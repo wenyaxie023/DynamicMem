@@ -1,0 +1,5988 @@
+from __future__ import annotations
+
+import json
+import re
+from copy import deepcopy
+from dataclasses import asdict, dataclass
+from datetime import datetime, timedelta
+from collections import Counter
+from pathlib import Path
+import random
+from typing import Any, Dict, List, Sequence
+from jinja2 import Template
+import dotenv
+dotenv.load_dotenv()
+import os
+
+from mem_bench.behavior_and_conversation.atomic_events_generator import (
+    AtomicEventsRequest,
+    generate_atomic_events,
+)
+from mem_bench.behavior_and_conversation.dynamic_profile_generator import (
+    DynamicProfileRequest,
+    generate_dynamic_profile,
+)
+from mem_bench.behavior_and_conversation.llm_client import GeminiJSONClient, LLMResult
+from mem_bench.behavior_and_conversation.real_data_generator import (
+    RealDataRequest,
+    generate_real_data,
+)
+from mem_bench.behavior_and_conversation.elite_persona_sampler import (
+    DEFAULT_SAMPLE_PATH as DEFAULT_ELITE_SAMPLE_PATH,
+    DEFAULT_SAMPLE_SIZE as DEFAULT_ELITE_SAMPLE_SIZE,
+    DEFAULT_SEED as ELITE_SAMPLE_SEED,
+    load_sampled_personas,
+    sample_elite_personas,
+)
+from mem_bench.behavior_and_conversation.semantic_events_generator import (
+    SemanticEventsRequest,
+    generate_semantic_events,
+)
+
+DYNAMIC_PROFILE_TEMPLATE_EXCERPT = """
+Expected JSON shape:
+{
+  "life_domain": "...",
+  "initial_state": {
+    "user_attributes_state": {
+        "initial": {
+          {
+            "<attribute_name>": <attribute value, list format of concrete values>,
+          },
+        }
+      },
+    "habits_state": {
+      "initial": {
+        "<habit_name>": {
+          "action": "...",
+          "frequency": "...",
+          "timing": "...",
+          "context": "...",
+          "description": "..."
+        }
+      }
+    },
+    "preferences_state": {
+        "initial": {
+          {
+            "<preference_name>": "<preference value, should be a concrete value, 5-20 words description of what this preference value means in natural language>",
+          },
+        }
+      },
+    "summary": "..."
+  },
+  "time_windows": [
+    {
+      "window_id": "w1",
+      "time_range": ["YYYY-MM-DD", "YYYY-MM-DD"],
+      "window_description": "...",
+      "user_attributes_delta": {
+        "operations": [
+          {
+            "op": "add|remove|modify",
+            "attribute_name": "...",
+            "new_state": <list or null>,
+            "reason": "..."
+          }
+        ]
+      },
+      "habits_delta": {
+        "operations": [
+          {
+            "op": "acquire|adjust|drop",
+            "habit_name": "...",
+            "new_state": null or dict(keys: action, frequency, timing, context, description),
+            "reason": "..."
+          }
+        ]
+      },
+      "preferences_delta": {
+        "operations": [
+          {
+            "op": "shift|amplify|attenuate",
+            "preference_name": "...",
+            "new_state": "<concrete preference value>",
+            "reason": "..."
+          }
+        ]
+      },
+      "summary": "..."
+    }
+  ]
+}
+"""
+
+in_domain_data_review_revise_prompt = Template("""You are a strict compliance auditor for dynamic user profiles.
+
+Life domain: {{ domain_name }}: {{ domain_scope_definition }}
+Basic user profile: {{ user_profile }}
+
+Your task: Validate the candidate JSON against the generation rules from dynamic_profile_template and fix violations.
+
+=================================================================================
+OPERATION SEMANTICS REFERENCE
+=================================================================================
+
+Before auditing, understand the operation semantics:
+
+**For user_attributes (arrays like user_subscriptions, user_owned_devices):**
+- "add": typically adds items to existing list
+  - new_state contains the COMPLETE new array (all old items + new items)
+  - Can be used multiple times on the same attribute across windows
+  - Example: initial ["A", "B"] → w1 add ["A", "B", "C"] → w3 add ["A", "B", "C", "D"]
+
+- "modify": typically changes existing items
+  - new_state contains the COMPLETE new array
+  - Can be used multiple times on the same attribute across windows
+  - Example: initial ["A", "B"] → w1 modify ["A", "C"] → w3 modify ["A", "D"]
+  
+- "remove": typically removes items from existing list
+  - new_state contains the COMPLETE new array (excluding removed items)
+  - Example: initial ["A", "B"] → w1 remove ["A"] → w3 remove ["B"]
+
+**For habits:**
+- "acquire": Create a new habit (habit must NOT exist before)
+- "adjust": Modify an existing habit (habit MUST exist in initial_state or prior windows)
+- "drop": Remove a habit (new_state must be JSON null, not string "none")
+
+**For preferences:**
+- "shift": Change preference to different value (preference MUST exist before)
+- "amplify": Strengthen preference (preference MUST exist before)
+- "attenuate": Weaken preference (preference MUST exist before)
+
+=================================================================================
+COMPLIANCE CHECKLIST (MUST ALL PASS)
+=================================================================================
+
+### RULE 1: SHORT-TERM CHANGES MUST HAVE FOLLOW-UPS
+**What to check:**
+- Identify all changes motivated by SHORT-TERM external factors:
+  * Seasonal changes (e.g., "winter dry air" → hydration habit)
+  * Special events (e.g., "Olympics" → daily viewing habit)
+  * Temporary circumstances (e.g., "heatwave" → indoor exercise)
+
+- For each short-term change, verify that a LATER window includes:
+  * A corresponding rollback (drop/adjust/attenuate) when the factor ends
+  * OR explicit reasoning why the change became permanent
+
+**How to detect:**
+- Look for keywords (e.g. "winter", "summer", "seasonal", "holiday", etc.) in "reason" fields
+- Check if subsequent windows mention the end of these factors
+- Verify that habits/preferences acquired for short-term reasons are later adjusted
+
+**Examples of violations:**
+w1: acquire "daily_hydration_habit" reason="combat dry winter air" 
+→ w3 (summer): no adjustment to this habit
+   
+w2: acquire "evening_olympic_viewing" reason="watch Olympics coverage"
+→ w3 (after Olympics): habit still exists, not dropped
+
+**How to fix:**
+- Add a new operation in the appropriate later window to drop/adjust the temporary change
+- Update the summary to mention the rollback
+- Ensure the timeline is realistic (e.g., Olympics ~2 weeks, winter ~3 months, etc.)
+
+---
+
+### RULE 2: MODIFICATION OPERATIONS REQUIRE PRIOR EXISTENCE
+**What to check:**
+- "modify" (attributes), "adjust" (habits), "shift/amplify/attenuate" (preferences) operations can ONLY be used if the target existed in a prior window
+
+**How to detect:**
+- For each modify/adjust/shift/amplify/attenuate operation in window N:
+  * Check if the target exists in initial_state OR was added/acquired in windows 1..N-1
+  * If not found, this is a violation
+
+**Examples of violations:**
+w2: op="adjust", habit_name="morning_jog"
+→ "morning_jog" never defined in initial_state or w1
+
+w3: op="shift", preference_name="exercise_style"
+→ "exercise_style" never defined in initial_state or w1-w2
+
+**How to fix:**
+- If a modify/adjust/shift/amplify/attenuate operation targets a non-existent item:
+  * Add the missing item to initial_state with a baseline value
+  * Update initial_state summary to mention it
+
+---
+
+### RULE 3: REQUIRED FIELDS MUST BE PRESENT
+**What to check:**
+- Every window object MUST have: "window_description", "summary"
+- initial_state object MUST have: "summary"
+- All habits MUST be complete dicts with: action, frequency, timing, context, description
+- Dropped habits MUST use JSON null (not string "none")
+
+**How to detect:**
+- Check for missing keys in window objects
+- Validate habit structure in all habit_state.initial and habits_delta operations
+- Check that drop operations set new_state to null (not "none", not empty string)
+
+**Examples of violations:**
+time_windows[1] missing "window_description"
+initial_state missing "summary"
+habit object: {"action": "walk_dog", "frequency": "daily"} 
+(Missing: timing, context, description)
+drop operation: "new_state": "none" 
+(Should be: "new_state": null)
+
+**How to fix:**
+- Add missing window_description based on window context
+- Generate summary by synthesizing changes in that window
+- Complete habit dicts with all required fields
+- Replace "none" strings with JSON null
+
+---
+
+### RULE 4: ESSENTIAL ITEMS MUST BE INITIALIZED IF EVOLVED
+**What to check:**
+- Identify all items that are:
+  * ESSENTIAL for this domain and this user profile (realistic baseline)
+  * EVOLVED in later windows (modify/adjust/shift operations)
+
+- Verify these items exist in initial_state with a baseline value
+
+**Essential items by domain (examples):**
+- Finances & Material Living: smartphone, primary bank account, payment methods
+- Health & Self-care: basic toiletries, bed, clothing appropriate for climate
+- Family & Close Relationships: communication devices if family is not co-located
+
+**How to detect:**
+- Scan all "modify", "adjust", "shift" operations in time_windows
+- For each, check if that attribute/habit/preference exists in initial_state
+- If missing, determine if it's essential (would a realistic person already have it?)
+
+**Examples of violations:**
+initial_state: no smartphone listed
+→ w3: add the first item to "user_owned_devices"
+(Violation: In modern society, an adult should own a phone.)
+
+**How to fix:**
+- Add the missing item to initial_state with a realistic baseline value
+- Update initial_state summary to mention it
+- Ensure the baseline is appropriate for the user's profile (income, tech literacy, etc.)
+
+---
+
+### RULE 5: TEMPORAL FEASIBILITY
+**What to check:**
+- Within each window, habit timings must not overlap
+- Habits must have realistic frequency (not "daily" and "5_times_per_day" for same person)
+- Time windows must be chronologically ordered and non-overlapping
+
+**How to detect:**
+- Parse timing strings (e.g., "6:00-6:30 AM") and check for overlaps
+- Check that time_range values are sequential across windows
+- Verify frequencies are realistic given user's work schedule and commitments
+
+**Examples of violations:**
+- Same window: "morning_exercise" (6:00-7:00 AM) + "morning_commute" (6:30-7:30 AM)
+- No spacing: Activity 'daily_ai_exploration' (10:00 PM) starts immediately after 'evening_streaming_routine' (ends 10:00 PM) without the required 15-30 minute spacing.
+- Overload: The user's combined schedule is unrealistically packed
+
+**How to fix:**
+- Shift timing of one habit to avoid overlap (minimal adjustment)
+- Reorder or merge windows if date ranges overlap
+- Adjust frequency if unrealistic
+
+=================================================================================
+CRITICAL: CASCADE EFFECTS
+=================================================================================
+
+**IMPORTANT**: When you fix a violation, you MUST include ALL downstream changes that are affected by your fix.
+
+**Examples of cascade effects:**
+
+1. **Adding to initial_state affects later modifications:**
+   - Fix: Add "smartphone" to initial_state.user_attributes_state.initial.user_owned_devices
+   - Cascade: Change w3's op from "add" to "modify" for the smartphone upgrade
+   - Your patches MUST include BOTH changes
+
+2. **Adjusting a habit timing affects overlapping habits:**
+   - Fix: Shift "morning_exercise" from 6:00-7:00 to 7:00-8:00
+   - Cascade: If "morning_commute" was 7:30-8:30, it now overlaps and must also shift
+   - Your patches MUST include BOTH timing changes
+
+3. **Adding a rollback for short-term change affects summary:**
+   - Fix: Add drop operation for "winter_hydration_habit" in w3
+   - Cascade: Update w3's summary to mention the habit was dropped
+   - Your patches MUST include BOTH the operation and summary update
+
+4. **Changing operation type affects later references:**
+   - Fix: Change w1's "adjust" to "acquire" for a habit
+   - Cascade: If w2 references this habit with "adjust", verify it's still valid
+   - Your patches MUST verify and fix any downstream references
+
+**How to handle cascades:**
+- After identifying a fix, scan ALL subsequent windows for items that reference or depend on the changed item
+- Include patches for ALL affected locations in the same violation's patches array
+- Patches will be applied in array order, so order them from earliest to latest window
+- Always update summaries when you add/modify operations in a window
+
+=================================================================================
+PATCH FORMAT GUIDE
+=================================================================================
+
+**Path format:**
+- Use dot notation with array indices: "time_windows[0].habits_delta.operations[1].new_state.timing"
+- Path should point to the MINIMAL unit that needs to change
+
+**Action types:**
+Choose the most appropriate action type for the operation.
+
+1. **"remove"** - Delete an element from array or key from object
+   Example: Remove an invalid operation
+   {
+     "path": "time_windows[1].habits_delta.operations[3]",
+     "action": "remove"
+   }
+
+2. **"append"** - Add to the end of an array
+   Example: Add a new operation to habits_delta
+   {
+     "path": "time_windows[2].habits_delta.operations",
+     "action": "append",
+     "value": {
+       "op": "drop",
+       "habit_name": "winter_hydration",
+       "new_state": null,
+       "reason": "Summer humidity makes aggressive hydration unnecessary"
+     }
+   }
+
+3. **"replace"** - Replace an existing value
+   Example: Change a timing string
+   {
+     "path": "time_windows[0].habits_delta.operations[1].new_state.timing",
+     "action": "replace",
+     "value": "8:45-9:15 AM"
+   }
+
+4. **"add_key"** - Add a new key-value pair to an object (for missing required fields or structural issues)
+   Example: Add missing "summary" to initial_state
+   {
+     "path": "initial_state",
+     "action": "add_key",
+     "key": "summary",
+     "value": "User is a tech-savvy professional with moderate fitness habits and a focus on long-term health."
+   }
+   
+   Example: Add missing "window_description" to a window
+   {
+     "path": "time_windows[1]",
+     "action": "add_key",
+     "key": "window_description",
+     "value": "Spring weather and increased outdoor activity opportunities motivate fitness improvements."
+   }
+   
+   Example: Add entirely missing section to initial_state
+   {
+     "path": "initial_state",
+     "action": "add_key",
+     "key": "preferences_state",
+     "value": {
+       "initial": {
+         "exercise_style": "Prefers outdoor running over gym workouts",
+         "meal_preference": "Prefers home-cooked meals with fresh ingredients"
+       }
+     }
+   }
+
+
+
+=================================================================================
+OUTPUT FORMAT
+=================================================================================
+
+Return a JSON object with this structure:
+
+{
+  "violations_and_fixes": [
+    {
+      "violation_type": "short_term_followups" | "operation_without_prior_existence" | "required_fields_violation" | "essential_items_violation" | "temporal_feasibility_violation",
+      "location": "time_windows[2].habits_delta.operations[0]",
+      "violation_description": "Short-term habit 'daily_hydration' acquired in winter (w1) but not adjusted in summer (w3)",
+      "patches": [
+        {
+          "path": "time_windows[2].habits_delta.operations[0]",
+          "action": "append",
+          "value": {
+            "op": "adjust",
+            "habit_name": "daily_hydration",
+            "new_state": {
+              "action": "drink_water_regularly",
+              "frequency": "when_thirsty",
+              "timing": "throughout_the_day",
+              "context": "using a standard water bottle",
+              "description": "Reduced frequency as summer humidity makes constant hydration less necessary"
+            },
+            "reason": "Summer humidity reduces need for aggressive hydration routine"
+          }
+        },
+        {
+          "path": "time_windows[2].summary",
+          "action": "replace",
+          "value": "<you should update the summary to mention the hydration adjustment>"
+        }
+      ]
+    }
+  ]
+}
+
+**CRITICAL REQUIREMENTS:**
+- Each violation's patches array MUST include ALL cascading changes (operations + affected summaries)
+- Patches are applied in array order, so order them chronologically (initial_state first, then w1, w2, etc.)
+- Always include "cascade_note" field explaining what downstream effects your fix has
+- If a fix has no cascade effects, set "cascade_note": "No downstream changes needed"
+
+If no violations found, return:
+{
+  "violations_and_fixes": []
+}
+
+=================================================================================
+SCHEMA REFERENCE
+=================================================================================
+{{ schema_excerpt }}
+
+=================================================================================
+CANDIDATE JSON TO AUDIT
+=================================================================================
+{{ dynamic_profile_json }}
+
+Now perform the audit step by step:
+1. Check RULE 1 (short-term followups)
+2. Check RULE 2 (operation without prior existence)  
+3. Check RULE 3 (required fields)
+4. Check RULE 4 (essential items violation)
+5. Check RULE 5 (temporal feasibility)
+
+For each violation found, generate the minimal patches to fix it.
+Output only the JSON result.
+""")
+# in_domain_data_review_revise_prompt = Template("""You are a strict auditor AND repairer for dynamic profiles produced with dynamic_profile_template.
+
+# Life domain: {{ domain_name }}: {{ domain_scope_definition }}
+# Basic user profile: {{ user_profile }}
+
+# Your task: inspect the candidate JSON, detect issues, and think step by step to fix the issues.
+
+# =================================================================================
+# ISSUE TYPES YOU MUST CHECK
+# =================================================================================
+
+# 1) TIME_CONFLICT
+#    - Time windows must be strictly chronological and non-overlapping
+#    - Activities within and across windows need plausible spacing (>=15-30 mins buffer)
+#    - If a change introduces overlap, adjust times minimally (shift/merge/drop the least-supported item)
+
+# 2) CONSISTENCY_VIOLATION
+#    - Every preference/habit change must reference an existing prior value
+#    - If a change touches something missing from initial/prior window, add a plausible prior value first
+#    - All referenced entities must exist and stay coherent across windows
+
+# 3) FORMAT_VIOLATION
+#    - Habits must be dicts with: action, frequency, timing, context, description
+#    - Dropped habits use JSON null (not the string "none")
+#    - Modified habits use complete habit dict in new_state
+#    - Adhere to the schema excerpt below (types and shapes must stay intact)
+
+# =================================================================================
+# REPAIR PRINCIPLES
+# =================================================================================
+# - Make minimal, localized edits; keep unrelated content untouched
+# - Preserve value types (list/dict/string/null)
+# - Keep window ordering unless fixing a detected overlap/ordering error
+# - If a fix in initial affects later windows, patch the downstream windows too
+
+# =================================================================================
+# OUTPUT FORMAT (STRICT JSON)
+# =================================================================================
+
+# Path format: 
+# path 到最小可改的单元 
+# 然后要注意cascade effect，比如调整了initial state的habit timing，那么后续的window的habit timing也要调整
+
+# {
+#   "conflicts_and_resolutions": [
+#   // example for time conflict
+#     {
+#       "conflict": {
+#         "location": "time_windows[0].habits_delta.operations[1].new_state",
+#         "type": "time_conflict",
+#         "conflict_description": "8:00 AM smoothie overlaps with 8:15-8:45 light therapy"
+#       },
+#       "resolution": {
+#         "strategy": "adjust_timing",
+#         "patches": [
+#           {
+#             "path": "time_windows[0].habits_delta.operations[1].new_state.timing",(这里到最小可改的单元）
+#             "action": "replace",
+#             "value": "8:45-9:15 AM"
+#           },
+#           ...
+#         ]
+#       }
+#     },
+
+#   // example for consistency violation
+#     {
+#       "conflict":{
+#         "location": "time_windows[0].habits_delta.operations[1].new_state,
+#         "type": "consistency_violation",
+#         "description": "habit missing context/description"
+#         },
+#         "resolution": {
+#         "strategy": "complete_habit_dict",
+#             "patches": [
+#                 {
+#                 "path": "time_windows[0].habits_delta.operations[2].new_state",
+#                 "action": "replace",
+#                 "new_value": {<exact value in this location>, if is remove, the set to null},
+#                 "reason": "..."
+#                 }
+#             ]
+#             }
+#     },
+#     // example for format violation
+#     {
+#         "conflict":{
+#         "location": "time_windows[0].habits_delta.operations[2].new_state",
+#         "conflict_description": "habit missing context/description"
+#         },
+#         "resolution": {
+#         "strategy": "complete_habit_dict",
+#             "patches": [
+#                 {
+#                 "path": "time_windows[0].habits_delta.operations[2].new_state",
+#                 "action": "replace",
+#                 "new_value": {<exact value in this location>, if is remove, the set to null},
+#                 "reason": "..."
+#                 }
+#         ]
+#         }
+# }
+
+# If no issues: set each conflicts_and_resolutions array to [] and patch_ops to [].
+
+# =================================================================================
+# SCHEMA REFERENCE (follow strictly)
+# =================================================================================
+# {{ schema_excerpt }}
+
+# Candidate JSON to audit and fix:
+# {{ dynamic_profile_json }}
+# """
+# )
+
+@dataclass
+class TimelineConfig:
+    start_date: str = "2024-01-01"
+    end_date: str = "2024-12-31"
+    num_windows: int = 4
+
+
+@dataclass
+class SemanticEventsConfig:
+    stable_state_reveal_probability: float = 0.35
+    stable_state_reveal_seed: int | None = None
+
+
+@dataclass
+class AtomicEventsConfig:
+    min_per_semantic: int = 1
+    max_per_semantic: int = 3
+
+
+@dataclass
+class RealDataConfig:
+    conversation_turns_range: tuple[int, int] = (2, 4)
+
+
+@dataclass
+class BasicProfileRequest:
+    user_description: str
+
+
+@dataclass
+class SpatiotemporalConstraintsRequest:
+    time_range: List[str] | tuple[str, str]
+    user_basic_profile: Dict
+    window_profile_summary: str
+    window_description: str
+    world_background: str
+
+
+@dataclass
+class LifeContextBaselineRequest:
+    user_basic_profile: Dict
+    dynamic_profiles_initial_state: Dict[str, Dict]
+
+
+@dataclass
+class LifeContextDeltaRequest:
+    user_basic_profile: Dict
+    life_context_baseline: Dict
+    time_range: List[str] | tuple[str, str] | None
+    window_id: str
+    window_description: str
+    window_profile_summary: str
+    world_background: str
+    previous_life_context: Dict | None = None
+    window_state_by_domain: Dict[str, Dict] | None = None
+
+# BASIC_PROFILE_PROMPT = """
+# You convert a free-form user_description paragraph into a concise, structured basic profile.
+
+# Input user_description:
+# {user_description}
+
+# Return JSON only (no code fences) using this structure and concrete values:
+# {{
+#   "summary": "2-3 sentences capturing the user overall",
+#   "demographics": {{
+#     "age": "mid-30s, late-20s, etc. if inferable",
+#     "location": "city/region if present, otherwise null",
+#     "education": "highest degree and field if mentioned, otherwise null"
+#   }},
+#   "work_and_income": {{
+#     "occupation": "role and industry if given",
+#     "work_style": "hybrid/remote/on-site if hinted",
+#     "income_situation": "brief note if present, otherwise null"
+#   }},
+#   "household": {{
+#     "living_situation": "who they live with and housing type if available",
+#     "dependents_or_pets": "brief note or null"
+#   }},
+#   "interests_and_hobbies": [
+#     "list of specific interests or hobbies pulled from the description"
+#   ],
+#   "values_and_personality": [
+#     "short bullets on values/traits (e.g., efficiency-focused, community-minded)"
+#   ],
+#   "digital_life": [
+#     "devices, platforms, or tech preferences mentioned; leave empty if unknown"
+#   ],
+#   "top_priorities": [
+#     "1-3 concrete current priorities you can infer; leave empty if unknown"
+#   ]
+# }}
+# """
+
+# BASIC_PROFILE_PROMPT = Template("""You are an expert Social Scientist and Data Profiler. Your task is to convert a raw, unstructured description of a user into a structured, highly consistent Basic User Profile.
+
+# # User Description
+# {user_description}
+
+# # Step-by-step Instructions
+# 1.  **Analyze** the provided [User Description].
+# 2.  **Extract** explicit facts.
+# 3.  **Infer** missing attributes based on sociodemographic logic (e.g., if "University Student", infer "Low Income" and "Age 18-25"; if "Senior Surgeon", infer "High Income" and "High Conscientiousness").
+# 4.  **Map** the data strictly into the JSON Schema provided below.
+# 5.  **Output** ONLY the valid JSON object.
+
+# # Constraints
+# -   **Realism & Verisimilitude:** The profile must be **realistic** and **plausible** within the context of the modern world.
+# -   **Internal Coherence:** Ensure logical consistency between attributes (e.g., Occupation and Income must match; Age and Education Level must be chronologically possible).
+# -   **Enums:** You MUST select values from the provided [Enum Options]. Do not invent new strings.
+# -   **No Nulls:** If a field is not mentioned in the text, infer the most **statistically probable** value based on the other known traits.
+
+# # JSON Schema (Strictly Follow This)
+# {
+#   "basic_user_profile": {
+#     "demographics": {
+#       "age": "Integer (18-90)",
+#       "gender": "Enum ['Male', 'Female', 'Non-binary']",
+#       "location_type": "Enum ['Urban_Metropolis', 'Suburban', 'Rural']",
+#       "cultural_background": "String (e.g., 'East Asian', 'North American', 'Western European')",
+#       "primary_language": "String (ISO code, e.g., 'en', 'zh')"
+#     },
+#     "socio_economic": {
+#       "education_level": "Enum ['High_School', 'Vocational', 'Bachelor', 'Master', 'Doctorate']",
+#       "occupation": "String (e.g., 'Software Engineer', 'Marketing Manager', 'Unemployed')",
+#       "economic_tier": "Enum ['Low_Income', 'Lower_Middle', 'Middle_Class', 'Upper_Middle', 'High_Net_Worth']",
+#       "housing_status": "Enum ['Renting', 'Home_Owner', 'Living_with_Family', 'Dormitory']"
+#     },
+#     "household": {
+#       "marital_status": "Enum ['Single', 'Partnered', 'Married', 'Divorced', 'Widowed']",
+#       "parental_status": "Enum ['No_Children', 'Expecting', 'Young_Children', 'Teenage_Children', 'Adult_Children']",
+#       "household_size": "Integer (1-10)"
+#     },
+#     "psychometrics": {
+#       "big_five_traits": {
+#         "openness": "Enum ['Low', 'Medium', 'High']",
+#         "conscientiousness": "Enum ['Low', 'Medium', 'High']",
+#         "extraversion": "Enum ['Low', 'Medium', 'High']",
+#         "agreeableness": "Enum ['Low', 'Medium', 'High']",
+#         "neuroticism": "Enum ['Low', 'Medium', 'High']"
+#       },
+#       "digital_literacy": "Enum ['Low', 'Basic', 'Advanced', 'Native']",
+#       "risk_tolerance": "Enum ['Risk_Averse', 'Neutral', 'Risk_Seeking']"
+#     }
+#   }
+# }
+# """
+# # )
+# BASIC_PROFILE_PROMPT = Template("""You are an expert Social Scientist and Data Profiler. Your task is to convert a raw, unstructured description of a user into a structured, highly consistent Basic User Profile that can be used to synthesize realistic day-to-day behavioral trajectories.
+
+# # User Description
+# {user_description}
+
+# # Core Objective
+# Produce ONE concrete, internally consistent profile. Do not leave anything vague. Every field must be filled with a specific value from the schema.
+
+# # Step-by-step Instructions
+# 1. **Parse & Quote Evidence**
+#    - Identify explicit facts in the description (e.g., age, job, family status, location hints).
+#    - Treat explicit facts as high-priority constraints.
+
+# 2. **Infer Missing Fields Deterministically**
+#    - If a field is not mentioned, infer the most plausible value using the other fields.
+#    - Prefer inferences that tighten behavioral constraints (time, money, health capacity, responsibilities) rather than soft “identity” guesses.
+#    - Ensure chronological plausibility (age ↔ education ↔ employment).
+
+# 3. **Resolve Conflicts**
+#    - If the description contains conflicting signals, resolve to the most coherent interpretation.
+#    - Use conservative assumptions (avoid extreme values unless clearly implied).
+
+# 4. **Validate Cross-field Coherence (Hard Rules)**
+#    - **Employment ↔ Work Hours**
+#      - Student: weekly_work_hours typically 0–25 (unless explicitly working full-time).
+#      - Full_time: typically 35–60.
+#      - Part_time: typically 5–30.
+#      - Retired: typically 0–15.
+#      - Unemployed: typically 0–10.
+#      - Caregiver: typically 0–20 unless explicitly employed.
+#      - Self_employed: typically 20–70 depending on clues.
+#    - **Age ↔ Education**
+#      - Middle_School_or_Less: typically age 13+ (any)
+#      - High_School: typically 16–20+
+#      - Associate/Vocational: typically 18+
+#      - Bachelor: typically 21+
+#      - Master: typically 23+
+#      - Doctorate: typically 26+
+#      - If the description implies an uncommon path, keep it plausible and consistent.
+#    - **Income ↔ Buffer ↔ Housing**
+#      - Low income more likely: buffer '0'/'<1'/'1-3', housing Renting/Living_with_Family/Dormitory.
+#      - High income more likely: buffer '3-6'/'6-12'/'12+', housing Home_Owner or higher-quality Renting.
+#      - Do not assign 'High' income with '0' buffer unless strong evidence (e.g., debt crisis).
+#    - **Household ↔ Caregiving**
+#      - household_size >= 3 often implies at least Light caregiving if children/elders are implied.
+#      - If parental/care duties are explicitly mentioned, increase caregiving_load accordingly.
+#    - **Health Constraint ↔ Work**
+#      - Severe health_constraint_level makes 50–70 weekly work hours unlikely unless explicitly stated.
+
+# 5. **Use Inference Heuristics (Examples; apply consistently)**
+#    - “University/college student” → employment_status Student; education_level Associate/Bachelor (choose based on wording); income_band Low or Lower_Mid; housing Dormitory or Renting; buffer '<1' or '1-3'; digital_literacy Advanced/Native.
+#    - “Senior surgeon / partner / executive” → employment_status Full_time; education_level Doctorate/Master; income_band High; buffer '6-12' or '12+'; planning_orientation Future_oriented or Balanced; digital_literacy Advanced.
+#    - “Single parent” or strong childcare cues → caregiving_load Moderate/High; household_size 2–5; weekly_work_hours adjusted downward unless explicit full-time.
+#    - If no language clues, choose the statistically dominant language for the implied region ONLY if the region is mentioned; otherwise infer from the text (names, phrases).
+
+# # Constraints
+# - **Realism & Verisimilitude:** The profile must be realistic and plausible in the modern world.
+# - **Internal Coherence:** Ensure logical consistency between attributes (e.g., work hours match employment status; age matches education).
+# - **Enums:** You MUST select values from the provided Enum options. Do not invent new strings.
+# - **No Nulls / No Unknown / No Prefer_not_to_say:** Every field must have a concrete value.
+# - **No Overreach:** Do not infer sensitive details beyond what’s needed to constrain behavior. When multiple values are plausible, choose the one that best preserves coherence and typicality.
+
+# # Output Format
+# - Output ONLY one valid JSON object.
+# - No commentary, no markdown, no extra keys.
+
+# # JSON Schema (Strictly Follow This)
+# {
+#   "basic_user_profile": {
+#     "context": {
+#       "age": "Integer (13-100)",
+#       "gender": "Enum ['Male','Female','Non-binary','Other']",
+#       "location_type": "Enum ['Urban_Metropolis','Urban','Suburban','Town','Rural']",
+#       "languages": "List[String] (ISO-639-1, e.g., ['en','zh'])"
+#     },
+#     "resources": {
+#       "education_level": "Enum ['Middle_School_or_Less','High_School','Vocational','Associate','Bachelor','Master','Doctorate']",
+#       "income_band": "Enum ['Low','Lower_Mid','Mid','Upper_Mid','High']",
+#       "financial_buffer_months": "Enum ['0','<1','1-3','3-6','6-12','12+']",
+#       "housing_status": "Enum ['Renting','Home_Owner','Living_with_Family','Dormitory','Other']"
+#     },
+#     "constraints": {
+#       "employment_status": "Enum ['Full_time','Part_time','Self_employed','Unemployed','Student','Retired','Caregiver']",
+#       "weekly_work_hours": "Integer (0-100)",
+#       "caregiving_load": "Enum ['None','Light','Moderate','High']",
+#       "household_size": "Integer (1-10)",
+#       "health_constraint_level": "Enum ['None','Mild','Moderate','Severe']"
+#     },
+#     "capabilities": {
+#       "digital_literacy": "Enum ['Low','Basic','Advanced','Native']",
+#       "planning_orientation": "Enum ['Present_biased','Balanced','Future_oriented']",
+#       "risk_tolerance": "Enum ['Risk_Averse','Neutral','Risk_Seeking']"
+#     }
+#   }
+# }
+# """)
+
+BASIC_PROFILE_PROMPT = Template("""You are creating a concrete user profile for behavioral simulation. Generate ONE specific, realistic profile based on the description below.
+
+# User Description
+{{user_description}}
+
+# Instructions
+1. Extract explicit facts from the description
+2. Infer missing details to create a complete, coherent profile
+3. Ensure all fields are internally consistent (e.g., student income matches student occupation)
+4. Choose specific values - no vague or placeholder text
+
+# Consistency Rules
+- **Students**: income Low/Lower_Mid, work_hours 0-25, education Associate/Bachelor
+- **Full-time workers**: work_hours 35-50, income Mid or higher
+- **Parents with young children**: caregiving_load Moderate/High, household_size 2+
+- **Age & education**: Bachelor typically 22+, Master 24+, Doctorate 27+
+- **Income & buffer**: High income → 6+ months buffer; Low income → 0-3 months
+
+# Output Format (JSON only)
+{
+  "age": <integer 18-85>,
+  "gender": "<Male|Female|Non_binary|Other>",
+  "location_type": "<Urban_Metropolis|Urban|Suburban|Town|Rural>",
+  "location_region": "<string, e.g., 'San Francisco Bay Area', 'Beijing', 'London'>",
+  "languages": ["<ISO codes, e.g., en, zh, es>"],
+  
+  "occupation": "<specific job title, e.g., 'Software Engineer', 'Retail Cashier', 'Graduate Student', 'Retired Teacher'>",
+  "employment_status": "<Full_time|Part_time|Self_employed|Unemployed|Student|Retired|Caregiver>",
+  "industry": "<specific industry, e.g., 'Technology', 'Healthcare', 'Education', 'Retail'>",
+  "weekly_work_hours": <integer 0-70>,
+  
+  "education_level": "<Middle_School|High_School|Vocational|Associate|Bachelor|Master|Doctorate>",
+  "income_band": "<Low|Lower_Mid|Mid|Upper_Mid|High>",
+  "financial_buffer_months": "<0|<1|1-3|3-6|6-12|12+>",
+  "housing_status": "<Renting|Home_Owner|Living_with_Family|Dormitory|Other>",
+  
+  "household_size": <integer 1-8>,
+  "household_composition": "<string, e.g., 'Lives alone', 'Married with 2 children', 'College roommates'>",
+  "caregiving_load": "<None|Light|Moderate|High>",
+  "health_constraint_level": "<None|Mild|Moderate|Severe>",
+  
+  "digital_literacy": "<Low|Basic|Advanced|Native>",
+  "planning_orientation": "<Present_biased|Balanced|Future_oriented>",
+  "risk_tolerance": "<Risk_Averse|Neutral|Risk_Seeking>"
+}
+
+""")
+
+def render_basic_profile_prompt(request: BasicProfileRequest) -> str:
+    return BASIC_PROFILE_PROMPT.render(user_description=request.user_description)
+
+
+def generate_basic_profile(
+    llm_client: GeminiJSONClient, request: BasicProfileRequest
+) -> LLMResult:
+    prompt = render_basic_profile_prompt(request)
+    return llm_client.generate_json(prompt)
+
+
+# SPATIOTEMPORAL_CONSTRAINTS_PROMPT = Template(
+#     """You generate a precise spatiotemporal plan for ONE time window.
+# you need generate a spatiotemporal plan in this time range for the user 
+# Inputs:
+# - time_range: {{ time_range }}  the time range
+# - user_basic_profile (JSON): {{ user_basic_profile_json }}  this is the basic user profile that impact multiple life domains
+# - window description: {{ window_description }} short description of the general conditions that motivate changes from previous time window to this time window
+# - window_profile_summary (cross-domain, JSON text): {{ window_profile_summary }}  this is user fine-grained profile in multiple life domains in this time window, each is a summary
+# - window_world_background: {{ world_background }} this is the world background in this time window
+
+# Output ONLY JSON with this exact shape (no code fences):
+# {
+#   "whereabouts": [
+#     {
+#       "start": "YYYY-MM-DDTHH:MM",
+#       "end":   "YYYY-MM-DDTHH:MM",
+#       "loc":   "ISO-like location code or description (e.g., CN.SHANGHAI or US.SF)",
+#       "kind":  "STAY"
+#     },
+#     {
+#       "start": "YYYY-MM-DDTHH:MM",
+#       "end":   "YYYY-MM-DDTHH:MM",
+#       "loc":   "TRAVEL",
+#       "kind":  "TRAVEL",
+#       "from":  "origin code",
+#       "to":    "destination code"
+#     }
+#   ],
+#   "home_base": "default base city/area (e.g., CN.SHANGHAI)"
+# }
+
+# Rules:
+# - Cover the entire time_range; combine into a minimal, coherent itinerary.
+# - If no travel cues, use one STAY covering the whole range at the home_base.
+# - Times can be approximate but must be within the time_range.
+# - Use TRAVEL segments only when the summary or background implies travel; otherwise avoid them.
+# - Keep texts concise; no extra fields.
+# """
+# )
+Life_Context_Baseline_Prompt = Template("""
+You are a constraint extraction agent. Generate a minimal life context that defines external constraints on when/where/with-whom events can occur.
+
+# Framework
+- **Capability**: Physical reach (travel time) + time budgets (when user is available)
+- **Authority**: Location access rules (opening hours, memberships)
+- **Coupling**: Coordination requirements (lead time, participants)
+
+# Input Data
+**Basic Profile**: {{ user_basic_profile_json }}
+**Baseline Detailed Profile**: {{ dynamic_profiles_initial_state_json }}
+
+---
+
+## 1. CAPABILITY
+
+### Time Budgets (4 blocks)
+```json
+{
+  "name": "sleep|work_core|free_evening|free_weekend",
+  "days": "all|weekday|weekend",
+  "start": "HH:MM",
+  "end": "HH:MM",
+  "rigidity": "hard|soft"
+}
+```
+- **hard**: Cannot violate (e.g., employer-mandated work hours)
+- **soft**: Preferred but flexible (e.g., typical sleep window)
+
+**Extract from**:
+- Work habits → `work_core` (default 09:00-18:00 weekdays, rigidity=hard)
+- Sleep habits → `sleep` (default 23:00-07:00, rigidity=soft)
+- Remainder → `free_evening` (weekday 18:00-23:00), `free_weekend` (weekend 09:00-23:00)
+
+### Mobility
+```json
+{
+  "mode_defaults": {"local": "drive|walk|transit"},
+  "edges": [
+    {
+      "from": "home|work|fitness|grocery|restaurant",
+      "to": "home|work|fitness|grocery|restaurant",
+      "mode": "drive|walk|transit",
+      "travel_time": {"kind": "quantiles", "min": X, "p50": Y, "p90": Z, "max": W},
+      "time_sensitivity": "rush_hour|weather|stable"
+    }
+  ]
+}
+```
+- **Only generate edges for**: home↔work, home↔locations in 3+ weekly habits
+- **Travel time estimation**: Urban car p50 ≈ distance_km × 3 minutes
+- **Use generic location types**: "fitness" not "The Studio Climbing"
+
+---
+
+## 2. AUTHORITY
+
+### Places (5-8 maximum)
+```json
+{
+  "id": "home|work|fitness|grocery|restaurant|social_venue",
+  "type": "residence|workplace|fitness|retail|social|healthcare",
+  "access": {
+    "kind": "private|restricted|public",
+    "open_hours": [["weekday", "09:00", "18:00"]], // only if restricted
+    "membership_required": true  // only if restricted
+  }
+}
+```
+- **Mandatory**: `home` (private), `work` (if employed)
+- **Conditional**: Extract from habits (gym→fitness, grocery shopping→grocery, date night→restaurant)
+- **Generic types only**: No real business names
+
+---
+
+## 3. COUPLING
+
+### Commitments (recurring coordinated activities)
+```json
+{
+  "id": "unique_id",
+  "activity_tag": "date_night|board_game|gym_class",
+  "rule": {
+    "recurrence": "daily|weekly|monthly",
+    "day": "monday|friday|last_saturday|15th",
+    "time": "HH:MM",
+    "duration_min": 120
+  },
+  "participants": ["partner", "group:board_game"],
+  "location_hint": "restaurant|social_venue|fitness",
+  "preemptible": false
+}
+```
+- **Only include**: Habits with explicit timing + other people involved
+- **Skip**: Solo habits, flexible activities
+
+### Coordination Rules (by activity type)
+```json
+{
+  "activity_tag": "date_night|group_event|casual_meetup",
+  "participants": ["partner", "group:*", "friend:*"],
+  "lead_time": {"min_h": 0, "preferred_h": 24},
+  "flex_window_h": 2,
+  "cancellation_penalty": "high|medium|low"
+}
+```
+- **Standard patterns**:
+  - Co-resident partner: min_h=0, preferred_h=24, penalty=high
+  - Small group (4-8): min_h=48, preferred_h=168, penalty=high
+  - Professional: min_h=24, preferred_h=72, penalty=low
+
+---
+
+# Output Format
+```json
+{
+  "life_context": {
+    "timezone": "America/Los_Angeles",
+    "capability": {
+      "time_budgets": [...],
+      "mobility": {"mode_defaults": {...}, "edges": [...]}
+    },
+    "authority": {
+      "places": [...]
+    },
+    "coupling": {
+      "commitments": [...],
+      "coordination_rules": [...]
+    }
+  }
+}
+```
+
+# Rules
+1. Use generic types, not specific names
+2. Extract only what's in habits or blocks scheduling
+3. Minimize entries: 4 time_budgets, 3-5 edges, 5-8 places
+4. If unsure, omit (better sparse than speculative)
+
+Generate the life context now.
+""")
+
+Life_Context_Delta_Prompt = Template("""
+You are a constraint delta agent. Analyze a time window to identify TEMPORARY changes to the user's life context constraints.
+
+# Input Data
+**Basic Profile**: {{ user_basic_profile_json }}
+**Current Life Context Baseline**: {{ life_context_baseline_json }}
+**Time Window**:
+- Description: {{ window_description }}
+- Summary: {{ window_summary }}
+- World Background: {{ window_world_background }}
+
+---
+
+# Task
+Generate constraint deltas (additions, modifications, suspensions) that apply ONLY during this time window. Focus on:
+1. **Travel/Relocation**: Does user leave primary region? (affects capability.mobility)
+2. **Schedule Disruptions**: Do work hours change? Holidays? (affects capability.time_budgets)
+3. **Access Changes**: New locations needed? Facilities closed? (affects authority.places)
+4. **Coordination Shifts**: Are recurring commitments suspended? New group activities? (affects coupling)
+
+---
+
+## Delta Operations
+
+### 1. CAPABILITY Deltas
+
+#### Time Budget Modifications
+```json
+{
+  "op": "suspend|modify|add",
+  "target": "work_core|sleep|free_evening|free_weekend",
+  "effective_dates": ["2024-07-15", "2024-07-20"], // specific date range, or null for entire window
+  "new_state": {
+    "name": "vacation_mode",
+    "days": "all",
+    "start": "08:00",
+    "end": "23:00",
+    "rigidity": "soft"
+  },
+  "reason": "User on vacation per window_summary"
+}
+```
+**Triggers**:
+- "vacation", "travel", "time off" → suspend work_core
+- "holiday season", "extended break" → modify time_budgets
+- "working from [other city]" → add temporary work hours
+
+#### Mobility Changes
+```json
+{
+  "op": "add_temporary_location|modify_edge",
+  "details": {
+    "location_id": "vacation_destination",
+    "location_type": "temporary_residence",
+    "from_baseline": "home", // which baseline location this replaces
+    "effective_dates": ["2024-07-15", "2024-07-20"]
+  },
+  "reason": "Week-long vacation to [location] mentioned in window"
+}
+```
+**Triggers**:
+- "trip to", "vacation in", "visiting" → add temporary location
+- "working remotely from" → add temporary work location
+- Extreme weather mentioned → modify travel_time multipliers
+
+---
+
+### 2. AUTHORITY Deltas
+
+#### Place Access Changes
+```json
+{
+  "op": "add|suspend|modify",
+  "place_id": "office|gym|new_venue",
+  "effective_dates": ["2024-12-24", "2024-12-26"],
+  "modification": {
+    "access": {"kind": "restricted", "open_hours": []} // empty = closed
+  },
+  "reason": "Holiday closure per window_description"
+}
+```
+**Triggers**:
+- "office closed for holidays" → suspend work access
+- "gym membership starts" → add fitness place
+- "new climbing gym opens" → add alternative fitness venue
+
+---
+
+### 3. COUPLING Deltas
+
+#### Commitment Suspensions
+```json
+{
+  "op": "suspend|reschedule|add",
+  "commitment_id": "date_night|board_game",
+  "effective_dates": ["2024-08-01", "2024-08-14"],
+  "modification": {
+    "suspended": true,
+    "reason": "Partner traveling for work per window_summary"
+  }
+}
+```
+**Triggers**:
+- "partner away", "group on break" → suspend commitments
+- "holiday gatherings" → add temporary family events
+- Event like "Olympics viewing parties" → add temporary recurring commitment
+
+#### Temporary Coordination Rules
+```json
+{
+  "op": "add",
+  "temporary_rule": {
+    "activity_tag": "olympics_viewing",
+    "participants": ["friend:*"],
+    "lead_time": {"min_h": 4, "preferred_h": 24},
+    "flex_window_h": 1,
+    "cancellation_penalty": "low",
+    "effective_window": "entire"
+  },
+  "reason": "Olympics viewing parties mentioned in habits_delta"
+}
+```
+
+---
+
+## Analysis Guidelines
+
+### Look for these signals:
+
+**In window_description**:
+- Geographic terms: "traveling to", "vacation in", "visiting", "relocated temporarily"
+- Schedule terms: "holiday", "break", "time off", "remote work period"
+- Access terms: "gym closed", "new facility", "office shutdown"
+- Social terms: "partner away", "hosting visitors", "group hiatus"
+
+**In window_summary**:
+- Habit changes: "drops outdoor_running" → may indicate location change or facility closure
+- Attribute changes: "adds travel gear" → likely trip planned
+- Relationship changes: "partner becomes fiancée" → may affect coordination patterns
+
+**In window_world_background**:
+- Major events: "Olympics", "holidays" → temporary commitments
+- Natural events: "heatwave", "winter storm" → mobility constraints
+- Market events: "Bitcoin halving" → usually no constraint impact (unless explicitly changes schedule)
+
+### Default to NO DELTA if:
+- Window only describes internal changes (skills learned, preferences shifted)
+- Events are purely informational (reading about Olympics ≠ attending Olympics)
+- Changes are covered by existing seasonal_modifiers in baseline
+
+---
+
+# Output Format
+```json
+{
+  "window_id": "w1|w2|w3|w4",
+  "window_dates": ["2024-01-01", "2024-03-31"],
+  "has_constraint_changes": true,
+  "deltas": {
+    "capability": [
+      // time_budget and mobility deltas
+    ],
+    "authority": [
+      // place access deltas
+    ],
+    "coupling": [
+      // commitment and coordination deltas
+    ]
+  },
+  "rationale": "Brief explanation of why these deltas were generated"
+}
+```
+
+**If no constraint changes**: 
+```json
+{
+  "window_id": "w2",
+  "window_dates": ["2024-04-01", "2024-07-01"],
+  "has_constraint_changes": false,
+  "rationale": "Window describes internal skill/preference changes with no physical/temporal/social constraint impacts"
+}
+```
+
+---
+
+# Critical Rules
+
+1. **Only generate deltas with explicit evidence** in window text
+2. **Specify effective_dates** when possible (vs. "entire window")
+3. **Prefer suspend over delete**: Constraints usually return after window
+4. **Don't infer lifestyle from events**: "Bitcoin Halving occurs" ≠ "user changes schedule"
+5. **Check if seasonal_modifiers already cover it**: Don't duplicate baseline logic
+
+Generate the constraint deltas now.
+""")
+
+
+# SPATIOTEMPORAL_CONSTRAINTS_PROMPT = Template("""You are an expert agent responsible for generating spatiotemporal trajectory plans.
+
+# Your task: Generate a JSON-formatted schedule that covers the specified time window, based on user profiles and contextual information.
+
+# # Input Data
+
+# **Time Window**: {{ time_range }}
+
+# **Window World Background**: {{ window_world_background }}
+
+# **Basic Profile (Static/Long-term)**:
+# {{ user_basic_profile_json }}
+
+# **Motivation for This Window** (what drove the transition from previous state to current state):
+# {{ window_description }}
+
+# **Current State Summary (Dynamic/Window-specific)**:
+# {{ window_profile_summary }}
+
+
+# ---
+
+# # Task Instructions
+
+# 1. **User Modeling**: Analyze the `Basic Profile` to establish a baseline understanding of the user's characteristics, habits, and behavioral patterns.
+
+# 2. **Window-specific Reasoning**: 
+#    - Examine the `Motivation` to understand WHY the user's state changed
+#    - Analyze the `Current State Summary` to understand WHAT the resulting state is
+#    - Infer spatiotemporal changes based on the interplay between motivation and outcome
+
+# 3. **Trajectory Generation Rules**:
+#    - **Full Coverage**: The schedule MUST cover the entire `Time Window` with no gaps
+#    - **Default Behavior**: If no explicit travel triggers exist, generate a single "STAY" segment at `home_base`
+#    - **Travel Conditions**: Only add "TRAVEL" segments when `window_description` or `window_profile_summary` explicitly indicates movement/relocation
+#    - **Consistency**: Ensure all transitions are logically justified by the input data
+
+# ---
+
+# # Output Format (JSON only)
+# {
+#   "whereabouts": [
+#     {
+#       "start": "YYYY-MM-DDTHH:MM",
+#       "end": "YYYY-MM-DDTHH:MM",
+#       "loc": "Location Code (e.g., CN.SHANGHAI) or 'TRAVEL'",
+#       "kind": "STAY or TRAVEL",
+#       "from": "Origin Code (required only if kind=TRAVEL)",
+#       "to": "Destination Code (required only if kind=TRAVEL)"
+#     }
+#   ],
+#   "home_base": "Default base city code (e.g., CN.SHANGHAI)"
+# }
+# """)
+
+# CONFLICT_RESOLUTION_PROMPT = Template("""You are a cross-domain consistency auditor. Given full dynamic user profiles across domains, detect and resolve conflicts realistically, per window (initial + each window_id). Do NOT blanket-apply a single value to all windows.
+
+# User basic profile (context, optional):
+# {{ user_basic_profile_json }}
+
+# Full dynamic profiles by domain (initial state + deltas):
+# {{ dynamic_profiles_json }}
+
+# What to look for (be exhaustive):
+# - Inventory contradictions for the same entity class (e.g., one domain lists MacBook Pro M3, another lists MacBook Pro M2 14-inch).
+# - Temporal collisions: overlapping recurring habits/events in the same day/slot; multiple "weekly" events all on Wed night—adjust to bi-weekly/alt days.
+# - Preference/attribute drifts that cannot coexist (e.g., vegan in one domain, steakhouse lover in another).
+# - Financial/resource feasibility anchored to the basic profile (time, money, energy).
+# - Cross-window coherence across domains: if two windows overlap in time across domains and clash (e.g., two full-time jobs), flag and resolve.
+
+# How to fix:
+# - Prefer the most coherent, realistic single truth; keep shapes (list/dict/string) intact.
+# - When schedule conflicts arise, resolve by spacing out (bi-weekly/monthly), shifting day/time, or dropping the least-supported item.
+# - When similar attributes use different keys, pick a canonical key name and align all domains to the chosen value.
+# - For set/list-type fields (subscriptions, devices, assets), resolve by union + dedupe unless items are mutually exclusive; then choose the consistent subset and note dropped items.
+# - Resolve per window_id; only touch windows that need changes.
+# - If nothing is conflicting, return empty sections.
+
+# Return strict JSON (no code fences) with this structure:
+# {
+#   "canonical_attributes": {
+#     "<canonical_key>": {
+#       "resolved_value": "<final value>",
+#       "reason": "short justification",
+#       "windows": [
+#         {
+#           "window_id": "<initial|w1|...>",
+#           "domains": [{"domain": "<domain_name>", "attribute_name": "<attr key as stored in that domain>"}]
+#         }
+#       ]
+#     }
+#   },
+#   "per_domain_resolutions": {
+#     "<domain_name>": [
+#       {
+#         "attribute_name": "<attr name exactly as it appears in that domain>",
+#         "resolved_value": "<resolved value for that domain>",
+#         "window_id": "<initial|w1|...>",
+#         "note": "short note on the change"
+#       }
+#     ]
+#   },
+#   "detected_conflicts": [
+#     {
+#       "kind": "semantic|temporal|inventory|preference",
+#       "window_id": "<initial|w1|...>",
+#       "time_range": ["<start>", "<end>"],
+#       "description": "brief description of the conflict and domains involved"
+#     }
+#   ]
+# }
+
+# Rules:
+# - Outputs must be realistic and consistent with the basic profile.
+# - Preserve attribute shapes (list/dict/string) when resolving.
+# - Be explicit in per_domain_resolutions for every field that needs updating; specify window_id.
+# """)
+CONFLICT_RESOLUTION_PROMPT = Template("""You are a cross-domain consistency auditor and profile reasonableness validator. 
+
+Your task is to:
+1. Detect and resolve CONFLICTS across different life domains in the user's dynamic profile
+2. Identify and fix UNREASONABLE patterns that emerge when domains are combined
+3. Ensure the integrated profile reflects a realistic, livable human schedule and lifestyle
+
+IMPORTANT CONTEXT:
+- All attribute keys are already normalized across domains
+- Intra-domain conflicts have been resolved; focus ONLY on cross-domain issues
+- Your output will be directly applied as patches to the profile
+
+User basic profile:
+{{ user_basic_profile_json }}
+
+Full dynamic profiles by domain (initial state + deltas):
+{{ dynamic_profiles_json }}
+
+=================================================================================
+CONFLICT TYPE 1: ATTRIBUTE CONFLICT
+=================================================================================
+
+## Definition & Detection
+
+**For Singular Attributes:**
+If the same attribute key exists in multiple domains with DIFFERENT values in the SAME window, it is a conflict.
+
+<Example>
+Job Title Conflict:
+// Work & Education @ initial_state
+"job_title": ["Director of Product Management"]
+
+// Finances & Material Living @ initial_state
+"job_title": ["Senior Product Manager"]
+
+→ CONFLICT: Same singular attribute, different values
+</Example>
+
+**For Collection Attributes:**
+If the same attribute key exists in multiple domains, the attribute itself is NOT a conflict (collections remain separate in each domain). However, if individual items WITHIN the collections are mutually contradictory OR overlapping, it IS a conflict.
+
+**Understanding Contradictory Items (Category Exclusivity):**
+Contradictory items belong to the same device/product category where a user typically owns only ONE item. Common exclusive categories include:
+- Smartphones: User has one primary phone (e.g., "iPhone 14" OR "Pixel 7", not both)
+- Laptops: User has one primary laptop (e.g., "MacBook Pro" OR "Lenovo ThinkPad", not both)  
+- Tablets: User has one primary tablet (e.g., "iPad" OR "Samsung Galaxy Tab", not both)
+- Fitness trackers: User wears one tracker (e.g., "Apple Watch" OR "Fitbit", not both)
+
+**Understanding Overlapping Items (Exact Duplicates):**
+Overlapping items are the EXACT SAME item listed in multiple domains (e.g., "iPhone 14" appears in both Domain A and Domain B).
+
+<Example>
+Device Inventory - Contradictory Items:
+// Domain A
+"user_digital_assets": ["iPhone 14", "MacBook Pro"]
+
+// Domain B  
+"user_digital_assets": ["Pixel 7", "Lenovo ThinkPad"]
+
+→ CONFLICT: The collections contain contradictory items within the same device category.
+   - "iPhone 14" (Domain A) vs "Pixel 7" (Domain B): Both are smartphones - user can only have ONE primary phone
+   - "MacBook Pro" (Domain A) vs "Lenovo ThinkPad" (Domain B): Both are laptops - user can only have ONE primary laptop
+
+Resolution Approach:
+   - Evaluate which phone is more reasonable based on user's basic profile
+   - DELETE the less reasonable phone from its domain
+   - Apply the same logic to the laptop conflict
+   - Result: User should have exactly ONE phone and ONE laptop across all domains
+
+Example Resolution (if user prefers Apple ecosystem):
+   - Keep "iPhone 14" in Domain A
+   - DELETE "Pixel 7" from Domain B (contradictory phone)
+   - Keep "MacBook Pro" in Domain A  
+   - DELETE "Lenovo ThinkPad" from Domain B (contradictory laptop)
+</Example>
+
+<Example>
+Device Inventory - Overlapping Items:
+// Domain A
+"user_digital_assets": ["iPhone 14", "MacBook Pro"]
+
+// Domain B  
+"user_digital_assets": ["iPhone 14", "AirPods"]
+
+→ OVERLAP CONFLICT: The collections contain the same item ("iPhone 14" appears in both domains). In our data format, each item should be represented in only ONE domain.
+</Example>
+
+<Example>
+Subscription Coexistence (**NOT a conflict**):
+// Domain A
+"user_subscriptions": ["Netflix", "Spotify"]
+
+// Domain B
+"user_subscriptions": ["Health Matters Podcast"]
+
+→ NO CONFLICT: All items are unique across domains. User can subscribe to all simultaneously. Keep each domain's list as-is.
+</Example>
+
+**Key Distinction:**
+- Collection attributes remain separate in each domain (no merging needed)
+- **Contradictory items** are mutually exclusive (e.g., competing devices, contradictory dietary plans)
+- **Overlapping items** are exact duplicates appearing in multiple domains
+- When items are contradictory, identify and drop the less reasonable items from their respective domains
+- When items overlap, keep the item in the MOST AUTHORITATIVE domain and remove from all other domains
+
+---
+
+## Resolution Strategies
+
+**For Singular Attributes:**
+- Analyze all conflicting values across domains
+- Select the MOST REASONABLE value based on:
+  * Consistency with user's basic profile
+  * Domain authority (e.g., Work & Education owns job_title)
+- Update ALL domains to use the selected canonical value
+- Document which values were dropped and why
+
+**For Collection Attributes:**
+- Identify specific ITEMS within the collection that are contradictory or overlapping
+- For **contradictory items**: Evaluate each for reasonableness and drop the less reasonable ones
+- For **overlapping items**: Determine the most authoritative domain and remove duplicates from other domains
+- Keep collections separate per domain; do NOT merge across domains
+- Only remove problematic items that create contradictions or redundancy
+
+<Example>
+Before:
+  Domain A "Technology & Digital Life": ["iPhone 14", "MacBook Pro", "AirPods"]
+  Domain B "Work & Education": ["Pixel 7", "iPad Pro", "AirPods"]
+
+Analysis: 
+  - "iPhone 14" vs "Pixel 7": Contradictory (mutually exclusive phones)
+  - "AirPods": Overlapping (duplicate in both domains)
+
+Resolution:
+  If user's basic profile shows preference for Apple ecosystem:
+    Domain A: Keep as-is ["iPhone 14", "MacBook Pro", "AirPods"]
+    Domain B: Remove contradictions and overlaps → ["iPad Pro"]
+    
+  Reasoning:
+    - Dropped "Pixel 7": Contradictory to user's Apple preference
+    - Dropped "AirPods" from Domain B: Overlapping item, keep only in authoritative Technology domain
+</Example>
+
+**Priority Rules for Determining Authoritative Domain (for overlapping items):**
+1. If an attribute naturally belongs to a domain's core purpose (e.g., "work_email" in Work & Education), that domain is authoritative
+2. For general items (devices, subscriptions), prioritize:
+   - Dedicated domain (e.g., "Technology & Digital Life" for devices)
+   - Financial tracking domain (e.g., "Finances & Material Living" for subscriptions)
+   - Context-specific domain (e.g., "Health & Wellness" for fitness devices)
+3. When in doubt, keep the item in the domain with more context about that item
+
+---
+
+=================================================================================
+CONFLICT TYPE 2: TEMPORAL COLLISION
+=================================================================================
+
+## Definition & Detection
+
+**Definition**: User cannot physically perform two activities at the same time
+
+**Sub-types:**
+
+### 2a. Direct Time Overlap
+
+<Example>
+habit_A: "every Wednesday 7:00-8:00 PM"
+habit_B: "every Wednesday 7:00-9:00 PM"
+
+→ CONFLICT (overlapping time blocks)
+</Example>
+
+### 2b. Frequency Saturation
+
+<Example>
+habit_A: "daily 8:30-9:00 AM"
+habit_B: "daily 8:00-9:00 AM"  
+habit_C: "daily 8:45-9:15 AM"
+
+→ CONFLICT (same day, overlapping times)
+</Example>
+
+---
+
+## Resolution Strategies
+
+**Option 1: Shift Timing**
+Move one activity to a different time slot to eliminate overlap.
+
+<Example>
+Before: Both activities at "Wednesday 7:00 PM"
+After:  habit_A → "Monday 7:00 PM", habit_B stays "Wednesday 7:00 PM"
+</Example>
+
+**Option 2: Reduce Frequency**
+Convert one activity from more frequent to less frequent to create space.
+
+<Example>
+Before: Both "weekly on Wednesday"
+After:  habit_A → "bi-weekly, alternating Wednesdays"
+</Example>
+
+**Option 3: Remove Lower-Priority Habit**
+If timing adjustment is impractical, remove the less important activity entirely.
+
+---
+
+=================================================================================
+CONFLICT TYPE 3: SCHEDULE OVERLOAD/UNREASONABLE
+=================================================================================
+
+## Definition & Detection
+
+**Definition**: While activities don't directly overlap, the overall schedule is unrealistically packed
+When looking across all domains, the user's combined schedule may be implausibly busy.
+
+**Detection Criteria:**
+
+### 3a. Single Time Slot Overcrowding
+If multiple habits are scheduled for the same general time period (e.g., "Saturday morning", "weekday evenings"), check if the cumulative time commitment is reasonable.
+
+<Example>
+Saturday morning habits:
+- Domain A: "grocery shopping (9:00-10:30 AM)"
+- Domain B: "family breakfast outing (9:00-11:00 AM)"
+- Domain C: "youth soccer practice (9:00-10:00 AM)"
+- Domain D: "home cleaning routine (8:00-10:00 AM)"
+- Domain E: "weekend yoga class (9:30-10:30 AM)"
+
+→ UNREASONABLE: Five activities scheduled for the same 2-hour window on Saturday morning. User cannot realistically do all of these.
+</Example>
+
+### 3b. Daily/Weekly Time Budget Exhaustion
+Check if the total time commitment across all habits leaves room for:
+- Work/sleep (assume ~8 hours each for working adults)
+- Meals and basic routines
+- Buffer time and flexibility
+- Unscheduled downtime
+
+<Example>
+Daily habits totaling:
+- 2 hours morning routine
+- 8 hours work
+- 1.5 hours commute
+- 1.5 hours evening exercise
+- 1 hour meal prep
+- 1 hour family time
+- 1 hour hobby time
+- 1 hour learning/reading
+
+→ Total: 16 hours + sleep (8h) = 24 hours with ZERO buffer
+→ UNREASONABLE: No time for flexibility, meals take longer, unexpected events
+</Example>
+
+### 3c. Frequency Overlap Within Same Time Slot
+Multiple "daily" or "weekly" habits scheduled for the same time-of-day create implicit conflicts.
+
+<Example>
+"Every weekday evening after work":
+- Domain A: gym session (daily, 6:00-7:30 PM)
+- Domain B: online course (3x/week, 6:30-8:00 PM)
+- Domain C: family dinner prep (daily, 6:00-7:00 PM)
+
+→ UNREASONABLE: While they don't overlap EVERY day, the combined pattern is implausible. Gym is daily, course is 3x/week, dinner is daily—user needs to choose priorities.
+</Example>
+
+---
+
+## Resolution Strategies
+
+**Guiding Principle**: Ensure the profile represents a REALISTIC, SUSTAINABLE human lifestyle while making minimal necessary changes.
+
+**Step 1: Assess Priority**
+Use user's basic profile and domain context to rank activities by importance:
+- Core needs (work, sleep, meals) > social commitments > hobbies
+- Health-critical activities > optional recreation
+- Recurring commitments > flexible activities
+
+**Step 2: Apply Thinning Strategy**
+Choose one or more approaches:
+
+**Option A: Reduce Frequency**
+<Example>
+Before: 
+  - morning_run: daily
+  - strength_training: daily
+  - yoga_class: 3x/week
+After:
+  - morning_run: 4x/week (Mon, Wed, Fri, Sat)
+  - strength_training: 3x/week (Tue, Thu, Sat)
+  - yoga_class: 2x/week (Wed, Sun)
+</Example>
+
+**Option B: Shift to Different Time Slots**
+<Example>
+Before (all Saturday morning):
+  - grocery shopping
+  - soccer practice
+  - yoga class
+  - home cleaning
+After:
+  - grocery shopping: Saturday morning
+  - soccer practice: Saturday morning (keep, high priority)
+  - yoga class: Sunday morning (shifted)
+  - home cleaning: Friday evening (shifted)
+</Example>
+
+**Option C: Remove Lower-Priority Habits**
+<Example>
+Before (weekday evenings overloaded):
+  - gym session (daily, high priority - health)
+  - online course (3x/week, medium priority)
+  - podcast listening (daily, low priority)
+  - family dinner (daily, high priority)
+After:
+  - gym session: keep
+  - online course: reduce to 2x/week
+  - podcast listening: Remove (can be done during commute instead)
+  - family dinner: keep
+</Example>
+
+**Step 3: Validate Reasonableness**
+After adjustments, verify:
+- No single time slot has more than 2-3 activities per week
+- Daily total time commitment leaves at least 2-3 hours unscheduled buffer
+- At least 1-2 free evenings per week
+- Weekend includes some unstructured time
+
+---
+
+=================================================================================
+CRITICAL: CASCADE CHANGES ACROSS WINDOWS
+=================================================================================
+
+Since this is a dynamic profile with temporal evolution, resolving a conflict in one window may affect subsequent windows. When generating patches, carefully consider the ripple effects:
+
+- If you adjust a habit's timing in the `initial` state, check if any time_windows modify that same habit
+- If a time_window delta references the adjusted habit, update those deltas accordingly
+- Ensure consistency: if you change "Tuesday 7pm" to "Monday 7pm" in initial state, and w2 says "adjust timing to 8pm", the w2 delta should reflect "Monday 8pm" not "Tuesday 8pm"
+
+<Example>
+Initial state: habit_A timing = "Tuesday 7pm"
+Window w2: adjust habit_A timing to "8pm" (inherits day from initial)
+If you resolve a conflict by changing initial to "Monday 7pm":
+→ MUST also patch w2 to clarify it's now "Monday 8pm"
+</Example>
+
+=================================================================================
+CRITICAL REQUIREMENTS
+=================================================================================
+
+1. **Window-specific**: Each patch must specify exact window_id
+2. **Minimal but sufficient changes**: Only patch what's necessary, but ensure profile is livable
+3. **Preserve structure**: Don't change data types (list→list, string→string)
+4. **Cascade awareness**: When modifying habits in initial state, check and update references in subsequent time_windows
+5. **One patch per change**: Don't combine multiple operations in one patch
+6. **Clear reasoning**: Always include "reason" field explaining the resolution
+7. **Holistic validation**: After resolving individual conflicts, validate that the overall schedule is reasonable
+
+=================================================================================
+PATCH FORMAT GUIDE
+=================================================================================
+
+**Path format:**
+- Use dot notation with array indices: "time_windows[0].habits_delta.operations[1].new_state.timing"
+- Path should point to the MINIMAL unit that needs to change
+
+**Action types:**
+IMPORTANT: Choose the most appropriate action type for the operation.
+
+1. **"remove"** - Delete an element from array or key from object
+   Example: Remove an invalid operation
+   {
+     "path": "time_windows[1].habits_delta.operations[3]",
+     "operation": "remove"
+   }
+   or **remove a value from an array**
+   {
+     "path": "user_attributes_state.initial.personal_devices[0]",
+     "operation": "remove"
+   }
+2. **"replace"** - Replace an existing value
+   Example: Change a timing string
+   {
+     "path": "time_windows[0].habits_delta.operations[1].new_state.timing",
+     "action": "replace",
+     "value": "8:45-9:15 AM"
+   }
+
+3. **"append"** - Add to the end of an array
+   Example: Add a new operation to habits_delta
+   {
+     "path": "time_windows[2].habits_delta.operations",
+     "action": "append",
+     "value": {
+       "op": "drop",
+       "habit_name": "winter_hydration",
+       "new_state": null,
+       "reason": "Summer humidity makes aggressive hydration unnecessary"
+     }
+   }
+
+4. **"add_key"** - Add a new key-value pair to an object (for missing required fields or structural issues)
+   Example: Add missing "summary" to initial_state
+   {
+     "path": "initial_state",
+     "action": "add_key",
+     "key": "summary",
+     "value": "User is a tech-savvy professional with moderate fitness habits and a focus on long-term health."
+   }
+   
+   Example: Add missing "window_description" to a window
+   {
+     "path": "time_windows[1]",
+     "action": "add_key",
+     "key": "window_description",
+     "value": "Spring weather and increased outdoor activity opportunities motivate fitness improvements."
+   }
+   
+   Example: Add entirely missing section to initial_state
+   {
+     "path": "initial_state",
+     "action": "add_key",
+     "key": "preferences_state",
+     "value": {
+       "initial": {
+         "exercise_style": "Prefers outdoor running over gym workouts",
+         "meal_preference": "Prefers home-cooked meals with fresh ingredients"
+       }
+     }
+   }
+
+=================================================================================
+OUTPUT FORMAT (STRICT JSON)
+=================================================================================
+
+Path format: `<state_type>.<window_id>.<nested_keys>`
+Operations: `replace` | `append` | `add_key` | `remove`
+
+{
+  "conflicts_and_resolutions": [
+    {
+      "conflict": {
+        "type": "singular_conflict|collection_item_conflict|temporal_collision",
+        "description": "Brief description of the conflict",
+        "involved_data": [
+          {
+            "domain": "Work & Education",
+            "window_id": "w3",
+            "path": "user_attributes_state.w3.user_job_title",
+            "value": "Director of Product Management"
+          },
+          {
+            "domain": "Finances & Material Living",
+            "window_id": "w3",
+            "path": "user_attributes_state.w3.user_job_title",
+            "value": "Senior Product Manager"
+          }
+        ]
+      },
+      "resolution": {
+        "strategy": "unify_singular_value|delete_contradictory_items|delete_overlapping_items|adjust_timing|reduce_frequency|drop_habit",
+        "patches": [
+          {
+            "domain": "Finances & Material Living",
+            "window_id": "initial",
+            "path": "user_attributes_state.initial.user_job_title",
+            "operation": "replace",
+            "new_value": "Director of Product Management",
+            "reason": "Align to the canonical job title chosen from the Work & Education domain."
+          },
+          {
+            "domain": "Work & Education",
+            "window_id": "initial",
+            "path": "user_attributes_state.initial.user_job_title",
+            "operation": "replace",
+            "new_value": "Director of Product Management",
+            "reason": "Set the canonical job title consistently across domains."
+          }
+        ]
+      }
+    },
+    {
+      "conflict": {
+        "type": "collection_overlap",
+        "description": "Duplicate phone appears in multiple domains",
+        "involved_data": [
+          {
+            "domain": "Finances & Material Living",
+            "window_id": "initial",
+            "path": "user_attributes_state.initial.personal_devices",
+            "value": "iPhone 13"
+          },
+          {
+            "domain": "Work & Education",
+            "window_id": "initial",
+            "path": "user_attributes_state.initial.personal_devices",
+            "value": "iPhone 15"
+          }
+        ]
+      },
+      "resolution": {
+        "strategy": "delete_overlapping_items",
+        "patches": [
+          {
+            "domain": "Work & Education",
+            "window_id": "initial",
+            "path": "user_attributes_state.initial.personal_devices[1]",
+            "operation": "remove",
+            "reason": "Remove duplicate 'phone' - keep only in authoritative Finances & Material Living domain"
+          }
+        ]
+      }
+    }
+  ]
+}
+
+If no conflicts detected, return:
+{
+  "conflicts_and_resolutions": []
+}
+""")
+
+# {
+#       "conflict": {
+#         "type": "temporal_collision",
+#         "description": "Tuesday 7pm time slot conflict between coding practice and cycling",
+#         "involved_data": [
+#           {
+#             "domain": "Work & Education",
+#             "window_id": "initial",
+#             "path": "habits_state.initial.weekly_technical_upskilling.timing",
+#             "value": "Tuesday and Thursday evenings from 7:00-8:00 PM"
+#           },
+#           {
+#             "domain": "Health & Self-care",
+#             "window_id": "initial",
+#             "path": "habits_state.initial.indoor_cycling_sessions.timing",
+#             "value": "after work around 7:00 PM"
+#           }
+#         ]
+#       },
+#       "resolution": {
+#         "strategy": "adjust_timing",
+#         "patches": [
+#           {
+#             "domain": "Health & Self-care",
+#             "window_id": "initial",
+#             "path": "habits_state.initial.indoor_cycling_sessions.timing",
+#             "operation": "update",
+#             "old_value": "after work around 7:00 PM",
+#             "new_value": "after work around 8:00 PM",
+#             "reason": "Shifted to 8pm to avoid Tuesday collision with Work & Education's coding practice at 7pm"
+#           }
+#         ]
+#       }
+#     },
+#     {
+#       "conflict": {
+#         "type": "temporal_collision",
+#         "description": "Cross-window conflict: Domain A's w1 habit overlaps with Domain B's initial habit",
+#         "involved_data": [
+#           {
+#             "domain": "Social & Community",
+#             "window_id": "w1",
+#             "path": "habits_state.w1.evening_networking_event.timing",
+#             "value": "Every Wednesday 7:00-9:00 PM"
+#           },
+#           {
+#             "domain": "Health & Self-care",
+#             "window_id": "initial",
+#             "path": "habits_state.initial.yoga_class.timing",
+#             "value": "Weekly Wednesday 7:30 PM"
+#           }
+#         ]
+#       },
+#       "resolution": {
+#         "strategy": "adjust_timing",
+#         "patches": [
+#           {
+#             "domain": "Social & Community",
+#             "window_id": "w1",
+#             "path": "habits_state.w1.evening_networking_event.timing",
+#             "operation": "update",
+#             "old_value": "Every Wednesday 7:00-9:00 PM",
+#             "new_value": "Every Thursday 7:00-9:00 PM",
+#             "reason": "Moved networking to Thursday to preserve Health & Self-care's established yoga routine"
+#           }
+#         ]
+#       }
+#     }
+#   ]
+# }
+
+# **Field Specifications**:
+# - `start`/`end`: ISO 8601 datetime format
+# - `loc`: City/region code for STAY; use "TRAVEL" literal for TRAVEL segments
+# - `kind`: Must be either "STAY" or "TRAVEL"
+# - `from`/`to`: Required for TRAVEL, omit for STAY
+# - `home_base`: The user's primary residence location
+
+# **Example**:
+# {
+#   "whereabouts": [
+#     {
+#       "start": "2024-01-15T08:00",
+#       "end": "2024-01-20T18:00",
+#       "loc": "CN.SHANGHAI",
+#       "kind": "STAY"
+#     }
+#   ],
+#   "home_base": "CN.SHANGHAI"
+# }
+def render_conflict_resolution_prompt(request: ConflictResolutionRequest) -> str:
+   user_basic_profile_json = json.dumps(
+       request.user_basic_profile or {}, indent=2, ensure_ascii=False
+   )
+   dynamic_profiles_json = json.dumps(
+       request.dynamic_profiles, indent=2, ensure_ascii=False
+   )
+   return CONFLICT_RESOLUTION_PROMPT.render(
+       user_basic_profile_json=user_basic_profile_json,
+       dynamic_profiles_json=dynamic_profiles_json
+   )
+
+
+def generate_conflict_resolution(
+   llm_client: GeminiJSONClient, request: ConflictResolutionRequest
+) -> LLMResult:
+   prompt = render_conflict_resolution_prompt(request)
+   return llm_client.generate_json(prompt)
+
+
+def render_life_context_baseline_prompt(
+    request: LifeContextBaselineRequest,
+) -> str:
+    user_basic_profile_json = json.dumps(
+        request.user_basic_profile, indent=2, ensure_ascii=False
+    )
+    dynamic_profiles_initial_state_json = json.dumps(
+        request.dynamic_profiles_initial_state, indent=2, ensure_ascii=False
+    )
+    return Life_Context_Baseline_Prompt.render(
+        user_basic_profile_json=user_basic_profile_json,
+        dynamic_profiles_initial_state_json=dynamic_profiles_initial_state_json,
+    )
+
+
+def generate_life_context_baseline(
+    llm_client: GeminiJSONClient, request: LifeContextBaselineRequest
+) -> LLMResult:
+    prompt = render_life_context_baseline_prompt(request)
+    return llm_client.generate_json(prompt)
+
+
+def render_life_context_delta_prompt(request: LifeContextDeltaRequest) -> str:
+    user_basic_profile_json = json.dumps(
+        request.user_basic_profile, indent=2, ensure_ascii=False
+    )
+    life_context_baseline_json = json.dumps(
+        request.life_context_baseline or {}, indent=2, ensure_ascii=False
+    )
+    window_summary = request.window_profile_summary or ""
+    if request.time_range and isinstance(request.time_range, (list, tuple)):
+        try:
+            start, end = request.time_range
+            prefix = f"[{request.window_id}] {start} to {end}"
+            window_summary = f"{prefix} | {window_summary}" if window_summary else prefix
+        except ValueError:
+            # fallback if time_range isn't a 2-tuple/list
+            window_summary = f"[{request.window_id}] {request.time_range} | {window_summary}"
+    return Life_Context_Delta_Prompt.render(
+        user_basic_profile_json=user_basic_profile_json,
+        life_context_baseline_json=life_context_baseline_json,
+        window_description=request.window_description,
+        window_summary=window_summary,
+    )
+
+
+def generate_life_context_delta(
+    llm_client: GeminiJSONClient, request: LifeContextDeltaRequest
+) -> LLMResult:
+    prompt = render_life_context_delta_prompt(request)
+    return llm_client.generate_json(prompt)
+
+
+def render_spatiotemporal_constraints_prompt(
+    request: SpatiotemporalConstraintsRequest,
+) -> str:
+    user_basic_profile_json = json.dumps(
+        request.user_basic_profile, indent=2, ensure_ascii=False
+    )
+    return SPATIOTEMPORAL_CONSTRAINTS_PROMPT.render(
+        time_range=request.time_range,
+        user_basic_profile_json=user_basic_profile_json,
+        window_profile_summary=request.window_profile_summary,
+        window_description=request.window_description,
+        window_world_background=request.world_background,
+    )
+
+
+def generate_spatiotemporal_constraints(
+    llm_client: GeminiJSONClient, request: SpatiotemporalConstraintsRequest
+) -> LLMResult:
+    prompt = render_spatiotemporal_constraints_prompt(request)
+    return llm_client.generate_json(prompt)
+
+
+@dataclass
+class ConflictResolutionRequest:
+    user_basic_profile: Dict | None
+    dynamic_profiles: Dict[str, Dict]
+
+
+@dataclass
+class KeyAlignmentRequest:
+    dynamic_profiles: Dict[str, Dict]
+    user_basic_profile: Dict | None = None
+
+
+KEY_ALIGNMENT_PROMPT = Template("""Normalize attribute key names across domains by identifying semantically identical keys.
+
+Input dynamic profiles (initial + deltas):
+{{ dynamic_profiles_json }}
+
+Basic user profile:
+{{ user_basic_profile_json }}
+
+Task:
+Identify keys that represent the SAME concept across different domains and map them to ONE canonical key name.
+
+Alignment Rules:
+1. Keys are "semantically identical" if they track the exact same attribute (e.g., "user_age" and "age" both mean age)
+2. Prefer the shortest, most common key name as canonical
+3. Do NOT merge keys that are similar but distinct (e.g., "last_login" vs "last_activity")
+4. If domains have different data types for same concept, note this in the mapping
+
+Examples of what TO align:
+- "user_email", "email_address", "email" → "email"
+- "user_id", "userId", "id" → "user_id"
+
+Output format (JSON only):
+{
+  "canonical_key_mappings": {
+    "<canonical_key>": {
+      "description": "<brief description of what this represents>",
+      "domains": [
+        {"domain": "<domain_name>", "original_key": "<original_key_name>"}
+      ]
+    }
+  }
+}
+""")
+
+
+
+
+def generate_key_alignment(
+    llm_client: GeminiJSONClient, request: KeyAlignmentRequest
+) -> LLMResult:
+    user_basic_profile_json = json.dumps(
+        request.user_basic_profile or {}, indent=2, ensure_ascii=False
+    )
+    dynamic_profiles_json = json.dumps(
+        request.dynamic_profiles, indent=2, ensure_ascii=False
+    )
+    prompt = KEY_ALIGNMENT_PROMPT.render(
+        dynamic_profiles_json=dynamic_profiles_json,
+        user_basic_profile_json=user_basic_profile_json,
+    )
+    return llm_client.generate_json(prompt)
+
+
+@dataclass
+class Domain:
+    domain_name: str
+    domain_scope_definition: str
+    start_date: str | None = None
+    end_date: str | None = None
+    num_windows: int | None = None
+
+    def resolve_timeline(self, default: TimelineConfig) -> TimelineConfig:
+        return TimelineConfig(
+            start_date=self.start_date or default.start_date,
+            end_date=self.end_date or default.end_date,
+            num_windows=self.num_windows or default.num_windows,
+        )
+
+
+def _slugify(value: str) -> str:
+    slug = re.sub(r"[^a-z0-9]+", "_", value.lower()).strip("_")
+    return slug or "domain"
+
+
+def _format_window_range(window_state: Dict) -> str:
+    time_range = window_state.get("time_range")
+    if isinstance(time_range, (list, tuple)) and len(time_range) == 2:
+        return f"{time_range[0]} to {time_range[1]}"
+    return str(time_range)
+
+
+def _ensure_dir(path: Path) -> None:
+    path.mkdir(parents=True, exist_ok=True)
+
+
+def _write_json(path: Path, payload: Dict) -> None:
+    path.write_text(json.dumps(payload, indent=2, ensure_ascii=False))
+
+def _write_text(path: Path, text: str) -> None:
+    path.write_text(text)
+
+
+def _path_key(key: object) -> object:
+    if isinstance(key, int):
+        return key
+    if isinstance(key, str) and key.isdigit():
+        try:
+            return int(key)
+        except ValueError:
+            return key
+    return key
+
+
+def _location_to_path(location: object) -> List[object]:
+    """
+    Convert dotted + bracket notation paths (e.g., time_windows[0].summary) into
+    a list/tuple path usable by the patch applier. If the input is already a
+    list/tuple, it is returned as-is.
+    """
+    if isinstance(location, (list, tuple)):
+        return list(location)
+    parts: List[object] = []
+    if location is None:
+        return parts
+    for segment in str(location).split("."):
+        if not segment:
+            continue
+        remainder = segment
+        while remainder:
+            if "[" in remainder:
+                before, after = remainder.split("[", 1)
+                if before:
+                    parts.append(before)
+                idx_str, remainder = after.split("]", 1)
+                parts.append(_path_key(idx_str))
+            else:
+                parts.append(remainder)
+                remainder = ""
+    return parts
+
+
+def _traverse_path(
+    root: Any, path: Sequence[object], *, create_missing: bool = False
+) -> Any:
+    """
+    Walk the object graph following a path. Optionally create missing containers
+    (dict or list) when create_missing is True.
+    """
+    target: Any = root
+    for idx, raw_key in enumerate(path):
+        key = _path_key(raw_key)
+        if isinstance(target, list):
+            if not isinstance(key, int):
+                return None
+            if 0 <= key < len(target):
+                target = target[key]
+            elif create_missing and key == len(target):
+                next_key = path[idx + 1] if idx + 1 < len(path) else None
+                target.append({} if isinstance(next_key, str) else [])
+                target = target[key]
+            else:
+                return None
+        elif isinstance(target, dict):
+            if key not in target:
+                if create_missing:
+                    next_key = path[idx + 1] if idx + 1 < len(path) else None
+                    target[key] = {} if isinstance(next_key, str) else []
+                else:
+                    return None
+            target = target[key]
+        else:
+            return None
+    return target
+
+
+def _apply_patch_ops(base: Dict, patch_ops: List[Dict]) -> Dict:
+    patched = deepcopy(base)
+    for op in patch_ops or []:
+        path = _location_to_path(op.get("path"))
+        action = op.get("action")
+        value = op.get("value")
+        key_name = op.get("key")
+        if action not in {"add", "replace", "remove", "append", "add_key"}:
+            continue
+        if not isinstance(path, list) or len(path) == 0:
+            continue
+
+        if action == "append":
+            target_list = _traverse_path(patched, path, create_missing=True)
+            if isinstance(target_list, list):
+                target_list.append(value)
+            continue
+
+        if action == "add_key":
+            target_dict = _traverse_path(patched, path, create_missing=True)
+            if isinstance(target_dict, dict) and key_name is not None:
+                target_dict[key_name] = value
+            continue
+
+        parent = _traverse_path(
+            patched, path[:-1], create_missing=action in {"add", "replace"}
+        )
+        if parent is None:
+            continue
+
+        last_key = _path_key(path[-1])
+        if isinstance(parent, list):
+            if not isinstance(last_key, int):
+                continue
+            if action == "add":
+                if 0 <= last_key <= len(parent):
+                    parent.insert(last_key, value)
+                else:
+                    parent.append(value)
+            elif action == "replace":
+                if 0 <= last_key < len(parent):
+                    parent[last_key] = value
+                elif last_key == len(parent):
+                    parent.append(value)
+            elif action == "remove" and 0 <= last_key < len(parent):
+                parent.pop(last_key)
+        elif isinstance(parent, dict):
+            if action in {"add", "replace"}:
+                parent[last_key] = value
+            elif action == "remove":
+                parent.pop(last_key, None)
+    return patched
+
+
+def _apply_profile_revision(original_profile: Dict, review_payload: Dict) -> Dict:
+    if not isinstance(review_payload, dict):
+        return deepcopy(original_profile)
+    patch_ops = review_payload.get("patch") or review_payload.get("patch_ops") or []
+    fixes = review_payload.get("fixes") or []
+    revised = review_payload.get("revised_profile")
+    base_from_singleton_list = (
+        isinstance(original_profile, list)
+        and len(original_profile) == 1
+        and isinstance(original_profile[0], dict)
+    )
+    base_obj = (
+        deepcopy(original_profile[0])
+        if base_from_singleton_list
+        else deepcopy(original_profile)
+    )
+
+    violations = review_payload.get("violations_and_fixes") or []
+    if violations and not patch_ops:
+        translated_ops: List[Dict] = []
+        for violation in violations:
+            for patch in violation.get("patches") or []:
+                loc = patch.get("path") or patch.get("location")
+                if loc is None:
+                    continue
+                translated_ops.append(
+                    {
+                        "path": _location_to_path(loc),
+                        "action": patch.get("action") or "replace",
+                        "value": patch.get("value"),
+                        "key": patch.get("key"),
+                    }
+                )
+        patch_ops = translated_ops
+
+    if fixes and not patch_ops:
+        translated_ops: List[Dict] = []
+        for fix in fixes:
+            loc = fix.get("location") or fix.get("path")
+            if not loc:
+                continue
+            path = _location_to_path(loc)
+            action = fix.get("action") or "replace"
+            value = fix.get("fix")
+            if "value" in fix and value is None:
+                value = fix.get("value")
+            translated_ops.append({"path": path, "action": action, "value": value})
+        patch_ops = translated_ops
+
+    patched = deepcopy(base_obj)
+    if patch_ops:
+        try:
+            patched = _apply_patch_ops(patched, patch_ops)
+        except Exception:
+            if revised is not None:
+                patched = deepcopy(revised)
+            else:
+                patched = deepcopy(base_obj)
+    elif revised is not None:
+        patched = deepcopy(revised)
+    if base_from_singleton_list and isinstance(patched, dict):
+        return [patched]
+    return patched
+
+
+PRICING_TABLE: Dict[str, Dict[str, Any]] = {
+    "gemini_2_5_flash_lite": {
+        "tier": "flash_lite",
+        "pricing": {
+            "input_per_1M_tokens_usd": 0.10,
+            "output_per_1M_tokens_usd": 0.40,
+        },
+    },
+    "gemini_2_5_flash": {
+        "tier": "flash",
+        "pricing": {
+            "input_per_1M_tokens_usd": 0.50,
+            "output_per_1M_tokens_usd": 3.00,
+        },
+    },
+    "gemini_3_flash_preview": {
+        "tier": "flash",
+        "pricing": {
+            "input_per_1M_tokens_usd": 0.50,
+            "output_per_1M_tokens_usd": 3.00,
+        },
+    },
+    "gemini_3_pro": {
+        "tier": "pro",
+        "pricing_tiers": {
+            "up_to_200k_context_tokens": {
+                "input_per_1M_tokens_usd": 2.00,
+                "output_per_1M_tokens_usd": 12.00,
+            },
+            "over_200k_context_tokens": {
+                "input_per_1M_tokens_usd": 4.00,
+                "output_per_1M_tokens_usd": 18.00,
+            },
+        },
+    },
+}
+
+
+def _summarize_usage_counts(node: Any) -> Dict[str, int]:
+    """
+    Walk a nested usage tree and accumulate token counts.
+    A usage leaf is any dict containing prompt/completion/total keys.
+    """
+    totals = {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
+
+    def _walk(value: Any) -> None:
+        if isinstance(value, dict):
+            if {
+                "prompt_tokens",
+                "completion_tokens",
+                "total_tokens",
+            }.issubset(value.keys()):
+                totals["prompt_tokens"] += int(value.get("prompt_tokens", 0) or 0)
+                totals["completion_tokens"] += int(
+                    value.get("completion_tokens", 0) or 0
+                )
+                totals["total_tokens"] += int(value.get("total_tokens", 0) or 0)
+            for child in value.values():
+                _walk(child)
+        elif isinstance(value, list):
+            for item in value:
+                _walk(item)
+
+    _walk(node)
+    return totals
+
+
+def _summarize_usage(aggregate_usage: Dict[str, Any]) -> Dict[str, Dict[str, int]]:
+    """
+    Summarize token usage per top-level section plus a grand total.
+    """
+    summary = {
+        key: _summarize_usage_counts(value) for key, value in aggregate_usage.items()
+    }
+    summary["grand_total"] = _summarize_usage_counts(aggregate_usage)
+    return summary
+
+
+def _normalize_model_key(model_name: str) -> str:
+    return _slugify(model_name.replace(".", "_"))
+
+
+def _lookup_pricing_for_model(model_name: str) -> Dict[str, float] | None:
+    pricing_key = _normalize_model_key(model_name)
+    entry = PRICING_TABLE.get(pricing_key)
+    if not entry:
+        return None
+    if "pricing" in entry:
+        return entry["pricing"]
+    if "pricing_tiers" in entry:
+        tiers = entry["pricing_tiers"]
+        # Default to the lower tier unless specified otherwise.
+        return tiers.get("up_to_200k_context_tokens") or next(iter(tiers.values()), None)
+    return None
+
+
+def _compute_usage_pricing(
+    usage_summary: Dict[str, Dict[str, int]], model_name: str
+) -> Dict[str, object] | None:
+    pricing = _lookup_pricing_for_model(model_name)
+    if not pricing:
+        return None
+
+    grand = usage_summary.get("grand_total") or {}
+    prompt_tokens = int(grand.get("prompt_tokens", 0) or 0)
+    completion_tokens = int(grand.get("completion_tokens", 0) or 0)
+
+    input_rate = pricing.get("input_per_1M_tokens_usd")
+    output_rate = pricing.get("output_per_1M_tokens_usd")
+    if input_rate is None or output_rate is None:
+        return None
+
+    input_cost = prompt_tokens / 1_000_000 * input_rate
+    output_cost = completion_tokens / 1_000_000 * output_rate
+
+    return {
+        "model_name": model_name,
+        "pricing_key": _normalize_model_key(model_name),
+        "input_rate_per_million": input_rate,
+        "output_rate_per_million": output_rate,
+        "prompt_tokens": prompt_tokens,
+        "completion_tokens": completion_tokens,
+        "input_cost_usd": round(input_cost, 6),
+        "output_cost_usd": round(output_cost, 6),
+        "total_cost_usd": round(input_cost + output_cost, 6),
+    }
+
+
+def _persist_usage_artifacts(
+    aggregate_usage: Dict[str, Any],
+    output_dir: Path,
+    *,
+    basename: str = "token_usage",
+    model_name: str | None = None,
+) -> tuple[Dict[str, Dict[str, int]], Dict[str, object] | None]:
+    """
+    Persist raw and summarized token usage to disk.
+    """
+    summary = _summarize_usage(aggregate_usage)
+    pricing = _compute_usage_pricing(summary, model_name) if model_name else None
+    _write_json(output_dir / f"{basename}.json", aggregate_usage)
+    _write_json(output_dir / f"{basename}_summary.json", summary)
+    if pricing:
+        _write_json(output_dir / f"{basename}_pricing.json", pricing)
+    return summary, pricing
+
+
+def _segment_world_background_text(world_background: str) -> List[str]:
+    """
+    Split a world background text into segments using bold headers as boundaries.
+    If no headers are found, return the whole text as a single segment.
+    """
+    if not isinstance(world_background, str):
+        return []
+
+    segments: List[str] = []
+    current_lines: List[str] = []
+    header_pattern = re.compile(r"^\s*\*\*.+\*\*\s*$")
+
+    for line in world_background.splitlines():
+        if header_pattern.match(line):
+            segment = "\n".join(current_lines).strip()
+            if segment:
+                segments.append(segment)
+            current_lines = []
+            continue
+        current_lines.append(line)
+
+    final_segment = "\n".join(current_lines).strip()
+    if final_segment:
+        segments.append(final_segment)
+
+    if not segments and world_background.strip():
+        return [world_background.strip()]
+    return segments
+
+
+def _parse_world_background_by_window(text: str) -> Dict[str, str]:
+    """
+    Parse a world background text that labels sections with window ids (e.g., 'w1:', 'w2:').
+    We scan the whole text for 'w<number>:' markers and slice between them, so labels do not
+    need to be at line starts.
+    """
+    sections: Dict[str, str] = {}
+    pattern = re.compile(r"(w\d+)\s*:", flags=re.IGNORECASE)
+    matches = list(pattern.finditer(text))
+    for idx, match in enumerate(matches):
+        window_id = match.group(1).lower()
+        start = match.end()
+        end = matches[idx + 1].start() if idx + 1 < len(matches) else len(text)
+        content = text[start:end].strip()
+        if content:
+            sections[window_id] = content
+    return sections
+
+
+def _map_world_background_to_windows(
+    world_background: str | Dict[str, str] | None, window_ids: List[str]
+) -> Dict[str, str]:
+    """
+    Map world background to each window. Supports:
+      - dict mapping window_id -> text (with optional "default")
+      - JSON string that can be parsed into such a dict (common when loading from disk)
+      - plain text split into sequential segments (aligned by index to window_ids)
+      - fallback: same text for all windows
+    """
+    mapped: Dict[str, str] = {}
+    if isinstance(world_background, str):
+        try:
+            parsed = json.loads(world_background)
+            if isinstance(parsed, dict):
+                world_background = parsed
+        except json.JSONDecodeError:
+            # Not a JSON payload; treat as plain text.
+            parsed_sections = _parse_world_background_by_window(world_background)
+            if parsed_sections:
+                default_text = parsed_sections.get("default", "")
+                for window_id in window_ids:
+                    mapped[window_id] = parsed_sections.get(window_id, default_text)
+                return mapped
+
+    if isinstance(world_background, dict):
+        default_text = world_background.get("default", "")
+        for window_id in window_ids:
+            mapped[window_id] = world_background.get(window_id, default_text)
+        return mapped
+
+    text = world_background or ""
+    segments = _segment_world_background_text(text)
+    if not segments:
+        return {window_id: "" for window_id in window_ids}
+
+    for idx, window_id in enumerate(window_ids):
+        mapped[window_id] = segments[min(idx, len(segments) - 1)]
+    return mapped
+
+
+ATTRIBUTE_CANONICAL_KEYS: Dict[str, str] = {
+    # Device/possession clusters
+    "user_material_possessions": "user_devices_and_possessions",
+    "user_tech_gadgets": "user_devices_and_possessions",
+    "user_owned_devices": "user_devices_and_possessions",
+    "user_smart_home_devices": "user_devices_and_possessions",
+}
+
+
+def _canonical_attribute_key(attribute_name: str) -> str:
+    return ATTRIBUTE_CANONICAL_KEYS.get(attribute_name, attribute_name)
+
+
+def _normalize_attribute_value(value: object) -> object:
+    """Recursively normalize values for comparison across domains."""
+    if isinstance(value, list):
+        return tuple(_normalize_attribute_value(v) for v in value)
+    if isinstance(value, dict):
+        return tuple(sorted((k, _normalize_attribute_value(v)) for k, v in value.items()))
+    return str(value)
+
+
+# def _collect_cross_domain_attribute_conflicts(
+#     dynamic_profiles: Dict[str, Dict],
+#     *,
+#     key_mapping: Dict[str, Dict[str, str]] | None = None,
+# ) -> List[Dict[str, object]]:
+#     """
+#     Seed conflict detector: finds attributes sharing a canonical key with divergent
+#     values, per window (initial + each time window).
+#     This is intentionally narrow (exact-key collisions in user_attributes_state) and
+#     serves as hints for the LLM, which performs broader semantic/temporal checks.
+#     """
+#     # window_id -> canonical_key -> list of entries
+#     grouped: Dict[str, Dict[str, List[Dict[str, object]]]] = {}
+
+#     for domain_name, profile in dynamic_profiles.items():
+#         # Initial snapshot
+#         initial_attrs = _extract_initial_state_entries(
+#             (profile.get("initial_state", {}) or {})
+#             .get("user_attributes_state", {})
+#             .get("initial")
+#         )
+#         initial_values = {
+#             name: entry.get("current_value") for name, entry in initial_attrs.items()
+#         }
+#         for attr_name, value in initial_values.items():
+#             mapped_name = (key_mapping or {}).get(domain_name, {}).get(attr_name)
+#             canonical_key = _canonical_attribute_key(mapped_name or attr_name)
+#             grouped.setdefault("initial", {}).setdefault(canonical_key, []).append(
+#                 {
+#                     "domain": domain_name,
+#                     "attribute_name": attr_name,
+#                     "value": value,
+#                     "normalized_value": _normalize_attribute_value(value),
+#                     "time_range": None,
+#                 }
+#             )
+
+#         # Per-window snapshots (apply deltas)
+#         for window in _resolve_window_states(profile):
+#             window_id = window.get("window_id")
+#             if not window_id:
+#                 continue
+#             time_range = window.get("time_range")
+#             attrs = {}
+#             for item in window.get("user_attributes_state", []):
+#                 name = item.get("name")
+#                 if not name:
+#                     continue
+#                 attrs[name] = item.get("current_value")
+
+#             for attr_name, value in attrs.items():
+#                 mapped_name = (key_mapping or {}).get(domain_name, {}).get(attr_name)
+#                 canonical_key = _canonical_attribute_key(mapped_name or attr_name)
+#                 grouped.setdefault(window_id, {}).setdefault(canonical_key, []).append(
+#                     {
+#                         "domain": domain_name,
+#                         "attribute_name": attr_name,
+#                         "value": value,
+#                         "normalized_value": _normalize_attribute_value(value),
+#                         "time_range": time_range,
+#                     }
+#                 )
+
+#     conflicts: List[Dict[str, object]] = []
+#     for window_id, canonical_map in grouped.items():
+#         for canonical_key, entries in canonical_map.items():
+#             unique_values = {entry["normalized_value"] for entry in entries}
+#             if len(unique_values) <= 1:
+#                 continue
+#             conflicts.append(
+#                 {
+#                     "window_id": window_id,
+#                     "time_range": entries[0].get("time_range"),
+#                     "canonical_key": canonical_key,
+#                     "domains": [
+#                         {
+#                             "domain": entry["domain"],
+#                             "attribute_name": entry["attribute_name"],
+#                             "value": entry["value"],
+#                         }
+#                         for entry in entries
+#                     ],
+#                 }
+#             )
+#     return conflicts
+
+
+def _replace_or_add_initial_attribute(
+    profile: Dict, attribute_name: str, new_value: object
+) -> None:
+    user_attrs_state = profile.setdefault("initial_state", {}).setdefault(
+        "user_attributes_state", {}
+    )
+    initial = user_attrs_state.get("initial")
+
+    # If using dict form (current schema), simply set/update the key.
+    if initial is None or isinstance(initial, dict):
+        if initial is None:
+            initial = {}
+            user_attrs_state["initial"] = initial
+        initial[attribute_name] = new_value
+        return
+
+    # Fallback for legacy list-of-dicts form.
+    replaced = False
+    for entry in initial:
+        if isinstance(entry, dict) and attribute_name in entry:
+            entry[attribute_name] = new_value
+            replaced = True
+    if not replaced:
+        initial.append({attribute_name: new_value})
+
+
+def _merge_values(
+    existing: object, new_value: object, *, value_kind: str | None
+) -> object:
+    """
+    Merge values when appropriate. For set-like fields, perform union.
+    """
+    if value_kind == "set":
+        if isinstance(existing, list) and isinstance(new_value, list):
+            seen = set()
+            merged: List[object] = []
+            for item in list(existing) + list(new_value):
+                marker = _normalize_attribute_value(item)
+                if marker in seen:
+                    continue
+                seen.add(marker)
+                merged.append(item)
+            return merged
+    return new_value
+
+
+def _set_attribute_in_window(
+    profile: Dict,
+    window_id: str | None,
+    attribute_name: str,
+    new_value: object,
+    *,
+    value_kind: str | None = None,
+) -> None:
+    """
+    Apply a resolved attribute to either the initial state or a specific window delta.
+    """
+    if not window_id or window_id == "initial":
+        initial_state = profile.setdefault("initial_state", {}).setdefault(
+            "user_attributes_state", {}
+        )
+        initial = initial_state.get("initial")
+        current_val = None
+        if isinstance(initial, dict):
+            current_val = initial.get(attribute_name)
+        elif isinstance(initial, list):
+            for entry in initial:
+                if isinstance(entry, dict) and attribute_name in entry:
+                    current_val = entry.get(attribute_name)
+                    break
+            merged_value = _merge_values(current_val, new_value, value_kind=value_kind)
+            _replace_or_add_initial_attribute(profile, attribute_name, merged_value)
+        return
+
+    for window in profile.get("time_windows", []):
+        if window.get("window_id") != window_id:
+            continue
+        delta = window.setdefault("user_attributes_delta", {}).setdefault(
+            "operations", []
+        )
+        # Update last matching operation if present.
+        updated = False
+        for op in reversed(delta):
+            if isinstance(op, dict) and op.get("attribute_name") == attribute_name:
+                current_val = op.get("new_state")
+                merged_value = _merge_values(
+                    current_val, new_value, value_kind=value_kind
+                )
+                op["new_state"] = merged_value
+                updated = True
+                break
+        if not updated:
+            delta.append(
+                {
+                    "op": "modify",
+                    "attribute_name": attribute_name,
+                    "new_state": new_value,
+                    "reason": "conflict_resolution",
+                }
+            )
+        break
+
+
+def _update_attribute_deltas(profile: Dict, attribute_name: str, new_value: object) -> None:
+    for window in profile.get("time_windows", []):
+        operations = (
+            (window.get("user_attributes_delta") or {}).get("operations") or []
+        )
+        for op in operations:
+            if op.get("attribute_name") == attribute_name and op.get("op") in {
+                "add",
+                "modify",
+            }:
+                op["new_state"] = new_value
+
+
+def _apply_key_alignment(
+    dynamic_profiles: Dict[str, Dict],
+    alignment_payload: Dict[str, object],
+) -> tuple[Dict[str, Dict], Dict[str, Dict[str, str]], Dict[str, str]]:
+    """
+    Apply LLM-suggested key alignment mappings and deterministic renames (no value merging).
+    """
+    resolved_profiles = deepcopy(dynamic_profiles)
+    if not isinstance(alignment_payload, dict):
+        return resolved_profiles, {}, {}
+
+    # Normalize the LLM output into a per-domain mapping:
+    # domain -> original_key -> canonical_key
+    domain_key_mapping: Dict[str, Dict[str, str]] = {}
+    canonical_descriptions: Dict[str, str] = {}
+
+    canonical_entries = alignment_payload.get("canonical_key_mappings") or alignment_payload.get("canonical_keys") or {}
+    if isinstance(canonical_entries, dict):
+        for canonical_key, entry in canonical_entries.items():
+            if not isinstance(entry, dict):
+                continue
+            description = entry.get("description") or entry.get("note")
+            if description:
+                canonical_descriptions[canonical_key] = description
+
+            for domain_entry in entry.get("domains") or []:
+                if not isinstance(domain_entry, dict):
+                    continue
+                domain_name = domain_entry.get("domain")
+                original_key = (
+                    domain_entry.get("original_key")
+                    or domain_entry.get("attribute_name")
+                    or domain_entry.get("key")
+                )
+                if not domain_name or not original_key:
+                    continue
+                domain_key_mapping.setdefault(domain_name, {})[original_key] = canonical_key
+
+    def _rename_initial_entries(entries: object, mapping: Dict[str, str]) -> object:
+        """
+        Rename keys in initial_state.user_attributes_state.initial while preserving shape (dict vs list).
+        """
+        if entries is None:
+            return entries
+
+        aggregated: Dict[str, object] = {}
+
+        # Support both dict and list-of-dicts forms.
+        items = []
+        if isinstance(entries, dict):
+            items = list(entries.items())
+        elif isinstance(entries, list):
+            for entry in entries:
+                if isinstance(entry, dict):
+                    items.extend(entry.items())
+        else:
+            return entries
+
+        for key, value in items:
+            target_key = mapping.get(key, key)
+            aggregated[target_key] = deepcopy(value)
+
+        if isinstance(entries, dict):
+            return aggregated
+        return [{k: v} for k, v in aggregated.items()]
+
+    def _drop_prefixed_duplicates(entries: object, mapping: Dict[str, str]) -> object:
+        """
+        Remove prefixed duplicates such as specific_<key>/user_specific_<key> when the base key is present.
+        """
+        prefixes = ("specific_", "user_specific_")
+
+        def should_drop(key: str, container: Dict[str, object]) -> bool:
+            for prefix in prefixes:
+                if not key.startswith(prefix):
+                    continue
+                base = key[len(prefix) :]
+                canonical_base = mapping.get(base, base)
+                canonical_key = mapping.get(key, key)
+                # Drop if the base (or canonical base) is already present.
+                if base in container or canonical_base in container or canonical_key == canonical_base:
+                    return True
+            return False
+
+        if isinstance(entries, dict):
+            return {k: v for k, v in entries.items() if not should_drop(k, entries)}
+
+        if isinstance(entries, list):
+            cleaned: List[object] = []
+            for entry in entries:
+                if isinstance(entry, dict):
+                    cleaned.append({k: v for k, v in entry.items() if not should_drop(k, entry)})
+                else:
+                    cleaned.append(entry)
+            return cleaned
+        return entries
+
+    for domain_name, profile in resolved_profiles.items():
+        # Some LLM responses wrap the profile object in a singleton list; unwrap to keep a consistent shape.
+        if isinstance(profile, list):
+            if len(profile) == 1 and isinstance(profile[0], dict):
+                profile = profile[0]
+                resolved_profiles[domain_name] = profile
+            else:
+                raise ValueError(
+                    f"Dynamic profile for {domain_name} should be an object, got list (len={len(profile)})"
+                )
+        if not isinstance(profile, dict):
+            raise ValueError(
+                f"Dynamic profile for {domain_name} should be a dict, got {type(profile).__name__}"
+            )
+        mapping = dict(ATTRIBUTE_CANONICAL_KEYS)
+        mapping.update(domain_key_mapping.get(domain_name, {}))
+
+        # Rename in initial_state.user_attributes_state.initial
+        initial_state = (profile.get("initial_state") or {}).get("user_attributes_state") or {}
+        if "initial" in initial_state:
+            renamed = _rename_initial_entries(initial_state.get("initial"), mapping)
+            initial_state["initial"] = _drop_prefixed_duplicates(renamed, mapping)
+
+        # Rename in each window's user_attributes_delta.operations
+        for window in profile.get("time_windows", []):
+            delta_ops = _get_delta_operations(
+                (window.get("user_attributes_delta") or {})
+            )
+            for op in delta_ops:
+                if not isinstance(op, dict):
+                    continue
+                attr_name = op.get("attribute_name")
+                if not attr_name:
+                    continue
+                mapped = mapping.get(attr_name)
+                if mapped:
+                    op["attribute_name"] = mapped
+
+    return resolved_profiles, domain_key_mapping, canonical_descriptions
+
+
+def _apply_conflict_resolution_to_profiles(
+    dynamic_profiles: Dict[str, Dict],
+    resolution_payload: Dict[str, object] | None,
+) -> Dict[str, Dict]:
+    resolved_profiles = deepcopy(dynamic_profiles)
+    if not isinstance(resolution_payload, dict):
+        return resolved_profiles
+
+    def _parse_path_tokens(path: str | None) -> List[object]:
+        """
+        Split a dotted path like "habits_delta.operations[0].new_state.timing"
+        into ["habits_delta", "operations", 0, "new_state", "timing"].
+        """
+        if not isinstance(path, str):
+            return []
+        tokens: List[object] = []
+        for segment in path.split("."):
+            for match in re.finditer(r"([^\[\]]+)|\[(\d+)\]", segment):
+                key, idx = match.groups()
+                if key:
+                    tokens.append(key)
+                elif idx:
+                    tokens.append(int(idx))
+        return tokens
+
+    def _normalize_window_id(window_id: str | None) -> str:
+        """
+        Normalize window identifiers to match stored window_ids.
+        Treats None/""/initial_state as "initial".
+        """
+        if window_id is None:
+            return "initial"
+        normalized = str(window_id).strip()
+        lower = normalized.lower()
+        if lower in {"", "initial", "initial_state", "initialstate", "init"}:
+            return "initial"
+        return normalized
+
+    def _get_window_root(profile: Dict, window_id: str | None) -> Dict | None:
+        normalized = _normalize_window_id(window_id)
+        if normalized == "initial":
+            return profile.setdefault("initial_state", {})
+        for window in profile.get("time_windows", []):
+            wid = window.get("window_id")
+            if isinstance(wid, str) and wid.lower() == normalized.lower():
+                return window
+        return None
+
+    def _strip_redundant_window_tokens(
+        tokens: List[object], window_id: str | None, root: Dict | None
+    ) -> List[object]:
+        """
+        Some patch formats repeat the window_id inside the path (e.g., habits_state.initial.*).
+        Strip that marker since we already route to the correct window root.
+        """
+        if not tokens or not isinstance(window_id, str):
+            return tokens
+        normalized = _normalize_window_id(window_id).lower()
+
+        def _matches_window(token_str: str) -> bool:
+            base = token_str.lower()
+            if base.endswith("_state"):
+                base = base[: -len("_state")]
+            return base == normalized
+
+        # Drop a leading window_id marker, e.g., "initial.habits_state..."
+        if isinstance(tokens[0], str) and _matches_window(tokens[0]):
+            tokens = tokens[1:]
+
+        # Drop a window_id marker immediately after a state section.
+        if len(tokens) >= 2 and isinstance(tokens[0], str) and isinstance(tokens[1], str):
+            parent_container = None
+            if isinstance(root, dict):
+                parent_container = root.get(tokens[0])
+            has_window_key = False
+            if isinstance(parent_container, dict):
+                for key in parent_container.keys():
+                    if isinstance(key, str) and _matches_window(key):
+                        has_window_key = True
+                        break
+            if _matches_window(tokens[1]) and tokens[0] in {
+                "user_attributes_state",
+                "habits_state",
+                "preferences_state",
+            } and not has_window_key:
+                tokens = [tokens[0]] + tokens[2:]
+
+        # Drop leading explicit container references like time_windows[2] or initial_state.*
+        if len(tokens) >= 2 and tokens[0] == "time_windows" and isinstance(tokens[1], int):
+            tokens = tokens[2:]
+        if tokens and isinstance(tokens[0], str) and tokens[0].lower() in {
+            "initial_state",
+            "time_windows",
+        }:
+            tokens = tokens[1:]
+
+        return tokens
+
+    def _apply_path_update(
+        root: Dict, tokens: List[object], op: str, value: object, *, value_provided: bool
+    ) -> None:
+        """
+        Generic setter/deleter/append that can walk dicts/lists, creating containers as needed for updates.
+        """
+        if not tokens:
+            return
+        op_lower = (op or "update").lower()
+        is_delete = op_lower in {"delete", "remove"}
+        is_append = op_lower in {"append", "add", "extend", "push"}
+
+        parent = root
+        for idx, token in enumerate(tokens[:-1]):
+            next_token = tokens[idx + 1] if idx + 1 < len(tokens) else None
+
+            if isinstance(token, str):
+                if not isinstance(parent, dict):
+                    if is_delete:
+                        return
+                    return
+                if token not in parent or not isinstance(parent[token], (dict, list)):
+                    if is_delete:
+                        return
+                    parent[token] = [] if isinstance(next_token, int) else {}
+                parent = parent[token]
+            else:  # token is int
+                if not isinstance(parent, list):
+                    return
+                while len(parent) <= token:  # type: ignore
+                    parent.append({} if isinstance(next_token, str) else None)  # type: ignore
+                if not isinstance(parent[token], (dict, list)) and isinstance(next_token, (str, int)):
+                    if not is_delete:
+                        parent[token] = {} if isinstance(next_token, str) else []  # type: ignore
+                parent = parent[token]  # type: ignore
+
+        last = tokens[-1]
+        if isinstance(last, str):
+            if not isinstance(parent, dict):
+                return
+            if is_delete:
+                parent.pop(last, None)
+                return
+            if is_append:
+                existing = parent.get(last)
+                if isinstance(existing, list):
+                    existing.append(value)
+                elif existing is None:
+                    parent[last] = [value]
+                else:
+                    parent[last] = [existing, value] if value_provided else existing
+                return
+            if op_lower in {"replace", "update", "modify", "set"} and value_provided and (
+                value == [] or value == {}
+            ):
+                # Treat explicit empty replacements as removal to avoid leaving empty containers.
+                parent.pop(last, None)
+                return
+            parent[last] = value
+        else:
+            if not isinstance(parent, list):
+                return
+            while len(parent) <= last:
+                parent.append(None)
+            if is_delete:
+                if 0 <= last < len(parent):
+                    parent.pop(last)
+                return
+            if is_append:
+                if last < len(parent) and isinstance(parent[last], list):
+                    parent[last].append(value)
+                elif last == len(parent):
+                    parent.append(value)
+                else:
+                    parent[last] = value
+                return
+            parent[last] = value
+
+    conflicts_and_resolutions = resolution_payload.get("conflicts_and_resolutions")
+    if not isinstance(conflicts_and_resolutions, list):
+        return resolved_profiles
+
+    for conflict_entry in conflicts_and_resolutions:
+        if not isinstance(conflict_entry, dict):
+            continue
+        patches = (conflict_entry.get("resolution") or {}).get("patches") or []
+        if not isinstance(patches, list):
+            continue
+
+        for patch in patches:
+            if not isinstance(patch, dict):
+                continue
+            domain_name = patch.get("domain") or patch.get("domain_name")
+            profile = resolved_profiles.get(domain_name)
+            if profile is None:
+                continue
+
+            op = str(patch.get("operation") or patch.get("action") or "update").lower()
+            value = None
+            value_provided = False
+            for key in ("new_value", "value", "resolved_value", "new_state", "replacement"):
+                if key in patch:
+                    value = patch.get(key)
+                    value_provided = True
+                    break
+
+            tokens = _parse_path_tokens(patch.get("path"))
+            if len(tokens) < 1:
+                continue
+
+            # Prefer explicit window_id field; otherwise try to infer from second token if present.
+            window_id = patch.get("window_id") or patch.get("window")
+            if not window_id:
+                for token in tokens:
+                    if isinstance(token, str):
+                        token_lower = token.lower()
+                        if token_lower in {"initial", "initial_state", "init"}:
+                            window_id = "initial"
+                            break
+                        if re.fullmatch(r"w\d+", token_lower):
+                            window_id = token
+                            break
+
+            normalized_window_id = _normalize_window_id(window_id)
+            root = _get_window_root(profile, normalized_window_id)
+            if root is None:
+                continue
+
+            if op in {"delete", "remove"}:
+                value_provided = True  # allow deletion without explicit value
+            if not value_provided and op in {
+                "append",
+                "add",
+                "extend",
+                "push",
+                "replace",
+                "update",
+                "modify",
+                "add_key",
+                "set",
+            }:
+                # Skip patches that would overwrite with None when no explicit value is provided.
+                continue
+
+            tokens = _strip_redundant_window_tokens(tokens, normalized_window_id, root)
+            _apply_path_update(root, tokens, op, value, value_provided=value_provided)
+
+    return resolved_profiles
+
+
+def _extract_initial_state_entries(
+    entries: Dict[str, object] | List[Dict[str, object]] | None,
+) -> Dict[str, Dict[str, object]]:
+    """
+    Extract initial state entries from the new format.
+    Each entry is a dict like {"attribute_name": "attribute_value"} or a map of
+    names to values.
+    """
+    state: Dict[str, Dict[str, object]] = {}
+    # Some generators produce an object map instead of a list of singleton dicts.
+    if isinstance(entries, dict):
+        for key, value in entries.items():
+            state[key] = {"current_value": value}
+        return state
+
+    for entry in entries or []:
+        if not isinstance(entry, dict):
+            # Treat bare strings as keys with unknown value to avoid crashing.
+            if isinstance(entry, str):
+                state[entry] = {"current_value": None}
+            continue
+        for key, value in entry.items():
+            state[key] = {"current_value": value}
+    return state
+
+
+def _get_delta_operations(delta_section: Dict | None) -> List[Dict[str, object]]:
+    if isinstance(delta_section, dict):
+        operations = delta_section.get("operations")
+        if isinstance(operations, list):
+            return operations
+    return []
+
+
+def _apply_delta_operations(
+    state: Dict[str, Dict[str, object]],
+    operations: List[Dict[str, object]] | None,
+    *,
+    name_field: str,
+) -> Dict[str, Dict[str, object]]:
+    """
+    Apply delta operations to state and return a dict of changes.
+    
+    Returns:
+        Dict mapping key to change info: {"previous_value": ..., "change_reason": ..., "op": ...}
+    """
+    changes: Dict[str, Dict[str, object]] = {}
+    if not operations:
+        return changes
+
+    for operation in operations:
+        key = operation.get(name_field)
+        if not key:
+            continue
+
+        op_type = (operation.get("op") or "").lower()
+        # Support both the old schema (before/after) and the new schema (new_state)
+        # Previous value is always taken from the current state snapshot
+        prev_entry = state.get(key) or {}
+        prev_value = prev_entry.get("current_value")
+
+        if "new_state" in operation:
+            new_value = operation.get("new_state")
+        else:
+            before = operation.get("before") or {}
+            after = operation.get("after") or {}
+            # Old schema stores the new value under after["value"]
+            new_value = after.get("value")
+
+            # Some generators emit flat fields (e.g., action/frequency/timing) instead
+            # of wrapping them under new_state; treat those as the new state payload.
+            if new_value is None:
+                candidate = {
+                    k: v
+                    for k, v in operation.items()
+                    if k
+                    not in {
+                        name_field,
+                        "op",
+                        "reason",
+                        "before",
+                        "after",
+                        "change_reason",
+                    }
+                }
+                if candidate:
+                    new_value = candidate
+
+        reason = operation.get("reason", "")
+        
+        # Record the change information
+        changes[key] = {
+            "previous_value": prev_value,
+            "change_reason": reason,
+            "op": op_type,
+        }
+
+        # We keep a tombstone entry for remove/drop so that semantic-event
+        # generation can still see the op on this field.
+        if op_type in {"remove", "drop"} and "new_state" not in operation:
+            # Old schema remove/drop: no explicit new_state, treat as cleared.
+            state[key] = {"current_value": None}
+        else:
+            state[key] = {
+                "current_value": new_value,
+            }
+    
+    return changes
+
+
+def _state_dict_to_list(
+    state: Dict[str, Dict[str, object]],
+    changes: Dict[str, Dict[str, object]] | None = None,
+) -> List[Dict[str, object]]:
+    """
+    Convert state dict to list format, including change information if available.
+    
+    Args:
+        state: Current state dict
+        changes: Optional dict of changes (from _apply_delta_operations)
+    """
+    if changes is None:
+        changes = {}
+    
+    result = []
+    for key, entry in sorted(state.items()):
+        item: Dict[str, object] = {
+            "name": key,
+            "current_value": entry.get("current_value"),
+        }
+        
+        # Add change information if this item changed
+        if key in changes:
+            change_info = changes[key]
+            item["previous_value"] = change_info.get("previous_value")
+            item["change_reason"] = change_info.get("change_reason")
+            item["op"] = change_info.get("op")
+        
+        result.append(item)
+    
+    return result
+
+
+def _resolve_window_states(dynamic_profile_data: Dict) -> List[Dict]:
+    """
+    Resolve initial state + deltas into full window states for downstream prompts.
+    Works with the newer dynamic_profile format that has:
+      - top-level "initial_state"
+      - per-window *_delta sections with {op, *_name, new_state, reason}
+    Preserves change information (previous_value, change_reason, op) for each state item.
+    """
+    resolved: List[Dict] = []
+    # Build initial snapshots from the top-level initial_state
+    initial_state = dynamic_profile_data.get("initial_state") or {}
+    current_attributes: Dict[str, Dict[str, object]] = _extract_initial_state_entries(
+        (initial_state.get("user_attributes_state") or {}).get("initial")
+    )
+    current_habits: Dict[str, Dict[str, object]] = _extract_initial_state_entries(
+        (initial_state.get("habits_state") or {}).get("initial")
+    )
+    current_preferences: Dict[str, Dict[str, object]] = _extract_initial_state_entries(
+        (initial_state.get("preferences_state") or {}).get("initial")
+    )
+
+    for window in dynamic_profile_data.get("time_windows", []):
+        window_id = window.get("window_id")
+        if not window_id:
+            continue
+
+        # Track changes for each state type
+        attributes_changes: Dict[str, Dict[str, object]] = {}
+        habits_changes: Dict[str, Dict[str, object]] = {}
+        preferences_changes: Dict[str, Dict[str, object]] = {}
+
+        # Start from the current snapshots and apply this window's deltas
+        attributes_snapshot = deepcopy(current_attributes)
+        attributes_changes = _apply_delta_operations(
+            attributes_snapshot,
+            _get_delta_operations(window.get("user_attributes_delta")),
+            # New schema uses "attribute_name"
+            name_field="attribute_name",
+        )
+
+        habits_snapshot = deepcopy(current_habits)
+        habits_changes = _apply_delta_operations(
+            habits_snapshot,
+            _get_delta_operations(window.get("habits_delta")),
+            # New schema uses "habit_name"
+            name_field="habit_name",
+        )
+
+        preferences_snapshot = deepcopy(current_preferences)
+        preferences_changes = _apply_delta_operations(
+            preferences_snapshot,
+            _get_delta_operations(window.get("preferences_delta")),
+            # New schema uses "preference_name"
+            name_field="preference_name",
+        )
+
+        resolved.append(
+            {
+                "window_id": window_id,
+                "time_range": window.get("time_range"),
+                "window_description": window.get("window_description"),
+                "summary": window.get("summary", ""),
+                "user_attributes_state": _state_dict_to_list(
+                    attributes_snapshot, changes=attributes_changes
+                ),
+                "habits_state": _state_dict_to_list(
+                    habits_snapshot, changes=habits_changes
+                ),
+                "preferences_state": _state_dict_to_list(
+                    preferences_snapshot, changes=preferences_changes
+                ),
+            }
+        )
+
+        current_attributes = attributes_snapshot
+        current_habits = habits_snapshot
+        current_preferences = preferences_snapshot
+
+    return resolved
+
+
+def _reorganize_by_key(resolved_windows: List[Dict]) -> Dict:
+    """
+    Reorganize window-based data into key-based timelines.
+    Each key maintains a timeline of its values across all windows.
+    Merges consecutive windows with no changes (no op field) into a single time range.
+    
+    Args:
+        resolved_windows: List of window states from _resolve_window_states
+        
+    Returns:
+        Dict with structure:
+        {
+            "user_attributes_state": {
+                "key_name": {
+                    "timeline": [
+                        {
+                            "time_range": ["2024-01-01", "2024-12-31"],  # merged if no changes
+                            "current_value": ...,
+                            # If there's a change:
+                            "op": "modify",  # or "add", "drop", etc.
+                            "previous_value": ...,
+                            "change_reason": ...,
+                        },
+                        ...
+                    ]
+                },
+                ...
+            },
+            "habits_state": {...},
+            "preferences_state": {...}
+        }
+    """
+    reorganized: Dict[str, Dict[str, Dict]] = {
+        "user_attributes_state": {},
+        "habits_state": {},
+        "preferences_state": {},
+    }
+    
+    # First pass: collect all timeline entries
+    for window in resolved_windows:
+        window_id = window.get("window_id")
+        time_range = window.get("time_range")
+        if not window_id:
+            continue
+        
+        # Process each state type
+        for state_type in ["user_attributes_state", "habits_state", "preferences_state"]:
+            state_list = window.get(state_type, [])
+            for item in state_list:
+                key_name = item.get("name")
+                if not key_name:
+                    continue
+                
+                # Initialize timeline for this key if not exists
+                if key_name not in reorganized[state_type]:
+                    reorganized[state_type][key_name] = {"timeline": []}
+                
+                # Create timeline entry (with window_id for now, will be removed after merging)
+                timeline_entry: Dict[str, object] = {
+                    "window_id": window_id,
+                    "time_range": time_range,
+                    "current_value": item.get("current_value"),
+                }
+                
+                # Add change information if present
+                if "op" in item:
+                    timeline_entry["op"] = item.get("op")
+                    if "previous_value" in item:
+                        timeline_entry["previous_value"] = item.get("previous_value")
+                    if "change_reason" in item:
+                        timeline_entry["change_reason"] = item.get("change_reason")
+                
+                reorganized[state_type][key_name]["timeline"].append(timeline_entry)
+    
+    # Second pass: merge consecutive entries with no changes
+    for state_type in ["user_attributes_state", "habits_state", "preferences_state"]:
+        for key_name, key_data in reorganized[state_type].items():
+            timeline = key_data["timeline"]
+            if not timeline:
+                continue
+            
+            merged_timeline: List[Dict[str, object]] = []
+            i = 0
+            
+            while i < len(timeline):
+                current_entry = timeline[i]
+                
+                # If this entry has an op (change), add it as-is (without window_id)
+                if "op" in current_entry:
+                    merged_entry: Dict[str, object] = {
+                        "time_range": list(current_entry["time_range"]),  # copy
+                        "current_value": current_entry["current_value"],
+                        "op": current_entry["op"],
+                    }
+                    if "previous_value" in current_entry:
+                        merged_entry["previous_value"] = current_entry["previous_value"]
+                    if "change_reason" in current_entry:
+                        merged_entry["change_reason"] = current_entry["change_reason"]
+                    merged_timeline.append(merged_entry)
+                    i += 1
+                    continue
+                
+                # Otherwise, try to merge consecutive entries with same value and no op
+                merged_entry = {
+                    "time_range": list(current_entry["time_range"]),  # copy
+                    "current_value": current_entry["current_value"],
+                }
+                j = i + 1
+                
+                # Merge consecutive entries with no op and same current_value
+                while j < len(timeline):
+                    next_entry = timeline[j]
+                    # Stop if next entry has an op (change)
+                    if "op" in next_entry:
+                        break
+                    
+                    # Check if current_value is the same (deep comparison for lists/dicts)
+                    current_val = current_entry["current_value"]
+                    next_val = next_entry["current_value"]
+                    
+                    # Simple comparison - for complex objects, we'd need deep comparison
+                    # But for our use case, this should work
+                    if current_val != next_val:
+                        break
+                    
+                    # Check if time ranges are consecutive
+                    current_end = merged_entry["time_range"][1]
+                    next_start = next_entry["time_range"][0]
+                    
+                    # Parse dates to check if consecutive
+                    try:
+                        current_end_date = datetime.strptime(current_end, "%Y-%m-%d")
+                        next_start_date = datetime.strptime(next_start, "%Y-%m-%d")
+                        # Check if next window starts the day after current ends
+                        if next_start_date != current_end_date + timedelta(days=1):
+                            break
+                    except (ValueError, TypeError):
+                        # If date parsing fails, just check if they're adjacent strings
+                        # This is a fallback
+                        pass
+                    
+                    # Merge: extend time_range to include next entry
+                    merged_entry["time_range"][1] = next_entry["time_range"][1]
+                    j += 1
+                
+                merged_timeline.append(merged_entry)
+                i = j
+            
+            # Update the timeline with merged version
+            reorganized[state_type][key_name]["timeline"] = merged_timeline
+    
+    return reorganized
+
+
+def _identify_stable_states(resolved_windows: List[Dict]) -> Dict[str, Dict[str, Dict]]:
+    """
+    Identify states that stay constant (no op, same value) across all windows.
+    Returns a mapping per state_type -> state_name -> metadata.
+    """
+    stable_states: Dict[str, Dict[str, Dict]] = {
+        "user_attributes_state": {},
+        "habits_state": {},
+        "preferences_state": {},
+    }
+    if not resolved_windows:
+        return stable_states
+
+    window_ids = [
+        window.get("window_id") for window in resolved_windows if window.get("window_id")
+    ]
+    num_windows = len(window_ids)
+    tracker: Dict[str, Dict[str, Dict[str, object]]] = {
+        "user_attributes_state": {},
+        "habits_state": {},
+        "preferences_state": {},
+    }
+
+    for window_state in resolved_windows:
+        window_id = window_state.get("window_id")
+        if not window_id:
+            continue
+        for state_type in ["user_attributes_state", "habits_state", "preferences_state"]:
+            for item in window_state.get(state_type, []) or []:
+                name = item.get("name")
+                if not name:
+                    continue
+                record = tracker[state_type].setdefault(
+                    name, {"entries": [], "has_op": False}
+                )
+                record["entries"].append(
+                    {"window_id": window_id, "value": item.get("current_value")}
+                )
+                if item.get("op"):
+                    record["has_op"] = True
+
+    for state_type, states in tracker.items():
+        for name, info in states.items():
+            entries = info.get("entries") or []
+            if len(entries) != num_windows:
+                continue
+            if info.get("has_op"):
+                continue
+            normalized_values = [
+                _normalize_attribute_value(entry["value"]) for entry in entries
+            ]
+            if len(set(normalized_values)) == 1:
+                stable_states[state_type][name] = {
+                    "value": entries[0]["value"],
+                    "window_ids": [entry["window_id"] for entry in entries],
+                }
+
+    return stable_states
+
+
+def _plan_stable_state_reveals(
+    resolved_windows: List[Dict],
+    *,
+    probability: float,
+    seed: int | None = None,
+) -> Dict[str, Dict[str, Dict[str, object]]]:
+    """
+    Decide in which windows a stable state should be revealed to semantic-event generation.
+    Ensures every stable state is revealed in at least one window.
+    """
+    probability = max(0.0, min(1.0, probability))
+    rng = random.Random(seed)
+    stable_states = _identify_stable_states(resolved_windows)
+    window_order = [
+        window.get("window_id") for window in resolved_windows if window.get("window_id")
+    ]
+    plan: Dict[str, Dict[str, Dict[str, object]]] = {
+        "user_attributes_state": {},
+        "habits_state": {},
+        "preferences_state": {},
+        "_metadata": {
+            "probability": probability,
+            "seed": seed,
+        },
+    }
+
+    for state_type, states in stable_states.items():
+        for name, info in states.items():
+            eligible_windows = [
+                window_id for window_id in window_order if window_id in info["window_ids"]
+            ]
+            reveal_in = [
+                window_id
+                for window_id in eligible_windows
+                if rng.random() < probability
+            ]
+            if not reveal_in and eligible_windows:
+                reveal_in = [eligible_windows[0]]
+            plan[state_type][name] = {
+                "value": info["value"],
+                "reveal_in_windows": reveal_in,
+            }
+
+    return plan
+
+
+def _filter_window_state_for_semantic_events(
+    window_state: Dict,
+    reveal_plan: Dict[str, Dict[str, Dict[str, object]]],
+) -> Dict:
+    """Remove stable states that are not selected to be revealed in this window."""
+    filtered = deepcopy(window_state)
+    window_id = window_state.get("window_id")
+    for state_type in ["user_attributes_state", "habits_state", "preferences_state"]:
+        plan_for_type = reveal_plan.get(state_type, {})
+        filtered_state: List[Dict[str, object]] = []
+        for item in window_state.get(state_type, []) or []:
+            name = item.get("name")
+            plan_entry = plan_for_type.get(name)
+            if plan_entry:
+                reveal_windows = plan_entry.get("reveal_in_windows") or []
+                if window_id not in reveal_windows:
+                    continue
+            filtered_state.append(item)
+        filtered[state_type] = filtered_state
+    return filtered
+
+
+def _extract_dynamic_profiles_initial_state(
+    dynamic_profiles: Dict[str, Dict],
+) -> Dict[str, Dict]:
+    """
+    Pull out the initial_state section for each domain. Used as seed context
+    for life context baseline generation.
+    """
+    initial_state_by_domain: Dict[str, Dict] = {}
+    for domain_name, profile in (dynamic_profiles or {}).items():
+        if isinstance(profile, dict):
+            initial_state_by_domain[domain_name] = deepcopy(
+                profile.get("initial_state") or {}
+            )
+    return initial_state_by_domain
+
+
+def _apply_life_context_delta(
+    previous_context: Dict, delta_payload: Dict
+) -> Dict:
+    """
+    Apply a delta payload produced by Life_Context_Delta_Prompt onto the
+    previous life context using generic patch ops. Falls back to a provided
+    updated_life_context if no patches are present.
+    """
+    base = deepcopy(previous_context) if isinstance(previous_context, dict) else {}
+    if not isinstance(delta_payload, dict):
+        return base
+
+    delta_section = delta_payload.get("life_context_delta") or {}
+    patches = delta_section.get("patches") or delta_payload.get("patches") or []
+    patched = _apply_patch_ops(base, patches) if patches else base
+
+    updated_context = delta_payload.get("updated_life_context")
+    if patches:
+        return patched
+    if isinstance(updated_context, dict):
+        return deepcopy(updated_context)
+    return patched
+
+
+def _format_life_context_for_prompt(
+    window_id: str | None, life_context: Dict | None, *, time_range: List[str] | None
+) -> str:
+    """Serialize life context into a compact string for semantic event prompts."""
+    context = deepcopy(life_context or {})
+    if isinstance(context, dict):
+        context.pop("rationale", None)
+        context.pop("reasoning", None)
+    return json.dumps(context, indent=2, ensure_ascii=False)
+
+
+def _build_life_contexts(
+    *,
+    dynamic_profiles: Dict[str, Dict],
+    user_basic_profile: Dict,
+    world_background_by_window: Dict[str, str],
+    user_full_state_summaries: Dict[str, Dict],
+    llm_client: GeminiJSONClient,
+    output_dir: Path,
+) -> tuple[Dict, Dict[str, Dict], Dict[str, Dict]]:
+    """
+    Build life context baseline (from initial states) and per-window contexts via
+    delta application for downstream semantic event generation.
+    """
+    initial_state_by_domain = _extract_dynamic_profiles_initial_state(dynamic_profiles)
+
+    ## save initial_state_by_domain
+    _write_json(output_dir / "initial_state_by_domain.json", initial_state_by_domain)
+
+    baseline_result = generate_life_context_baseline(
+        llm_client,
+        LifeContextBaselineRequest(
+            user_basic_profile=user_basic_profile,
+            dynamic_profiles_initial_state=initial_state_by_domain,
+        ),
+    )
+    _write_text(
+        output_dir / "life_context_baseline_prompt.txt", baseline_result.prompt
+    )
+    baseline_payload = (
+        baseline_result.data if isinstance(baseline_result.data, dict) else {}
+    )
+    _write_json(
+        output_dir / "life_context_baseline_result.json",
+        baseline_payload,
+    )
+
+    baseline_context: Dict = {}
+    if isinstance(baseline_payload, dict):
+        if "life_context" in baseline_payload:
+            baseline_context = deepcopy(baseline_payload.get("life_context") or {})
+        elif "life_context_baseline" in baseline_payload:
+            baseline_context = deepcopy(baseline_payload.get("life_context_baseline") or {})
+        else:
+            baseline_context = deepcopy(baseline_payload)
+
+    usage: Dict[str, Dict] = {"baseline": baseline_result.usage}
+    contexts_by_window: Dict[str, Dict] = {}
+
+    for window_id in sorted(user_full_state_summaries.keys()):
+        window_entry = user_full_state_summaries[window_id]
+        if not isinstance(window_entry, dict):
+            continue
+        time_range = window_entry.get("time_range")
+        window_profile_summary = window_entry.get("window_profile_summary", "")
+        window_description = window_entry.get("window_description", "")
+        window_world_background = world_background_by_window.get(window_id, "")
+        window_state_by_domain = window_entry.get("domains", {})
+
+        delta_result = generate_life_context_delta(
+            llm_client,
+            LifeContextDeltaRequest(
+                user_basic_profile=user_basic_profile,
+                time_range=time_range,
+                window_id=window_id,
+                window_description=window_description,
+                window_profile_summary=window_profile_summary,
+                world_background=window_world_background,
+                life_context_baseline=baseline_context,
+                previous_life_context=None,
+                window_state_by_domain=window_state_by_domain,
+            ),
+        )
+        usage[window_id] = delta_result.usage
+
+        _write_text(
+            output_dir / f"life_context_delta_{window_id}_prompt.txt",
+            delta_result.prompt,
+        )
+        _write_json(
+            output_dir / f"life_context_delta_{window_id}_result.json",
+            delta_result.data,
+        )
+        delta_payload = (
+            delta_result.data if isinstance(delta_result.data, dict) else {}
+        )
+        window_context = {
+            "window_id": window_id,
+            "time_range": time_range or [],
+            "life_context": deepcopy(baseline_context),
+            "life_context_delta": delta_payload,
+            "window_profile_summary": window_profile_summary,
+            "window_description": window_description,
+            "world_background": window_world_background,
+        }
+        contexts_by_window[window_id] = window_context
+
+    _write_json(
+        output_dir / "life_context_by_window.json",
+        {"baseline": baseline_context, "by_window": contexts_by_window},
+    )
+
+    return baseline_context, contexts_by_window, usage
+
+
+def _build_user_spatiotemporal_constraints(
+    user_full_state_summaries: Dict[str, Dict],
+    world_background_by_window: Dict[str, str],
+    llm_client: GeminiJSONClient,
+    *,
+    output_dir: Path,
+    user_basic_profile: Dict,
+) -> tuple[Dict[str, Dict[str, object]], Dict]:
+    """
+    Build per-window spatiotemporal constraints via LLM using merged
+    cross-domain window summaries and per-window world background.
+    """
+    constraints: Dict[str, Dict[str, object]] = {}
+    usage: Dict[str, Dict] = {}
+
+    for window in sorted(
+        user_full_state_summaries.values(), key=lambda w: w.get("window_id", "")
+    ):
+        window_id = window.get("window_id")
+        if not window_id:
+            continue
+
+        time_range = window.get("time_range") or []
+        window_profile_summary = window.get("window_profile_summary", "")
+        window_description = window.get("window_description") or window_profile_summary
+        world_bg = world_background_by_window.get(window_id, "")
+
+        result = generate_spatiotemporal_constraints(
+            llm_client,
+            SpatiotemporalConstraintsRequest(
+                time_range=time_range,
+                user_basic_profile=user_basic_profile,
+                window_profile_summary=window_profile_summary,
+                window_description=window_description,
+                world_background=world_bg,
+            ),
+        )
+        usage[window_id] = result.usage
+        _write_text(
+            output_dir / f"spatiotemporal_constraints_{window_id}_prompt.txt",
+            result.prompt,
+        )
+
+        payload = result.data if isinstance(result.data, dict) else {}
+        base: Dict[str, object] = payload if isinstance(payload, dict) else {}
+        base.setdefault("window_id", window_id)
+        base.setdefault("time_range", time_range)
+        base.setdefault("whereabouts", [])
+        base.setdefault("home_base", "")
+        base.setdefault("window_profile_summary", window_profile_summary)
+        base.setdefault("window_description", window_description)
+        constraints[window_id] = base
+
+    return constraints, {"spatiotemporal_constraints": usage}
+
+
+def _build_user_full_state_summaries(
+    dynamic_profiles: Dict[str, Dict],
+    llm_client: GeminiJSONClient | None = None,
+) -> Dict[str, Dict]:
+    """
+    Build a cross-domain per-window view by stitching together each domain's window state.
+
+    Output is keyed by window_id with an aggregated summary built from all domains.
+    """
+    summaries: Dict[str, Dict] = {}
+    for domain_name, profile in dynamic_profiles.items():
+        for window_state in _resolve_window_states(profile):
+            window_id = window_state.get("window_id")
+            if not window_id:
+                continue
+
+            entry = summaries.setdefault(
+                window_id,
+                {
+                    "window_id": window_id,
+                    "time_range": window_state.get("time_range"),
+                    "domains": {},
+                    "_summary_parts_by_domain": {},
+                    "_window_description_parts_by_domain": {},
+                    "summary_by_domain": {},
+                    "window_description_by_domain": {},
+                },
+            )
+
+            window_description = window_state.get("window_description") or ""
+            window_summary = window_state.get("summary") or window_description
+            entry["_summary_parts_by_domain"][domain_name] = window_summary or ""
+            entry["summary_by_domain"][domain_name] = window_summary or ""
+            entry["_window_description_parts_by_domain"][domain_name] = (
+                window_description or ""
+            )
+            entry["window_description_by_domain"][domain_name] = window_description or ""
+
+            entry.setdefault("domains", {})[domain_name] = {
+                "window_description": window_state.get("window_description", ""),
+                "summary": window_summary or "",
+                "user_attributes_state": window_state.get("user_attributes_state", []),
+                "habits_state": window_state.get("habits_state", []),
+                "preferences_state": window_state.get("preferences_state", []),
+            }
+
+    for entry in summaries.values():
+        summary_parts_by_domain = entry.pop("_summary_parts_by_domain", {})
+        summary_parts = [
+            f"{domain}: {summary}"
+            for domain, summary in summary_parts_by_domain.items()
+            if summary
+        ]
+        entry["window_profile_summary"] = "\n\n".join(summary_parts)
+        # NOTE: Do NOT persist a redundant top-level "summary" field.
+        # Use "window_profile_summary" and "summary_by_domain" instead.
+
+        description_parts_by_domain = entry.pop("_window_description_parts_by_domain", {})
+        description_parts = [
+            f"{domain}: {desc}"
+            for domain, desc in description_parts_by_domain.items()
+            if desc
+        ]
+        combined_description = "\n\n".join(description_parts)
+        entry["window_description"] = (
+            combined_description or entry.get("window_profile_summary") or ""
+        )
+
+    return summaries
+
+
+def generate_time_windows(
+    start_date: str, end_date: str, num_windows: int
+) -> List[Dict[str, str | List[str]]]:
+    """
+    Generate time windows by evenly splitting the date range.
+    
+    Args:
+        start_date: Start date in YYYY-MM-DD format
+        end_date: End date in YYYY-MM-DD format
+        num_windows: Number of windows to create
+        
+    Returns:
+        List of window dictionaries with window_id and time_range
+    """
+    start = datetime.strptime(start_date, "%Y-%m-%d")
+    end = datetime.strptime(end_date, "%Y-%m-%d")
+    total_days = (end - start).days + 1  # +1 to include both start and end dates
+    
+    if num_windows < 1:
+        raise ValueError("num_windows must be at least 1")
+    
+    windows = []
+    days_per_window = total_days / num_windows
+    
+    for i in range(num_windows):
+        # Calculate window start: round down to ensure no gaps
+        window_start_offset = int(i * days_per_window)
+        window_start = start + timedelta(days=window_start_offset)
+        
+        if i == num_windows - 1:
+            # Last window should always end at the specified end_date
+            window_end = end
+        else:
+            # Calculate window end: round down and subtract 1 to avoid overlap
+            # This ensures each day belongs to exactly one window
+            window_end_offset = int((i + 1) * days_per_window) - 1
+            window_end = start + timedelta(days=window_end_offset)
+        
+        windows.append({
+            "window_id": f"w{i + 1}",
+            "time_range": [
+                window_start.strftime("%Y-%m-%d"),
+                window_end.strftime("%Y-%m-%d"),
+            ],
+        })
+    
+    return windows
+
+
+def load_domains_from_file(path: str | Path) -> List[Domain]:
+    path = Path(path)
+    data = json.loads(path.read_text())
+    domains: List[Domain] = []
+    for entry in data:
+        domain_name = entry.get("domain_name") or entry.get("name")
+        if not domain_name:
+            raise ValueError(f"domain entry missing name: {entry}")
+        domains.append(
+            Domain(
+                domain_name=domain_name,
+                domain_scope_definition=entry.get("domain_scope_definition"),
+            )
+        )
+    return domains
+
+
+def select_domains_for_user(
+    specs: Sequence[domainSpec],
+    *,
+    optional_probability: float,
+    seed: int | None = None,
+) -> tuple[List[domainSpec], Dict[str, Dict[str, object]]]:
+    optional_probability = max(0.0, min(1.0, optional_probability))
+    rng = random.Random(seed)
+    selected: List[domainSpec] = []
+    metadata: Dict[str, Dict[str, object]] = {}
+    for spec in specs:
+        include = spec.is_essential or rng.random() < optional_probability
+        metadata[spec.name] = {
+            "is_essential": spec.is_essential,
+            "included": include,
+        }
+        if include:
+            selected.append(spec)
+    return selected, metadata
+
+
+class GenerationPipeline:
+    def __init__(
+        self,
+        llm_client: GeminiJSONClient,
+        output_dir: Path,
+        timeline: TimelineConfig | None = None,
+        semantic_config: SemanticEventsConfig | None = None,
+        atomic_config: AtomicEventsConfig | None = None,
+        real_data_config: RealDataConfig | None = None,
+    ) -> None:
+        self.llm_client = llm_client
+        self.timeline = timeline or TimelineConfig()
+        self.semantic_config = semantic_config or SemanticEventsConfig()
+        self.atomic_config = atomic_config or AtomicEventsConfig()
+        self.real_data_config = real_data_config or RealDataConfig()
+        self.output_dir = Path(output_dir)
+        _ensure_dir(self.output_dir)
+
+    def build_user_basic_profile(
+        self,
+        *,
+        user_description: str,
+    ) -> tuple[Dict, Dict]:
+        """
+        Reason about the user_description and convert it into a structured basic profile.
+
+        Returns the parsed profile and a usage dict (empty if loaded from cache).
+        """
+        basic_profile_path = self.output_dir / "user_basic_profile.json"
+
+        basic_profile_result = generate_basic_profile(
+            self.llm_client,
+            BasicProfileRequest(user_description=user_description),
+        )
+        _write_json(basic_profile_path, basic_profile_result.data)
+        _write_text(
+            self.output_dir / "user_basic_profile_prompt.txt",
+            basic_profile_result.prompt,
+        )
+        usage = {"basic_profile": basic_profile_result.usage}
+        return basic_profile_result.data, usage
+
+    def resolve_cross_domain_conflicts(
+        self,
+        dynamic_profiles: Dict[str, Dict],
+        *,
+        user_basic_profile: Dict | None = None,
+    ) -> tuple[Dict[str, Dict], Dict[str, Dict], Dict[str, object], List[Dict[str, object]]]:
+        """
+        Detect and resolve cross-domain conflicts using the LLM.
+        Step 1: LLM aligns keys.
+        Step 2: LLM resolves conflicts with full dynamic profiles.
+
+        Returns:
+            resolved_profiles: Updated dynamic profiles per domain
+            usage: Usage metadata (empty if no conflicts)
+            resolution_payload: Raw LLM resolution output (empty if no conflicts)
+            conflicts_summary: Detected conflicts summary (from LLM detected_conflicts)
+        """
+
+        key_alignment_path = self.output_dir / "key_alignment_result.json"
+        if key_alignment_path.exists():
+            key_alignment = json.loads(key_alignment_path.read_text())
+            alignment_usage: Dict = {}
+        else:
+            alignment_result = generate_key_alignment(
+                self.llm_client,
+                KeyAlignmentRequest(
+                    dynamic_profiles=dynamic_profiles,
+                    user_basic_profile=user_basic_profile,
+                ),
+            )
+            key_alignment = alignment_result.data
+            _write_text(
+                self.output_dir / "key_alignment_prompt.txt", alignment_result.prompt
+            )
+            _write_json(self.output_dir / "key_alignment_result.json", key_alignment)
+            alignment_usage = {"key_alignment": alignment_result.usage}
+        dynamic_profiles, _key_alignment_mapping, _canonical_key_descriptions = _apply_key_alignment(
+            dynamic_profiles, key_alignment
+        )
+        _write_json(
+            self.output_dir / "dynamic_profiles_key_aligned.json", dynamic_profiles
+        )
+
+        resolution_result = generate_conflict_resolution(
+            self.llm_client,
+            ConflictResolutionRequest(
+                user_basic_profile=user_basic_profile,
+                dynamic_profiles=dynamic_profiles,
+            ),
+        )
+        resolution_payload = resolution_result.data
+
+        _write_text(
+            self.output_dir / "conflict_resolution_prompt.txt",
+            resolution_result.prompt,
+        )
+        _write_json(
+            self.output_dir / "cross_domain_conflict_resolution.json",
+            resolution_payload,
+        )
+
+        with open(self.output_dir / "cross_domain_conflict_resolution.json", "r", encoding="utf-8") as f:
+            resolution_payload = json.load(f)
+
+        resolved_profiles = _apply_conflict_resolution_to_profiles(
+            dynamic_profiles,
+            resolution_payload,
+        )
+        _write_json(
+            self.output_dir / "dynamic_profiles_conflict_resolved.json",
+            resolved_profiles,
+        )
+
+        usage = {
+            "conflict_resolution": resolution_result.usage,
+        }
+        if alignment_usage:
+            usage.update(alignment_usage)
+        return resolved_profiles, usage, resolution_payload
+
+    def debug_resolve_conflicts_from_file(
+        self,
+        raw_profiles_path: str | Path,
+        *,
+        user_basic_profile: Dict | None = None,
+    ) -> tuple[Dict[str, Dict], Dict[str, Dict], Dict[str, object], List[Dict[str, object]]]:
+        """
+        Convenience helper to re-run conflict resolution on an existing dynamic_profiles_raw.json
+        without regenerating per-domain profiles.
+        """
+        raw_profiles_path = Path(raw_profiles_path)
+        dynamic_profiles = json.loads(raw_profiles_path.read_text())
+
+        # Load cached basic profile if not provided.
+        if user_basic_profile is None:
+            basic_profile_path = self.output_dir / "user_basic_profile.json"
+            if basic_profile_path.exists():
+                user_basic_profile = json.loads(basic_profile_path.read_text())
+
+        # Persist the input for traceability, then run resolution.
+        _write_json(self.output_dir / "dynamic_profiles_raw.json", dynamic_profiles)
+        return self.resolve_cross_domain_conflicts(
+            dynamic_profiles, user_basic_profile=user_basic_profile
+        )
+
+    def _prepare_basic_profile(
+        self, user_description: str | None
+    ) -> tuple[Dict, Dict, str]:
+        """
+        Load or build the basic profile and return it with usage + serialized text.
+        """
+        basic_profile_path = self.output_dir / "user_basic_profile.json"
+        if user_description is None and not basic_profile_path.exists():
+            raise ValueError("user_description or user_profile is required to run.")
+
+        if basic_profile_path.exists():
+            user_basic_profile = json.loads(basic_profile_path.read_text())
+            basic_usage: Dict = {}
+        else:
+            user_basic_profile, basic_usage = self.build_user_basic_profile(
+                user_description=user_description  # validated above
+            )
+
+        user_profile_text = json.dumps(
+            user_basic_profile, indent=2, ensure_ascii=False
+        )
+        return user_basic_profile, basic_usage, user_profile_text
+
+    def _prepare_dynamic_profiles(
+        self,
+        domains: Sequence[Domain],
+        *,
+        user_profile_text: str,
+        world_background_text: str,
+        user_basic_profile: Dict | None,
+    ) -> tuple[
+        Dict[str, Dict],
+        Dict[str, Dict],
+        List[Dict[str, object]],
+        Dict[str, object],
+    ]:
+        """
+        Generate (or load) dynamic profiles, optionally resolve conflicts, and
+        return profiles plus usage and conflict metadata.
+        """
+        dynamic_profiles: Dict[str, Dict] = {}
+        aggregate_usage: Dict[str, Dict] = {}
+        conflict_resolution_payload: Dict[str, object] = {}
+        # conflict_cache_used = False
+
+        conflict_resolved_path = self.output_dir / "dynamic_profiles_conflict_resolved.json"
+        life_domain_list = [
+            f"{domain.domain_name}"
+            for domain in domains
+        ]
+        # import pdb; pdb.set_trace()
+        cached_resolved_profiles: Dict[str, Dict] | None = None
+        new_dynamic_profile_generated = False
+        if conflict_resolved_path.exists():
+            cached_resolved_profiles = json.loads(conflict_resolved_path.read_text())
+            # conflict_cache_used = True
+        # import pdb; pdb.set_trace()
+        for domain in domains:
+            cached_profile = None
+            if cached_resolved_profiles is not None:
+                cached_profile = cached_resolved_profiles.get(domain.domain_name)
+
+            if cached_profile is not None:
+                dynamic_profile = cached_profile
+                usage = {"dynamic_profile": {}}
+            else:
+                exist_path = self.output_dir / f"{_slugify(domain.domain_name)}_dynamic_profile.json"
+                if exist_path.exists():
+                    dynamic_profile = json.loads(exist_path.read_text())
+                    usage = {"dynamic_profile": {}}
+                else:
+                    # import pdb; pdb.set_trace()
+                    dynamic_profile, usage = self.generate_dynamic_profile_for_domain(
+                        domain,
+                        user_profile=user_profile_text,
+                        world_background=world_background_text,
+                        life_domain_list=life_domain_list,
+                    )
+                ### read from file if exists
+                # import pdb; pdb.set_trace()
+                reviewed_result, revised_dynamic_profile, review_usage = self.review_revise_dynamic_profile_for_domain(
+                    domain,
+                    dynamic_profile=dynamic_profile,
+                    user_profile=user_profile_text,
+                )
+                usage.update(review_usage)
+                # reviewed_path = (
+                #     self.output_dir / f"{_slugify(domain.domain_name)}_dynamic_profile_checked.json"
+                # )
+
+                # _write_json(reviewed_path, revised_dynamic_profile)
+                new_dynamic_profile_generated = True
+
+            dynamic_profiles[domain.domain_name] = dynamic_profile
+            aggregate_usage[domain.domain_name] = usage
+
+        ## [debug1, set to True to force conflict resolution]
+        # raw_dynamic_profiles_path = self.output_dir / "dynamic_profiles_raw.json"
+        # with open(raw_dynamic_profiles_path, "r", encoding="utf-8") as f:
+        #     dynamic_profiles = json.load(f)
+        # import pdb; pdb.set_trace()
+        # new_dynamic_profile_generated = True
+        
+        if new_dynamic_profile_generated:
+            # Persist the freshly generated, per-domain dynamic profiles before conflict resolution.
+            
+            ## [debug1, skip persisting raw dynamic profiles]
+            raw_dynamic_profiles_path = self.output_dir / "dynamic_profiles_raw.json"
+            _write_json(raw_dynamic_profiles_path, dynamic_profiles)
+            ## [debug1 end]
+
+            (
+                dynamic_profiles,
+                conflict_usage,
+                conflict_resolution_payload,
+            ) = self.resolve_cross_domain_conflicts(
+                dynamic_profiles, user_basic_profile=user_basic_profile
+            )
+            if conflict_usage:
+                aggregate_usage["_conflict_resolution"] = conflict_usage
+        
+        return (
+            dynamic_profiles,
+            aggregate_usage,
+            conflict_resolution_payload,
+        )
+
+    def _prepare_cross_domain_context(
+        self,
+        dynamic_profiles: Dict[str, Dict],
+        *,
+        world_background: str | Dict[str, str],
+        user_basic_profile: Dict,
+    ) -> tuple[Dict[str, Dict], Dict, Dict[str, str], Dict]:
+        """
+        Build cross-domain summaries, life context (baseline + window deltas), and per-window world background.
+        """
+        user_full_state_summaries_path = (
+            self.output_dir / "user_full_state_summaries.json"
+        )
+        if user_full_state_summaries_path.exists():
+            
+            user_full_state_summaries = json.loads(
+                user_full_state_summaries_path.read_text()
+            )
+            # needs_rebuild = any(
+            #     not isinstance(entry, dict)
+            #     or "summary_by_domain" not in entry
+            #     or "window_description" not in entry
+            #     or "window_description_by_domain" not in entry
+            #     for entry in user_full_state_summaries.values()
+            # )
+            # if needs_rebuild:
+            #     user_full_state_summaries = _build_user_full_state_summaries(
+            #         dynamic_profiles, self.llm_client
+            #     )
+            #     _write_json(
+            #         user_full_state_summaries_path,
+            #         user_full_state_summaries,
+            #     )
+        else:
+            user_full_state_summaries = _build_user_full_state_summaries(
+                dynamic_profiles, self.llm_client
+            )
+            _write_json(
+                user_full_state_summaries_path,
+                user_full_state_summaries,
+            )
+
+        window_ids_all = sorted(user_full_state_summaries.keys())
+        world_background_by_window = _map_world_background_to_windows(
+            world_background, window_ids_all
+        )
+
+        life_context_by_window_path = (
+            self.output_dir / "life_context_by_window.json"
+        )
+        life_context_usage: Dict = {}
+        life_context_baseline: Dict = {}
+        life_context_by_window: Dict[str, Dict] = {}
+        if life_context_by_window_path.exists():
+            payload = json.loads(life_context_by_window_path.read_text())
+            if isinstance(payload, dict):
+                life_context_baseline = payload.get("baseline", {}) or {}
+                life_context_by_window = payload.get("by_window", {}) or {}
+        else:
+            (
+                life_context_baseline,
+                life_context_by_window,
+                life_context_usage,
+            ) = _build_life_contexts(
+                dynamic_profiles=dynamic_profiles,
+                user_basic_profile=user_basic_profile,
+                world_background_by_window=world_background_by_window,
+                user_full_state_summaries=user_full_state_summaries,
+                llm_client=self.llm_client,
+                output_dir=self.output_dir,
+            )
+
+        user_life_contexts = {
+            "baseline": life_context_baseline,
+            "by_window": life_context_by_window,
+        }
+        return (
+            user_full_state_summaries,
+            user_life_contexts,
+            world_background_by_window,
+            life_context_usage,
+        )
+
+    def _generate_semantic_events_for_domains(
+        self,
+        domains: Sequence[Domain],
+        *,
+        dynamic_profiles: Dict[str, Dict],
+        user_basic_profile: Dict,
+        user_life_contexts: Dict,
+        user_full_state_summaries: Dict[str, Dict],
+        world_background_by_window: Dict[str, str],
+        aggregate_usage: Dict[str, Dict],
+    ) -> tuple[Dict[str, Dict], Dict[str, Dict]]:
+        """
+        Generate semantic events for all domains and return assembled payload + usage.
+        """
+        assembled: Dict[str, Dict] = {}
+        # Aggregate initial summaries across domains for window1 prompts.
+        initial_summaries_parts: List[str] = []
+        for domain_name, profile in dynamic_profiles.items():
+            init_summary = (
+                (profile.get("initial_state") or {}).get("summary") or ""
+            )
+            if init_summary:
+                initial_summaries_parts.append(f"{domain_name}: {init_summary}")
+        initial_all_domains_summary = "\n\n".join(initial_summaries_parts)
+        if not initial_all_domains_summary:
+            first_window = None
+            for window_id in sorted(user_full_state_summaries.keys()):
+                entry = user_full_state_summaries.get(window_id)
+                if isinstance(entry, dict):
+                    first_window = entry
+                    break
+            if first_window:
+                initial_all_domains_summary = (
+                    first_window.get("window_profile_summary", "") or ""
+                )
+
+        for domain in domains:
+            events_chain, usage = self.generate_semantic_events_for_domain(
+                domain=domain,
+                user_basic_profile=user_basic_profile,
+                dynamic_profiles=dynamic_profiles,
+                user_life_contexts=user_life_contexts,
+                user_full_state_summaries=user_full_state_summaries,
+                world_background=world_background_by_window,
+                usage=aggregate_usage.get(domain.domain_name),
+                initial_all_domains_summary=initial_all_domains_summary,
+            )
+            aggregate_usage[domain.domain_name] = usage
+            assembled[domain.domain_name] = {
+                "dynamic_profile": dynamic_profiles[domain.domain_name],
+                "events_chain": events_chain,
+            }
+
+        return assembled, aggregate_usage
+
+    def _generate_real_data_for_domains(
+        self,
+        domains: Sequence[Domain],
+        *,
+        dynamic_profiles: Dict[str, Dict],
+        user_basic_profile: Dict,
+        user_life_contexts: Dict,
+        user_full_state_summaries: Dict[str, Dict],
+        events_chain_by_domain: Dict[str, List[Dict]],
+        aggregate_usage: Dict[str, Dict],
+    ) -> tuple[Dict[str, List[Dict]], Dict[str, Dict]]:
+        """
+        Generate real data for all domains using previously generated semantic events.
+        """
+        assembled: Dict[str, List[Dict]] = {}
+
+        for domain in domains:
+            events_chain_windows = (
+                events_chain_by_domain.get(domain.domain_name) or []
+            )
+            if not events_chain_windows:
+                continue
+
+            usage = aggregate_usage.get(domain.domain_name)
+            real_windows, usage = self.generate_real_data_for_domain(
+                domain=domain,
+                dynamic_profiles=dynamic_profiles,
+                events_chain_windows=events_chain_windows,
+                user_basic_profile=user_basic_profile,
+                user_life_contexts=user_life_contexts,
+                user_full_state_summaries=user_full_state_summaries,
+                usage=usage,
+            )
+            aggregate_usage[domain.domain_name] = usage
+            assembled[domain.domain_name] = real_windows
+
+        return assembled, aggregate_usage
+
+    def _assemble_final_payload(
+        self,
+        *,
+        raw_user_description: str | None,
+        user_basic_profile: Dict,
+        user_profile_text: str,
+        world_background_text: str,
+        world_background_by_window: Dict[str, str],
+        user_life_contexts: Dict,
+        user_full_state_summaries: Dict[str, Dict],
+        assembled_domains: Dict[str, Dict],
+        conflicts_summary: List[Dict[str, object]],
+        conflict_resolution_payload: Dict[str, object],
+        usage: Dict[str, Dict],
+        usage_summary: Dict[str, Dict[str, int]] | None = None,
+        usage_pricing: Dict[str, object] | None = None,
+    ) -> Dict:
+        return {
+            "user_description": raw_user_description,
+            "user_basic_profile": user_basic_profile,
+            # Structured profile serialized for prompts (backwards-compatible key name).
+            "user_profile": user_profile_text,
+            "world_background": world_background_text,
+            "world_background_by_window": world_background_by_window,
+            "user_life_contexts": user_life_contexts,
+            # Legacy alias to avoid breaking downstream readers; remove once migrated.
+            "general_environment": user_life_contexts,
+            "user_full_state_summaries": user_full_state_summaries,
+            "timeline_defaults": asdict(self.timeline),
+            "domains": assembled_domains,
+            "conflict_resolution": {
+                "summary": conflicts_summary,
+                "resolution": conflict_resolution_payload,
+            },
+            "usage": usage,
+            "usage_summary": usage_summary or _summarize_usage(usage),
+            "usage_pricing": usage_pricing,
+        }
+
+    def generate_dynamic_profile_inputs(
+        self,
+        domains: Sequence[Domain],
+        *,
+        user_description: str | None,
+        world_background: str | Dict[str, str],
+    ) -> tuple[str, Dict, str, Dict[str, Dict], Dict[str, Dict], Dict[str, object]]:
+        """
+        Generate the basic profile and dynamic profiles stage of the pipeline.
+        """
+        user_basic_profile, basic_usage, user_profile_text = self._prepare_basic_profile(
+            user_description
+        )
+        aggregate_usage: Dict[str, Dict] = {}
+        if basic_usage:
+            aggregate_usage["basic_profile"] = basic_usage
+
+        world_background_text = (
+            world_background
+            if isinstance(world_background, str)
+            else json.dumps(world_background, ensure_ascii=False)
+        )
+
+        (
+            dynamic_profiles,
+            dynamic_usage,
+            conflict_resolution_payload,
+        ) = self._prepare_dynamic_profiles(
+            domains,
+            user_profile_text=user_profile_text,
+            world_background_text=world_background_text,
+            user_basic_profile=user_basic_profile,
+        )
+        aggregate_usage.update(dynamic_usage)
+
+        return (
+            user_basic_profile,
+            user_profile_text,
+            dynamic_profiles,
+            aggregate_usage,
+            conflict_resolution_payload,
+        )
+
+    def prepare_context_for_semantic_events_generation(
+        self,
+        dynamic_profiles: Dict[str, Dict],
+        *,
+        world_background: str | Dict[str, str],
+        user_basic_profile: Dict,
+    ) -> tuple[Dict[str, Dict], Dict, Dict[str, str], Dict]:
+        """
+        Prepare cross-domain context needed for semantic events generation.
+        """
+        return self._prepare_cross_domain_context(
+            dynamic_profiles,
+            world_background=world_background,
+            user_basic_profile=user_basic_profile,
+        )
+
+    def run(
+        self,
+        domains: Sequence[Domain],
+        *,
+        user_description: str | None = None,
+        world_background: str | Dict[str, str],
+    ) -> Dict:
+        """
+        Full pipeline run using separated dynamic-profile and context stages.
+        """
+        world_background_text = (
+            world_background
+            if isinstance(world_background, str)
+            else json.dumps(world_background, ensure_ascii=False)
+        )
+        (
+            user_basic_profile,
+            user_profile_text,
+            dynamic_profiles,
+            aggregate_usage,
+            conflict_resolution_payload,
+        ) = self.generate_dynamic_profile_inputs(
+            domains,
+            user_description=user_description,
+            world_background=world_background,
+        )
+
+        (
+            user_full_state_summaries,
+            user_life_contexts,
+            world_background_by_window,
+            life_context_usage,
+        ) = self.prepare_context_for_semantic_events_generation(
+            dynamic_profiles,
+            world_background=world_background,
+            user_basic_profile=user_basic_profile,
+        )
+        if life_context_usage:
+            aggregate_usage["life_context"] = life_context_usage
+
+        conflict_info = {
+            "summary": [],
+            "resolution": conflict_resolution_payload,
+        }
+
+        assembled_domains, aggregate_usage = self._generate_semantic_events_for_domains(
+            domains,
+            dynamic_profiles=dynamic_profiles,
+            user_basic_profile=user_basic_profile,
+            user_life_contexts=user_life_contexts,
+            user_full_state_summaries=user_full_state_summaries,
+            world_background_by_window=world_background_by_window,
+            aggregate_usage=aggregate_usage,
+        )
+
+        events_chain_by_domain = {
+            domain_name: payload.get("events_chain") or []
+            for domain_name, payload in assembled_domains.items()
+        }
+        real_data_by_domain, aggregate_usage = self._generate_real_data_for_domains(
+            domains,
+            dynamic_profiles=dynamic_profiles,
+            user_basic_profile=user_basic_profile,
+            user_life_contexts=user_life_contexts,
+            user_full_state_summaries=user_full_state_summaries,
+            events_chain_by_domain=events_chain_by_domain,
+            aggregate_usage=aggregate_usage,
+        )
+        for domain_name, real_windows in real_data_by_domain.items():
+            assembled_domains.setdefault(domain_name, {})
+            assembled_domains[domain_name]["real_data"] = real_windows
+
+        usage_summary, usage_pricing = _persist_usage_artifacts(
+            aggregate_usage,
+            self.output_dir,
+            model_name=getattr(self.llm_client, "model_name", None),
+        )
+
+        final_payload = self._assemble_final_payload(
+            raw_user_description=user_description,
+            user_basic_profile=user_basic_profile,
+            user_profile_text=user_profile_text,
+            world_background_text=world_background_text,
+            world_background_by_window=world_background_by_window,
+            user_life_contexts=user_life_contexts,
+            user_full_state_summaries=user_full_state_summaries,
+            assembled_domains=assembled_domains,
+            conflicts_summary=conflict_info["summary"],
+            conflict_resolution_payload=conflict_info["resolution"],
+            usage=aggregate_usage,
+            usage_summary=usage_summary,
+            usage_pricing=usage_pricing,
+        )
+        _write_json(self.output_dir / "pipeline_output.json", final_payload)
+        return final_payload
+
+    def generate_dynamic_profile_for_domain(
+        self,
+        domain: Domain,
+        *,
+        user_profile: str,
+        world_background: str,
+        life_domain_list: List[str] | str | None = None,
+    ) -> tuple[Dict, Dict]:
+        """
+        Generate latent state for an domain.
+        
+        Returns:
+            Tuple of (dynamic_profile_data, usage_dict)
+        """
+        timeline = domain.resolve_timeline(self.timeline)
+        slug = _slugify(domain.domain_name)
+
+        # Pre-generate time windows
+        time_windows = generate_time_windows(
+            timeline.start_date,
+            timeline.end_date,
+            timeline.num_windows,
+        )
+
+        latent_result = generate_dynamic_profile(
+            self.llm_client,
+            DynamicProfileRequest(
+                domain_name=domain.domain_name,
+                domain_scope_definition=domain.domain_scope_definition,
+                world_background=world_background,
+                user_profile=user_profile,
+                time_windows=time_windows,
+                life_domain_list=life_domain_list,
+            ),
+        )
+        latent_path = self.output_dir / f"{slug}_dynamic_profile.json"
+        _write_json(latent_path, latent_result.data)
+
+        usage = {"dynamic_profile": latent_result.usage}
+        return latent_result.data, usage
+
+    def review_revise_dynamic_profile_for_domain(
+        self,
+        domain: Domain,
+        *,
+        dynamic_profile: Dict,
+        user_profile: str,
+    ) -> tuple[Dict, Dict]:
+        """
+        Run a structured audit + repair pass on a generated dynamic profile to
+        catch format/consistency issues (time windows, habit/preference schema) and
+        apply the patch onto the original profile.
+        """
+        # review_revise_result_path = "/export/scratch_large/wenya/mem_bench/behavior_and_conversation/generated_outputs_debug_v5/gemini_3_flash_preview/leisure_media_consumption_dynamic_profile_checked_result.json"
+        # with open(review_revise_result_path, "r", encoding="utf-8") as f:
+        #     review_revise_result = json.load(f)
+        review_revise_prompt = in_domain_data_review_revise_prompt.render(
+            domain_name=domain.domain_name,
+            domain_scope_definition=domain.domain_scope_definition,
+            user_profile=user_profile,
+            schema_excerpt=DYNAMIC_PROFILE_TEMPLATE_EXCERPT,
+            dynamic_profile_json=json.dumps(
+                dynamic_profile, indent=2, ensure_ascii=False
+            ),
+        )
+        review_revise_result = self.llm_client.generate_json(review_revise_prompt)
+        revised_profile = _apply_profile_revision(dynamic_profile, review_revise_result.data)
+        usage = {"dynamic_profile_review": review_revise_result.usage}
+    
+        # save result
+        
+        slug = _slugify(domain.domain_name)
+        reviewed_path = self.output_dir / f"{slug}_dynamic_profile_checked_result.json"
+        _write_json(reviewed_path, review_revise_result.data)
+        revised_path = self.output_dir / f"{slug}_dynamic_profile_revised_result.json"
+        _write_json(revised_path, revised_profile)
+        
+        return review_revise_result.data, revised_profile, usage
+
+    # # Backward-compatible alias
+    # def _review_revise_dynamic_profile_for_domain(
+    #     self,
+    #     domain: Domain,
+    #     *,
+    #     dynamic_profile: Dict,
+    #     user_profile: str,
+    #     world_background: str,
+    # ) -> tuple[Dict, Dict]:
+    #     return self.review_revise_dynamic_profile_for_domain(
+    #         domain,
+    #         dynamic_profile=dynamic_profile,
+    #         user_profile=user_profile,
+    #         world_background=world_background,
+    #     )
+    
+    def review_revise_dynamic_profile_from_file(
+        self,
+        *,
+        domain_profile_path: str | Path,
+        domain: Domain,
+        user_profile_text: str | Dict | None = None,
+    ) -> tuple[Dict, Dict]:
+        """
+        Load an existing dynamic profile JSON, run the audit/revise prompt, and
+        save the corrected version for manual inspection.
+        """
+        with open(domain_profile_path, "r", encoding="utf-8") as f:
+            dynamic_profile = json.load(f)
+
+        reviewed_result, revised_profile, usage = self.review_revise_dynamic_profile_for_domain(
+            domain,
+            dynamic_profile=dynamic_profile,
+            user_profile=user_profile_text,
+        )
+        slug = _slugify(domain.domain_name)
+
+        # reviewed_path = self.output_dir / f"{slug}_dynamic_profile_checked_result.json"
+        # _write_json(reviewed_path, reviewed_result)
+
+        # revised_path = self.output_dir / f"{slug}_dynamic_profile_revised_result.json"
+        # _write_json(revised_path, revised_profile)
+
+        return reviewed_result, revised_profile, usage
+
+    def generate_semantic_events_for_domain(
+        self,
+        *,
+        domain: Domain,
+        user_basic_profile: Dict,
+        dynamic_profiles: Dict[str, Dict],
+        user_life_contexts: Dict | None = None,
+        user_full_state_summaries: Dict[str, Dict] | None = None,
+        world_background: str | Dict[str, str] | None = None,
+        usage: Dict | None = None,
+        initial_all_domains_summary: str | None = None,
+    ) -> tuple[List[Dict], Dict]:
+        """
+        Generate semantic events (events chain) for a domain based on existing latent state.
+        
+        Args:
+            domain: domain specification
+            dynamic_profiles: All latent state data across domains (from generate_dynamic_profile_for_domain)
+            user_full_state_summaries: Cross-domain per-window summaries for previous-window context
+            usage: Optional existing usage dict to update
+            world_background: Optional global context used to keep events consistent (per-window or shared)
+            
+        Returns:
+            Tuple of (events_chain_windows_list, updated_usage_dict)
+        """
+        if usage is None:
+            usage = {"events_chain": {}}
+        elif "events_chain" not in usage:
+            usage["events_chain"] = {}
+
+        domain_profile = (dynamic_profiles or {}).get(domain.domain_name)
+        if not isinstance(domain_profile, dict):
+            raise ValueError(f"Dynamic profile for domain {domain.domain_name} is missing.")
+
+        user_life_contexts = user_life_contexts or {}
+        user_full_state_summaries = user_full_state_summaries or {}
+        life_context_baseline = {}
+        life_context_by_window: Dict[str, Dict] = {}
+
+        ## user_life_contexts is a dict with two keys: "baseline" and "by_window"
+        if isinstance(user_life_contexts, dict):
+            life_context_baseline = user_life_contexts.get("baseline") or {}
+            life_context_by_window = user_life_contexts.get("by_window") or {}
+
+        # import pdb; pdb.set_trace()     
+
+        slug = _slugify(domain.domain_name)
+        events_chain_windows: List[Dict] = []
+
+
+        ## resolved_windows is a list of dicts, each dict is a window state
+        resolved_windows = _resolve_window_states(domain_profile)
+        resolved_windows_path = self.output_dir / f"{slug}_resolved_windows.json"
+        _write_json(resolved_windows_path, resolved_windows)
+
+        window_ids = [w.get("window_id") for w in resolved_windows if w.get("window_id")]
+        world_background_map = _map_world_background_to_windows(
+            world_background, window_ids
+        )
+        summary_all_by_window: Dict[str, str] = {}
+        summary_by_window_domain: Dict[str, str] = {}
+
+
+        for window_id, entry in user_full_state_summaries.items():
+            if not window_id or not isinstance(entry, dict):
+                continue
+            summary_all_by_window[window_id] = entry.get("window_profile_summary", "") or ""
+            domain_summary_val = (
+                entry.get("summary_by_domain", {}).get(domain.domain_name)
+                or entry.get("window_description_by_domain", {}).get(domain.domain_name, "")
+            )
+            summary_by_window_domain[window_id] = domain_summary_val
+
+        ## for window 1
+        domain_initial_summary = (
+            (domain_profile.get("initial_state") or {}).get("summary") or ""
+        )
+        # import pdb; pdb.set_trace()
+        initial_window_summary = initial_all_domains_summary or ""
+        
+
+        resolved_window_map = {
+            w.get("window_id"): w for w in resolved_windows if w.get("window_id")
+        }
+        rng = random.Random(self.semantic_config.stable_state_reveal_seed)
+        stale_sample_probability = max(
+            0.0, min(1.0, self.semantic_config.stable_state_reveal_probability)
+        )
+        conversion_flags: Dict[str, Dict[str, bool]] = {
+            "user_attributes_state": {},
+            "habits_state": {},
+            "preferences_state": {},
+        }
+
+        def _default_metadata() -> Dict[str, object]:
+            return {
+                "updated_this_window": False,
+                "freshness": False,
+                "already_converted_to_semantic_events": False,
+                "should_convert_to_semantic_events": False,
+                "reason": None,
+            }
+
+        def _make_item_key(value: object) -> str:
+            try:
+                return json.dumps(value, sort_keys=True, ensure_ascii=False)
+            except TypeError:
+                return str(value)
+
+        def _init_state_tracker() -> Dict[str, Dict[str, Dict[str, Dict[str, object]]]]:
+            tracker: Dict[str, Dict[str, Dict[str, Dict[str, object]]]] = {
+                "user_attributes_state": {},
+                "habits_state": {},
+                "preferences_state": {},
+            }
+            initial_state = domain_profile.get("initial_state") or {}
+            initial_sections = {
+                "user_attributes_state": (initial_state.get("user_attributes_state") or {}).get("initial"),
+                "habits_state": (initial_state.get("habits_state") or {}).get("initial"),
+                "preferences_state": (initial_state.get("preferences_state") or {}).get("initial"),
+            }
+            for state_type, section in initial_sections.items():
+                if not isinstance(section, dict):
+                    continue
+                for name, value in section.items():
+                    values = value if isinstance(value, list) else [value]
+                    for val in values:
+                        key = _make_item_key(val)
+                        tracker[state_type].setdefault(name, {})[key] = {
+                            "value": val,
+                            "metadata": _default_metadata(),
+                        }
+            return tracker
+
+        state_tracker = _init_state_tracker()
+
+        def _materialize_state_table_from_tracker() -> Dict[str, List[Dict[str, object]]]:
+            """Convert current tracker snapshot into a state_table list structure."""
+            table: Dict[str, List[Dict[str, object]]] = {
+                "user_attributes_state": [],
+                "habits_state": [],
+                "preferences_state": [],
+            }
+            for state_type, names in state_tracker.items():
+                for name, entries in names.items():
+                    for entry in entries.values():
+                        table[state_type].append(
+                            {
+                                "name": name,
+                                "current_value": entry["value"],
+                                "op": "stable",
+                                "metadata": deepcopy(entry["metadata"]),
+                            }
+                        )
+            return table
+
+        # Emit an initial baseline state_table snapshot before processing windows.
+        initial_state_table_payload = {
+            "window_id": "initial",
+            "time_range": (domain_profile.get("initial_state") or {}).get("time_range"),
+            "state_table": _materialize_state_table_from_tracker(),
+        }
+        _write_json(
+            self.output_dir / f"{slug}_domain_window_state_payload_initial.json",
+            initial_state_table_payload,
+        )
+
+        for idx, window_state in enumerate(resolved_windows):
+            window_id = window_state.get("window_id")
+            if not window_id:
+                continue
+
+            window_full_state = user_full_state_summaries.get(window_id, {})
+            if not isinstance(window_full_state, dict):
+                window_full_state = {}
+            if idx == 0:
+                previous_all_summary_raw = initial_window_summary
+                previous_domain_summary_raw = domain_initial_summary
+            else:
+                prev_window_id = resolved_windows[idx - 1].get("window_id")
+                previous_all_summary_raw = summary_all_by_window.get(prev_window_id, "")
+                previous_domain_summary_raw = summary_by_window_domain.get(prev_window_id, "")
+            user_previous_window_summary = (
+                "<previous window summary (all domains)>\n"
+                f"{previous_all_summary_raw or 'No previous window summary available for this window.'}\n"
+                "</previous window summary (all domains)>"
+            )
+            user_domain_previous_window_summary = (
+                f"<previous window summary in {domain.domain_name}>\n"
+                f"{previous_domain_summary_raw or 'No previous window summary available for this window.'}\n"
+                f"</previous window summary in {domain.domain_name}>"
+            )
+            life_context_for_window: Dict = {}
+            life_context_entry = life_context_by_window.get(window_id, {}) or {}
+            base_context = life_context_entry.get("life_context") or life_context_baseline
+            delta_payload = life_context_entry.get("life_context_delta") or {}
+            life_context_for_window = _apply_life_context_delta(
+                base_context, delta_payload
+            )
+
+            if not life_context_for_window and isinstance(life_context_baseline, dict):
+                life_context_for_window = life_context_baseline
+            life_context_prompt_str = _format_life_context_for_prompt(
+                window_id, life_context_for_window, time_range=window_state.get("time_range")
+            )
+            domain_window_description = (
+                window_state.get("window_description")
+            )
+            user_this_window_description = (
+                f"<this window description in {domain.domain_name}>\n"
+                f"{domain_window_description or 'No description available for this domain in this window.'}\n"
+                f"</this window description in {domain.domain_name}>"
+            )
+
+            resolved_window_state = resolved_window_map.get(window_id, {})
+
+            conversion_targets: Dict[str, List[Dict[str, object]]] = {
+                "user_attributes_state": [],
+                "habits_state": [],
+                "preferences_state": [],
+            }
+            selected_tracker_keys: Dict[str, List[tuple[str, str]]] = {
+                "user_attributes_state": [],
+                "habits_state": [],
+                "preferences_state": [],
+            }
+
+            for state_type in ["user_attributes_state", "habits_state", "preferences_state"]:
+                window_items = window_state.get(state_type) or []
+                seen_keys: Dict[str, set[str]] = {}
+
+                for item in window_items:
+                    name = item.get("name")
+                    if not name:
+                        continue
+
+                    item_op = item.get("op")
+                    change_reason = item.get("change_reason")
+                    previous_value = item.get("previous_value")
+                    current_value = item.get("current_value")
+                    item_op_lower = (item_op or "").lower()
+
+                    values = (
+                        current_value
+                        if state_type == "user_attributes_state" and isinstance(current_value, list)
+                        else [current_value]
+                    )
+
+                    for val in values:
+                        key = _make_item_key(val)
+                        tracker_entries = state_tracker[state_type].setdefault(name, {})
+                        existing_entry = tracker_entries.get(key)
+
+                        already_converted = bool(
+                            existing_entry
+                            and existing_entry["metadata"].get("already_converted_to_semantic_events")
+                        )
+                        updated_this_window = existing_entry is None
+                        freshness = updated_this_window
+                        reason = change_reason if updated_this_window else None
+
+                        should_convert = False
+                        if state_type == "habits_state":
+                            should_convert = True  # Habits are always converted each window (no sampling).
+                        elif freshness:
+                            should_convert = True
+                        elif not already_converted and rng.random() < stale_sample_probability:
+                            should_convert = True
+
+                        metadata = {
+                            "updated_this_window": updated_this_window,
+                            "freshness": freshness,
+                            "already_converted_to_semantic_events": already_converted,
+                            "should_convert_to_semantic_events": should_convert,
+                            "reason": reason if freshness else None,
+                        }
+
+                        tracker_entries[key] = {"value": val, "metadata": deepcopy(metadata)}
+                        seen_keys.setdefault(name, set()).add(key)
+
+                        if should_convert:
+                            entry: Dict[str, object] = {
+                                "name": name,
+                                "current_value": val,
+                                "op": item_op if freshness and item_op else "stable",
+                                "metadata": metadata,
+                            }
+                            if updated_this_window and change_reason:
+                                entry["change_reason"] = change_reason
+                            if updated_this_window:
+                                if item_op_lower in {"add", "acquire"}:
+                                    entry["previous_value"] = None
+                                elif previous_value is not None:
+                                    entry["previous_value"] = previous_value
+
+                            conversion_targets[state_type].append(entry)
+                            selected_tracker_keys[state_type].append((name, key))
+
+                # Drop tracker entries that no longer exist in the current snapshot (e.g., removals).
+                for name, entries in list(state_tracker[state_type].items()):
+                    keep_keys = seen_keys.get(name, set())
+                    for key in list(entries.keys()):
+                        if key not in keep_keys:
+                            entries.pop(key, None)
+                    if not entries:
+                        state_tracker[state_type].pop(name, None)
+
+            domain_window_state_payload = {
+                "window_id": window_id,
+                "time_range": window_state.get("time_range"),
+                "state_table": conversion_targets,
+            }
+            # Do not leak internal metadata into the prompt.
+            domain_window_state_payload_for_prompt = deepcopy(domain_window_state_payload)
+            for state_type in ["user_attributes_state", "habits_state", "preferences_state"]:
+                entries = domain_window_state_payload_for_prompt["state_table"].get(state_type) or []
+                for entry in entries:
+                    entry.pop("metadata", None)
+
+            domain_window_state = (
+                f"<user detailed state in {domain.domain_name}>\n"
+                f"{json.dumps(domain_window_state_payload_for_prompt, indent=2, ensure_ascii=False)}\n"
+                f"</user detailed state in {domain.domain_name}>"
+            )
+            ## save domain_window_state_payload
+            domain_window_state_payload_path = self.output_dir / f"{slug}_domain_window_state_payload_{window_id}.json"
+            _write_json(domain_window_state_payload_path, domain_window_state_payload)
+            domain_window_state_path = self.output_dir / f"{slug}_domain_window_state_{window_id}.json"
+            _write_json(domain_window_state_path, domain_window_state_payload_for_prompt)
+            window_world_background = world_background_map.get(
+                window_id, "No world background available for this window."
+            )
+            user_basic_profile_str = json.dumps(user_basic_profile, indent=2, ensure_ascii=False)
+            semantic_result = generate_semantic_events(
+                self.llm_client,
+                SemanticEventsRequest(
+                    domain_name=domain.domain_name,
+                    user_basic_profile=user_basic_profile_str,
+                    user_life_context=life_context_prompt_str,
+                    user_previous_window_summary=user_previous_window_summary,
+                    user_domain_previous_window_summary=user_domain_previous_window_summary,
+                    user_this_window_description=user_this_window_description,
+                    world_background=window_world_background,
+                    domain_window_state=domain_window_state,
+                ),
+            )
+            events_chain_windows.append(semantic_result.data)
+            usage["events_chain"][window_id] = semantic_result.usage
+
+            ## save prompt
+            prompt_path = self.output_dir / f"{slug}_events_chain_{window_id}_prompt.txt"
+            _write_text(prompt_path, semantic_result.prompt)
+
+            semantic_path = self.output_dir / f"{slug}_events_chain_{window_id}.json"
+            _write_json(semantic_path, semantic_result.data)
+            legacy_semantic_path = self.output_dir / f"{slug}_semantic_events_{window_id}.json"
+            _write_json(legacy_semantic_path, semantic_result.data)
+
+            # Mark converted items so we don't repeatedly force conversion in later windows.
+            for state_type, entries in selected_tracker_keys.items():
+                for name, key in entries:
+                    meta_entry = state_tracker[state_type].get(name, {}).get(key)
+                    if meta_entry:
+                        meta_entry["metadata"]["already_converted_to_semantic_events"] = True
+                        meta_entry["metadata"]["should_convert_to_semantic_events"] = False
+
+        windows_by_id = {
+            entry.get("window_id"): entry
+            for entry in events_chain_windows
+            if isinstance(entry, dict) and entry.get("window_id")
+        }
+        semantic_path = self.output_dir / f"{slug}_events_chain.json"
+        payload = {
+            "domain": domain.domain_name,
+            "windows_by_id": windows_by_id,
+        }
+        _write_json(semantic_path, payload)
+        legacy_semantic_path = self.output_dir / f"{slug}_semantic_events.json"
+        _write_json(legacy_semantic_path, payload)
+
+        return events_chain_windows, usage
+
+    def generate_atomic_events_for_domain(
+        self,
+        domain: Domain,
+        *,
+        dynamic_profile_data: Dict,
+        events_chain_windows: List[Dict],
+        usage: Dict | None = None,
+    ) -> tuple[List[Dict], Dict]:
+        """
+        Generate atomic events for a domain based on existing latent state and events chain.
+        
+        Args:
+            spec: domain specification
+            dynamic_profile_data: The latent state data
+            events_chain_windows: List of events chain entries for each window
+            usage: Optional existing usage dict to update
+            
+        Returns:
+            Tuple of (atomic_events_windows_list, updated_usage_dict)
+        """
+        if usage is None:
+            usage = {"atomic_events": {}}
+        elif "atomic_events" not in usage:
+            usage["atomic_events"] = {}
+
+        slug = _slugify(domain.domain_name)
+        atomic_windows: List[Dict] = []
+
+        # Create a mapping from window_id to resolved window state and semantic events
+        window_states = {
+            w.get("window_id"): w for w in _resolve_window_states(dynamic_profile_data)
+        }
+        import pdb; pdb.set_trace()
+        for events_chain_data in events_chain_windows:
+            window_id = events_chain_data.get("window_id")
+            if not window_id:
+                continue
+
+            window_state = window_states.get(window_id)
+            if not window_state:
+                continue
+
+            events_payload = (
+                events_chain_data.get("events_chain")
+                or events_chain_data.get("semantic_events")
+                or events_chain_data
+            )
+
+            atomic_result = generate_atomic_events(
+                self.llm_client,
+                AtomicEventsRequest(
+                    domain_name=domain.domain_name,
+                    window_id=window_id,
+                    window_time_range=_format_window_range(window_state),
+                    current_window_state=window_state,
+                    semantic_events=events_payload,
+                    min_atomic_per_semantic=self.atomic_config.min_per_semantic,
+                    max_atomic_per_semantic=self.atomic_config.max_per_semantic,
+                ),
+            )
+            atomic_windows.append(atomic_result.data)
+            usage["atomic_events"][window_id] = atomic_result.usage
+
+        atomic_path = self.output_dir / f"{slug}_atomic_events.json"
+        _write_json(
+            atomic_path,
+            {"domain": domain.domain_name, "windows": atomic_windows},
+        )
+
+        return atomic_windows, usage
+
+    def generate_real_data_for_domain(
+        self,
+        *,
+        domain: Domain,
+        dynamic_profiles: Dict[str, Dict],
+        events_chain_windows: List[Dict],
+        user_basic_profile: Dict,
+        user_life_contexts: Dict | None = None,
+        user_full_state_summaries: Dict[str, Dict] | None = None,
+        usage: Dict | None = None,
+    ) -> tuple[List[Dict], Dict]:
+        """
+        Generate real data for a domain directly from semantic events (evidence chains).
+        """
+        if usage is None:
+            usage = {"real_data": {}}
+        elif "real_data" not in usage:
+            usage["real_data"] = {}
+
+        domain_profile = (dynamic_profiles or {}).get(domain.domain_name)
+        if not isinstance(domain_profile, dict):
+            raise ValueError(f"Dynamic profile for domain {domain.domain_name} is missing.")
+
+        slug = _slugify(domain.domain_name)
+        real_windows: List[Dict] = []
+
+        resolved_windows = _resolve_window_states(domain_profile)
+        window_states = {
+            w.get("window_id"): w for w in resolved_windows if w.get("window_id")
+        }
+        window_order = [w.get("window_id") for w in resolved_windows if w.get("window_id")]
+        prev_window_map = {
+            window_order[i]: window_order[i - 1] for i in range(1, len(window_order))
+        }
+
+        life_context_baseline = {}
+        life_context_by_window: Dict[str, Dict] = {}
+        if isinstance(user_life_contexts, dict):
+            life_context_baseline = user_life_contexts.get("baseline") or {}
+            life_context_by_window = user_life_contexts.get("by_window") or {}
+
+        summary_by_window_domain: Dict[str, str] = {}
+        for window_id, entry in (user_full_state_summaries or {}).items():
+            if not window_id or not isinstance(entry, dict):
+                continue
+            domain_summary_val = (
+                entry.get("summary_by_domain", {}).get(domain.domain_name)
+                or entry.get("window_description_by_domain", {}).get(domain.domain_name, "")
+            )
+            summary_by_window_domain[window_id] = domain_summary_val
+
+        domain_initial_summary = (
+            (domain_profile.get("initial_state") or {}).get("summary") or ""
+        )
+        user_basic_profile_str = json.dumps(
+            user_basic_profile, indent=2, ensure_ascii=False
+        )
+
+        import pdb; pdb.set_trace() 
+        for events_chain_data in events_chain_windows:
+            window_id = events_chain_data.get("window_id")
+            if not window_id:
+                continue
+
+            window_state = window_states.get(window_id, {})
+            window_time_range = (
+                events_chain_data.get("time_range") or window_state.get("time_range")
+            )
+            window_description = window_state.get("window_description") or ""
+
+            previous_window_id = prev_window_map.get(window_id)
+            previous_domain_summary_raw = (
+                domain_initial_summary
+                if previous_window_id is None
+                else summary_by_window_domain.get(previous_window_id, "")
+            )
+            if previous_domain_summary_raw:
+                previous_summary_text = (
+                    f"Window {previous_window_id or 'initial'} summary in {domain.domain_name}: "
+                    f"{previous_domain_summary_raw}"
+                )
+            else:
+                previous_summary_text = (
+                    f"No previous window summary available for window {window_id} in {domain.domain_name}."
+                )
+
+            life_context_entry = life_context_by_window.get(window_id, {}) or {}
+            base_context = life_context_entry.get("life_context") or life_context_baseline
+            delta_payload = life_context_entry.get("life_context_delta") or {}
+            life_context_for_window = _apply_life_context_delta(
+                base_context, delta_payload
+            )
+            if not life_context_for_window and isinstance(life_context_baseline, dict):
+                life_context_for_window = life_context_baseline
+            life_context_prompt_str = _format_life_context_for_prompt(
+                window_id, life_context_for_window, time_range=window_time_range
+            )
+
+            evidence_chains = events_chain_data.get("evidence_chains") or []
+            if not evidence_chains:
+                continue
+
+            window_real_data: Dict[str, object] = {
+                "window_id": window_id,
+                "time_range": window_time_range,
+                "real_data": [],
+            }
+
+            for chain_idx, chain in enumerate(evidence_chains):
+                chain_id = chain.get("evidence_chain_id") or f"{window_id}_chain_{chain_idx+1:02d}"
+                chain_payload = deepcopy(chain)
+                chain_payload.setdefault("evidence_chain_id", chain_id)
+                chain_payload.setdefault("window_id", window_id)
+                chain_payload.setdefault("time_range", window_time_range)
+                chain_payload.setdefault("domain_name", domain.domain_name)
+
+                import pdb; pdb.set_trace()
+
+                real_result = generate_real_data(
+                    self.llm_client,
+                    RealDataRequest(
+                        user_basic_profile=user_basic_profile_str,
+                        life_context=life_context_prompt_str,
+                        previous_window_summary_this_domain=previous_summary_text,
+                        current_window_description=window_description
+                        or "No description available for this domain in this window.",
+                        evidence_chain=chain_payload,
+                        window_id=window_id,
+                        window_time_range=window_time_range,
+                        domain_name=domain.domain_name,
+                    ),
+                )
+                window_real_data["real_data"].append(real_result.data)
+                usage["real_data"].setdefault(window_id, {})[chain_id] = real_result.usage
+
+                prompt_path = (
+                    self.output_dir
+                    / f"{slug}_real_data_{window_id}_{_slugify(chain_id)}_prompt.txt"
+                )
+                _write_text(prompt_path, real_result.prompt)
+
+                _write_json(
+                    self.output_dir / f"{slug}_real_data_{window_id}_{_slugify(chain_id)}.json",
+                    real_result.data,
+                )
+
+                ## record usage
+                _write_json(
+                    self.output_dir / f"{slug}_real_data_{window_id}_{_slugify(chain_id)}_usage.json",
+                    real_result.usage,
+                )
+
+            real_windows.append(window_real_data)
+
+        real_path = self.output_dir / f"{slug}_real_data.json"
+        _write_json(
+            real_path,
+            {"domain": domain.domain_name, "windows": real_windows},
+        )
+
+        return real_windows, usage
+
+    def load_dynamic_profile_from_file(
+        self, domain: Domain
+    ) -> Dict | None:
+        """Load latent state from file if it exists."""
+        slug = _slugify(domain.domain_name)
+        latent_path = self.output_dir / f"{slug}_dynamic_profile.json"
+        if latent_path.exists():
+            return json.loads(latent_path.read_text())
+        return None
+
+    def load_events_chain_from_file(
+        self, domain: Domain
+    ) -> List[Dict] | None:
+        """Load events chain (semantic events) from file if it exists."""
+        slug = _slugify(domain.domain_name)
+        events_chain_path = self.output_dir / f"{slug}_events_chain.json"
+        legacy_semantic_path = self.output_dir / f"{slug}_semantic_events.json"
+        path_to_use = None
+        if events_chain_path.exists():
+            path_to_use = events_chain_path
+        elif legacy_semantic_path.exists():
+            path_to_use = legacy_semantic_path
+
+        if path_to_use:
+            data = json.loads(path_to_use.read_text())
+            windows_by_id = data.get("windows_by_id")
+            if isinstance(windows_by_id, dict):
+                try:
+                    return [windows_by_id[k] for k in sorted(windows_by_id.keys())]
+                except Exception:
+                    return list(windows_by_id.values())
+            windows = data.get("windows")
+            if isinstance(windows, list):
+                return windows
+            if isinstance(windows, dict):
+                try:
+                    return [windows[k] for k in sorted(windows.keys())]
+                except Exception:
+                    return list(windows.values())
+        return None
+    def load_atomic_events_from_file(
+        self, domain: Domain
+    ) -> List[Dict] | None:
+        """Load atomic events from file if it exists."""
+        slug = _slugify(domain.domain_name)
+        atomic_path = self.output_dir / f"{slug}_atomic_events.json"
+        if atomic_path.exists():
+            data = json.loads(atomic_path.read_text())
+            return data.get("windows", [])
+        return None
+
+
+def _load_or_sample_elite_personas(
+    sample_path: str | Path = DEFAULT_ELITE_SAMPLE_PATH,
+    *,
+    sample_size: int = DEFAULT_ELITE_SAMPLE_SIZE,
+    seed: int = ELITE_SAMPLE_SEED,
+) -> List[Dict]:
+    """
+    Ensure we have a local elite persona sample and return it.
+    """
+    sample_path = Path(sample_path)
+    if not sample_path.exists():
+        sample_elite_personas(
+            output_path=sample_path,
+            sample_size=sample_size,
+            seed=seed,
+        )
+    return load_sampled_personas(sample_path)
+
+
+def batch_generate_dynamic_profiles_from_elite_personas(
+    *,
+    sample_path: str | Path = DEFAULT_ELITE_SAMPLE_PATH,
+    max_personas: int = DEFAULT_ELITE_SAMPLE_SIZE,
+    output_root: str | Path | None = None,
+    model_name: str | None = None,
+    skip_existing: bool = True,
+) -> None:
+    """
+    Generate dynamic profiles for a batch of elite personas.
+
+    This only runs stages up to dynamic profiles (no semantic/real data) to keep
+    runtime manageable while benchmarking persona coverage.
+    """
+    base_dir = Path(__file__).resolve().parent
+    world_background = (base_dir / "context_world_background_2024.txt").read_text().strip()
+    domains_path = base_dir / "domains.json"
+    domains = load_domains_from_file(domains_path)
+
+    target_sample_size = max(max_personas, DEFAULT_ELITE_SAMPLE_SIZE)
+    personas = _load_or_sample_elite_personas(
+        sample_path=sample_path,
+        sample_size=target_sample_size,
+        seed=ELITE_SAMPLE_SEED,
+    )
+    if max_personas:
+        personas = personas[:max_personas]
+
+    output_root_path = (
+        Path(output_root) if output_root is not None else base_dir / "generated_outputs_elite_sample"
+    )
+    _ensure_dir(output_root_path)
+
+    api_key = os.getenv("GOOGLE_API_KEY")
+    resolved_model_name = (
+        model_name
+        or os.getenv("GEMINI_MODEL_NAME")
+        or os.getenv("GENERATION_MODEL_NAME")
+        or "gemini-3-flash-preview"
+    )
+    client = GeminiJSONClient(api_key=api_key, model_name=resolved_model_name)
+
+    total = len(personas)
+    for idx, persona in enumerate(personas):
+        user_description = persona.get("persona") or persona.get("user_description")
+        if not user_description:
+            # Skip malformed rows.
+            continue
+
+        persona_dir = output_root_path / f"{idx:03d}_{_slugify(user_description)[:48]}"
+        prepare_path = persona_dir / "prepare_inputs_result.json"
+        resolved_path = persona_dir / "dynamic_profiles_conflict_resolved.json"
+        if skip_existing and prepare_path.exists() and resolved_path.exists():
+            print(f"[{idx + 1}/{total}] skip existing {persona_dir}")
+            continue
+
+        pipeline = GenerationPipeline(
+            client,
+            output_dir=persona_dir,
+        )
+        (
+            user_basic_profile,
+            user_profile_text,
+            dynamic_profiles,
+            aggregate_usage,
+            conflict_resolution_payload,
+        ) = pipeline.generate_dynamic_profile_inputs(
+            domains=domains,
+            user_description=user_description,
+            world_background=world_background,
+        )
+        conflict_info = {
+            "summary": [],
+            "resolution": conflict_resolution_payload,
+        }
+        intermediate = {
+            "raw_user_description": user_description,
+            "user_basic_profile": user_basic_profile,
+            "user_profile_text": user_profile_text,
+            "world_background_by_window": {},
+            "user_life_contexts": {"baseline": {}, "by_window": {}},
+            "general_environment": {},
+            "user_full_state_summaries": {},
+            "dynamic_profiles": dynamic_profiles,
+        }
+
+        _write_text(persona_dir / "raw_user_description.txt", user_description)
+        _write_json(persona_dir / "persona_record.json", persona)
+        _write_json(persona_dir / "aggregate_usage.json", aggregate_usage)
+        _write_json(persona_dir / "prepare_inputs_result.json", intermediate)
+        print(f"[{idx + 1}/{total}] generated dynamic profiles at {persona_dir}")
+
+
+def example_usage() -> None:
+    """Small helper so the module can be run directly."""
+    api_key = os.getenv("GOOGLE_API_KEY")
+    client = GeminiJSONClient(api_key=api_key)
+    base_dir = Path(__file__).resolve().parent
+    # base_dir = "/export/scratch_large/wenya/mem_bench/behavior_and_conversation"
+    domains_path = base_dir / "domains.json"
+    domains = load_domains_from_file(domains_path)
+    # selected, selection_meta = select_domains_for_user(domains, optional_probability=0.5, seed=42)
+    pipeline = GenerationPipeline(
+        client,
+        output_dir=base_dir / "generated_outputs_v2",
+    )
+    world_background = (base_dir / "context_world_background_2024.txt").read_text().strip()
+    user_description = (base_dir / "context_user_description.txt").read_text().strip()
+    pipeline.run(
+        domains,
+        user_description=user_description,
+        world_background=world_background,
+    )
+
+def debug_dynamic_profile_generation() -> None:
+    api_key = os.getenv("GOOGLE_API_KEY")
+    model_name = (
+        os.getenv("GEMINI_MODEL_NAME")
+        or os.getenv("GENERATION_MODEL_NAME")
+        or "gemini-2.5-flash-lite"
+    )
+
+    model_name="gemini-3-flash-preview"
+    # model_name="gemini-3-pro-preview"
+    # model_name="gemini-2.5-flash-lite"
+    client = GeminiJSONClient(api_key=api_key, model_name=model_name)
+    base_dir = Path(__file__).resolve().parent
+    output_dir = base_dir / "generated_outputs_debug_v6" / _slugify(model_name)
+    domains_path = base_dir / "domains.json"
+    # domains_path = base_dir / "domains_test.json"
+    domains = load_domains_from_file(domains_path)
+    pipeline = GenerationPipeline(
+        client,
+        output_dir=output_dir,
+    )
+
+    world_background = (base_dir / "context_world_background_2024.txt").read_text().strip()
+    user_description = (base_dir / "context_user_description.txt").read_text().strip()
+
+    (
+        user_basic_profile,
+        user_profile_text,
+        dynamic_profiles,
+        aggregate_usage,
+        conflict_resolution_payload,
+    ) = pipeline.generate_dynamic_profile_inputs(
+        domains=domains,
+        user_description=user_description,
+        world_background=world_background,
+    )
+    conflict_info = {
+        "summary": [],
+        "resolution": conflict_resolution_payload,
+    }
+    intermediate = {
+        "raw_user_description": user_description,
+        "user_basic_profile": user_basic_profile,
+        "user_profile_text": user_profile_text,
+        "world_background": world_background,
+        "world_background_by_window": {},
+        "user_life_contexts": {"baseline": {}, "by_window": {}},
+        "general_environment": {},
+        "user_full_state_summaries": {},
+        "dynamic_profiles": dynamic_profiles,
+    }
+    print(intermediate)
+    print(aggregate_usage)
+    print(conflict_info)
+
+    usage_summary, usage_pricing = _persist_usage_artifacts(
+        aggregate_usage,
+        output_dir,
+        basename="debug_token_usage",
+        model_name=model_name,
+    )
+
+    # record intermediate, usage, conflict info to per-model debug directory
+    _write_json(
+        output_dir / "debug_dynamic_profile_generation_intermediate.json",
+        intermediate,
+    )
+    _write_json(
+        output_dir / "debug_dynamic_profile_generation_aggregate_usage.json",
+        aggregate_usage,
+    )
+    _write_json(
+        output_dir / "debug_dynamic_profile_generation_aggregate_usage_summary.json",
+        usage_summary,
+    )
+    if usage_pricing:
+        _write_json(
+            output_dir / "debug_dynamic_profile_generation_aggregate_usage_pricing.json",
+            usage_pricing,
+        )
+    _write_json(
+        output_dir / "debug_dynamic_profile_generation_conflict_info.json",
+        conflict_info,
+    )
+
+def debug_resolve_conflicts_from_file() -> None:
+    base_dir = Path(__file__).resolve().parent
+    model_name = "gemini-3-flash-preview"
+    output_dir = base_dir / "generated_outputs_debug_v6" / _slugify(model_name)
+    raw_path = base_dir / "generated_outputs_debug_v6" / _slugify(model_name) / "dynamic_profiles_raw.json"
+    user_basic_profile_path = base_dir / "generated_outputs_debug_v6" / _slugify(model_name) / "user_basic_profile.json"
+    user_basic_profile = json.loads(user_basic_profile_path.read_text())
+    client = GeminiJSONClient(model_name=model_name)
+    pipeline = GenerationPipeline(client, output_dir=output_dir)
+
+    resolved, usage, payload = pipeline.debug_resolve_conflicts_from_file(raw_profiles_path=raw_path, user_basic_profile=user_basic_profile)
+    print(json.dumps(payload, indent=2, ensure_ascii=False))
+
+def debug_review_revise_dynamic_profile_from_file() -> None:
+    base_dir = Path(__file__).resolve().parent
+    model_name = "gemini-3-flash-preview"
+    output_dir = base_dir / "generated_outputs_debug_v5" / _slugify(model_name)
+    client = GeminiJSONClient(model_name=model_name)
+
+
+    pipeline = GenerationPipeline(
+        llm_client=client,
+        output_dir=output_dir
+    )
+    # domain_name = "Health & Self-care"
+    domain_name = "Leisure & Media Consumption"
+    # domain_scope_definition="Encompasses users' physical and mental well-being, including health conditions, lifestyle habits, and self-care practices such as exercise, diet, sleep, and healthcare-seeking behavior. It describes how users manage and optimize their health over time."
+    domain_scope_definition="Captures users' recreational activities and content preferences, including entertainment, hobbies, travel, and consumption of digital media such as videos, music, games, and books. It reflects how users spend discretionary time and pursue enjoyment."
+
+
+    domain = Domain(domain_name=domain_name, domain_scope_definition=domain_scope_definition)
+    slug = _slugify(domain.domain_name)
+
+    with open(output_dir  / "user_basic_profile.json", "r") as f:
+        user_basic_profile = json.load(f)
+
+    with open(output_dir / f"{slug}_dynamic_profile.json", "r", encoding="utf-8") as f:
+        dynamic_profile = json.load(f)
+
+    # import pdb; pdb.set_trace()
+
+    reviewed_result, revised_profile, usage = pipeline.review_revise_dynamic_profile_from_file(
+        domain_profile_path=output_dir / f"{slug}_dynamic_profile.json",
+        domain=domain,
+        user_profile_text=user_basic_profile,  # or pass the basic profile JSON string/dict
+    )
+    # revised_profile = _apply_profile_revision(dynamic_profile, reviewed)
+    # revised_path = output_dir / f"{slug}_dynamic_profile_revised_result.json"
+    # _write_json(revised_path, revised_profile)
+    # print("Reviewed saved to:", reviewed_path)
+    # print("Revised saved to:", revised_path)
+    print("Usage:", usage)
+
+def debug_prepare_context_for_semantic_events_generation() -> None: 
+    base_dir = Path(__file__).resolve().parent
+    model_name = "gemini-3-flash-preview"
+    output_dir = base_dir / "generated_outputs_debug_v6" / _slugify(model_name)
+    client = GeminiJSONClient(model_name=model_name)
+    pipeline = GenerationPipeline(client, output_dir=output_dir)
+    with open(base_dir / "context_world_background_2024.txt", "r") as f:
+        world_background = f.read()
+    with open(output_dir / "user_basic_profile.json", "r") as f:
+        user_basic_profile = json.load(f)
+
+    with open(output_dir / "dynamic_profiles_conflict_resolved.json", "r") as f:
+        dynamic_profiles = json.load(f)
+    (
+        user_full_state_summaries,
+        user_life_contexts,
+        world_background_by_window,
+        life_context_usage,
+    ) = pipeline.prepare_context_for_semantic_events_generation(dynamic_profiles, world_background=world_background, user_basic_profile=user_basic_profile)
+    print(user_full_state_summaries)
+    print(user_life_contexts)
+    print(world_background_by_window)
+    print(life_context_usage)
+
+def debug_generate_semantic_events() -> None:
+    base_dir = Path(__file__).resolve().parent
+    model_name = "gemini-3-flash-preview"
+    output_dir = base_dir / "generated_outputs_debug_v6" / _slugify(model_name)
+    client = GeminiJSONClient(model_name=model_name)
+    pipeline = GenerationPipeline(client, output_dir=output_dir)
+    with open(output_dir / "user_basic_profile.json", "r") as f:
+        user_basic_profile = json.load(f)
+    with open(base_dir / "context_world_background_2024.txt", "r") as f:
+        world_background = f.read()
+    with open(output_dir / "dynamic_profiles_conflict_resolved.json", "r") as f:
+        dynamic_profiles = json.load(f)
+    with open(output_dir / "life_context_by_window.json", "r") as f:
+        user_life_contexts = json.load(f)
+    with open(output_dir / "user_full_state_summaries.json", "r") as f:
+        user_full_state_summaries = json.load(f)
+
+    # Build cross-domain initial summary for w1 previous-window context.
+    initial_summaries_parts: List[str] = []
+    for d_name, profile in dynamic_profiles.items():
+        init_summary = (profile.get("initial_state") or {}).get("summary") or ""
+        if init_summary:
+            initial_summaries_parts.append(f"{d_name}: {init_summary}")
+    initial_all_domains_summary = "\n\n".join(initial_summaries_parts)
+    if not initial_all_domains_summary:
+        first_window = None
+        for window_id in sorted(user_full_state_summaries.keys()):
+            entry = user_full_state_summaries.get(window_id)
+            if isinstance(entry, dict):
+                first_window = entry
+                break
+        if first_window:
+            initial_all_domains_summary = first_window.get("window_profile_summary", "") or ""
+    # domain_name = "Leisure & Media Consumption"
+    # # domain_scope_definition="Encompasses users' physical and mental well-being, including health conditions, lifestyle habits, and self-care practices such as exercise, diet, sleep, and healthcare-seeking behavior. It describes how users manage and optimize their health over time."
+    # domain_scope_definition="Captures users' recreational activities and content preferences, including entertainment, hobbies, travel, and consumption of digital media such as videos, music, games, and books. It reflects how users spend discretionary time and pursue enjoyment."
+    domain_name = "Health & Self-care"
+    domain_scope_definition = "Encompasses users' physical and mental well-being, including health conditions, lifestyle habits, and self-care practices such as exercise, diet, sleep, and healthcare-seeking behavior. It describes how users manage and optimize their health over time."
+
+
+    domain = Domain(domain_name=domain_name, domain_scope_definition=domain_scope_definition)
+ 
+    # NOTE: generate_semantic_events_for_domain expects the full multi-domain dynamic_profiles dict.
+    events_chain_windows = pipeline.generate_semantic_events_for_domain(
+        domain=domain,
+        user_basic_profile=user_basic_profile,
+        dynamic_profiles=dynamic_profiles,
+        user_life_contexts=user_life_contexts,
+        world_background=world_background,
+        user_full_state_summaries=user_full_state_summaries,
+        initial_all_domains_summary=initial_all_domains_summary,
+    )
+    print(events_chain_windows)
+
+def debug_generate_real_data() -> None:
+    base_dir = Path(__file__).resolve().parent
+    model_name = "gemini-3-flash-preview"
+    output_dir = base_dir / "generated_outputs_debug_v6" / _slugify(model_name)
+    client = GeminiJSONClient(model_name=model_name)
+    pipeline = GenerationPipeline(client, output_dir=output_dir)
+
+    with open(output_dir / "user_basic_profile.json", "r") as f:
+        user_basic_profile = json.load(f)
+    with open(output_dir / "dynamic_profiles_conflict_resolved.json", "r") as f:
+        dynamic_profiles = json.load(f)
+    with open(output_dir / "life_context_by_window.json", "r") as f:
+        user_life_contexts = json.load(f)
+    with open(output_dir / "user_full_state_summaries.json", "r") as f:
+        user_full_state_summaries = json.load(f)
+
+    domain_name = "Health & Self-care"
+    domain_scope_definition = "Encompasses users' physical and mental well-being, including health conditions, lifestyle habits, and self-care practices such as exercise, diet, sleep, and healthcare-seeking behavior. It describes how users manage and optimize their health over time."
+    domain = Domain(domain_name=domain_name, domain_scope_definition=domain_scope_definition)
+
+    events_chain_windows = pipeline.load_events_chain_from_file(domain) or []
+    aggregate_usage: Dict[str, Dict] = {}
+    import pdb; pdb.set_trace()
+    if not events_chain_windows:
+        with open(base_dir / "context_world_background_2024.txt", "r") as f:
+            world_background = f.read()
+
+        # Build cross-domain initial summary for window1 context.
+        initial_summaries_parts: List[str] = []
+        for d_name, profile in dynamic_profiles.items():
+            init_summary = (profile.get("initial_state") or {}).get("summary") or ""
+            if init_summary:
+                initial_summaries_parts.append(f"{d_name}: {init_summary}")
+        initial_all_domains_summary = "\n\n".join(initial_summaries_parts)
+        if not initial_all_domains_summary:
+            first_window = None
+            for window_id in sorted(user_full_state_summaries.keys()):
+                entry = user_full_state_summaries.get(window_id)
+                if isinstance(entry, dict):
+                    first_window = entry
+                    break
+            if first_window:
+                initial_all_domains_summary = (
+                    first_window.get("window_profile_summary", "") or ""
+                )
+
+        events_chain_windows, usage = pipeline.generate_semantic_events_for_domain(
+            domain=domain,
+            user_basic_profile=user_basic_profile,
+            dynamic_profiles=dynamic_profiles,
+            user_life_contexts=user_life_contexts,
+            user_full_state_summaries=user_full_state_summaries,
+            world_background=world_background,
+            usage={},
+            initial_all_domains_summary=initial_all_domains_summary,
+        )
+        aggregate_usage[domain.domain_name] = usage
+
+    if not events_chain_windows:
+        raise FileNotFoundError("No semantic events found; generate them before real data.")
+
+    usage_for_real = aggregate_usage.get(domain.domain_name)
+    real_data_windows, usage_for_real = pipeline.generate_real_data_for_domain(
+        domain=domain,
+        dynamic_profiles=dynamic_profiles,
+        events_chain_windows=events_chain_windows,
+        user_basic_profile=user_basic_profile,
+        user_life_contexts=user_life_contexts,
+        user_full_state_summaries=user_full_state_summaries,
+        usage=usage_for_real,
+    )
+    aggregate_usage[domain.domain_name] = usage_for_real
+
+    print(json.dumps(real_data_windows, indent=2, ensure_ascii=False))
+    print(json.dumps(aggregate_usage, indent=2, ensure_ascii=False))
+
+if __name__ == "__main__":
+    # example_usage()
+    # debug_dynamic_profile_generation()
+    # debug_review_revise_dynamic_profile_from_file()
+    # debug_resolve_conflicts_from_file()
+
+    # ===== batch generate dynamic profiles from elite personas =====
+    # base_dir = Path(__file__).resolve().parent
+    # batch_generate_dynamic_profiles_from_elite_personas(
+    #     sample_path=base_dir / "persona_data" / "elite_personas_sample_seed42.jsonl",
+    #     max_personas=10,
+    #     output_root=base_dir / "generated_outputs_elite_sample",
+    #     model_name="gemini-3-flash-preview",
+    # )
+    # ===== batch generate dynamic profiles from elite personas =====
+
+    # ===== prepare context for semantic events generation =====
+    # debug_prepare_context_for_semantic_events_generation()
+    # debug_generate_semantic_events()
+    debug_generate_real_data()
+    # ===== prepare context for semantic events generation =====
+
+
+    # debug_review_revise_dynamic_profile_from_file()
