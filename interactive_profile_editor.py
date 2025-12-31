@@ -382,43 +382,53 @@ HTML_TEMPLATE = """<!doctype html>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Dynamic Profile Editor</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Nunito:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
   <style>
     :root {
-      --bg: #f3f1eb;
+      --bg: #fef9f3;
       --card: #ffffff;
-      --ink: #1d1f21;
-      --muted: #5c6672;
-      --accent: #0f766e;
-      --accent-2: #1b4b7a;
-      --border: #d8d5cf;
-      --danger: #c2410c;
-      --success: #0f7b2c;
+      --ink: #3d3d3d;
+      --muted: #6b6b6b;
+      --accent: #e8976a;
+      --accent-2: #f0a878;
+      --border: #ebe5dc;
+      --danger: #e88a7a;
+      --success: #7ac090;
+      --warm-bg: #fdf6ee;
+      --soft-coral: #f5b8a8;
+      --sage: #a8d8b8;
+      --lavender: #d8c0e8;
+      --sand: #f0e0c0;
     }
     * { box-sizing: border-box; }
     body {
       margin: 0;
-      font-family: "DM Sans", "Trebuchet MS", "Segoe UI", sans-serif;
-      background: radial-gradient(circle at 10% 20%, #f7f3ff 0, #f3f1eb 25%, #f3f1eb 100%);
+      font-family: "Nunito", "Avenir Next", "Segoe UI", sans-serif;
+      font-size: 16px;
+      background: linear-gradient(180deg, #fffbf7 0%, #fef9f3 35%, #fdf6ee 100%);
       color: var(--ink);
       min-height: 100vh;
     }
     header {
-      padding: 16px 24px;
+      padding: 18px 28px;
       display: flex;
       align-items: center;
       justify-content: space-between;
       border-bottom: 1px solid var(--border);
-      background: #fbfaf7;
+      background: linear-gradient(135deg, #fdfcfa 0%, #f9f7f3 100%);
       position: sticky;
       top: 0;
       z-index: 10;
     }
     header .title {
-      font-size: 20px;
+      font-size: 22px;
       font-weight: 700;
-      letter-spacing: 0.4px;
+      letter-spacing: 0.3px;
+      color: var(--accent);
     }
-    header .meta { color: var(--muted); font-size: 13px; }
+    header .meta { color: var(--muted); font-size: 14px; }
     header .actions {
       display: flex;
       gap: 10px;
@@ -429,18 +439,24 @@ HTML_TEMPLATE = """<!doctype html>
       background: var(--card);
       color: var(--ink);
       border-radius: 10px;
-      padding: 8px 12px;
+      padding: 10px 16px;
       cursor: pointer;
       font-weight: 600;
-      transition: transform 120ms ease, box-shadow 120ms ease;
-      box-shadow: 0 2px 6px rgba(0,0,0,0.06);
+      font-size: 14px;
+      transition: transform 120ms ease, box-shadow 120ms ease, background 150ms ease;
+      box-shadow: 0 2px 6px rgba(0,0,0,0.05);
     }
     button.primary {
-      background: linear-gradient(120deg, var(--accent), var(--accent-2));
+      background: linear-gradient(135deg, #e8976a, #f0a878);
       color: #fff;
       border: none;
     }
-    button:hover { transform: translateY(-1px); }
+    button.success-btn {
+      background: linear-gradient(135deg, #7ac090, #8ad0a0);
+      color: #fff;
+      border: none;
+    }
+    button:hover { transform: translateY(-1px); box-shadow: 0 4px 10px rgba(0,0,0,0.08); }
     button:disabled { opacity: 0.4; cursor: not-allowed; transform: none; }
     .layout {
       display: grid;
@@ -470,29 +486,29 @@ HTML_TEMPLATE = """<!doctype html>
     }
     .domain-tile {
       border: 1px solid var(--border);
-      border-radius: 10px;
-      padding: 10px;
+      border-radius: 12px;
+      padding: 12px;
       cursor: pointer;
       transition: border 120ms ease, transform 120ms ease, box-shadow 120ms ease;
-      background: #fdfbf8;
+      background: linear-gradient(135deg, #fdfcfa, #f9f7f3);
     }
-    .domain-tile:hover { transform: translateX(2px); box-shadow: 0 3px 8px rgba(0,0,0,0.04); }
-    .domain-tile.active { border-color: var(--accent); box-shadow: 0 4px 12px rgba(15,118,110,0.16); }
-    .domain-name { font-weight: 700; }
+    .domain-tile:hover { transform: translateX(2px); box-shadow: 0 4px 12px rgba(232,151,106,0.15); }
+    .domain-tile.active { border-color: var(--accent); background: linear-gradient(135deg, #fff8f0, #fef3e8); box-shadow: 0 4px 12px rgba(232,151,106,0.2); }
+    .domain-name { font-weight: 700; font-size: 15px; }
     details[data-domain-section] { scroll-margin-top: 72px; }
     .pill {
       display: inline-flex;
       align-items: center;
       gap: 6px;
-      padding: 2px 8px;
+      padding: 4px 10px;
       border-radius: 999px;
-      background: rgba(15,118,110,0.12);
-      color: var(--accent);
-      font-size: 12px;
-      font-weight: 700;
+      background: rgba(232,151,106,0.18);
+      color: #b87050;
+      font-size: 13px;
+      font-weight: 600;
       letter-spacing: 0.2px;
     }
-    .pill.warn { background: rgba(194,65,12,0.12); color: var(--danger); }
+    .pill.warn { background: rgba(232,138,122,0.18); color: #c07060; }
     main {
       display: flex;
       flex-direction: column;
@@ -502,25 +518,27 @@ HTML_TEMPLATE = """<!doctype html>
       background: var(--card);
       border: 1px solid var(--border);
       border-radius: 14px;
-      padding: 14px 16px;
-      box-shadow: 0 6px 14px rgba(0,0,0,0.06);
+      padding: 16px 18px;
+      box-shadow: 0 4px 12px rgba(0,0,0,0.04);
       width: 100%;
       max-width: 100%;
       overflow-x: auto;
     }
-    .card h2 { margin: 0 0 6px; }
-    .muted { color: var(--muted); }
+    .card h2 { margin: 0 0 8px; font-size: 18px; color: var(--ink); }
+    .muted { color: var(--muted); font-size: 14px; }
+    .small { font-size: 13px; }
     pre {
-      background: #f7f5f0;
+      background: #f9f7f4;
       border: 1px solid var(--border);
       border-radius: 10px;
-      padding: 10px;
+      padding: 12px;
       overflow: auto;
-      font-size: 12px;
-      line-height: 1.45;
+      font-size: 14px;
+      line-height: 1.6;
+      color: var(--ink);
     }
-    details { border: 1px solid var(--border); border-radius: 12px; padding: 10px 12px; background: #fdfcf9; }
-    summary { cursor: pointer; font-weight: 700; }
+    details { border: 1px solid var(--border); border-radius: 12px; padding: 12px 14px; background: #fdfcfa; }
+    summary { cursor: pointer; font-weight: 700; font-size: 15px; }
     .section-header {
       display: flex;
       align-items: center;
@@ -529,10 +547,18 @@ HTML_TEMPLATE = """<!doctype html>
       flex-wrap: wrap;
       margin-bottom: 6px;
     }
+    .stage-row {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 10px;
+      align-items: center;
+      justify-content: space-between;
+    }
     .status-bar {
-      margin-left: 8px;
-      font-size: 13px;
+      margin-left: 10px;
+      font-size: 14px;
       color: var(--muted);
+      font-weight: 500;
     }
     .status-bar.ok { color: var(--success); }
     .status-bar.error { color: var(--danger); }
@@ -544,67 +570,171 @@ HTML_TEMPLATE = """<!doctype html>
     .modal-backdrop {
       position: fixed;
       inset: 0;
-      background: rgba(0,0,0,0.35);
+      background: rgba(60,60,60,0.4);
       display: none;
       align-items: center;
       justify-content: center;
       z-index: 30;
     }
     .modal {
-      background: var(--card);
-      border-radius: 12px;
-      padding: 14px;
+      background: linear-gradient(135deg, #fdfcfa, #f9f7f3);
+      border-radius: 16px;
+      padding: 18px;
       width: min(960px, 90vw);
       max-height: 90vh;
       overflow: auto;
       border: 1px solid var(--border);
-      box-shadow: 0 8px 20px rgba(0,0,0,0.16);
+      box-shadow: 0 12px 32px rgba(0,0,0,0.12);
     }
     textarea {
       width: 100%;
       min-height: 320px;
       border: 1px solid var(--border);
       border-radius: 12px;
-      padding: 10px;
-      font-family: "DM Mono", "SFMono-Regular", Consolas, monospace;
-      background: #f8f7f3;
+      padding: 12px;
+      font-family: "JetBrains Mono", "SF Mono", Consolas, monospace;
+      background: #fffbf7;
       resize: vertical;
-      font-size: 13px;
+      font-size: 14px;
+      line-height: 1.5;
     }
+    textarea:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px rgba(232,151,106,0.2); }
     .flex {
       display: flex;
       gap: 10px;
       align-items: center;
       flex-wrap: wrap;
     }
-    .small { font-size: 12px; }
-    .grid-table { width: 100%; border-collapse: collapse; margin-top: 6px; table-layout: fixed; }
-    .grid-table th, .grid-table td { border: 1px solid var(--border); padding: 6px 8px; text-align: left; vertical-align: top; background: #fff; word-break: break-word; }
-    .grid-table th:first-child { width: 160px; background: #f6f5f2; }
-    .cell-actions { margin-top: 6px; display: flex; gap: 6px; flex-wrap: wrap; }
-    .pill.small { font-size: 11px; padding: 2px 6px; }
-    .ghost { background: #f0efec; }
-    label { font-weight: 600; display: block; margin-bottom: 4px; }
-    input[type="text"] { width: 100%; padding: 8px; border: 1px solid var(--border); border-radius: 10px; }
-    select { width: 100%; padding: 8px; border: 1px solid var(--border); border-radius: 10px; background: #fff; }
-    .two-col { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 10px; }
-    .window-block { border: 1px dashed var(--border); border-radius: 10px; padding: 10px; margin-top: 8px; background: #fdfbf8; }
-    .window-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 10px; }
-    .chart { margin-top: 6px; }
-    .bar-row { display: flex; align-items: center; gap: 8px; margin: 4px 0; }
-    .bar { flex: 1; background: #f0efec; border-radius: 6px; overflow: hidden; }
-    .bar-fill { height: 10px; background: linear-gradient(120deg, var(--accent), var(--accent-2)); }
-    .reason-buttons { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 6px; }
-    .reason-btn { border: 1px solid var(--border); background: #fff; border-radius: 999px; padding: 6px 10px; cursor: pointer; font-weight: 600; }
-    .reason-btn.active { border-color: var(--accent); background: rgba(15,118,110,0.12); color: var(--accent); }
-    .login-overlay { position: fixed; inset:0; background: rgba(0,0,0,0.35); display:flex; align-items:center; justify-content:center; z-index:50; }
-    .login-card { background:#fff; padding:16px; border-radius:12px; width: min(420px, 90vw); box-shadow:0 8px 18px rgba(0,0,0,0.15); border:1px solid var(--border); }
-    .login-card h3 { margin-top:0; }
+    .small { font-size: 13px; }
+    .grid-table { width: 100%; border-collapse: collapse; margin-top: 8px; table-layout: fixed; }
+    .grid-table th, .grid-table td { border: 1px solid var(--border); padding: 10px 12px; text-align: left; vertical-align: top; background: #fff; word-break: break-word; font-size: 14px; }
+    .grid-table td { position: relative; padding-bottom: 60px; }
+    .grid-table th:first-child { width: 180px; background: #f9f7f4; font-size: 14px; }
+    .cell-actions { position: absolute; left: 12px; right: 12px; bottom: 10px; margin-top: 0; display: flex; gap: 6px; flex-wrap: wrap; justify-content: flex-end; }
+    .cell-actions button { padding: 6px 10px; font-size: 12px; border-radius: 8px; }
+    .pill.small { font-size: 12px; padding: 3px 8px; }
+    .ghost { background: #f5f3ef; }
+    .value-preview { display: flex; gap: 6px; align-items: flex-start; flex-wrap: wrap; }
+    .value-text { white-space: pre-wrap; word-break: break-word; }
+    .value-list { margin: 0; padding-left: 18px; }
+    .value-list li { margin: 4px 0; white-space: pre-wrap; word-break: break-word; }
+    .habit-key { font-weight: 700; color: var(--ink); }
+    .tooltip {
+      position: relative;
+      cursor: help;
+    }
+    .tooltip::after {
+      content: attr(data-full);
+      position: absolute;
+      left: 0;
+      top: 120%;
+      z-index: 20;
+      white-space: pre-wrap;
+      background: #3d3d3d;
+      color: #fff;
+      padding: 10px 12px;
+      border-radius: 10px;
+      box-shadow: 0 6px 16px rgba(0,0,0,0.18);
+      opacity: 0;
+      transform: translateY(4px);
+      pointer-events: none;
+      transition: opacity 120ms ease, transform 120ms ease;
+      min-width: 220px;
+      max-width: min(520px, 70vw);
+      font-size: 13px;
+      line-height: 1.5;
+    }
+    .tooltip:hover::after {
+      opacity: 1;
+      transform: translateY(0);
+    }
+    label { font-weight: 600; display: block; margin-bottom: 6px; font-size: 14px; color: var(--ink); }
+    input[type="text"] { width: 100%; padding: 12px; border: 1px solid var(--border); border-radius: 10px; font-size: 14px; background: #fffbf7; }
+    input[type="text"]:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px rgba(232,151,106,0.2); }
+    select { width: 100%; padding: 12px; border: 1px solid var(--border); border-radius: 10px; background: #fef9f3; font-size: 14px; }
+    select:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px rgba(232,151,106,0.2); }
+    .two-col { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 12px; }
+    .window-block { border: 1px dashed var(--border); border-radius: 12px; padding: 12px; margin-top: 10px; background: linear-gradient(135deg, #fdfcfa, #f9f7f3); }
+    .window-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 12px; }
+    .chart { margin-top: 8px; }
+    .bar-row { display: flex; align-items: center; gap: 10px; margin: 6px 0; }
+    .bar { flex: 1; background: #ebe8e3; border-radius: 6px; overflow: hidden; }
+    .bar-fill { height: 10px; background: linear-gradient(135deg, #e8976a, #f0a878); }
+    .reason-buttons { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 8px; }
+    .reason-btn { border: 1px solid var(--border); background: #fff; border-radius: 999px; padding: 8px 12px; cursor: pointer; font-weight: 600; font-size: 13px; }
+    .reason-btn.active { border-color: var(--accent); background: rgba(232,151,106,0.18); color: #b87050; }
+    .op-badge {
+      display: inline-flex;
+      align-items: center;
+      padding: 6px 12px;
+      border-radius: 10px;
+      font-weight: 700;
+      font-size: 13px;
+      letter-spacing: 0.3px;
+      color: #3d3d3d;
+      box-shadow: 0 2px 6px rgba(0,0,0,0.08);
+      text-transform: uppercase;
+    }
+    /* User Attributes: add/remove/modify - Warm peach/coral palette */
+    .op-add { background: linear-gradient(135deg, #b8e6b8, #98d898); }
+    .op-remove { background: linear-gradient(135deg, #ffb8b8, #ff9898); }
+    .op-modify { background: linear-gradient(135deg, #ffe0a8, #ffd080); }
+    /* Habits: acquire/drop/adjust - Fresh mint/teal palette */
+    .op-acquire { background: linear-gradient(135deg, #a8e8d8, #80dcc8); }
+    .op-drop { background: linear-gradient(135deg, #f0c8a8, #e8b890); }
+    .op-adjust { background: linear-gradient(135deg, #c8e8d8, #a8d8c8); }
+    /* Preferences: shift/amplify/attenuate - Distinct purple/pink palette */
+    .op-shift { background: linear-gradient(135deg, #d0e8f8, #b8d8f0); }
+    .op-amplify { background: linear-gradient(135deg, #f8d0a8, #f0c090); }
+    .op-attenuate { background: linear-gradient(135deg, #e8c8e8, #d8b8d8); }
+    .op-default { background: linear-gradient(135deg, #e0e0e0, #d0d0d0); }
+    .login-overlay { position: fixed; inset:0; background: rgba(60,60,60,0.4); display:flex; align-items:center; justify-content:center; z-index:50; }
+    .login-card { background: linear-gradient(135deg, #fdfcfa, #f9f7f3); padding:20px; border-radius:16px; width: min(420px, 90vw); box-shadow:0 12px 32px rgba(0,0,0,0.12); border:1px solid var(--border); }
+    .login-card h3 { margin-top:0; font-size: 20px; color: var(--accent); }
     .dataset-scroll { max-height: 280px; overflow: auto; padding-right: 4px; }
-    .dataset-item { border: 1px solid var(--border); border-radius: 10px; padding: 8px 10px; background: #fdfbf8; word-break: break-word; }
-    .dataset-item + .dataset-item { margin-top: 6px; }
-    .dataset-item .title { font-weight: 700; word-break: break-word; }
-    .dataset-item .meta { font-size: 12px; color: var(--muted); }
+    .dataset-item { border: 1px solid var(--border); border-radius: 10px; padding: 10px 12px; background: linear-gradient(135deg, #fdfcfa, #f9f7f3); word-break: break-word; }
+    .dataset-item + .dataset-item { margin-top: 8px; }
+    .dataset-item .title { font-weight: 700; word-break: break-word; font-size: 14px; }
+    .dataset-item .meta { font-size: 13px; color: var(--muted); }
+    .progress-track {
+      width: 100%;
+      height: 10px;
+      background: #ebe8e3;
+      border-radius: 999px;
+      overflow: hidden;
+      border: 1px solid var(--border);
+    }
+    .progress-fill {
+      height: 100%;
+      background: linear-gradient(135deg, var(--accent), var(--accent-2));
+      transition: width 200ms ease;
+    }
+    .stage-tags { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 8px; }
+    .stage-tags .pill { background: rgba(232,151,106,0.15); color: #b87050; }
+    .muted-compact { color: var(--muted); font-size: 13px; }
+    .stage-actions { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+    .window-rollups { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 10px; margin: 10px 0; }
+    .window-rollup-card { border: 1px solid var(--border); border-radius: 12px; padding: 10px; background: linear-gradient(135deg, #fdfcfa, #f9f7f3); box-shadow: 0 2px 6px rgba(0,0,0,0.03); }
+    .window-rollup-card h4 { margin: 0 0 6px; font-size: 14px; color: var(--ink); }
+    .window-rollup-card pre { margin: 0; font-size: 13px; line-height: 1.6; }
+    .celebrate {
+      position: fixed;
+      inset: 0;
+      pointer-events: none;
+      overflow: hidden;
+      z-index: 80;
+    }
+    .confetti-piece {
+      position: absolute;
+      top: -10px;
+      font-size: 22px;
+      animation: confetti-fall 1.3s ease-out forwards;
+      filter: drop-shadow(0 2px 4px rgba(0,0,0,0.2));
+    }
+    @keyframes confetti-fall {
+      0% { transform: translateY(0) rotate(0deg); opacity: 1; }
+      100% { transform: translateY(280px) rotate(360deg); opacity: 0; }
+    }
     @media (max-width: 900px) {
       .layout { grid-template-columns: 1fr; }
       aside { min-height: auto; }
@@ -654,6 +784,7 @@ HTML_TEMPLATE = """<!doctype html>
       <div class="domain-list" id="domain-list"></div>
     </aside>
     <main>
+      <div class="card" id="stage-card" style="display:none;"></div>
       <div class="card" id="user-context" style="display:none;"></div>
       <div class="card" id="stats-card" style="display:none;"></div>
       <div class="card" id="domain-detail"><span class="muted">Select a domain to inspect and edit.</span></div>
@@ -715,8 +846,15 @@ HTML_TEMPLATE = """<!doctype html>
       habits_state: ["acquire", "adjust", "drop"],
       preferences_state: ["shift", "amplify", "attenuate"],
     };
+    function allowedOps(stateType, attrType = "") {
+      if (stateType === "user_attributes_state") {
+        if (attrType === "singular") return ["modify"];
+        if (attrType === "collections") return ["add", "remove"];
+      }
+      return OPS[stateType] || [];
+    }
     const DEFAULT_VALUES = {
-      user_attributes_state: [""],
+      user_attributes_state: "",
       habits_state: { action: "", frequency: "", timing: "", context: "", description: "" },
       preferences_state: "",
     };
@@ -724,21 +862,82 @@ HTML_TEMPLATE = """<!doctype html>
       "Category 1: Structural Missing Fields",
       "Category 2: Missing Prior Existence for Modifications",
       "Category 3: Missing Essential Items That Should Be Initialized",
-      "Category 4: Direct Time Conflicts (Temporal Collision)",
+      "Category 4: Direct Time Conflicts",
       "Category 5: Schedule Overload / Unrealistic Time Constraints",
       "Category 6: Attribute Conflicts Across Domains (singular or collection)",
       "Category 7: Short-Term Changes Without Follow-Up",
       "Category 8: Cross-Window Inconsistencies / Narrative Coherence",
       "Other",
     ];
+    const STAGE_REASON_OPTIONS = {
+      structure: [
+        "Category 1: Structural Missing Fields",
+        "Category 2: Missing Prior Existence for Modifications",
+        "Other",
+      ],
+      domain: [
+        "Category 3: Missing Essential Items That Should Be Initialized",
+        "Category 4: Direct Time Conflicts (within domain)",
+        "Category 7: Short-Term Changes Without Follow-Up",
+        "Other",
+      ],
+      cross: [
+        "Category 4: Direct Time Conflicts (cross domains/windows)",
+        "Category 5: Schedule Overload / Unrealistic Time Constraints",
+        "Category 6: Attribute Conflicts Across Domains (singular or collection)",
+        "Category 8: Cross-Window Inconsistencies / Narrative Coherence",
+        "Other",
+      ],
+    };
     const USAGE_NOTES = [
-      "Use Add/Edit buttons in each cell to tweak values; Delete removes that entry for the column.",
-      "Op is a dropdown with allowed values per type; Reason type must be selected; add a note when choosing Other.",
-      "Apply & Save writes to a new annotated file; top Save or Cmd/Ctrl+S also saves.",
-      "All domains start expanded; collapse any domain manually. Left list lets you jump to a domain.",
-      "To add a new row, use the Add button in the section header. Add new windows via the windows JSON editor.",
-      "Window descriptions and summaries can be edited inline in each domain section.",
+      "Follow the three stages: 1) Structure/obvious issues; 2) Within-domain timeline; 3) Cross-domain consistency. Mark a stage as done to keep momentum.",
+      "Stage-specific conflict types: each stage filters the reason options so you only see what matters for that pass.",
+      "Use Add/Edit on cells to change values; Delete removes the entry in that column. Add rows via the section header buttons.",
+      "Op dropdown changes based on state type; always pick a Reason and add a short note if you choose Other.",
+      "Apply & Save in the modal writes changes; top Save or Cmd/Ctrl+S also saves to disk.",
+      "Window descriptions and summaries can be edited inline. Use the left sidebar to jump domains; current stage shows only the active domain when applicable.",
     ];
+    const REVIEW_STAGES = [
+      {
+        id: "structure",
+        title: "Stage 1 - Structure & obvious issues",
+        description: "Go domain by domain to fix missing required fields, ensure modifications have prior existence, and catch any structural red flags.",
+        focusCategories: [
+          "Category 1: Structural Missing Fields",
+          "Category 2: Missing Prior Existence for Modifications",
+        ],
+        perDomain: true,
+        hint: "Each domain is reviewed on its own page. Finish the checks, mark this stage complete, then jump to the next domain.",
+      },
+      {
+        id: "domain",
+        title: "Stage 2 - Within-domain timeline",
+        description: "Stay within a single domain and check temporal coherence: initialized essentials, follow-through on short-term changes, and ordering conflicts.",
+        focusCategories: [
+          "Category 3: Missing Essential Items That Should Be Initialized",
+          "Category 7: Short-Term Changes Without Follow-Up",
+          "Category 4: Direct Time Conflicts (within domain)",
+        ],
+        perDomain: true,
+        hint: "Check each domain's own timeline: are required items initialized, do short bursts resolve, and are there ordering/time collisions?",
+      },
+      {
+        id: "cross",
+        title: "Stage 3 - Cross-domain consistency",
+        description: "Compare across domains for clashes, overload, and narrative coherence.",
+        focusCategories: [
+          "Category 4: Direct Time Conflicts (cross domains/windows)",
+          "Category 5: Schedule Overload / Unrealistic Time Constraints",
+          "Category 6: Attribute Conflicts Across Domains (singular or collection)",
+          "Category 8: Cross-Window Inconsistencies / Narrative Coherence",
+        ],
+        perDomain: false,
+        hint: "Open multiple domains side-by-side mentally: look for schedule overload, cross-domain attribute conflicts, and narrative coherence. Mark cross-domain check complete when done.",
+      },
+    ];
+    function createEmptyStageProgress() {
+      return { structure: new Set(), domain: new Set() };
+    }
 
     const state = {
       profiles: {},
@@ -766,11 +965,15 @@ HTML_TEMPLATE = """<!doctype html>
       datasets: [],
       activeDataset: null,
       assignmentRegistryPath: "",
+      stageIndex: 0,
+      stageProgress: createEmptyStageProgress(),
+      stageContextKey: "",
     };
 
     const dom = {
       list: document.getElementById("domain-list"),
       detail: document.getElementById("domain-detail"),
+      stageCard: document.getElementById("stage-card"),
       context: document.getElementById("user-context"),
       stats: document.getElementById("stats-card"),
       targetPath: document.getElementById("target-path"),
@@ -849,6 +1052,165 @@ HTML_TEMPLATE = """<!doctype html>
     function valuePreview(value) {
       return pretty(value === undefined ? null : value);
     }
+    function previewParts(value) {
+      if (typeof value === "string") {
+        const full = value;
+        const short = full.length > 240 ? `${full.slice(0, 220)}...` : full;
+        return { full, short };
+      }
+      const full = valuePreview(value);
+      const short = full.length > 240 ? `${full.slice(0, 220)}...` : full;
+      return { full, short };
+    }
+    function renderValueContent(value, stateType = "") {
+      const val = value === undefined ? null : value;
+      if (Array.isArray(val)) {
+        if (!val.length) return `<div class="value-text">[]</div>`;
+        const items = val.map((item) => {
+          const { short } = previewParts(item);
+          return `<li>${escapeHtml(short)}</li>`;
+        });
+        return `<ul class="value-list">${items.join("")}</ul>`;
+      }
+      if (val && typeof val === "object") {
+        const entries = Object.entries(val);
+        if (!entries.length) return `<div class="value-text">{}</div>`;
+        const items = entries.map(([k, v]) => {
+          const { short } = previewParts(v);
+          const keyClass = stateType === "habits_state" ? "habit-key" : "muted small";
+          return `<li><span class="${keyClass}">${escapeHtml(String(k))}:</span> ${escapeHtml(short)}</li>`;
+        });
+        return `<ul class="value-list">${items.join("")}</ul>`;
+      }
+      const { short } = previewParts(val);
+      return `<div class="value-text">${escapeHtml(short)}</div>`;
+    }
+    function domainNames() {
+      return Object.keys(state.profiles || {}).sort();
+    }
+    function currentStage() {
+      return REVIEW_STAGES[state.stageIndex] || REVIEW_STAGES[0];
+    }
+    function stageProgressSet(stageId) {
+      if (!state.stageProgress) state.stageProgress = createEmptyStageProgress();
+      if (stageId === "structure") {
+        if (!(state.stageProgress.structure instanceof Set)) {
+          state.stageProgress.structure = new Set(state.stageProgress.structure || []);
+        }
+        return state.stageProgress.structure;
+      }
+      if (stageId === "domain") {
+        if (!(state.stageProgress.domain instanceof Set)) {
+          state.stageProgress.domain = new Set(state.stageProgress.domain || []);
+        }
+        return state.stageProgress.domain;
+      }
+      return new Set();
+    }
+    function stageCounts(stage) {
+      const names = domainNames();
+      if (!stage) return { completed: 0, total: names.length };
+      if (stage.perDomain) {
+        const set = stageProgressSet(stage.id);
+        return { completed: Math.min(set.size, names.length), total: names.length };
+      }
+      return { completed: 1, total: 1 };
+    }
+    function resetStageIfNewContext(contextKey) {
+      if (state.stageContextKey !== contextKey) {
+        state.stageContextKey = contextKey;
+        state.stageProgress = createEmptyStageProgress();
+        state.stageIndex = 0;
+      }
+    }
+    function ensureFocusedDomain(names = []) {
+      if (!names.length) {
+        state.focusedDomain = null;
+        return;
+      }
+      if (state.focusedDomain && names.includes(state.focusedDomain)) return;
+      state.focusedDomain = names[0];
+    }
+    function nextDomainName(current, names = domainNames()) {
+      if (!names.length) return null;
+      const idx = names.indexOf(current);
+      if (idx === -1 || idx === names.length - 1) return names[0];
+      return names[idx + 1];
+    }
+    function nextIncompleteDomain(stage, names = domainNames()) {
+      if (!stage || !stage.perDomain) return null;
+      const done = stageProgressSet(stage.id);
+      const target = names.find((n) => !done.has(n));
+      return target || names[0] || null;
+    }
+
+    function resolveUserAttributeMeta(opObj, fallbackAttrType = "") {
+      const attrType =
+        (opObj && opObj.attribute_type) ||
+        (opObj && opObj.collection_name ? "collections" : opObj && opObj.attribute_name ? "singular" : "") ||
+        fallbackAttrType;
+      const name =
+        (opObj && (opObj.attribute_name || opObj.collection_name)) ||
+        (opObj && (opObj.name || opObj.key)) ||
+        "";
+      return { attrType, name };
+    }
+
+    function userAttributeRowKey(name, attrType = "") {
+      return `${attrType || "unknown"}::${name}`;
+    }
+
+    function itemsEqual(a, b) {
+      try {
+        return JSON.stringify(a) === JSON.stringify(b);
+      } catch (_err) {
+        return a === b;
+      }
+    }
+
+    function applyUserAttributeValue(current, attrType, op, delta) {
+      const type = attrType || "singular";
+      if (type === "collections") {
+        let arr = Array.isArray(current) ? [...current] : current ? [current] : [];
+        if (op === "add") {
+          const additions = Array.isArray(delta) ? delta : delta !== undefined && delta !== null ? [delta] : [];
+          arr = arr.concat(additions);
+        } else if (op === "remove") {
+          const removals = Array.isArray(delta) ? delta : [];
+          if (removals.length) {
+            arr = arr.filter((item) => !removals.some((r) => itemsEqual(r, item)));
+          }
+        } else if (op) {
+          arr = delta !== undefined ? (Array.isArray(delta) ? delta : delta === null ? [] : [delta]) : arr;
+        } else if (delta !== undefined) {
+          arr = Array.isArray(delta) ? delta : delta === null ? [] : [delta];
+        }
+        return arr;
+      }
+      if (op === "remove") return null;
+      if (op === "modify" || op === "add") return delta;
+      if (delta !== undefined) return delta;
+      return current;
+    }
+
+    function mergeObjects(base, patch) {
+      if (!base || typeof base !== "object") return patch;
+      if (!patch || typeof patch !== "object") return patch ?? base;
+      return { ...base, ...patch };
+    }
+
+    function applyHabitValue(current, op, delta) {
+      if (!op && delta === undefined) return current;
+      if (op === "drop") return null;
+      if (op === "acquire") return delta;
+      if (op === "adjust") return mergeObjects(current, delta);
+      return delta !== undefined ? delta : current;
+    }
+
+    function applyPreferenceValue(current, op, delta) {
+      if (!op && delta === undefined) return current;
+      return delta !== undefined ? delta : current;
+    }
 
     function computeStats(annotations) {
       const entries = Object.values(annotations || {});
@@ -858,6 +1220,97 @@ HTML_TEMPLATE = """<!doctype html>
         counts[key] = (counts[key] || 0) + 1;
       });
       return { total: entries.length, counts };
+    }
+    function renderStageCard() {
+      if (!dom.stageCard) return;
+      if (!datasetReady()) {
+        dom.stageCard.style.display = "none";
+        dom.stageCard.innerHTML = "";
+        return;
+      }
+      const stage = currentStage();
+      const { completed, total } = stageCounts(stage);
+      const names = domainNames();
+      const percent = total ? Math.round((completed / total) * 100) : 0;
+      const navPrevDisabled = state.stageIndex === 0 ? "disabled" : "";
+      const navNextDisabled = state.stageIndex >= REVIEW_STAGES.length - 1 ? "disabled" : "";
+      const categories = (stage.focusCategories || [])
+        .map((c) => `<span class="pill small">${escapeHtml(c)}</span>`)
+        .join("");
+      const completionText = stage.perDomain
+        ? `Completed ${completed}/${total} domains`
+        : "Cross-domain review (no checkbox needed)";
+      const domainHint = stage.perDomain
+        ? `<div class="muted-compact">Current domain: ${escapeHtml(state.focusedDomain || names[0] || "none selected")} | Remaining ${Math.max(total - completed, 0)}</div>`
+        : `<div class="muted-compact">Review conflicts that require comparing multiple domains.</div>`;
+      const actionButtons = stage.perDomain && names.length
+        ? `<button data-stage-action="next-unfinished" class="ghost">Jump to next unfinished</button>`
+        : "";
+      dom.stageCard.style.display = "block";
+      dom.stageCard.innerHTML = `
+        <div class="stage-row">
+          <div>
+            <div class="pill small ghost">Stage ${state.stageIndex + 1} / ${REVIEW_STAGES.length}</div>
+            <div style="font-weight:700; margin-top:4px;">${escapeHtml(stage.title)}</div>
+            <div class="muted-compact">${escapeHtml(stage.description)}</div>
+            ${domainHint}
+            <div class="stage-tags">${categories}</div>
+            <div class="muted-compact">${escapeHtml(stage.hint || "")}</div>
+          </div>
+          <div class="stage-actions">
+            <button data-stage-nav="prev" ${navPrevDisabled}>Previous stage</button>
+            <button data-stage-nav="next" ${navNextDisabled}>Next stage</button>
+          </div>
+        </div>
+        <div style="margin-top:8px;">
+          <div class="progress-track"><div class="progress-fill" style="width:${percent}%;"></div></div>
+          <div class="muted-compact" style="margin-top:4px;">${escapeHtml(completionText)}</div>
+        </div>
+        <div class="stage-actions" style="margin-top:8px;">
+          ${actionButtons || ""}
+        </div>
+      `;
+    }
+
+    function goToStage(index) {
+      if (!datasetReady()) return;
+      const clamped = Math.max(0, Math.min(REVIEW_STAGES.length - 1, index));
+      state.stageIndex = clamped;
+      const stage = currentStage();
+      const names = domainNames();
+      if (stage.perDomain) {
+        const target = nextIncompleteDomain(stage, names) || names[0] || null;
+        state.focusedDomain = target;
+      } else {
+        state.focusedDomain = null;
+      }
+      renderStageCard();
+      renderDomainList();
+      renderDomains();
+    }
+
+    function toggleDomainStageCompletion(domain) {
+      const stage = currentStage();
+      if (!stage || !stage.perDomain || !domain) return;
+      const set = stageProgressSet(stage.id);
+      const wasDone = set.has(domain);
+      if (wasDone) set.delete(domain);
+      else {
+        set.add(domain);
+        celebrate("Stage task completed!");
+      }
+      const names = domainNames();
+      const next = nextIncompleteDomain(stage, names);
+      if (set.has(domain) && next && next !== domain) {
+        state.focusedDomain = next;
+      }
+      renderStageCard();
+      renderDomainList();
+      renderDomains();
+    }
+
+    function toggleCrossCompletion() {
+      // Deprecated: cross-domain completion button removed.
     }
 
     function resetDataView(message = "Select a dataset to start.") {
@@ -871,11 +1324,15 @@ HTML_TEMPLATE = """<!doctype html>
       state.sourcePath = "";
       state.savePath = "";
       state.focusedDomain = null;
+      state.stageProgress = createEmptyStageProgress();
+      state.stageIndex = 0;
+      state.stageContextKey = "";
       dom.context.style.display = "none";
       dom.stats.style.display = "none";
       dom.list.innerHTML = `<div class='muted'>${escapeHtml(message)}</div>`;
       dom.detail.innerHTML = `<span class='muted'>${escapeHtml(message)}</span>`;
       dom.targetPath.textContent = targetLabel();
+      renderStageCard();
       updateActionButtons();
     }
 
@@ -897,10 +1354,20 @@ HTML_TEMPLATE = """<!doctype html>
       state.dirtyDomains = new Set();
       state.dirty = false;
       state.activeDataset = payload.dataset_id || state.activeDataset;
-      state.focusedDomain = null;
+      const contextKey = payload.dataset_id || payload.source_path || state.sourcePath || "";
+      resetStageIfNewContext(contextKey);
+      const names = domainNames();
+      if (currentStage().perDomain) {
+        ensureFocusedDomain(names);
+        const next = nextIncompleteDomain(currentStage(), names);
+        state.focusedDomain = next || state.focusedDomain;
+      } else {
+        state.focusedDomain = null;
+      }
       dom.targetPath.textContent = targetLabel();
       renderContext();
       renderStats();
+      renderStageCard();
       renderDomainList();
       renderDomains();
       updateActionButtons();
@@ -1050,7 +1517,7 @@ HTML_TEMPLATE = """<!doctype html>
       dom.stats.style.display = "block";
       dom.stats.innerHTML = `
         <h2>Correction Stats</h2>
-        <div class="muted">Annotator: ${escapeHtml(state.annotator || "n/a")} | Saved to: ${escapeHtml(state.savePath || "")} | Total corrections: ${stats.total} | Review time: ${state.reviewDurationSeconds}s</div>
+        <div class="muted">Total corrections: ${stats.total} | Review time: ${state.reviewDurationSeconds}s</div>
         <div class="chart">${rows}</div>
       `;
     }
@@ -1074,7 +1541,7 @@ HTML_TEMPLATE = """<!doctype html>
         addSection(
           "Dynamic Profile Human Validation Instructions",
           `<div class="md">${renderMarkdown(instructions)}</div>`,
-          true
+          false
         );
       }
       addSection(
@@ -1112,13 +1579,22 @@ HTML_TEMPLATE = """<!doctype html>
         tile.onclick = () => {
           state.focusedDomain = name;
           renderDomainList();
+          renderDomains();
+          renderStageCard();
           scrollDomainIntoView(name, "smooth");
         };
         const dirtyMark = state.dirtyDomains.has(name) ? `<span class="pill warn">edited</span>` : "";
+        const stage = currentStage();
+        const stageDone =
+          stage && stage.perDomain && stageProgressSet(stage.id).has(name)
+            ? `<span class="pill small">Stage done</span>`
+            : stage && stage.perDomain
+              ? `<span class="pill small ghost">To-do</span>`
+              : "";
         tile.innerHTML = `
           <div class="domain-name">${escapeHtml(name)}</div>
           <div class="muted">Windows: ${windows}</div>
-          <div style="margin-top:4px;">${dirtyMark}</div>
+          <div style="margin-top:4px; display:flex; gap:6px; flex-wrap:wrap; align-items:center;">${dirtyMark}${stageDone}</div>
         `;
         dom.list.appendChild(tile);
       });
@@ -1139,21 +1615,26 @@ HTML_TEMPLATE = """<!doctype html>
         preferences_state: new Map(),
       };
 
-      function ensureRow(stateType, name) {
+      function ensureRow(stateType, name, meta = {}) {
         const map = grids[stateType];
-        if (!map.has(name)) {
-          map.set(name, { name, cells: Array(headers.length).fill(null) });
+        const key = stateType === "user_attributes_state" ? userAttributeRowKey(name, meta.attrType) : name;
+        if (!map.has(key)) {
+          map.set(key, { name, attrType: meta.attrType || "", cells: Array(headers.length).fill(null) });
         }
-        return map.get(name);
+        const row = map.get(key);
+        if (meta.attrType && !row.attrType) row.attrType = meta.attrType;
+        return row;
       }
 
-      function setCell(stateType, name, colIdx, data) {
-        const row = ensureRow(stateType, name);
+      function setCell(stateType, name, colIdx, data, meta = {}) {
+        const row = ensureRow(stateType, name, meta);
         row.cells[colIdx] = {
           value: data.value,
           op: data.op || "",
           reason: data.reason || "",
           source: data.source || null,
+          attrType: meta.attrType || row.attrType || "",
+          full: null,
         };
       }
 
@@ -1177,16 +1658,81 @@ HTML_TEMPLATE = """<!doctype html>
       }
 
       const init = domain.initial_state || {};
-      ["user_attributes_state", "habits_state", "preferences_state"].forEach((stateType) => {
+
+      const uaInit = init.user_attributes_state || {};
+      const uaSingular = uaInit.singular || {};
+      Object.entries(uaSingular).forEach(([name, val]) => {
+        setCell("user_attributes_state", name, 0, {
+          value: val,
+          op: "",
+          reason: "initial",
+          source: { kind: "initial", stateType: "user_attributes_state", name, attrType: "singular" },
+        }, { attrType: "singular" });
+      });
+      const uaCollections = uaInit.collections || {};
+      Object.entries(uaCollections).forEach(([name, val]) => {
+        setCell("user_attributes_state", name, 0, {
+          value: val,
+          op: "",
+          reason: "initial",
+          source: { kind: "initial", stateType: "user_attributes_state", name, attrType: "collections" },
+        }, { attrType: "collections" });
+      });
+      if (uaInit.initial) {
+        for (const [name, val] of iterInitial(uaInit.initial)) {
+          setCell("user_attributes_state", name, 0, {
+            value: val,
+            op: "",
+            reason: "initial",
+            source: { kind: "initial", stateType: "user_attributes_state", name, attrType: "singular" },
+          }, { attrType: "singular" });
+        }
+      }
+
+      ["habits_state", "preferences_state"].forEach((stateType) => {
         const entries = (init[stateType] || {}).initial;
         for (const [name, val] of iterInitial(entries)) {
-          setCell(stateType, name, 0, { value: val, op: "", reason: "initial", source: { kind: "initial", stateType, name } });
+          setCell(stateType, name, 0, {
+            value: val,
+            op: "",
+            reason: "initial",
+            source: { kind: "initial", stateType, name },
+          });
         }
       });
 
       windows.forEach((w, wIdx) => {
         const colIdx = wIdx + 1;
-        Object.entries(STATE_CONFIG).forEach(([stateType, cfg]) => {
+        const uaDelta = w.user_attributes_delta;
+        const uaOps = uaDelta && Array.isArray(uaDelta.operations) ? uaDelta.operations : [];
+        uaOps.forEach((opObj, idx) => {
+          const meta = resolveUserAttributeMeta(opObj);
+          const name = meta.name || `${meta.attrType || "attribute"}_${idx + 1}`;
+          const value = opObj.delta !== undefined ? opObj.delta : opObj.new_state;
+          setCell(
+            "user_attributes_state",
+            name,
+            colIdx,
+            {
+              value,
+              op: opObj.op,
+              reason: opObj.reason,
+              source: {
+                kind: "op",
+                stateType: "user_attributes_state",
+                windowIndex: wIdx,
+                opIndex: idx,
+                name,
+                attrType: meta.attrType,
+                deltaKey: "user_attributes_delta",
+              },
+            },
+            { attrType: meta.attrType }
+          );
+        });
+
+        ["habits_state", "preferences_state"].forEach((stateType) => {
+          const cfg = STATE_CONFIG[stateType];
           const delta = w[cfg.deltaKey];
           const ops = delta && Array.isArray(delta.operations) ? delta.operations : [];
           const byName = new Map();
@@ -1196,13 +1742,41 @@ HTML_TEMPLATE = """<!doctype html>
             byName.set(name, { opObj, idx });
           });
           byName.forEach(({ opObj, idx }, name) => {
+            const value = opObj.delta !== undefined ? opObj.delta : opObj.new_state;
             setCell(stateType, name, colIdx, {
-              value: opObj.new_state,
+              value,
               op: opObj.op,
               reason: opObj.reason,
               source: { kind: "op", stateType, windowIndex: wIdx, opIndex: idx, name, deltaKey: cfg.deltaKey, nameKey: cfg.nameKey },
             });
           });
+        });
+      });
+
+      // Compute complete values by applying deltas cumulatively across windows
+      const headerCount = headers.length;
+      ["user_attributes_state", "habits_state", "preferences_state"].forEach((stateType) => {
+        const rows = grids[stateType];
+        rows.forEach((row) => {
+          let current = row.cells[0]?.value;
+          if (stateType === "user_attributes_state" && row.attrType === "collections" && current === undefined) {
+            current = [];
+          }
+          if (row.cells[0]) row.cells[0].full = current;
+          for (let col = 1; col < headerCount; col += 1) {
+            const cell = row.cells[col] || { attrType: row.attrType || "", op: "", value: undefined, reason: "", source: null };
+            const delta = cell.value;
+            const op = cell.op || "";
+            if (stateType === "user_attributes_state") {
+              current = applyUserAttributeValue(current, row.attrType || cell.attrType, op, delta);
+            } else if (stateType === "habits_state") {
+              current = applyHabitValue(current, op, delta);
+            } else {
+              current = applyPreferenceValue(current, op, delta);
+            }
+            cell.full = current;
+            row.cells[col] = cell;
+          }
         });
       });
 
@@ -1217,33 +1791,80 @@ HTML_TEMPLATE = """<!doctype html>
     }
 
     function renderStateGrid(stateType, grid, domainName) {
+      const stage = currentStage();
+      const showComplete = stage && stage.id === "cross";
+      const showRollups = stage && stage.id === "domain";
       const cfg = STATE_CONFIG[stateType];
       const rows = grid.grids[stateType] || [];
       const headers = grid.headers || [];
       if (!headers.length) return "";
+      const headerSummaries = headers.map(() => null);
+      if (showRollups) {
+        headers.forEach((h, idx) => {
+          if (idx === 0) return;
+          const snapshot = {};
+          rows.forEach((row) => {
+            const cell = row.cells[idx] || {};
+            if (cell.full !== undefined) snapshot[row.name] = cell.full;
+          });
+          const pretty = JSON.stringify(snapshot, null, 2) || "{}";
+          const short = pretty.length > 160 ? `${pretty.slice(0, 160)}...` : pretty;
+          headerSummaries[idx] = { pretty, short };
+        });
+      }
       const headerCells = headers
-        .map((h, idx) => `<th>${idx === 0 ? "Initial" : escapeHtml(h.id)}<div class="sub">${escapeHtml(h.label || "")}</div></th>`)
+        .map((h, idx) => {
+          const summary = headerSummaries[idx];
+          const summaryPill = summary
+            ? `<span class="pill small tooltip" data-full="${escapeHtml(summary.pretty)}">Complete value</span>`
+            : "";
+          return `<th style="font-size:15px;">${idx === 0 ? "Initial" : escapeHtml(h.id)}<div class="sub" style="font-size:13px;">${escapeHtml(h.label || "")} ${summaryPill}</div></th>`;
+        })
         .join("");
 
       const body = rows
         .map((row) => {
-          const cells = headers
-            .map((_, idx) => {
-              const cell = row.cells[idx] || {};
-              const hasData = (cell.value !== undefined && cell.value !== null) || cell.op || cell.reason;
-              const badge = cell.op ? `<span class="pill small">${escapeHtml(cell.op)}</span>` : "";
-              const valueBlock = hasData ? `<pre>${escapeHtml(valuePreview(cell.value))}</pre>` : `<span class="muted">Empty</span>`;
-              const reason = cell.reason ? `<div class="muted small">${escapeHtml(cell.reason)}</div>` : "";
-              const actions = hasData
-                ? `<div class="cell-actions">
-                    <button data-action="edit" class="ghost" data-domain="${escapeHtml(domainName)}">Edit</button>
-                    <button data-action="delete" data-domain="${escapeHtml(domainName)}">Delete</button>
-                  </div>`
-                : `<button data-action="add" class="ghost" data-domain="${escapeHtml(domainName)}">Add</button>`;
-              return `<td data-state="${stateType}" data-name="${escapeHtml(row.name)}" data-col="${idx}" data-domain="${escapeHtml(domainName)}">${badge}${valueBlock}${reason}${actions}</td>`;
-            })
-            .join("");
-          return `<tr><th><div class="flex" style="justify-content:space-between; gap:6px; align-items:center;"><span>${escapeHtml(row.name)}</span><button class="ghost" data-action="delete-row" data-state="${stateType}" data-name="${escapeHtml(row.name)}" data-domain="${escapeHtml(domainName)}">Delete row</button></div></th>${cells}</tr>`;
+          const attrBadge = row.attrType ? `<span class="pill small ghost">${escapeHtml(row.attrType)}</span>` : "";
+          let noChangeShown = false;
+          const cells = [];
+          headers.forEach((_, idx) => {
+            const cell = row.cells[idx] || {};
+            const hasData = (cell.value !== undefined && cell.value !== null) || cell.op || cell.reason;
+            const badge = cell.op ? `<span class="op-badge ${opBadgeClass(cell.op)}">${escapeHtml(cell.op)}</span>` : "";
+            const fullValue = cell.full !== undefined ? cell.full : cell.value;
+            const deltaPreview = previewParts(cell.value);
+            const fullPreview = valuePreview(fullValue);
+            const habitChips = stateType === "habits_state" ? renderHabitChips(cell.value) : null;
+            let valueBlock = "";
+            if (hasData) {
+              const baseValue =
+                habitChips ||
+                renderValueContent(cell.value !== undefined ? cell.value : fullValue, stateType);
+              valueBlock = `<div class="value-preview">${baseValue}${showComplete ? `<span class="pill small tooltip" data-full="${escapeHtml(fullPreview)}">Complete value</span>` : ""}</div>`;
+              noChangeShown = false;
+            } else if (idx === 0) {
+              valueBlock = `<div class="value-preview">${renderValueContent(fullValue, stateType)}</div>`;
+              // keep noChangeShown false so the first later window can show "No change"
+            } else if (!noChangeShown) {
+              valueBlock = `<div class="value-preview muted"><span class="pill small ghost tooltip" data-full="${escapeHtml(fullPreview)}">No change</span></div>`;
+              noChangeShown = true;
+            } else {
+              valueBlock = `<div class="value-preview muted"><span class="muted">&nbsp;</span></div>`;
+            }
+            const reason = cell.reason ? `<div class="muted small">${escapeHtml(cell.reason)}</div>` : "";
+            const actions = hasData
+              ? `<div class="cell-actions">
+                  <button data-action="edit" class="ghost" data-domain="${escapeHtml(domainName)}">Edit</button>
+                  <button data-action="delete" data-domain="${escapeHtml(domainName)}">Delete</button>
+                </div>`
+              : `<div class="cell-actions"><button data-action="add" class="ghost" data-domain="${escapeHtml(domainName)}">Add</button></div>`;
+            cells.push(
+              `<td data-state="${stateType}" data-name="${escapeHtml(row.name)}" data-col="${idx}" data-domain="${escapeHtml(domainName)}" data-attr-type="${escapeHtml(row.attrType || "")}">${badge}${valueBlock}${reason}${actions}</td>`
+            );
+          });
+          const cellsHtml = cells.join("");
+          const rowLabel = `<div class="flex" style="gap:6px; align-items:center;"><span>${escapeHtml(row.name)}</span>${attrBadge}</div>`;
+          return `<tr><th><div class="flex" style="justify-content:space-between; gap:6px; align-items:center;">${rowLabel}<button class="ghost" data-action="delete-row" data-state="${stateType}" data-name="${escapeHtml(row.name)}" data-domain="${escapeHtml(domainName)}" data-attr-type="${escapeHtml(row.attrType || "")}">Delete row</button></div></th>${cellsHtml}</tr>`;
         })
         .join("");
 
@@ -1307,13 +1928,20 @@ HTML_TEMPLATE = """<!doctype html>
         dom.detail.innerHTML = "<span class='muted'>Select a dataset to start annotating.</span>";
         return;
       }
-      const names = Object.keys(state.profiles || {}).sort();
+      const stage = currentStage();
+      const names = domainNames();
       if (!names.length) {
         dom.detail.innerHTML = "<span class='muted'>No domains loaded.</span>";
         return;
       }
+      if (stage.perDomain) ensureFocusedDomain(names);
+      const visibleNames = stage.perDomain ? (state.focusedDomain ? [state.focusedDomain] : []) : names;
+      if (!visibleNames.length) {
+        dom.detail.innerHTML = "<span class='muted'>Select a domain to inspect and edit.</span>";
+        return;
+      }
       state.grids = {};
-      const sections = names
+      const sections = visibleNames
         .map((name) => {
           const domain = state.profiles[name] || {};
           const grid = buildGridForDomain(domain);
@@ -1325,6 +1953,17 @@ HTML_TEMPLATE = """<!doctype html>
             habits: grid.grids.habits_state.length,
             preferences: grid.grids.preferences_state.length,
           };
+          const stageDone = stage.perDomain && stageProgressSet(stage.id).has(name);
+          const stageBadge = stage.perDomain
+            ? `<span class="pill small ${stageDone ? "" : "ghost"}">${stageDone ? "Stage done" : "Stage to-do"}</span>`
+            : "";
+          const stageButton = stage.perDomain
+            ? `<button class="${stageDone ? "ghost" : "success-btn"}" data-stage-action="complete-domain" data-domain="${escapeHtml(name)}">${stageDone ? "Mark as not done" : "Mark stage done"}</button>`
+            : "";
+          const nextButton =
+            stage.perDomain && names.length > 1
+              ? `<button data-stage-action="next-domain" data-domain="${escapeHtml(name)}">Next domain</button>`
+              : "";
           const gridsHtml = [
             renderWindowsMeta(name, domain),
             renderStateGrid("user_attributes_state", grid, name),
@@ -1341,10 +1980,9 @@ HTML_TEMPLATE = """<!doctype html>
                 </div>
                 <div class="flex">
                   ${dirtyMark}
-                  <button data-edit-scope="domain" data-domain="${escapeHtml(name)}">Edit domain JSON</button>
-                  <button data-edit-scope="initial" data-domain="${escapeHtml(name)}">Edit initial state</button>
-                  <button data-edit-scope="windows" data-domain="${escapeHtml(name)}">Edit windows</button>
-                  <button class="primary" data-edit-scope="full" data-domain="${escapeHtml(name)}">Edit entire file</button>
+                  ${stageBadge}
+                  ${stageButton}
+                  ${nextButton}
                 </div>
               </summary>
               ${gridsHtml}
@@ -1353,6 +1991,7 @@ HTML_TEMPLATE = """<!doctype html>
         })
         .join("");
       dom.detail.innerHTML = sections;
+      renderStageCard();
       if (state.focusedDomain) {
         scrollDomainIntoView(state.focusedDomain, "auto");
       }
@@ -1394,7 +2033,7 @@ HTML_TEMPLATE = """<!doctype html>
                 <div class="flex" style="justify-content:space-between; gap:6px;">
                   <div>
                     <div class="title" title="${escapeHtml(d.id)}">${escapeHtml(shortId(d.id) || d.id)}</div>
-                    <div class="meta">${metaParts.join(" · ") || "Unassigned"}</div>
+                    <div class="meta">${metaParts.join(" | ") || "Unassigned"}</div>
                   </div>
                   <div class="flex">
                     ${badge}
@@ -1439,16 +2078,23 @@ HTML_TEMPLATE = """<!doctype html>
       dom.editor.focus();
     }
 
-    function findCell(stateType, name, colIdx, domain) {
+    function findCell(stateType, name, colIdx, domain, attrType = "") {
       const grid = state.grids[domain];
       if (!grid) return null;
       const rows = grid.grids[stateType] || [];
-      const row = rows.find((r) => r.name === name);
+      const row = rows.find(
+        (r) =>
+          r.name === name &&
+          (stateType !== "user_attributes_state" || !attrType || (r.attrType || "") === attrType || !r.attrType)
+      );
       if (!row) return null;
       return row.cells[colIdx] || null;
     }
 
-    function defaultValueFor(stateType) {
+    function defaultValueFor(stateType, attrType = "") {
+      if (stateType === "user_attributes_state") {
+        return attrType === "collections" ? [] : "";
+      }
       const val = DEFAULT_VALUES[stateType];
       return typeof val === "object" ? JSON.parse(JSON.stringify(val)) : val;
     }
@@ -1478,7 +2124,8 @@ HTML_TEMPLATE = """<!doctype html>
 
       const annKey = getWindowAnnotationKey(domain, windowIdx, field);
       const ann = state.annotations[annKey] || {};
-      renderReasonButtons(ann.reasonType || REASON_OPTIONS[0]);
+      const reasonOptions = reasonOptionsForCurrentStage(ann.reasonType);
+      renderReasonButtons(ann.reasonType || reasonOptions[0], reasonOptions);
       dom.cellConflictDescription.value = ann.conflictDescription || "";
       dom.cellCorrectionDetail.value = ann.reasonNote || "";
       dom.cellChangeReason.value = ann.changeReason || "";
@@ -1500,13 +2147,47 @@ HTML_TEMPLATE = """<!doctype html>
       return btn ? btn.dataset.reason : REASON_OPTIONS[0];
     }
 
-    function renderReasonButtons(selected) {
-      dom.reasonButtons.innerHTML = REASON_OPTIONS.map((r) => `<button type="button" class="reason-btn${r === selected ? " active" : ""}" data-reason="${r}">${escapeHtml(r)}</button>`).join("");
+    function reasonOptionsForCurrentStage(selected = "") {
+      const stage = currentStage();
+      const options = (STAGE_REASON_OPTIONS[stage?.id] || REASON_OPTIONS).slice();
+      if (selected && !options.includes(selected)) options.unshift(selected);
+      return options;
     }
 
-    function openCellEditor(action, stateType, name, colIdx, domain) {
+    function datasetReady() {
+      return state.loggedIn && (!state.datasetMode || state.activeDataset);
+    }
+
+    function opBadgeClass(op = "") {
+      const key = (op || "").toLowerCase();
+      // Each operation gets its own class for semantic coloring
+      if (key === "add") return "op-add";
+      if (key === "remove") return "op-remove";
+      if (key === "modify") return "op-modify";
+      if (key === "acquire") return "op-acquire";
+      if (key === "drop") return "op-drop";
+      if (key === "adjust") return "op-adjust";
+      if (key === "shift") return "op-shift";
+      if (key === "amplify") return "op-amplify";
+      if (key === "attenuate") return "op-attenuate";
+      return "op-default";
+    }
+
+    function renderHabitChips(val) {
+      // Habits are now shown as plain JSON, no special chip rendering
+      return null;
+    }
+
+    function renderReasonButtons(selected, options) {
+      const list = options && options.length ? options : reasonOptionsForCurrentStage(selected);
+      dom.reasonButtons.innerHTML = list
+        .map((r) => `<button type="button" class="reason-btn${r === selected ? " active" : ""}" data-reason="${r}">${escapeHtml(r)}</button>`)
+        .join("");
+    }
+
+    function openCellEditor(action, stateType, name, colIdx, domain, attrType = "") {
       const cfg = STATE_CONFIG[stateType];
-      modalState = { mode: "cell", action, stateType, name, colIdx, domain };
+      modalState = { mode: "cell", action, stateType, name, colIdx, domain, attrType };
       dom.modal.style.display = "flex";
       dom.jsonWrap.style.display = "none";
       dom.cellWrap.style.display = "block";
@@ -1515,25 +2196,29 @@ HTML_TEMPLATE = """<!doctype html>
       const columnLabel = header ? `${header.id}${header.label ? " (" + header.label + ")" : ""}` : `column ${colIdx}`;
       dom.modalTitle.textContent = `${action === "add" ? "Add" : "Edit"} ${cfg.label}`;
       dom.modalHint.textContent = "JSON value supported. Name is fixed per row.";
-      dom.cellTarget.textContent = `Domain: ${domain} | Row: ${name} | Column: ${columnLabel}`;
+      const typeHint = attrType ? ` | Type: ${attrType}` : "";
+      dom.cellTarget.textContent = `Domain: ${domain} | Row: ${name}${typeHint} | Column: ${columnLabel}`;
       state.focusedDomain = domain;
       renderDomainList();
 
-      const cell = findCell(stateType, name, colIdx, domain) || {};
+      const cell = findCell(stateType, name, colIdx, domain, attrType) || {};
       const isInitial = colIdx === 0;
-      const opList = OPS[stateType] || [];
+      const opList = allowedOps(stateType, attrType);
       dom.opWrap.style.display = isInitial ? "none" : "block";
       dom.changeReasonWrap.style.display = isInitial ? "none" : "block";
       dom.cellOp.innerHTML = opList.map((op) => `<option value="${op}">${op}</option>`).join("");
-      dom.cellOp.value = cell.op || opList[0] || "";
+      const preferredOp = cell.op && opList.includes(cell.op) ? cell.op : opList[0] || "";
+      dom.cellOp.value = preferredOp;
 
       const annKey = getAnnotationKey(domain, stateType, name, colIdx);
       const ann = state.annotations[annKey] || {};
-      renderReasonButtons(ann.reasonType || REASON_OPTIONS[0]);
+      const reasonOptions = reasonOptionsForCurrentStage(ann.reasonType);
+      renderReasonButtons(ann.reasonType || reasonOptions[0], reasonOptions);
       dom.cellConflictDescription.value = ann.conflictDescription || "";
       dom.cellCorrectionDetail.value = ann.reasonNote || "";
 
-      const valueForEditor = cell.value !== undefined && cell.value !== null ? cell.value : defaultValueFor(stateType);
+      const valueForEditor =
+        cell.value !== undefined && cell.value !== null ? cell.value : defaultValueFor(stateType, attrType);
       dom.cellValue.value = valuePreview(valueForEditor);
       dom.cellChangeReason.value = isInitial ? "" : cell.reason || ann.changeReason || "";
       dom.cellValue.focus();
@@ -1580,7 +2265,7 @@ HTML_TEMPLATE = """<!doctype html>
       }
     }
 
-    function updateAnnotation(domain, stateType, name, colIdx, op, reasonType, reasonNote, changeReason, conflictDescription) {
+    function updateAnnotation(domain, stateType, name, colIdx, op, reasonType, reasonNote, changeReason, conflictDescription, attrType = "") {
       const key = getAnnotationKey(domain, stateType, name, colIdx);
       const prev = state.annotations[key] || {};
       state.annotations[key] = {
@@ -1595,6 +2280,7 @@ HTML_TEMPLATE = """<!doctype html>
         reasonNote,
         changeReason,
         conflictDescription,
+        attrType,
       };
       renderStats();
     }
@@ -1616,7 +2302,7 @@ HTML_TEMPLATE = """<!doctype html>
       renderStats();
     }
 
-    function deleteCell(stateType, name, colIdx, domain) {
+    function deleteCell(stateType, name, colIdx, domain, attrType = "") {
       if (!state.profiles[domain]) return;
       const cfg = STATE_CONFIG[stateType];
 
@@ -1624,17 +2310,37 @@ HTML_TEMPLATE = """<!doctype html>
 
       if (colIdx === 0) {
         const initState = (state.profiles[domain].initial_state = state.profiles[domain].initial_state || {});
-        const block = (initState[stateType] = initState[stateType] || { initial: {} });
-        normalizeInitialBlock(block);
-        if (block.initial && typeof block.initial === "object") {
-          delete block.initial[name];
+        if (stateType === "user_attributes_state") {
+          const ua = (initState.user_attributes_state = initState.user_attributes_state || {});
+          ua.singular = ua.singular || {};
+          ua.collections = ua.collections || {};
+          if (attrType === "collections") delete ua.collections[name];
+          else delete ua.singular[name];
+        } else {
+          const block = (initState[stateType] = initState[stateType] || { initial: {} });
+          normalizeInitialBlock(block);
+          if (block.initial && typeof block.initial === "object") {
+            delete block.initial[name];
+          }
         }
       } else {
         const windowIdx = colIdx - 1;
         const win = ensureWindow(state.profiles[domain], windowIdx);
-        const delta = (win[cfg.deltaKey] = win[cfg.deltaKey] || { operations: [] });
-        delta.operations = Array.isArray(delta.operations) ? delta.operations : [];
-        delta.operations = delta.operations.filter((op) => op && op[cfg.nameKey] !== name);
+        if (stateType === "user_attributes_state") {
+          const delta = (win.user_attributes_delta = win.user_attributes_delta || { operations: [] });
+          delta.operations = Array.isArray(delta.operations) ? delta.operations : [];
+          delta.operations = delta.operations.filter((op) => {
+            const meta = resolveUserAttributeMeta(op);
+            if (!meta.name) return true;
+            if (meta.name !== name) return true;
+            if (attrType && meta.attrType && attrType !== meta.attrType) return true;
+            return false;
+          });
+        } else {
+          const delta = (win[cfg.deltaKey] = win[cfg.deltaKey] || { operations: [] });
+          delta.operations = Array.isArray(delta.operations) ? delta.operations : [];
+          delta.operations = delta.operations.filter((op) => op && op[cfg.nameKey] !== name);
+        }
       }
 
       const annKey = getAnnotationKey(domain, stateType, name, colIdx);
@@ -1645,25 +2351,45 @@ HTML_TEMPLATE = """<!doctype html>
       saveToDisk("autosave");
     }
 
-    function deleteRow(stateType, name, domain) {
+    function deleteRow(stateType, name, domain, attrType = "") {
       const profile = state.profiles[domain];
       if (!profile) return;
       if (!confirm(`Delete ${STATE_CONFIG[stateType].label} "${name}" across all columns?`)) return;
       // Remove from initial
       const initState = (profile.initial_state = profile.initial_state || {});
-      const block = (initState[stateType] = initState[stateType] || { initial: {} });
-      normalizeInitialBlock(block);
-      if (block.initial && typeof block.initial === "object") {
-        delete block.initial[name];
+      if (stateType === "user_attributes_state") {
+        const ua = (initState.user_attributes_state = initState.user_attributes_state || {});
+        ua.singular = ua.singular || {};
+        ua.collections = ua.collections || {};
+        if (attrType === "collections") delete ua.collections[name];
+        else delete ua.singular[name];
+      } else {
+        const block = (initState[stateType] = initState[stateType] || { initial: {} });
+        normalizeInitialBlock(block);
+        if (block.initial && typeof block.initial === "object") {
+          delete block.initial[name];
+        }
       }
       // Remove from all windows
       const windows = Array.isArray(profile.time_windows) ? profile.time_windows : [];
       windows.forEach((win) => {
-        const deltaKey = STATE_CONFIG[stateType].deltaKey;
-        const nameKey = STATE_CONFIG[stateType].nameKey;
-        const delta = (win[deltaKey] = win[deltaKey] || { operations: [] });
-        delta.operations = Array.isArray(delta.operations) ? delta.operations : [];
-        delta.operations = delta.operations.filter((op) => op && op[nameKey] !== name);
+        if (stateType === "user_attributes_state") {
+          const delta = (win.user_attributes_delta = win.user_attributes_delta || { operations: [] });
+          delta.operations = Array.isArray(delta.operations) ? delta.operations : [];
+          delta.operations = delta.operations.filter((op) => {
+            const meta = resolveUserAttributeMeta(op);
+            if (!meta.name) return true;
+            if (meta.name !== name) return true;
+            if (attrType && meta.attrType && attrType !== meta.attrType) return true;
+            return false;
+          });
+        } else {
+          const deltaKey = STATE_CONFIG[stateType].deltaKey;
+          const nameKey = STATE_CONFIG[stateType].nameKey;
+          const delta = (win[deltaKey] = win[deltaKey] || { operations: [] });
+          delta.operations = Array.isArray(delta.operations) ? delta.operations : [];
+          delta.operations = delta.operations.filter((op) => op && op[nameKey] !== name);
+        }
       });
       // Drop annotations for this row
       Object.keys(state.annotations || {}).forEach((key) => {
@@ -1725,8 +2451,9 @@ HTML_TEMPLATE = """<!doctype html>
     }
 
     function applyCellEdit() {
-      const { stateType, name, colIdx, domain } = modalState;
+      const { stateType, name, colIdx, domain, attrType } = modalState;
       const cfg = STATE_CONFIG[stateType];
+      const opList = allowedOps(stateType, attrType);
 
       let parsedValue;
       try {
@@ -1750,22 +2477,58 @@ HTML_TEMPLATE = """<!doctype html>
 
       if (colIdx === 0) {
         profile.initial_state = profile.initial_state || {};
-        const block = (profile.initial_state[stateType] = profile.initial_state[stateType] || { initial: {} });
-        normalizeInitialBlock(block);
-        block.initial[name] = parsedValue;
+        if (stateType === "user_attributes_state") {
+          const ua = (profile.initial_state.user_attributes_state = profile.initial_state.user_attributes_state || {});
+          ua.singular = ua.singular || {};
+          ua.collections = ua.collections || {};
+          if (attrType === "collections") ua.collections[name] = parsedValue;
+          else ua.singular[name] = parsedValue;
+        } else {
+          const block = (profile.initial_state[stateType] = profile.initial_state[stateType] || { initial: {} });
+          normalizeInitialBlock(block);
+          block.initial[name] = parsedValue;
+        }
       } else {
         const windowIdx = colIdx - 1;
         const win = ensureWindow(profile, windowIdx);
-        win[cfg.deltaKey] = win[cfg.deltaKey] || { operations: [] };
-        const ops = (win[cfg.deltaKey].operations = Array.isArray(win[cfg.deltaKey].operations) ? win[cfg.deltaKey].operations : []);
-        let target = ops.find((op) => op && op[cfg.nameKey] === name);
-        if (!target) {
-          target = { [cfg.nameKey]: name };
-          ops.push(target);
+        if (stateType === "user_attributes_state") {
+          const deltaBlock = (win.user_attributes_delta = win.user_attributes_delta || { operations: [] });
+          const ops = (deltaBlock.operations = Array.isArray(deltaBlock.operations) ? deltaBlock.operations : []);
+          let target = ops.find((op) => {
+            const meta = resolveUserAttributeMeta(op, attrType);
+            return meta.name === name && (!attrType || !meta.attrType || meta.attrType === attrType);
+          });
+          if (!target) {
+            const chosenOp = dom.cellOp.value && opList.includes(dom.cellOp.value) ? dom.cellOp.value : opList[0] || "";
+            target = { op: chosenOp || "" };
+            if (attrType) target.attribute_type = attrType;
+            if (attrType === "collections") target.collection_name = name;
+            else target.attribute_name = name;
+            ops.push(target);
+          } else {
+            if (attrType && !target.attribute_type) target.attribute_type = attrType;
+            if (attrType === "collections" && !target.collection_name) target.collection_name = name;
+            if (attrType === "singular" && !target.attribute_name) target.attribute_name = name;
+          }
+          const chosenOp = dom.cellOp.value && opList.includes(dom.cellOp.value) ? dom.cellOp.value : opList[0] || "";
+          target.op = chosenOp || target.op || "";
+          target.delta = parsedValue;
+          target.reason = changeReason;
+          if ("new_state" in target) delete target.new_state;
+        } else {
+          win[cfg.deltaKey] = win[cfg.deltaKey] || { operations: [] };
+          const ops = (win[cfg.deltaKey].operations = Array.isArray(win[cfg.deltaKey].operations) ? win[cfg.deltaKey].operations : []);
+          let target = ops.find((op) => op && op[cfg.nameKey] === name);
+          if (!target) {
+            target = { [cfg.nameKey]: name };
+            ops.push(target);
+          }
+          const chosenOp = dom.cellOp.value && opList.includes(dom.cellOp.value) ? dom.cellOp.value : opList[0] || "";
+          target.op = chosenOp || target.op || "";
+          target.delta = parsedValue;
+          target.reason = changeReason;
+          if ("new_state" in target) delete target.new_state;
         }
-        target.op = dom.cellOp.value || target.op || OPS[stateType]?.[0] || "";
-        target.new_state = parsedValue;
-        target.reason = changeReason;
       }
 
       updateAnnotation(
@@ -1777,7 +2540,8 @@ HTML_TEMPLATE = """<!doctype html>
         reasonType,
         reasonNote,
         changeReason,
-        conflictDescription
+        conflictDescription,
+        attrType || ""
       );
       closeEditor();
       markDirty(domain);
@@ -1807,6 +2571,35 @@ HTML_TEMPLATE = """<!doctype html>
       markDirty(domain);
       renderDomains();
       saveToDisk("autosave");
+    }
+
+    function celebrate(message = "Nice work!") {
+      const overlay = document.createElement("div");
+      overlay.className = "celebrate";
+      const pool = ["✨", "🎉", "⭐", "🏅", "✅", "💡"];
+      for (let i = 0; i < 28; i += 1) {
+        const piece = document.createElement("span");
+        piece.className = "confetti-piece";
+        piece.textContent = pool[Math.floor(Math.random() * pool.length)];
+        piece.style.left = `${Math.random() * 100}%`;
+        piece.style.animationDuration = `${0.9 + Math.random() * 0.6}s`;
+        overlay.appendChild(piece);
+      }
+      const msg = document.createElement("div");
+      msg.style.position = "fixed";
+      msg.style.top = "24px";
+      msg.style.right = "24px";
+      msg.style.padding = "10px 14px";
+      msg.style.background = "#fff";
+      msg.style.border = "1px solid var(--border)";
+      msg.style.borderRadius = "12px";
+      msg.style.boxShadow = "0 6px 14px rgba(0,0,0,0.12)";
+      msg.style.fontWeight = "700";
+      msg.style.color = "var(--ink)";
+      msg.textContent = message;
+      overlay.appendChild(msg);
+      document.body.appendChild(overlay);
+      setTimeout(() => overlay.remove(), 1500);
     }
 
     async function applyEditor() {
@@ -1911,9 +2704,15 @@ HTML_TEMPLATE = """<!doctype html>
     }
 
     function addRow(stateType, domain) {
+      let attrType = "";
+      if (stateType === "user_attributes_state") {
+        const typeInput = prompt("Attribute type? (singular or collections)", "singular");
+        if (!typeInput) return;
+        attrType = typeInput.toLowerCase().includes("collect") ? "collections" : "singular";
+      }
       const name = prompt(`New ${STATE_CONFIG[stateType].label} name?`);
       if (!name) return;
-      openCellEditor("add", stateType, name, 0, domain);
+      openCellEditor("add", stateType, name, 0, domain, attrType);
     }
 
     dom.saveBtn.addEventListener("click", () => saveToDisk("manual"));
@@ -1929,11 +2728,21 @@ HTML_TEMPLATE = """<!doctype html>
       setReasonSelection(btn.dataset.reason);
     });
     dom.detail.addEventListener("click", (e) => {
-      const editBtn = e.target.closest("[data-edit-scope]");
-      if (editBtn) {
-        const scope = editBtn.dataset.editScope;
-        const domain = editBtn.dataset.domain;
-        openEditor(scope, domain);
+      const stageBtn = e.target.closest("[data-stage-action]");
+      if (stageBtn) {
+        const actionType = stageBtn.dataset.stageAction;
+        const domain = stageBtn.dataset.domain || state.focusedDomain;
+        if (actionType === "complete-domain") {
+          toggleDomainStageCompletion(domain);
+        } else if (actionType === "next-domain") {
+          const target = nextDomainName(domain);
+          if (target) {
+            state.focusedDomain = target;
+            renderDomainList();
+            renderDomains();
+            scrollDomainIntoView(target, "smooth");
+          }
+        }
         return;
       }
       const btn = e.target.closest("[data-action]");
@@ -1949,7 +2758,8 @@ HTML_TEMPLATE = """<!doctype html>
         const stateType = btn.dataset.state;
         const domain = btn.dataset.domain;
         const name = btn.dataset.name;
-        deleteRow(stateType, name, domain);
+        const attrType = btn.dataset.attrType || "";
+        deleteRow(stateType, name, domain, attrType);
         return;
       }
       if (action === "edit-window-field") {
@@ -1965,12 +2775,41 @@ HTML_TEMPLATE = """<!doctype html>
       const name = cell.dataset.name;
       const colIdx = Number(cell.dataset.col);
       const domain = cell.dataset.domain;
+      const attrType = cell.dataset.attrType || "";
       if (action === "edit" || action === "add") {
-        openCellEditor(action, stateType, name, colIdx, domain);
+        openCellEditor(action, stateType, name, colIdx, domain, attrType);
       } else if (action === "delete") {
-        deleteCell(stateType, name, colIdx, domain);
+        deleteCell(stateType, name, colIdx, domain, attrType);
       }
     });
+    if (dom.stageCard) {
+      dom.stageCard.addEventListener("click", (e) => {
+        const nav = e.target.closest("[data-stage-nav]");
+        if (nav) {
+          const dir = nav.dataset.stageNav === "next" ? 1 : -1;
+          goToStage(state.stageIndex + dir);
+          return;
+        }
+        const actionBtn = e.target.closest("[data-stage-action]");
+        if (!actionBtn) return;
+        const actionType = actionBtn.dataset.stageAction;
+        if (actionType === "next-unfinished") {
+          const stage = currentStage();
+          const names = domainNames();
+          const target = nextIncompleteDomain(stage, names) || nextDomainName(state.focusedDomain, names);
+          if (target) {
+            state.focusedDomain = target;
+            renderDomainList();
+            renderDomains();
+            scrollDomainIntoView(target, "smooth");
+          }
+          return;
+        }
+        if (actionType === "toggle-cross") {
+          toggleCrossCompletion();
+        }
+      });
+    }
     window.addEventListener("keydown", (e) => {
       if ((e.metaKey || e.ctrlKey) && e.key === "s") {
         e.preventDefault();
@@ -2034,7 +2873,7 @@ HTML_TEMPLATE = """<!doctype html>
           renderDatasets();
         }
         startIdleTimer();
-        const suffix = state.activeDataset ? ` · ${shortId(state.activeDataset)}` : state.datasetMode ? " · select a dataset" : "";
+        const suffix = state.activeDataset ? ` | ${shortId(state.activeDataset)}` : state.datasetMode ? " | select a dataset" : "";
         setStatus(`Logged in as ${state.annotator}${suffix}`, "ok");
       } catch (err) {
         console.error(err);
@@ -2334,7 +3173,18 @@ def main() -> None:
         print(f"Saving annotated copy to: {state.save_path}")
     print(f"Serving on http://{args.host}:{args.port} (Ctrl+C to stop)")
     if args.open_browser:
-        webbrowser.open(f"http://{args.host}:{args.port}")
+        # In headless / remote / tmux environments, `webbrowser.open()` can block
+        # (e.g., waiting on a CLI browser subprocess). Launch it asynchronously so
+        # the HTTP server still starts accepting connections immediately.
+        url = f"http://{args.host}:{args.port}"
+
+        def _open_browser_nonblocking() -> None:
+            try:
+                webbrowser.open(url)
+            except Exception as exc:  # pragma: no cover - best-effort helper
+                print(f"Warning: failed to open browser for {url}: {exc}")
+
+        threading.Thread(target=_open_browser_nonblocking, daemon=True).start()
 
     try:
         server.serve_forever()
