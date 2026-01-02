@@ -40,74 +40,155 @@ Before proceeding, you must understand these core concepts:
 - **User Attributes**:
   Definition: Factual, discrete attributes about the user (e.g., occupation, family members, owned devices), which can be accurately stored and updated.
 
-  Examples:
-  - "user_occupation": [
-      "Software Engineer"
-    ]
-  - "user_family_members": [
-      "partner",
-      "child (age 5)"
-    ]
-  - "user_smart_home_devices": [
-      "Amazon Echo Dot",
-      "Philips Hue bulbs"
-    ]
+  **STRUCTURE**: Attributes are divided into two types:
   
-  Constraints:
-  - All user attribute values must be concrete and unambiguous.
-    Bad: "Master's degree in technology-related field" (Too vague, should be a specific degree and field)
-    Good (single-element list): ["Master's degree in Computer Science from a public university"]
-    Bad: "Moderate income" (Too vague, should be a specific amount)
-    Good: ["40000 USD per year before tax from primary job"]
-    Bad: "High-end laptop (e.g., Dell XPS), smartphone (e.g., Google Pixel), smart home hub (e.g., Amazon Echo Dot)" (Too vague, should be a specific brand and model)
-    Good:
-      [
-        "Dell XPS 13 (ultrabook used mainly for software development)",
-        "Google Pixel 7 (Android smartphone used for daily communication)",
-        "Amazon Echo Dot (voice assistant in the living room)"
-      ]
+  #### Type 1: Singular Attributes
+  - **Semantics**: Dimensions that have exactly ONE value at any given time, but the value can change over time.
+  - **Structure**: Simple key-value pairs where each key is an attribute name and the value is a concrete description string.
+  - **Operations**: Only **modify** (replace the current value with a new value)
   
-  Allowed types of user attribute change:
+  Examples of singular attributes:
+  ```json
+  "singular": {
+    "primary_residence": "Rented studio apartment in downtown area, 450 sq ft",
+    "primary_job": "Software Engineer at mid-size tech startup, full-time",
+    "marital_status": "Single, never married",
+    "primary_vehicle": "2018 Honda Civic (reliable sedan for daily commute)",
+    "highest_education": "Master's degree in Computer Science from State University"
+  }
+  ```
+  
+  #### Type 2: Collection Attributes
+  - **Semantics**: Dimensions that can have MULTIPLE items simultaneously, where items can be added or removed independently.
+  - **Structure**: Key-value pairs where each key is a collection name and the value is an **array of concrete description strings**.
+  - **Operations**: **add** (append new items to the array), **remove** (remove specific items from the array)
+  - **Important**: Each description string should be sufficiently specific to be uniquely identifiable (include brand, model, key details).
+  
+  Examples of collection attributes:
+  ```json
+  "collections": {
+    "owned_devices": [
+      "Dell XPS 13 (ultrabook used mainly for software development)",
+      "Google Pixel 7 (Android smartphone for daily communication)",
+      "Apple Watch SE (entry-level fitness tracker)",
+      "iPad Air 2022 (tablet for reading and media consumption)"
+    ],
+    "active_subscriptions": [
+      "Netflix Standard plan (streaming service for TV shows and movies)",
+      "O'Reilly Media annual subscription (technical learning platform)",
+      "Spotify Premium family plan (ad-free music streaming)"
+    ],
+    "close_friends": [
+      "Alex (college roommate, meets monthly for dinner in downtown)",
+      "Jordan (coworker from engineering team, goes hiking together on weekends)",
+      "Sam (childhood friend from hometown, stays in touch via video calls)"
+    ]
+  }
+  ```
+  
+  **How to decide which type:**
+  - Ask: "Can the user have multiple of these simultaneously?"
+    - YES → Collection (e.g., devices, friends, hobbies, subscriptions, skills)
+    - NO → Singular (e.g., primary residence, marital status, main job)
+  - Ask: "Does it make sense to talk about 'adding' or 'removing' items?"
+    - YES → Collection
+    - NO → Singular (you modify the single value instead)
+  
+  **Constraints for all attributes:**
+  - All attribute values must be concrete and unambiguous.
+    Bad: "Master's degree in technology-related field" (Too vague)
+    Good: "Master's degree in Computer Science from State University"
+    Bad: "Moderate income" (Too vague)
+    Good: "42000 USD per year before tax from primary software engineering job"
+    Bad: "High-end laptop" (Too vague)
+    Good: "Dell XPS 13 (ultrabook used mainly for software development)"
+  
+  - For collection items, each description must be specific enough to be uniquely identifiable.
+    This typically means including: brand/name, model/type, and key distinguishing details.
+  
+  **Allowed operations:**
+
+  ##### For Singular Attributes:
+  
+  - **modify**:
+    Meaning: Replace the current value with a new value.
+    **CRITICAL**: You can ONLY modify attributes that already exist in previous state.
+    **DELTA FORMAT**: Provide the new value as a string.
+    
+    Example:
+      Current state: {
+        "primary_residence": "Rented studio apartment in downtown area"
+      }
+      Delta: {
+        "op": "modify",
+        "attribute_type": "singular",
+        "attribute_name": "primary_residence",
+        "delta": "Recently purchased two-bedroom apartment in suburban area",
+        "reason": "Bought first home after saving for down payment"
+      }
+
+  ##### For Collection Attributes:
 
   - **add**:
-    Meaning:
-      For this attribute_name, introduce new list elements that were not present
-      in the previous window. This covers two cases:
-      (1) The attribute already exists: append one or more new values to its list.
-      (2) The attribute did not exist for this user in the previous window
-          (i.e., was not recorded at all): start tracking this attribute by giving
-          it a non-empty list as its initial value.
+    Meaning: Add new items to a collection array. This covers:
+      (1) The collection already exists: append new items to the existing array
+      (2) The collection doesn't exist: create the collection with initial items
 
-    Example (append to an existing attribute list):
-      Before: "user_owned_devices": [
-        "Dell XPS 13 (ultrabook used mainly for development)",
-        "Google Pixel 7 (Android smartphone used for daily communication)"
-      ]
-      new_state: "user_owned_devices": [
-        "Dell XPS 13 (ultrabook used mainly for development)",
-        "Google Pixel 7 (Android smartphone used for daily communication)",
-        "Apple Watch SE (entry-level smartwatch for fitness tracking)"
-      ]
+    **DELTA FORMAT**: Provide an array of new description strings to add
+    
+    Example (add to existing collection):
+      Current state: {
+        "owned_devices": [
+          "Dell XPS 13 (ultrabook for development)",
+          "Google Pixel 7 (Android smartphone)"
+        ]
+      }
+      Delta: {
+        "op": "add",
+        "attribute_type": "collections",
+        "collection_name": "owned_devices",
+        "delta": [
+          "Apple Watch SE (entry-level smartwatch for fitness tracking)",
+          "Sony WH-1000XM4 (noise-canceling headphones for focused work)"
+        ],
+        "reason": "Purchased fitness tracker and quality headphones for better productivity"
+      }
 
-    Example (start tracking a previously absent attribute):
-      Before: (no 'user_subscriptions' attribute recorded for this user)
-      new_state: "user_subscriptions": [
-        "O'Reilly Media subscription (used for technical learning and reading)"
-      ]
+    Example (create new collection):
+      Current state: (no 'active_subscriptions' exists)
+      Delta: {
+        "op": "add",
+        "attribute_type": "collections",
+        "collection_name": "active_subscriptions",
+        "delta": [
+          "O'Reilly Media annual subscription (for technical learning and skill development)"
+        ],
+        "reason": "Started subscription to improve programming skills"
+      }
 
   - **remove**:
-    Meaning: for a specific attribute, delete an **existing value** that was present in the previous window.
-
-  - **modify**:
-    Meaning: change the list of values for an existing attribute.
-    **CRITICAL**: You can ONLY use "modify" if this attribute already exists in a previous window (either in initial state or added in an earlier delta). You cannot modify an attribute that has never been defined.
+    Meaning: Remove specific items from a collection array.
+    **DELTA FORMAT**: Provide an array of description strings to remove (must match exactly).
+    
     Example:
-      Before: "user_residence": [
-        "Lives in a rented studio apartment in downtown area"
-      ]
-      After: "user_residence": [
-        "Lives in a recently purchased two-bedroom apartment in a suburban area"
-      ]
+      Current state: {
+        "owned_devices": [
+          "Dell XPS 13 (ultrabook for development)",
+          "iPhone 8 (old backup phone, rarely used)",
+          "Google Pixel 7 (Android smartphone)"
+        ]
+      }
+      Delta: {
+        "op": "remove",
+        "attribute_type": "collections",
+        "collection_name": "owned_devices",
+        "delta": [
+          "iPhone 8 (old backup phone, rarely used)"
+        ],
+        "reason": "Sold old backup phone as it was no longer needed"
+      }
+    
+    **Important**: The description strings in the delta must match the exact strings in the current state.
 
 - **Habits**:
   Definition: Recurring behavioral patterns (e.g., morning jogging routine, weekly meal prep), which can be identified and consolidated from repeated observations.
@@ -121,13 +202,15 @@ Before proceeding, you must understand these core concepts:
   - description: a short natural language description (5–20 words) summarizing the habit in human-readable form.
 
   Examples:
-  - "user_walks_dog_morning": {
-      "action": "walk_dog_on_leash",
-      "frequency": "daily",
-      "timing": "early morning before work",
-      "context": "around the residential neighborhood for 20–30 minutes",
-      "description": "User walks the dog every morning before work for 20–30 minutes."
-    }
+  ```json
+  "user_walks_dog_morning": {
+    "action": "walk_dog_on_leash",
+    "frequency": "daily",
+    "timing": "early morning before work (6:30 AM - 7:00 AM)",
+    "context": "around the residential neighborhood for 20–30 minutes",
+    "description": "User walks the dog every morning before work for 20–30 minutes."
+  }
+  ```
 
   Constraints:
   - All habit fields must be concrete and unambiguous.
@@ -138,11 +221,29 @@ Before proceeding, you must understand these core concepts:
   Allowed types of habit change:
   - **acquire**:
     Meaning: a new habit appears in this window.
+    **DELTA FORMAT**: Provide the complete habit object
+    
   - **drop**:
     Meaning: a **previously existing habit** ceases entirely.
+    **DELTA FORMAT**: Set value to null
+    
   - **adjust**:
     Meaning: frequency, timing, duration, or context of a habit changes.
-    **CRITICAL**: You can ONLY use "adjust" if this habit already exists in a previous window (either in initial state or acquired in an earlier delta). You cannot adjust a habit that has never been defined.
+    **CRITICAL**: You can ONLY use "adjust" if this habit already exists in a previous window.
+    **DELTA FORMAT**: Provide only the fields that are changing (partial habit object)
+    
+    Example:
+      Current state: {
+        "action": "morning_jog",
+        "frequency": "3_times_per_week",
+        "timing": "6:00 AM - 6:30 AM",
+        "context": "neighborhood streets",
+        "description": "..."
+      }
+      Delta (adjust frequency): {
+        "frequency": "5_times_per_week",
+        "description": "Increased jogging frequency to 5 times per week for better fitness"
+      }
 
 - **Preferences**:
   Definition: Subjective inclinations that guide choices (e.g., preferring window seats, favoring spicy food).
@@ -164,25 +265,36 @@ Before proceeding, you must understand these core concepts:
   - new equipment/resources (e.g., prime lens → preference for street photography)
 
   Examples of preferences:
-  - "investment_focus": "Prefers long-term investments in technology stocks and diversified index funds over short-term trading."
+  ```json
+  "preferences_state": {
+    "initial": {
+      "investment_focus": "Prefers long-term investments in technology stocks and diversified index funds over short-term trading",
+      "exercise_style": "Prefers solo outdoor activities like running and cycling over group gym classes",
+      "learning_approach": "Prefers hands-on project-based learning over passive video tutorials"
+    }
+  }
+  ```
 
   Constraints:
   - All preference values must be concrete and unambiguous.
-    Bad: "better", "worse", "moderate", "likes it a lot" (Too vague, should be a specific preference description)
+    Bad: "better", "worse", "moderate", "likes it a lot" (Too vague)
     Good: "Prefers quiet solo activities over group-based social gatherings"
 
   Allowed types of preference change:
   - **shift**:
     Meaning: dominant preference changes from one option to another.
-    **CRITICAL**: You can ONLY use "shift" if this preference already exists in a previous window (either in initial state or shifted in an earlier delta). You cannot shift a preference that has never been defined.
+    **CRITICAL**: You can ONLY use "shift" if this preference already exists in a previous window.
+    **DELTA FORMAT**: Provide the new preference value (string)
 
   - **amplify**:
     Meaning: preference strength increases.
-    **CRITICAL**: You can ONLY use "amplify" if this preference already exists in a previous window (either in initial state or amplified in an earlier delta). You cannot amplify a preference that has never been defined.
+    **CRITICAL**: You can ONLY use "amplify" if this preference already exists in a previous window.
+    **DELTA FORMAT**: Provide the amplified preference description (string)
 
   - **attenuate**:
     Meaning: preference strength weakens.
-    **CRITICAL**: You can ONLY use "attenuate" if this preference already exists in a previous window (either in initial state or attenuated in an earlier delta). You cannot attenuate a preference that has never been defined.
+    **CRITICAL**: You can ONLY use "attenuate" if this preference already exists in a previous window.
+    **DELTA FORMAT**: Provide the attenuated preference description (string)
   
 ---
 
@@ -225,16 +337,16 @@ You are building the profile for **{{ life_domain }}** ONLY.
 Now that you understand the core concepts and constraints, here's how to generate the trajectory:
 
 **For the initial state (window 0):**
-1. Define the baseline state for attributes, habits, and preferences in this domain
+1. Define the baseline state for attributes (both singular and collections), habits, and preferences in this domain
 2. Write a summary describing the user's starting state
 
 **For each subsequent time window (window 1, 2, 3, ...):**
 1. **First, write the window_description**: Identify the salient external factors (from world background: seasons, events, circumstances) and the user's internal motivations/focus during this period. This is the **latent causal variable** that will drive coordinated changes across attributes, habits, and preferences.
 
 2. **Then, generate the trajectory deltas**: Based on the window_description, determine how attributes, habits, and preferences evolve together in directionally coherent ways:
-   - user_attributes_delta: what gets added, removed, or modified
-   - habits_delta: what habits are acquired, adjusted, or dropped
-   - preferences_delta: what preferences shift, amplify, or attenuate
+   - user_attributes_delta: what gets added, removed, or modified (delta format)
+   - habits_delta: what habits are acquired, adjusted, or dropped (delta format)
+   - preferences_delta: what preferences shift, amplify, or attenuate (delta format)
    
 3. **Finally, write the summary**: Synthesize all changes and explicitly connect them back to the window_description's driving factors (format: "Due to [context], the user [changed X, Y, Z]...")
 
@@ -311,12 +423,12 @@ This means:
      (e.g., budget level, common usage, defining feature), not marketing language.
 
    - Example format:
-       "Blue Buffalo Life Protection (a mid-range dry dog food focused on digestion)"
-       "Canon EF 50mm f/1.8 (an entry-level prime lens for portraits)"
-       "iRobot Roomba 694 (a budget robot vacuum for small apartments)"
+       "Blue Buffalo Life Protection (mid-range dry dog food focused on digestion)"
+       "Canon EF 50mm f/1.8 (entry-level prime lens for portraits)"
+       "iRobot Roomba 694 (budget robot vacuum for small apartments)"
 
 2. **No vague descriptions**:
-   - Facts about the user must be stated definitively, not as guesses using words like “likely” or “probably.”
+   - Facts about the user must be stated definitively, not as guesses using words like "likely" or "probably."
 
 ---
 ### Output Format (JSON only)
@@ -330,57 +442,107 @@ Return strictly valid JSON with this schema:
 {
   "life_domain": "{{ life_domain }}",
   "initial_state": {
-      "user_attributes_state": {
-        "initial": {
-          {
-            "<attribute_name>": <attribute value, list format of concrete values>,
-          },
-          ...
-        }
+    "user_attributes_state": {
+      "singular": {
+        "<attribute_name>": "<concrete value string>",
+        ...
       },
-      "habits_state": {
-        "initial": {
-          "<habit_name>": {
-              "action": "<concrete action label, e.g., 'walk_dog_on_leash'>",
-              "frequency": "<frequency pattern, e.g., 'daily', '3_times_per_week'>",
-              "timing": "<typical timing within the day, e.g., 'early morning before work (6:00 AM–6:30 AM)'>",
-              "context": "<setting / environment, e.g., 'around the neighborhood for 20–30 minutes'>",
-              "description": "<5–20 words natural language description of this habit>"
-            }
+      "collections": {
+        "<collection_name>": [
+          "<concrete description string 1>",
+          "<concrete description string 2>",
           ...
-        }
-      },
-      "preferences_state": {
-        "initial": {
-          {
-            "<preference_name>": "<preference value, should be a concrete value, 5-20 words description of what this preference value means in natural language>",
-          },
-          ...
-        }
-      },
-      "summary": "<summary of inital state, should include all the attributes, habits, and preferences in initial state>",
+        ],
+        ...
+      }
     },
+    "habits_state": {
+      "initial": {
+        "<habit_name>": {
+          "action": "<concrete action label>",
+          "frequency": "<frequency pattern>",
+          "timing": "<typical timing>",
+          "context": "<setting / environment>",
+          "description": "<5–20 words natural language description>"
+        },
+        ...
+      }
+    },
+    "preferences_state": {
+      "initial": {
+        "<preference_name>": "<concrete preference value, 5-20 words>",
+        ...
+      }
+    },
+    "summary": "<summary of initial state>"
+  },
   "time_windows": [
     {
       "window_id": "w1",
       "time_range": ["YYYY-MM-DD", "YYYY-MM-DD"],
-      "window_description": "<short description of the general conditions that motivate changes>",
+      "window_description": "<short description of conditions motivating changes>",
       "user_attributes_delta": {
         "operations": [
+          // For singular attributes:
           {
-            "op": "add" | "remove" | "modify",
-            "attribute_name": "<attribute name (e.g., 'user_occupation', 'user_family_members', 'user_owned_devices')>",
-            "new_state": <new value or null, list format of concrete values>,
-            "reason": "<short reason for this change>"
+            "op": "modify",
+            "attribute_type": "singular",
+            "attribute_name": "<attribute name>",
+            "delta": "<new value string>",
+            "reason": "<short reason>"
+          },
+          // For collection attributes (add):
+          {
+            "op": "add",
+            "attribute_type": "collections",
+            "collection_name": "<collection name>",
+            "delta": [
+              "<new description string 1>",
+              "<new description string 2>",
+              ...
+            ],
+            "reason": "<short reason>"
+          },
+          // For collection attributes (remove):
+          {
+            "op": "remove",
+            "attribute_type": "collections",
+            "collection_name": "<collection name>",
+            "delta": [
+              "<description string to remove (must match exactly)>",
+              ...
+            ],
+            "reason": "<short reason>"
           }
         ]
       },
       "habits_delta": {
         "operations": [
           {
-            "op": "acquire" | "adjust" | "drop",
-            "habit_name": "<habit name (e.g., 'user_walks_dog_morning', 'user_evening_gym_sessions')>",
-            "new_state": "<null if the habit is dropped, or a JSON object with fields {action, frequency, timing, context, description}; description must be a concrete 5–20 word explanation of what this habit means in natural language>",
+            "op": "acquire",
+            "habit_name": "<habit name>",
+            "delta": {
+              "action": "<action>",
+              "frequency": "<frequency>",
+              "timing": "<timing>",
+              "context": "<context>",
+              "description": "<5–20 word description>"
+            },
+            "reason": "<short reason>"
+          },
+          {
+            "op": "adjust",
+            "habit_name": "<existing habit name>",
+            "delta": {
+              "<field_to_change>": "<new value>",
+              "description": "<updated 5–20 word description>"
+            },
+            "reason": "<short reason>"
+          },
+          {
+            "op": "drop",
+            "habit_name": "<existing habit name>",
+            "delta": null,
             "reason": "<short reason>"
           }
         ]
@@ -389,13 +551,13 @@ Return strictly valid JSON with this schema:
         "operations": [
           {
             "op": "shift" | "amplify" | "attenuate",
-            "preference_name": "<preference name (e.g., 'preferred_subject_to_photograph', 'preferred_type_of_pet', 'preferred_exercise_style')>",
-            "new_state": "<new value, should be a concrete value, 5-20 words description of what this preference value means in natural language>",
-            "reason": "<short reason (e.g., new experience / world factor)>"
+            "preference_name": "<existing preference name>",
+            "delta": "<new preference value, 5-20 words>",
+            "reason": "<short reason>"
           }
         ]
       },
-      "summary": "<summary of this window, should include all the attributes, habits, and preferences within this window>",
+      "summary": "<summary of this window>"
     },
     ...
   ]
