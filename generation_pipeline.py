@@ -45,12 +45,16 @@ Expected JSON shape:
   "life_domain": "...",
   "initial_state": {
     "user_attributes_state": {
-        "initial": {
-          {
-            "<attribute_name>": <attribute value, list format of concrete values>,
-          },
-        }
+      "singular": {
+        "<attribute_name>": "<concrete value string>"
       },
+      "collections": {
+        "<collection_name>": [
+          "<concrete description string 1>",
+          "<concrete description string 2>"
+        ]
+      }
+    },
     "habits_state": {
       "initial": {
         "<habit_name>": {
@@ -63,12 +67,10 @@ Expected JSON shape:
       }
     },
     "preferences_state": {
-        "initial": {
-          {
-            "<preference_name>": "<preference value, should be a concrete value, 5-20 words description of what this preference value means in natural language>",
-          },
-        }
-      },
+      "initial": {
+        "<preference_name>": "<preference value, 5-20 words>"
+      }
+    },
     "summary": "..."
   },
   "time_windows": [
@@ -79,9 +81,20 @@ Expected JSON shape:
       "user_attributes_delta": {
         "operations": [
           {
-            "op": "add|remove|modify",
+            "op": "modify",
+            "attribute_type": "singular",
             "attribute_name": "...",
-            "new_state": <list or null>,
+            "delta": "<new value string>",
+            "reason": "..."
+          },
+          {
+            "op": "add|remove",
+            "attribute_type": "collections",
+            "collection_name": "...",
+            "delta": [
+              "<item 1>",
+              "<item 2>"
+            ],
             "reason": "..."
           }
         ]
@@ -91,7 +104,13 @@ Expected JSON shape:
           {
             "op": "acquire|adjust|drop",
             "habit_name": "...",
-            "new_state": null or dict(keys: action, frequency, timing, context, description),
+            "delta": null or {
+              "action": "...",
+              "frequency": "...",
+              "timing": "...",
+              "context": "...",
+              "description": "..."
+            },
             "reason": "..."
           }
         ]
@@ -101,7 +120,7 @@ Expected JSON shape:
           {
             "op": "shift|amplify|attenuate",
             "preference_name": "...",
-            "new_state": "<concrete preference value>",
+            "delta": "<concrete preference value>",
             "reason": "..."
           }
         ]
@@ -111,7 +130,6 @@ Expected JSON shape:
   ]
 }
 """
-
 in_domain_data_review_revise_prompt = Template("""You are a strict compliance auditor for dynamic user profiles.
 
 Life domain: {{ domain_name }}: {{ domain_scope_definition }}
@@ -125,30 +143,55 @@ OPERATION SEMANTICS REFERENCE
 
 Before auditing, understand the operation semantics:
 
-**For user_attributes (arrays like user_subscriptions, user_owned_devices):**
-- "add": typically adds items to existing list
-  - new_state contains the COMPLETE new array (all old items + new items)
-  - Can be used multiple times on the same attribute across windows
-  - Example: initial ["A", "B"] → w1 add ["A", "B", "C"] → w3 add ["A", "B", "C", "D"]
+**For user_attributes:**
 
-- "modify": typically changes existing items
-  - new_state contains the COMPLETE new array
-  - Can be used multiple times on the same attribute across windows
-  - Example: initial ["A", "B"] → w1 modify ["A", "C"] → w3 modify ["A", "D"]
-  
-- "remove": typically removes items from existing list
-  - new_state contains the COMPLETE new array (excluding removed items)
-  - Example: initial ["A", "B"] → w1 remove ["A"] → w3 remove ["B"]
+USER ATTRIBUTES ARE DIVIDED INTO TWO TYPES:
+
+1. SINGULAR ATTRIBUTES (single-value attributes):
+   - Structure: Simple key-value where value is a string
+   - Example: "primary_residence": "Rented studio apartment downtown"
+   
+   - "modify": Replace the current value with a new value
+     * delta contains the NEW value string
+     * Can be used multiple times on the same attribute across windows
+     * The attribute MUST exist in initial_state or a prior window
+     * Example: initial "Rented studio apartment" → w1 modify delta="Purchased two-bedroom condo" → w3 modify delta="Moved to suburban house"
+
+2. COLLECTION ATTRIBUTES (multi-item collections):
+   - Structure: Key-value where value is an ARRAY of description strings
+   - Example: "owned_devices": ["Dell XPS 13 (laptop)", "Google Pixel 7 (phone)"]
+   
+   - "add": Add new items to the array
+     * delta contains an array of NEW item strings to append
+     * Can be used multiple times on the same collection across windows
+     * Example: initial ["A", "B"] → w1 add delta=["C", "D"] → w3 add delta=["E"]
+     * Result progression: ["A", "B"] → ["A", "B", "C", "D"] → ["A", "B", "C", "D", "E"]
+   
+   - "remove": Remove specific items from the array
+     * delta contains an array of item strings to remove (must match exactly)
+     * Example: initial ["A", "B", "C"] → w1 remove delta=["B"] → w3 remove delta=["A"]
+     * Result progression: ["A", "B", "C"] → ["A", "C"] → ["C"]
 
 **For habits:**
 - "acquire": Create a new habit (habit must NOT exist before)
+  * delta contains the complete habit object with all required fields
+  
 - "adjust": Modify an existing habit (habit MUST exist in initial_state or prior windows)
-- "drop": Remove a habit (new_state must be JSON null, not string "none")
+  * delta contains ONLY the fields being changed (partial habit object)
+  * Must include updated "description" field
+  
+- "drop": Remove a habit entirely
+  * delta must be JSON null (not string "none" or empty object)
 
 **For preferences:**
 - "shift": Change preference to different value (preference MUST exist before)
+  * delta contains the new preference value string
+  
 - "amplify": Strengthen preference (preference MUST exist before)
+  * delta contains the amplified preference description string
+  
 - "attenuate": Weaken preference (preference MUST exist before)
+  * delta contains the attenuated preference description string
 
 =================================================================================
 COMPLIANCE CHECKLIST (MUST ALL PASS)
@@ -186,7 +229,10 @@ w2: acquire "evening_olympic_viewing" reason="watch Olympics coverage"
 
 ### RULE 2: MODIFICATION OPERATIONS REQUIRE PRIOR EXISTENCE
 **What to check:**
-- "modify" (attributes), "adjust" (habits), "shift/amplify/attenuate" (preferences) operations can ONLY be used if the target existed in a prior window
+- For SINGULAR attributes: "modify" can ONLY be used if the attribute existed in a prior state
+- For COLLECTION attributes: "add" and "remove" operations work on collections (can create new or modify existing)
+- For HABITS: "adjust" can ONLY be used if the habit existed in a prior state
+- For PREFERENCES: "shift/amplify/attenuate" can ONLY be used if the preference existed in a prior state
 
 **How to detect:**
 - For each modify/adjust/shift/amplify/attenuate operation in window N:
@@ -194,16 +240,23 @@ w2: acquire "evening_olympic_viewing" reason="watch Olympics coverage"
   * If not found, this is a violation
 
 **Examples of violations:**
+w2: op="modify", attribute_name="primary_vehicle"
+→ "primary_vehicle" never defined in initial_state.singular
+
 w2: op="adjust", habit_name="morning_jog"
-→ "morning_jog" never defined in initial_state or w1
+→ "morning_jog" never defined in initial_state.habits_state.initial or acquired in w1
 
 w3: op="shift", preference_name="exercise_style"
-→ "exercise_style" never defined in initial_state or w1-w2
+→ "exercise_style" never defined in initial_state.preferences_state.initial
 
 **How to fix:**
 - If a modify/adjust/shift/amplify/attenuate operation targets a non-existent item:
   * Add the missing item to initial_state with a baseline value
   * Update initial_state summary to mention it
+- OR change the operation type:
+  * For attributes: change "modify" to "add" (if creating new singular) or use "add" for collections
+  * For habits: change "adjust" to "acquire"
+  * For preferences: cannot fix this way - must add to initial_state
 
 ---
 
@@ -213,25 +266,29 @@ w3: op="shift", preference_name="exercise_style"
 - initial_state object MUST have: "summary"
 - All habits MUST be complete dicts with: action, frequency, timing, context, description
 - Dropped habits MUST use JSON null (not string "none")
+- user_attributes_state MUST have both "singular" and "collections" keys (can be empty objects)
 
 **How to detect:**
 - Check for missing keys in window objects
-- Validate habit structure in all habit_state.initial and habits_delta operations
-- Check that drop operations set new_state to null (not "none", not empty string)
+- Validate habit structure in all habits_state.initial and habits_delta operations
+- Check that drop operations set delta to null (not "none", not empty string)
+- Verify user_attributes_state structure
 
 **Examples of violations:**
 time_windows[1] missing "window_description"
 initial_state missing "summary"
 habit object: {"action": "walk_dog", "frequency": "daily"} 
 (Missing: timing, context, description)
-drop operation: "new_state": "none" 
-(Should be: "new_state": null)
+drop operation: "delta": "none" 
+(Should be: "delta": null)
+initial_state.user_attributes_state missing "collections" key
 
 **How to fix:**
 - Add missing window_description based on window context
 - Generate summary by synthesizing changes in that window
 - Complete habit dicts with all required fields
 - Replace "none" strings with JSON null
+- Add missing structure keys with appropriate empty values
 
 ---
 
@@ -254,12 +311,20 @@ drop operation: "new_state": "none"
 - If missing, determine if it's essential (would a realistic person already have it?)
 
 **Examples of violations:**
-initial_state: no smartphone listed
-→ w3: add the first item to "user_owned_devices"
-(Violation: In modern society, an adult should own a phone.)
+initial_state.user_attributes_state.collections.owned_devices: [] (empty)
+→ w3: add operation adds first smartphone
+(Violation: A modern adult should already own a phone in initial_state)
+
+initial_state.preferences_state.initial: no "exercise_style" preference
+→ w2: shift operation changes "exercise_style"
+(Violation: Must initialize the preference in initial_state before shifting it)
 
 **How to fix:**
-- Add the missing item to initial_state with a realistic baseline value
+- Add the missing item to initial_state with a realistic baseline value:
+  * For singular attributes: add to initial_state.user_attributes_state.singular
+  * For collection attributes: add to initial_state.user_attributes_state.collections
+  * For habits: add to initial_state.habits_state.initial
+  * For preferences: add to initial_state.preferences_state.initial
 - Update initial_state summary to mention it
 - Ensure the baseline is appropriate for the user's profile (income, tech literacy, etc.)
 
@@ -295,21 +360,26 @@ CRITICAL: CASCADE EFFECTS
 **Examples of cascade effects:**
 
 1. **Adding to initial_state affects later modifications:**
-   - Fix: Add "smartphone" to initial_state.user_attributes_state.initial.user_owned_devices
-   - Cascade: Change w3's op from "add" to "modify" for the smartphone upgrade
+   - Fix: Add "primary_vehicle" to initial_state.user_attributes_state.singular
+   - Cascade: Change w3's op from "add" to "modify" for the vehicle upgrade
    - Your patches MUST include BOTH changes
 
-2. **Adjusting a habit timing affects overlapping habits:**
+2. **Adding collection item to initial_state affects later adds:**
+   - Fix: Add "Google Pixel 7" to initial_state.user_attributes_state.collections.owned_devices
+   - Cascade: If w2 has an "add" operation that includes this phone, remove it from the delta
+   - Your patches MUST include BOTH the initial_state addition and the w2 modification
+
+3. **Adjusting a habit timing affects overlapping habits:**
    - Fix: Shift "morning_exercise" from 6:00-7:00 to 7:00-8:00
    - Cascade: If "morning_commute" was 7:30-8:30, it now overlaps and must also shift
    - Your patches MUST include BOTH timing changes
 
-3. **Adding a rollback for short-term change affects summary:**
+4. **Adding a rollback for short-term change affects summary:**
    - Fix: Add drop operation for "winter_hydration_habit" in w3
    - Cascade: Update w3's summary to mention the habit was dropped
    - Your patches MUST include BOTH the operation and summary update
 
-4. **Changing operation type affects later references:**
+5. **Changing operation type affects later references:**
    - Fix: Change w1's "adjust" to "acquire" for a habit
    - Cascade: If w2 references this habit with "adjust", verify it's still valid
    - Your patches MUST verify and fix any downstream references
@@ -325,7 +395,7 @@ PATCH FORMAT GUIDE
 =================================================================================
 
 **Path format:**
-- Use dot notation with array indices: "time_windows[0].habits_delta.operations[1].new_state.timing"
+- Use dot notation with array indices: "time_windows[0].habits_delta.operations[1].delta.timing"
 - Path should point to the MINIMAL unit that needs to change
 
 **Action types:**
@@ -346,17 +416,31 @@ Choose the most appropriate action type for the operation.
      "value": {
        "op": "drop",
        "habit_name": "winter_hydration",
-       "new_state": null,
+       "delta": null,
        "reason": "Summer humidity makes aggressive hydration unnecessary"
      }
+   }
+   
+   Example: Add a new item to a collection in initial_state
+   {
+     "path": "initial_state.user_attributes_state.collections.owned_devices",
+     "action": "append",
+     "value": "Google Pixel 7 (Android smartphone for daily communication)"
    }
 
 3. **"replace"** - Replace an existing value
    Example: Change a timing string
    {
-     "path": "time_windows[0].habits_delta.operations[1].new_state.timing",
+     "path": "time_windows[0].habits_delta.operations[1].delta.timing",
      "action": "replace",
      "value": "8:45-9:15 AM"
+   }
+   
+   Example: Change operation from adjust to acquire
+   {
+     "path": "time_windows[1].habits_delta.operations[0].op",
+     "action": "replace",
+     "value": "acquire"
    }
 
 4. **"add_key"** - Add a new key-value pair to an object (for missing required fields or structural issues)
@@ -376,20 +460,26 @@ Choose the most appropriate action type for the operation.
      "value": "Spring weather and increased outdoor activity opportunities motivate fitness improvements."
    }
    
-   Example: Add entirely missing section to initial_state
+   Example: Add missing singular attribute to initial_state
    {
-     "path": "initial_state",
+     "path": "initial_state.user_attributes_state.singular",
      "action": "add_key",
-     "key": "preferences_state",
+     "key": "primary_vehicle",
+     "value": "2018 Honda Civic (reliable sedan for daily commute)"
+   }
+   
+   Example: Add entirely missing collections object to initial_state
+   {
+     "path": "initial_state.user_attributes_state",
+     "action": "add_key",
+     "key": "collections",
      "value": {
-       "initial": {
-         "exercise_style": "Prefers outdoor running over gym workouts",
-         "meal_preference": "Prefers home-cooked meals with fresh ingredients"
-       }
+       "owned_devices": [
+         "Dell XPS 13 (laptop for work)",
+         "Google Pixel 7 (smartphone)"
+       ]
      }
    }
-
-
 
 =================================================================================
 OUTPUT FORMAT
@@ -403,18 +493,16 @@ Return a JSON object with this structure:
       "violation_type": "short_term_followups" | "operation_without_prior_existence" | "required_fields_violation" | "essential_items_violation" | "temporal_feasibility_violation",
       "location": "time_windows[2].habits_delta.operations[0]",
       "violation_description": "Short-term habit 'daily_hydration' acquired in winter (w1) but not adjusted in summer (w3)",
+      "cascade_note": "Must also update w3 summary to reflect the habit adjustment",
       "patches": [
         {
-          "path": "time_windows[2].habits_delta.operations[0]",
+          "path": "time_windows[2].habits_delta.operations",
           "action": "append",
           "value": {
             "op": "adjust",
             "habit_name": "daily_hydration",
-            "new_state": {
-              "action": "drink_water_regularly",
+            "delta": {
               "frequency": "when_thirsty",
-              "timing": "throughout_the_day",
-              "context": "using a standard water bottle",
               "description": "Reduced frequency as summer humidity makes constant hydration less necessary"
             },
             "reason": "Summer humidity reduces need for aggressive hydration routine"
@@ -423,7 +511,7 @@ Return a JSON object with this structure:
         {
           "path": "time_windows[2].summary",
           "action": "replace",
-          "value": "<you should update the summary to mention the hydration adjustment>"
+          "value": "Due to summer's increased humidity, user reduces hydration routine frequency. Other habits continue as established."
         }
       ]
     }
@@ -1394,137 +1482,228 @@ Full dynamic profiles by domain (initial state + deltas):
 {{ dynamic_profiles_json }}
 
 =================================================================================
+DATA STRUCTURE REFERENCE
+=================================================================================
+
+Each domain profile has this structure:
+
+{
+  "life_domain": "<domain_name>",
+  "initial_state": {
+    "user_attributes_state": {
+      "singular": {
+        "<attribute_name>": "<value_string>",
+        ...
+      },
+      "collections": {
+        "<collection_name>": ["<item_1>", "<item_2>", ...],
+        ...
+      }
+    },
+    "habits_state": {
+      "initial": {
+        "<habit_name>": {
+          "action": "...",
+          "frequency": "...",
+          "timing": "...",
+          "context": "...",
+          "description": "..."
+        },
+        ...
+      }
+    },
+    "preferences_state": {
+      "initial": {
+        "<preference_name>": "<value_string>",
+        ...
+      }
+    }
+  },
+  "time_windows": [
+    {
+      "window_id": "w1",
+      "user_attributes_delta": {
+        "operations": [
+          {
+            "op": "modify" | "add" | "remove",
+            "attribute_type": "singular" | "collections",
+            "attribute_name" | "collection_name": "...",
+            "delta": <value>,
+            "reason": "..."
+          }
+        ]
+      },
+      "habits_delta": { ... },
+      "preferences_delta": { ... }
+    }
+  ]
+}
+
+=================================================================================
 CONFLICT TYPE 1: ATTRIBUTE CONFLICT
 =================================================================================
 
 ## Definition & Detection
 
 **For Singular Attributes:**
-If the same attribute key exists in multiple domains with DIFFERENT values in the SAME window, it is a conflict.
+If the same singular attribute key exists in multiple domains with DIFFERENT values in the SAME window (including initial_state), it is a conflict.
+
+Path format: `<domain>.initial_state.user_attributes_state.singular.<attribute_name>`
 
 <Example>
 Job Title Conflict:
-// Work & Education @ initial_state
-"job_title": ["Director of Product Management"]
+// Domain: Work & Education @ initial_state.user_attributes_state.singular
+"primary_job": "Director of Product Management"
 
-// Finances & Material Living @ initial_state
-"job_title": ["Senior Product Manager"]
+// Domain: Finances & Material Living @ initial_state.user_attributes_state.singular
+"primary_job": "Senior Product Manager"
 
-→ CONFLICT: Same singular attribute, different values
+→ CONFLICT: Same singular attribute key, different values across domains
 </Example>
 
 **For Collection Attributes:**
-If the same attribute key exists in multiple domains, the attribute itself is NOT a conflict (collections remain separate in each domain). However, if individual items WITHIN the collections are mutually contradictory OR overlapping, it IS a conflict.
+If the same collection key exists in multiple domains, the collections themselves are NOT automatically a conflict (they can coexist in different domains). However, if individual items WITHIN the collections are contradictory OR overlapping, it IS a conflict.
+
+Path format: `<domain>.initial_state.user_attributes_state.collections.<collection_name>`
 
 **Understanding Contradictory Items (Category Exclusivity):**
-Contradictory items belong to the same device/product category where a user typically owns only ONE item. Common exclusive categories include:
-- Smartphones: User has one primary phone (e.g., "iPhone 14" OR "Pixel 7", not both)
-- Laptops: User has one primary laptop (e.g., "MacBook Pro" OR "Lenovo ThinkPad", not both)  
-- Tablets: User has one primary tablet (e.g., "iPad" OR "Samsung Galaxy Tab", not both)
-- Fitness trackers: User wears one tracker (e.g., "Apple Watch" OR "Fitbit", not both)
+Contradictory items belong to the same device/product category where a user typically owns only ONE primary item. Common exclusive categories include:
+- Smartphones: User has one primary phone (e.g., "iPhone 14" OR "Google Pixel 7", not both)
+- Laptops: User has one primary laptop (e.g., "MacBook Pro" OR "Lenovo ThinkPad", not both)
+- Tablets: User has one primary tablet (e.g., "iPad Pro" OR "Samsung Galaxy Tab", not both)
+- Fitness trackers: User wears one primary tracker (e.g., "Apple Watch" OR "Fitbit", not both)
 
 **Understanding Overlapping Items (Exact Duplicates):**
-Overlapping items are the EXACT SAME item listed in multiple domains (e.g., "iPhone 14" appears in both Domain A and Domain B).
+Overlapping items are the EXACT SAME item (or highly similar description) listed in multiple domains.
 
 <Example>
 Device Inventory - Contradictory Items:
-// Domain A
-"user_digital_assets": ["iPhone 14", "MacBook Pro"]
+// Domain A: Technology & Digital Life
+collections.owned_devices: [
+  "iPhone 14 (smartphone for daily communication)",
+  "MacBook Pro 2021 (laptop for development work)"
+]
 
-// Domain B  
-"user_digital_assets": ["Pixel 7", "Lenovo ThinkPad"]
+// Domain B: Work & Education
+collections.work_devices: [
+  "Google Pixel 7 (Android phone for work)",
+  "Lenovo ThinkPad X1 (work laptop)"
+]
 
-→ CONFLICT: The collections contain contradictory items within the same device category.
-   - "iPhone 14" (Domain A) vs "Pixel 7" (Domain B): Both are smartphones - user can only have ONE primary phone
-   - "MacBook Pro" (Domain A) vs "Lenovo ThinkPad" (Domain B): Both are laptops - user can only have ONE primary laptop
+→ CONFLICT: Collections contain contradictory items within the same device category
+   - "iPhone 14" (Domain A) vs "Google Pixel 7" (Domain B): Both are smartphones
+   - "MacBook Pro" (Domain A) vs "Lenovo ThinkPad" (Domain B): Both are laptops
 
 Resolution Approach:
-   - Evaluate which phone is more reasonable based on user's basic profile
-   - DELETE the less reasonable phone from its domain
-   - Apply the same logic to the laptop conflict
-   - Result: User should have exactly ONE phone and ONE laptop across all domains
-
-Example Resolution (if user prefers Apple ecosystem):
-   - Keep "iPhone 14" in Domain A
-   - DELETE "Pixel 7" from Domain B (contradictory phone)
-   - Keep "MacBook Pro" in Domain A  
-   - DELETE "Lenovo ThinkPad" from Domain B (contradictory laptop)
+   - Evaluate which devices are more reasonable based on user's basic profile
+   - If user profile indicates Apple ecosystem preference:
+     * Keep "iPhone 14" and "MacBook Pro" in Domain A
+     * REMOVE "Google Pixel 7" from Domain B's collection
+     * REMOVE "Lenovo ThinkPad" from Domain B's collection
 </Example>
 
 <Example>
 Device Inventory - Overlapping Items:
-// Domain A
-"user_digital_assets": ["iPhone 14", "MacBook Pro"]
+// Domain A: Technology & Digital Life
+collections.owned_devices: [
+  "iPhone 14 (smartphone for daily communication)",
+  "MacBook Pro 2021 (laptop)"
+]
 
-// Domain B  
-"user_digital_assets": ["iPhone 14", "AirPods"]
+// Domain B: Finances & Material Living
+collections.tracked_assets: [
+  "iPhone 14 (smartphone)",
+  "AirPods Pro (wireless earbuds)"
+]
 
-→ OVERLAP CONFLICT: The collections contain the same item ("iPhone 14" appears in both domains). In our data format, each item should be represented in only ONE domain.
+→ OVERLAP CONFLICT: "iPhone 14" appears in both domains
+Resolution: Keep in MOST AUTHORITATIVE domain (Technology) and remove from other domain (Finances)
 </Example>
 
 <Example>
 Subscription Coexistence (**NOT a conflict**):
-// Domain A
-"user_subscriptions": ["Netflix", "Spotify"]
+// Domain A: Entertainment & Leisure
+collections.streaming_subscriptions: [
+  "Netflix Standard (streaming service)",
+  "Spotify Premium (music streaming)"
+]
 
-// Domain B
-"user_subscriptions": ["Health Matters Podcast"]
+// Domain B: Learning & Personal Growth
+collections.learning_subscriptions: [
+  "O'Reilly Media (technical learning platform)"
+]
 
-→ NO CONFLICT: All items are unique across domains. User can subscribe to all simultaneously. Keep each domain's list as-is.
+→ NO CONFLICT: All items are unique across domains. User can have all simultaneously.
 </Example>
 
 **Key Distinction:**
-- Collection attributes remain separate in each domain (no merging needed)
-- **Contradictory items** are mutually exclusive (e.g., competing devices, contradictory dietary plans)
-- **Overlapping items** are exact duplicates appearing in multiple domains
-- When items are contradictory, identify and drop the less reasonable items from their respective domains
-- When items overlap, keep the item in the MOST AUTHORITATIVE domain and remove from all other domains
+- Collection attributes can exist in multiple domains (no automatic merging)
+- **Contradictory items** = mutually exclusive items (competing devices, incompatible plans)
+- **Overlapping items** = exact duplicates appearing in multiple domains
+- When items are contradictory, identify and drop the less reasonable items
+- When items overlap, keep in the MOST AUTHORITATIVE domain and remove from others
 
 ---
 
 ## Resolution Strategies
 
 **For Singular Attributes:**
-- Analyze all conflicting values across domains
-- Select the MOST REASONABLE value based on:
-  * Consistency with user's basic profile
-  * Domain authority (e.g., Work & Education owns job_title)
-- Update ALL domains to use the selected canonical value
-- Document which values were dropped and why
+1. Analyze all conflicting values across domains
+2. Select the MOST REASONABLE value based on:
+   - Consistency with user's basic profile
+   - Domain authority (e.g., "Work & Education" is authoritative for job_title)
+3. Update ALL domains to use the selected canonical value
+4. Document which values were dropped and why
 
 **For Collection Attributes:**
-- Identify specific ITEMS within the collection that are contradictory or overlapping
-- For **contradictory items**: Evaluate each for reasonableness and drop the less reasonable ones
-- For **overlapping items**: Determine the most authoritative domain and remove duplicates from other domains
-- Keep collections separate per domain; do NOT merge across domains
-- Only remove problematic items that create contradictions or redundancy
+1. Identify specific ITEMS within collections that are contradictory or overlapping
+2. For **contradictory items**: Evaluate each for reasonableness and drop the less reasonable ones
+3. For **overlapping items**: Determine the most authoritative domain and remove duplicates from other domains
+4. Keep collections separate per domain; do NOT merge across domains
+5. Use "remove" operation targeting specific array indices
 
 <Example>
 Before:
-  Domain A "Technology & Digital Life": ["iPhone 14", "MacBook Pro", "AirPods"]
-  Domain B "Work & Education": ["Pixel 7", "iPad Pro", "AirPods"]
+  Domain A "Technology & Digital Life" - collections.owned_devices:
+    ["iPhone 14 (smartphone)", "MacBook Pro (laptop)", "AirPods Pro (earbuds)"]
+  
+  Domain B "Work & Education" - collections.work_devices:
+    ["Google Pixel 7 (work phone)", "iPad Pro (tablet)", "AirPods Pro (earbuds)"]
 
 Analysis: 
-  - "iPhone 14" vs "Pixel 7": Contradictory (mutually exclusive phones)
-  - "AirPods": Overlapping (duplicate in both domains)
+  - "iPhone 14" vs "Google Pixel 7": Contradictory (mutually exclusive phones)
+  - "AirPods Pro": Overlapping (duplicate in both domains)
 
-Resolution:
-  If user's basic profile shows preference for Apple ecosystem:
-    Domain A: Keep as-is ["iPhone 14", "MacBook Pro", "AirPods"]
-    Domain B: Remove contradictions and overlaps → ["iPad Pro"]
-    
-  Reasoning:
-    - Dropped "Pixel 7": Contradictory to user's Apple preference
-    - Dropped "AirPods" from Domain B: Overlapping item, keep only in authoritative Technology domain
+Resolution (if user prefers Apple ecosystem):
+  Domain A: Keep as-is
+  Domain B: Remove contradictions and overlaps
+  
+Patches:
+  [
+    {
+      "domain": "Work & Education",
+      "window_id": "initial",
+      "path": "user_attributes_state.collections.work_devices[0]",
+      "operation": "remove",
+      "reason": "Remove contradictory phone - user has iPhone 14 as primary device"
+    },
+    {
+      "domain": "Work & Education",
+      "window_id": "initial",
+      "path": "user_attributes_state.collections.work_devices[2]",
+      "operation": "remove",
+      "reason": "Remove duplicate AirPods - already tracked in Technology domain"
+    }
+  ]
 </Example>
 
 **Priority Rules for Determining Authoritative Domain (for overlapping items):**
-1. If an attribute naturally belongs to a domain's core purpose (e.g., "work_email" in Work & Education), that domain is authoritative
+1. If an item naturally belongs to a domain's core purpose (e.g., "work_laptop" in Work & Education), that domain is authoritative
 2. For general items (devices, subscriptions), prioritize:
    - Dedicated domain (e.g., "Technology & Digital Life" for devices)
    - Financial tracking domain (e.g., "Finances & Material Living" for subscriptions)
    - Context-specific domain (e.g., "Health & Wellness" for fitness devices)
-3. When in doubt, keep the item in the domain with more context about that item
+3. When in doubt, keep the item in the domain with more contextual detail
 
 ---
 
@@ -1536,25 +1715,39 @@ CONFLICT TYPE 2: TEMPORAL COLLISION
 
 **Definition**: User cannot physically perform two activities at the same time
 
+Habits are stored in: `initial_state.habits_state.initial.<habit_name>`
+Each habit has fields: `action`, `frequency`, `timing`, `context`, `description`
+
 **Sub-types:**
 
 ### 2a. Direct Time Overlap
 
 <Example>
-habit_A: "every Wednesday 7:00-8:00 PM"
-habit_B: "every Wednesday 7:00-9:00 PM"
+Domain A - habit_weekly_class:
+  timing: "every Wednesday 7:00-8:00 PM"
 
-→ CONFLICT (overlapping time blocks)
+Domain B - habit_team_meeting:
+  timing: "every Wednesday 7:00-9:00 PM"
+
+→ CONFLICT: Overlapping time blocks on the same day
 </Example>
 
 ### 2b. Frequency Saturation
 
 <Example>
-habit_A: "daily 8:30-9:00 AM"
-habit_B: "daily 8:00-9:00 AM"  
-habit_C: "daily 8:45-9:15 AM"
+Domain A - habit_morning_gym:
+  frequency: "daily"
+  timing: "8:30-9:00 AM"
 
-→ CONFLICT (same day, overlapping times)
+Domain B - habit_commute:
+  frequency: "daily"
+  timing: "8:00-9:00 AM"
+
+Domain C - habit_breakfast_prep:
+  frequency: "daily"
+  timing: "8:45-9:15 AM"
+
+→ CONFLICT: Same day (daily), overlapping times
 </Example>
 
 ---
@@ -1562,23 +1755,48 @@ habit_C: "daily 8:45-9:15 AM"
 ## Resolution Strategies
 
 **Option 1: Shift Timing**
-Move one activity to a different time slot to eliminate overlap.
+Modify the habit's `timing` field to a different time slot.
 
 <Example>
-Before: Both activities at "Wednesday 7:00 PM"
-After:  habit_A → "Monday 7:00 PM", habit_B stays "Wednesday 7:00 PM"
+Patch to shift timing:
+{
+  "domain": "Domain A",
+  "window_id": "initial",
+  "path": "habits_state.initial.habit_weekly_class.timing",
+  "operation": "replace",
+  "new_value": "every Monday 7:00-8:00 PM",
+  "reason": "Shifted to Monday to avoid Wednesday conflict with team meeting"
+}
 </Example>
 
 **Option 2: Reduce Frequency**
-Convert one activity from more frequent to less frequent to create space.
+Modify the habit's `frequency` field to create space.
 
 <Example>
-Before: Both "weekly on Wednesday"
-After:  habit_A → "bi-weekly, alternating Wednesdays"
+Patch to reduce frequency:
+{
+  "domain": "Domain B",
+  "window_id": "initial",
+  "path": "habits_state.initial.habit_team_meeting.frequency",
+  "operation": "replace",
+  "new_value": "bi-weekly",
+  "reason": "Reduced from weekly to bi-weekly to accommodate other Wednesday commitments"
+}
 </Example>
 
 **Option 3: Remove Lower-Priority Habit**
-If timing adjustment is impractical, remove the less important activity entirely.
+If timing adjustment is impractical, remove the entire habit.
+
+<Example>
+Patch to remove habit:
+{
+  "domain": "Domain C",
+  "window_id": "initial",
+  "path": "habits_state.initial.habit_breakfast_prep",
+  "operation": "remove",
+  "reason": "Removed lower-priority breakfast habit due to morning schedule conflicts"
+}
+</Example>
 
 ---
 
@@ -1589,111 +1807,109 @@ CONFLICT TYPE 3: SCHEDULE OVERLOAD/UNREASONABLE
 ## Definition & Detection
 
 **Definition**: While activities don't directly overlap, the overall schedule is unrealistically packed
-When looking across all domains, the user's combined schedule may be implausibly busy.
 
 **Detection Criteria:**
 
 ### 3a. Single Time Slot Overcrowding
-If multiple habits are scheduled for the same general time period (e.g., "Saturday morning", "weekday evenings"), check if the cumulative time commitment is reasonable.
+Multiple habits scheduled for the same general time period (e.g., "Saturday morning", "weekday evenings")
 
 <Example>
-Saturday morning habits:
-- Domain A: "grocery shopping (9:00-10:30 AM)"
-- Domain B: "family breakfast outing (9:00-11:00 AM)"
-- Domain C: "youth soccer practice (9:00-10:00 AM)"
-- Domain D: "home cleaning routine (8:00-10:00 AM)"
-- Domain E: "weekend yoga class (9:30-10:30 AM)"
+Saturday morning habits across domains:
+- Domain A: habit_grocery_shopping (9:00-10:30 AM)
+- Domain B: habit_family_breakfast (9:00-11:00 AM)
+- Domain C: habit_soccer_practice (9:00-10:00 AM)
+- Domain D: habit_home_cleaning (8:00-10:00 AM)
+- Domain E: habit_yoga_class (9:30-10:30 AM)
 
-→ UNREASONABLE: Five activities scheduled for the same 2-hour window on Saturday morning. User cannot realistically do all of these.
+→ UNREASONABLE: Five activities in a 2-hour window
 </Example>
 
 ### 3b. Daily/Weekly Time Budget Exhaustion
-Check if the total time commitment across all habits leaves room for:
+Total time commitment leaves no room for:
 - Work/sleep (assume ~8 hours each for working adults)
 - Meals and basic routines
 - Buffer time and flexibility
 - Unscheduled downtime
 
 <Example>
-Daily habits totaling:
-- 2 hours morning routine
-- 8 hours work
-- 1.5 hours commute
-- 1.5 hours evening exercise
-- 1 hour meal prep
-- 1 hour family time
-- 1 hour hobby time
-- 1 hour learning/reading
-
-→ Total: 16 hours + sleep (8h) = 24 hours with ZERO buffer
-→ UNREASONABLE: No time for flexibility, meals take longer, unexpected events
+Daily habits totaling 16+ hours plus 8 hours sleep = 24 hours with ZERO buffer
+→ UNREASONABLE
 </Example>
 
 ### 3c. Frequency Overlap Within Same Time Slot
-Multiple "daily" or "weekly" habits scheduled for the same time-of-day create implicit conflicts.
+Multiple "daily" or high-frequency habits scheduled for the same time-of-day
 
 <Example>
-"Every weekday evening after work":
-- Domain A: gym session (daily, 6:00-7:30 PM)
-- Domain B: online course (3x/week, 6:30-8:00 PM)
-- Domain C: family dinner prep (daily, 6:00-7:00 PM)
+"Every weekday evening after work" across domains:
+- Domain A: gym_session (daily, 6:00-7:30 PM)
+- Domain B: online_course (3x/week, 6:30-8:00 PM)
+- Domain C: family_dinner_prep (daily, 6:00-7:00 PM)
 
-→ UNREASONABLE: While they don't overlap EVERY day, the combined pattern is implausible. Gym is daily, course is 3x/week, dinner is daily—user needs to choose priorities.
+→ UNREASONABLE: Combined pattern is implausible
 </Example>
 
 ---
 
 ## Resolution Strategies
 
-**Guiding Principle**: Ensure the profile represents a REALISTIC, SUSTAINABLE human lifestyle while making minimal necessary changes.
+**Guiding Principle**: Ensure the profile represents a REALISTIC, SUSTAINABLE human lifestyle
 
 **Step 1: Assess Priority**
-Use user's basic profile and domain context to rank activities by importance:
+Rank activities using user's basic profile and domain context:
 - Core needs (work, sleep, meals) > social commitments > hobbies
 - Health-critical activities > optional recreation
 - Recurring commitments > flexible activities
 
 **Step 2: Apply Thinning Strategy**
-Choose one or more approaches:
 
 **Option A: Reduce Frequency**
 <Example>
-Before: 
-  - morning_run: daily
-  - strength_training: daily
-  - yoga_class: 3x/week
-After:
-  - morning_run: 4x/week (Mon, Wed, Fri, Sat)
-  - strength_training: 3x/week (Tue, Thu, Sat)
-  - yoga_class: 2x/week (Wed, Sun)
+Patches:
+[
+  {
+    "domain": "Health & Wellness",
+    "window_id": "initial",
+    "path": "habits_state.initial.morning_run.frequency",
+    "operation": "replace",
+    "new_value": "4_times_per_week",
+    "reason": "Reduced from daily to 4x/week to create schedule space"
+  },
+  {
+    "domain": "Fitness & Exercise",
+    "window_id": "initial",
+    "path": "habits_state.initial.yoga_class.frequency",
+    "operation": "replace",
+    "new_value": "2_times_per_week",
+    "reason": "Reduced from 3x/week to 2x/week due to overall schedule density"
+  }
+]
 </Example>
 
 **Option B: Shift to Different Time Slots**
 <Example>
-Before (all Saturday morning):
-  - grocery shopping
-  - soccer practice
-  - yoga class
-  - home cleaning
-After:
-  - grocery shopping: Saturday morning
-  - soccer practice: Saturday morning (keep, high priority)
-  - yoga class: Sunday morning (shifted)
-  - home cleaning: Friday evening (shifted)
+Patches:
+[
+  {
+    "domain": "Home & Living",
+    "window_id": "initial",
+    "path": "habits_state.initial.home_cleaning.timing",
+    "operation": "replace",
+    "new_value": "Friday evening (6:00-8:00 PM)",
+    "reason": "Shifted from Saturday morning to Friday evening to reduce weekend congestion"
+  }
+]
 </Example>
 
 **Option C: Remove Lower-Priority Habits**
 <Example>
-Before (weekday evenings overloaded):
-  - gym session (daily, high priority - health)
-  - online course (3x/week, medium priority)
-  - podcast listening (daily, low priority)
-  - family dinner (daily, high priority)
-After:
-  - gym session: keep
-  - online course: reduce to 2x/week
-  - podcast listening: Remove (can be done during commute instead)
-  - family dinner: keep
+Patch:
+{
+  "domain": "Entertainment & Leisure",
+  "window_id": "initial",
+  "path": "habits_state.initial.podcast_listening",
+  "operation": "remove",
+  "reason": "Removed low-priority habit due to weekday evening overload; user can listen during commute instead"
+}
 </Example>
 
 **Step 3: Validate Reasonableness**
@@ -1709,182 +1925,167 @@ After adjustments, verify:
 CRITICAL: CASCADE CHANGES ACROSS WINDOWS
 =================================================================================
 
-Since this is a dynamic profile with temporal evolution, resolving a conflict in one window may affect subsequent windows. When generating patches, carefully consider the ripple effects:
+Since this is a dynamic profile with temporal evolution, resolving a conflict in initial_state may affect subsequent time_windows. When generating patches, carefully consider the ripple effects:
 
-- If you adjust a habit's timing in the `initial` state, check if any time_windows modify that same habit
-- If a time_window delta references the adjusted habit, update those deltas accordingly
-- Ensure consistency: if you change "Tuesday 7pm" to "Monday 7pm" in initial state, and w2 says "adjust timing to 8pm", the w2 delta should reflect "Monday 8pm" not "Tuesday 8pm"
+- If you adjust a habit's timing in `initial_state`, check if any time_windows have operations that reference that habit
+- If a time_window delta modifies the adjusted habit, verify the modification is still coherent
+- Ensure consistency: if you change "Tuesday 7pm" to "Monday 7pm" in initial_state, and w2 says "adjust timing to 8pm", the w2 operation should reflect "Monday 8pm" not "Tuesday 8pm"
 
 <Example>
-Initial state: habit_A timing = "Tuesday 7pm"
-Window w2: adjust habit_A timing to "8pm" (inherits day from initial)
-If you resolve a conflict by changing initial to "Monday 7pm":
-→ MUST also patch w2 to clarify it's now "Monday 8pm"
+Initial state: habit_yoga timing = "Tuesday 7:00 PM"
+Window w2: adjust habit_yoga timing delta = {"timing": "8:00 PM"}
+
+If you resolve a conflict by changing initial to "Monday 7:00 PM":
+→ You may need to patch w2 to clarify it becomes "Monday 8:00 PM"
+→ OR add a note to the resolution explaining the inherited context
 </Example>
+
+However, in most cases, delta operations inherit the day context from the initial state, so only the time portion changes. Be judicious about whether cascade patches are truly needed.
 
 =================================================================================
 CRITICAL REQUIREMENTS
 =================================================================================
 
-1. **Window-specific**: Each patch must specify exact window_id
+1. **Window-specific**: Each patch must specify exact window_id ("initial" for initial_state, "w1", "w2", etc. for time_windows)
 2. **Minimal but sufficient changes**: Only patch what's necessary, but ensure profile is livable
-3. **Preserve structure**: Don't change data types (list→list, string→string)
-4. **Cascade awareness**: When modifying habits in initial state, check and update references in subsequent time_windows
+3. **Preserve structure**: Don't change data types (string→string, array→array)
+4. **Cascade awareness**: When modifying habits in initial_state, check and update references in subsequent time_windows if necessary
 5. **One patch per change**: Don't combine multiple operations in one patch
 6. **Clear reasoning**: Always include "reason" field explaining the resolution
 7. **Holistic validation**: After resolving individual conflicts, validate that the overall schedule is reasonable
+8. **Correct paths**: Use the new structure paths:
+   - Singular: `user_attributes_state.singular.<attr_name>`
+   - Collections: `user_attributes_state.collections.<collection_name>[<index>]`
+   - Habits: `habits_state.initial.<habit_name>.<field>`
 
 =================================================================================
 PATCH FORMAT GUIDE
 =================================================================================
 
 **Path format:**
-- Use dot notation with array indices: "time_windows[0].habits_delta.operations[1].new_state.timing"
-- Path should point to the MINIMAL unit that needs to change
+Use dot notation with array indices where applicable:
+- For singular attributes: `"user_attributes_state.singular.primary_job"`
+- For collection items: `"user_attributes_state.collections.owned_devices[2]"` (to target specific item)
+- For habit fields: `"habits_state.initial.morning_jog.timing"`
+- For entire habit: `"habits_state.initial.morning_jog"` (to remove entire habit)
 
 **Action types:**
-IMPORTANT: Choose the most appropriate action type for the operation.
 
-1. **"remove"** - Delete an element from array or key from object
-   Example: Remove an invalid operation
+1. **"remove"** - Delete an element from array or remove a key from object
+   
+   Remove item from collection by index:
    {
-     "path": "time_windows[1].habits_delta.operations[3]",
-     "operation": "remove"
+     "path": "user_attributes_state.collections.owned_devices[1]",
+     "operation": "remove",
+     "reason": "Remove contradictory device"
    }
-   or **remove a value from an array**
+   
+   Remove entire habit:
    {
-     "path": "user_attributes_state.initial.personal_devices[0]",
-     "operation": "remove"
+     "path": "habits_state.initial.habit_name",
+     "operation": "remove",
+     "reason": "Remove lower-priority habit due to schedule conflict"
    }
+
 2. **"replace"** - Replace an existing value
-   Example: Change a timing string
+   
+   Replace singular attribute value:
    {
-     "path": "time_windows[0].habits_delta.operations[1].new_state.timing",
-     "action": "replace",
-     "value": "8:45-9:15 AM"
-   }
-
-3. **"append"** - Add to the end of an array
-   Example: Add a new operation to habits_delta
-   {
-     "path": "time_windows[2].habits_delta.operations",
-     "action": "append",
-     "value": {
-       "op": "drop",
-       "habit_name": "winter_hydration",
-       "new_state": null,
-       "reason": "Summer humidity makes aggressive hydration unnecessary"
-     }
-   }
-
-4. **"add_key"** - Add a new key-value pair to an object (for missing required fields or structural issues)
-   Example: Add missing "summary" to initial_state
-   {
-     "path": "initial_state",
-     "action": "add_key",
-     "key": "summary",
-     "value": "User is a tech-savvy professional with moderate fitness habits and a focus on long-term health."
+     "path": "user_attributes_state.singular.primary_job",
+     "operation": "replace",
+     "new_value": "Director of Product Management",
+     "reason": "Align to canonical job title from Work domain"
    }
    
-   Example: Add missing "window_description" to a window
+   Replace habit timing:
    {
-     "path": "time_windows[1]",
-     "action": "add_key",
-     "key": "window_description",
-     "value": "Spring weather and increased outdoor activity opportunities motivate fitness improvements."
+     "path": "habits_state.initial.morning_jog.timing",
+     "operation": "replace",
+     "new_value": "6:00-7:00 AM on weekdays",
+     "reason": "Shifted timing to avoid conflict with commute"
    }
-   
-   Example: Add entirely missing section to initial_state
+
+3. **"append"** - Add to the end of an array (rarely used in conflict resolution)
    {
-     "path": "initial_state",
-     "action": "add_key",
-     "key": "preferences_state",
-     "value": {
-       "initial": {
-         "exercise_style": "Prefers outdoor running over gym workouts",
-         "meal_preference": "Prefers home-cooked meals with fresh ingredients"
-       }
-     }
+     "path": "user_attributes_state.collections.owned_devices",
+     "operation": "append",
+     "new_value": "iPad Pro (tablet for work)",
+     "reason": "Add missing device for completeness"
    }
 
 =================================================================================
 OUTPUT FORMAT (STRICT JSON)
 =================================================================================
 
-Path format: `<state_type>.<window_id>.<nested_keys>`
-Operations: `replace` | `append` | `add_key` | `remove`
+{
+  "conflicts_and_resolutions": [
+    {
+      "conflict": {
+        "type": "singular_conflict" | "collection_item_conflict" | "temporal_collision" | "schedule_overload",
+        "description": "<brief description of the conflict>",
+        "involved_data": [
+          {
+            "domain": "<domain_name>",
+            "window_id": "initial" | "w1" | "w2" | ...,
+            "path": "<full path to the conflicting element>",
+            "value": "<current value or description>"
+          },
+          ...
+        ]
+      },
+      "resolution": {
+        "strategy": "unify_singular_value" | "delete_contradictory_items" | "delete_overlapping_items" | "adjust_timing" | "reduce_frequency" | "drop_habit",
+        "explanation": "<detailed explanation of why this resolution was chosen>",
+        "patches": [
+          {
+            "domain": "<domain_name>",
+            "window_id": "initial" | "w1" | "w2" | ...,
+            "path": "<path to the element to modify>",
+            "operation": "remove" | "replace" | "append",
+            "new_value": <new value, if operation is replace or append>,
+            "reason": "<specific reason for this patch>"
+          },
+          ...
+        ]
+      }
+    },
+    ...
+  ]
+}
+
+**Example output:**
 
 {
   "conflicts_and_resolutions": [
     {
       "conflict": {
-        "type": "singular_conflict|collection_item_conflict|temporal_collision",
-        "description": "Brief description of the conflict",
+        "type": "collection_item_conflict",
+        "description": "Contradictory smartphones found in Technology and Work domains",
         "involved_data": [
           {
-            "domain": "Work & Education",
-            "window_id": "w3",
-            "path": "user_attributes_state.w3.user_job_title",
-            "value": "Director of Product Management"
+            "domain": "Technology & Digital Life",
+            "window_id": "initial",
+            "path": "user_attributes_state.collections.owned_devices[0]",
+            "value": "iPhone 14 (smartphone for daily communication)"
           },
           {
-            "domain": "Finances & Material Living",
-            "window_id": "w3",
-            "path": "user_attributes_state.w3.user_job_title",
-            "value": "Senior Product Manager"
+            "domain": "Work & Education",
+            "window_id": "initial",
+            "path": "user_attributes_state.collections.work_devices[0]",
+            "value": "Google Pixel 7 (Android phone for work)"
           }
         ]
       },
       "resolution": {
-        "strategy": "unify_singular_value|delete_contradictory_items|delete_overlapping_items|adjust_timing|reduce_frequency|drop_habit",
-        "patches": [
-          {
-            "domain": "Finances & Material Living",
-            "window_id": "initial",
-            "path": "user_attributes_state.initial.user_job_title",
-            "operation": "replace",
-            "new_value": "Director of Product Management",
-            "reason": "Align to the canonical job title chosen from the Work & Education domain."
-          },
-          {
-            "domain": "Work & Education",
-            "window_id": "initial",
-            "path": "user_attributes_state.initial.user_job_title",
-            "operation": "replace",
-            "new_value": "Director of Product Management",
-            "reason": "Set the canonical job title consistently across domains."
-          }
-        ]
-      }
-    },
-    {
-      "conflict": {
-        "type": "collection_overlap",
-        "description": "Duplicate phone appears in multiple domains",
-        "involved_data": [
-          {
-            "domain": "Finances & Material Living",
-            "window_id": "initial",
-            "path": "user_attributes_state.initial.personal_devices",
-            "value": "iPhone 13"
-          },
-          {
-            "domain": "Work & Education",
-            "window_id": "initial",
-            "path": "user_attributes_state.initial.personal_devices",
-            "value": "iPhone 15"
-          }
-        ]
-      },
-      "resolution": {
-        "strategy": "delete_overlapping_items",
+        "strategy": "delete_contradictory_items",
+        "explanation": "User's basic profile indicates preference for Apple ecosystem. Keep iPhone 14 as primary phone and remove the contradictory Google Pixel 7 from work devices.",
         "patches": [
           {
             "domain": "Work & Education",
             "window_id": "initial",
-            "path": "user_attributes_state.initial.personal_devices[1]",
+            "path": "user_attributes_state.collections.work_devices[0]",
             "operation": "remove",
-            "reason": "Remove duplicate 'phone' - keep only in authoritative Finances & Material Living domain"
+            "reason": "Remove contradictory phone - user has iPhone 14 as primary smartphone in Technology domain"
           }
         ]
       }
@@ -2094,7 +2295,6 @@ class KeyAlignmentRequest:
     dynamic_profiles: Dict[str, Dict]
     user_basic_profile: Dict | None = None
 
-
 KEY_ALIGNMENT_PROMPT = Template("""Normalize attribute key names across domains by identifying semantically identical keys.
 
 Input dynamic profiles (initial + deltas):
@@ -2103,26 +2303,62 @@ Input dynamic profiles (initial + deltas):
 Basic user profile:
 {{ user_basic_profile_json }}
 
+**IMPORTANT**: User attributes are structured as:
+- user_attributes_state.singular: single-value attributes (e.g., primary_residence, primary_job)
+- user_attributes_state.collections: multi-item collections (e.g., owned_devices, active_subscriptions)
+
 Task:
 Identify keys that represent the SAME concept across different domains and map them to ONE canonical key name.
 
 Alignment Rules:
-1. Keys are "semantically identical" if they track the exact same attribute (e.g., "user_age" and "age" both mean age)
+1. Keys are "semantically identical" if they track the exact same attribute (e.g., "primary_job" in one domain and "main_occupation" in another)
 2. Prefer the shortest, most common key name as canonical
-3. Do NOT merge keys that are similar but distinct (e.g., "last_login" vs "last_activity")
-4. If domains have different data types for same concept, note this in the mapping
+3. DO NOT merge keys that are similar but distinct (e.g., "primary_residence" vs "secondary_residence")
+4. If domains have different attribute types (singular vs collection) for same concept, note this in the mapping
+5. When specifying original_key, use the full path including attribute_type (e.g., "singular.primary_job" or "collections.owned_devices")
 
 Examples of what TO align:
-- "user_email", "email_address", "email" → "email"
-- "user_id", "userId", "id" → "user_id"
+- Domain A has "singular.primary_vehicle", Domain B has "singular.main_car" → canonical: "primary_vehicle"
+- Domain A has "collections.electronic_devices", Domain B has "collections.owned_devices" → canonical: "owned_devices"
+
+Examples of what NOT to align:
+- "singular.primary_residence" vs "collections.owned_properties" (different semantics: one primary vs multiple items)
+- "collections.close_friends" vs "collections.professional_contacts" (different relationship types)
 
 Output format (JSON only):
 {
   "canonical_key_mappings": {
     "<canonical_key>": {
       "description": "<brief description of what this represents>",
+      "attribute_type": "singular" | "collections",
       "domains": [
-        {"domain": "<domain_name>", "original_key": "<original_key_name>"}
+        {
+          "domain": "<domain_name>",
+          "original_key": "<attribute_type>.<key_name>",
+          "note": "<optional: note if data type differs or other special cases>"
+        }
+      ]
+    }
+  }
+}
+
+Example output:
+{
+  "canonical_key_mappings": {
+    "primary_vehicle": {
+      "description": "User's main vehicle for daily transportation",
+      "attribute_type": "singular",
+      "domains": [
+        {"domain": "Transportation & Mobility", "original_key": "singular.primary_vehicle"},
+        {"domain": "Finances & Material Living", "original_key": "singular.main_car"}
+      ]
+    },
+    "owned_devices": {
+      "description": "Electronic devices owned by the user",
+      "attribute_type": "collections",
+      "domains": [
+        {"domain": "Technology & Digital Life", "original_key": "collections.owned_devices"},
+        {"domain": "Finances & Material Living", "original_key": "collections.electronic_devices"}
       ]
     }
   }
@@ -2726,29 +2962,50 @@ def _normalize_attribute_value(value: object) -> object:
 
 
 def _replace_or_add_initial_attribute(
-    profile: Dict, attribute_name: str, new_value: object
+    profile: Dict,
+    attribute_name: str,
+    new_value: object,
+    *,
+    attribute_type: str = "singular",
 ) -> None:
+    """
+    Upsert an attribute into the initial_state using the new schema
+    (singular/collections). Falls back to legacy "initial" if present.
+    """
     user_attrs_state = profile.setdefault("initial_state", {}).setdefault(
         "user_attributes_state", {}
     )
-    initial = user_attrs_state.get("initial")
-
-    # If using dict form (current schema), simply set/update the key.
-    if initial is None or isinstance(initial, dict):
-        if initial is None:
-            initial = {}
-            user_attrs_state["initial"] = initial
-        initial[attribute_name] = new_value
+    attr_type = (
+        "collections" if (attribute_type or "").lower() == "collections" else "singular"
+    )
+    if attr_type == "collections":
+        collections = user_attrs_state.setdefault("collections", {})
+        if not isinstance(collections, dict):
+            collections = {}
+            user_attrs_state["collections"] = collections
+        collections[attribute_name] = (
+            new_value if isinstance(new_value, list) else ([] if new_value is None else [new_value])
+        )
         return
 
-    # Fallback for legacy list-of-dicts form.
-    replaced = False
-    for entry in initial:
-        if isinstance(entry, dict) and attribute_name in entry:
-            entry[attribute_name] = new_value
-            replaced = True
-    if not replaced:
-        initial.append({attribute_name: new_value})
+    singular = user_attrs_state.setdefault("singular", {})
+    if not isinstance(singular, dict):
+        singular = {}
+        user_attrs_state["singular"] = singular
+    singular[attribute_name] = new_value
+
+    # Legacy fallback: mirror into user_attributes_state.initial if present
+    legacy_initial = user_attrs_state.get("initial")
+    if isinstance(legacy_initial, dict):
+        legacy_initial[attribute_name] = new_value
+    elif isinstance(legacy_initial, list):
+        replaced = False
+        for entry in legacy_initial:
+            if isinstance(entry, dict) and attribute_name in entry:
+                entry[attribute_name] = new_value
+                replaced = True
+        if not replaced:
+            legacy_initial.append({attribute_name: new_value})
 
 
 def _merge_values(
@@ -2777,6 +3034,7 @@ def _set_attribute_in_window(
     attribute_name: str,
     new_value: object,
     *,
+    attribute_type: str = "singular",
     value_kind: str | None = None,
 ) -> None:
     """
@@ -2786,17 +3044,22 @@ def _set_attribute_in_window(
         initial_state = profile.setdefault("initial_state", {}).setdefault(
             "user_attributes_state", {}
         )
-        initial = initial_state.get("initial")
+        attr_type = (
+            "collections"
+            if (attribute_type or "").lower() == "collections"
+            else "singular"
+        )
+        container = initial_state.get(attr_type)
         current_val = None
-        if isinstance(initial, dict):
-            current_val = initial.get(attribute_name)
-        elif isinstance(initial, list):
-            for entry in initial:
-                if isinstance(entry, dict) and attribute_name in entry:
-                    current_val = entry.get(attribute_name)
-                    break
-            merged_value = _merge_values(current_val, new_value, value_kind=value_kind)
-            _replace_or_add_initial_attribute(profile, attribute_name, merged_value)
+        if isinstance(container, dict):
+            current_val = container.get(attribute_name)
+        merged_value = _merge_values(current_val, new_value, value_kind=value_kind)
+        _replace_or_add_initial_attribute(
+            profile,
+            attribute_name,
+            merged_value,
+            attribute_type=attr_type,
+        )
         return
 
     for window in profile.get("time_windows", []):
@@ -2805,23 +3068,36 @@ def _set_attribute_in_window(
         delta = window.setdefault("user_attributes_delta", {}).setdefault(
             "operations", []
         )
+        attr_type = (
+            "collections"
+            if (attribute_type or "").lower() == "collections"
+            else "singular"
+        )
+        name_field = "collection_name" if attr_type == "collections" else "attribute_name"
         # Update last matching operation if present.
         updated = False
         for op in reversed(delta):
-            if isinstance(op, dict) and op.get("attribute_name") == attribute_name:
-                current_val = op.get("new_state")
+            if (
+                isinstance(op, dict)
+                and op.get(name_field) == attribute_name
+                and (op.get("attribute_type") in {None, attr_type} or attr_type == "singular")
+            ):
+                current_val = op.get("delta") or op.get("new_state")
                 merged_value = _merge_values(
                     current_val, new_value, value_kind=value_kind
                 )
-                op["new_state"] = merged_value
+                op["delta"] = merged_value
+                op["attribute_type"] = attr_type
+                op[name_field] = attribute_name
                 updated = True
                 break
         if not updated:
             delta.append(
                 {
-                    "op": "modify",
-                    "attribute_name": attribute_name,
-                    "new_state": new_value,
+                    "op": "modify" if attr_type == "singular" else "add",
+                    "attribute_type": attr_type,
+                    name_field: attribute_name,
+                    "delta": new_value,
                     "reason": "conflict_resolution",
                 }
             )
@@ -2834,11 +3110,11 @@ def _update_attribute_deltas(profile: Dict, attribute_name: str, new_value: obje
             (window.get("user_attributes_delta") or {}).get("operations") or []
         )
         for op in operations:
-            if op.get("attribute_name") == attribute_name and op.get("op") in {
-                "add",
-                "modify",
-            }:
-                op["new_state"] = new_value
+            target_name = op.get("attribute_name") or op.get("collection_name")
+            if target_name == attribute_name and op.get("op") in {"add", "modify"}:
+                op["delta"] = new_value
+                if "new_state" in op:
+                    op["new_state"] = new_value
 
 
 def _apply_key_alignment(
@@ -2877,7 +3153,12 @@ def _apply_key_alignment(
                 )
                 if not domain_name or not original_key:
                     continue
-                domain_key_mapping.setdefault(domain_name, {})[original_key] = canonical_key
+                domain_mapping = domain_key_mapping.setdefault(domain_name, {})
+                domain_mapping[original_key] = canonical_key
+                if "." in original_key:
+                    base_key = original_key.rsplit(".", 1)[-1]
+                    if base_key:
+                        domain_mapping.setdefault(base_key, canonical_key)
 
     def _rename_initial_entries(entries: object, mapping: Dict[str, str]) -> object:
         """
@@ -2955,8 +3236,22 @@ def _apply_key_alignment(
         mapping = dict(ATTRIBUTE_CANONICAL_KEYS)
         mapping.update(domain_key_mapping.get(domain_name, {}))
 
-        # Rename in initial_state.user_attributes_state.initial
-        initial_state = (profile.get("initial_state") or {}).get("user_attributes_state") or {}
+        # Rename in initial_state.user_attributes_state (singular/collections)
+        initial_state = (profile.get("initial_state") or {}).get(
+            "user_attributes_state"
+        ) or {}
+        for section in ("singular", "collections"):
+            entries = initial_state.get(section)
+            if isinstance(entries, dict):
+                renamed_section = {
+                    mapping.get(key, key): deepcopy(value)
+                    for key, value in entries.items()
+                }
+                initial_state[section] = _drop_prefixed_duplicates(
+                    renamed_section, mapping
+                )
+
+        # Legacy fallback: user_attributes_state.initial
         if "initial" in initial_state:
             renamed = _rename_initial_entries(initial_state.get("initial"), mapping)
             initial_state["initial"] = _drop_prefixed_duplicates(renamed, mapping)
@@ -2969,12 +3264,28 @@ def _apply_key_alignment(
             for op in delta_ops:
                 if not isinstance(op, dict):
                     continue
-                attr_name = op.get("attribute_name")
+                attr_type_raw = (op.get("attribute_type") or "").lower()
+                inferred_type = (
+                    "collections" if op.get("collection_name") else "singular"
+                )
+                attr_type = (
+                    "collections"
+                    if attr_type_raw in {"collection", "collections"}
+                    else attr_type_raw
+                    or inferred_type
+                )
+                name_field = "collection_name" if attr_type == "collections" else "attribute_name"
+                attr_name = (
+                    op.get(name_field)
+                    or op.get("attribute_name")
+                    or op.get("collection_name")
+                )
                 if not attr_name:
                     continue
                 mapped = mapping.get(attr_name)
                 if mapped:
-                    op["attribute_name"] = mapped
+                    op[name_field] = mapped
+                op["attribute_type"] = attr_type
 
     return resolved_profiles, domain_key_mapping, canonical_descriptions
 
@@ -3177,7 +3488,7 @@ def _apply_conflict_resolution_to_profiles(
             op = str(patch.get("operation") or patch.get("action") or "update").lower()
             value = None
             value_provided = False
-            for key in ("new_value", "value", "resolved_value", "new_state", "replacement"):
+            for key in ("new_value", "value", "resolved_value", "new_state", "delta", "replacement"):
                 if key in patch:
                     value = patch.get(key)
                     value_provided = True
@@ -3288,9 +3599,12 @@ def _apply_delta_operations(
         prev_entry = state.get(key) or {}
         prev_value = prev_entry.get("current_value")
 
-        if "new_state" in operation:
+        new_value = None
+        if "delta" in operation:
+            new_value = operation.get("delta")
+        if new_value is None and "new_state" in operation:
             new_value = operation.get("new_state")
-        else:
+        if new_value is None:
             before = operation.get("before") or {}
             after = operation.get("after") or {}
             # Old schema stores the new value under after["value"]
@@ -3305,6 +3619,7 @@ def _apply_delta_operations(
                     if k
                     not in {
                         name_field,
+                        "delta",
                         "op",
                         "reason",
                         "before",
@@ -3326,7 +3641,7 @@ def _apply_delta_operations(
 
         # We keep a tombstone entry for remove/drop so that semantic-event
         # generation can still see the op on this field.
-        if op_type in {"remove", "drop"} and "new_state" not in operation:
+        if op_type in {"remove", "drop"} and "new_state" not in operation and "delta" not in operation:
             # Old schema remove/drop: no explicit new_state, treat as cleared.
             state[key] = {"current_value": None}
         else:
@@ -3335,6 +3650,261 @@ def _apply_delta_operations(
             }
     
     return changes
+
+
+def _init_user_attributes_state(
+    initial_state: Dict[str, object] | None,
+) -> Dict[str, Dict[str, object]]:
+    """
+    Build a {singular, collections} map from the new schema, with a legacy
+    fallback to user_attributes_state.initial when present.
+    """
+    attrs = {"singular": {}, "collections": {}}
+    user_attrs_state = (initial_state or {}).get("user_attributes_state") or {}
+    if isinstance(user_attrs_state, dict):
+        singular = user_attrs_state.get("singular")
+        collections = user_attrs_state.get("collections")
+        if isinstance(singular, dict):
+            attrs["singular"] = deepcopy(singular)
+        if isinstance(collections, dict):
+            attrs["collections"] = deepcopy(collections)
+
+        # Legacy fallback: user_attributes_state.initial (dict or list of dicts)
+        if not attrs["singular"] and not attrs["collections"]:
+            legacy_entries = _extract_initial_state_entries(
+                user_attrs_state.get("initial")
+            )
+            if legacy_entries:
+                attrs["singular"] = {
+                    name: entry.get("current_value")
+                    for name, entry in legacy_entries.items()
+                }
+    return attrs
+
+
+def _apply_user_attribute_operations(
+    state: Dict[str, Dict[str, object]],
+    operations: List[Dict[str, object]] | None,
+) -> tuple[Dict[str, Dict[str, object]], Dict[tuple[str, str], Dict[str, object]]]:
+    """
+    Apply attribute deltas using the new singular/collections semantics.
+    """
+    updated = {
+        "singular": deepcopy(state.get("singular") or {}),
+        "collections": deepcopy(state.get("collections") or {}),
+    }
+    changes: Dict[tuple[str, str], Dict[str, object]] = {}
+    if not operations:
+        return updated, changes
+
+    for operation in operations:
+        if not isinstance(operation, dict):
+            continue
+        raw_attr_type = (operation.get("attribute_type") or "").lower()
+        inferred_type = "collections" if operation.get("collection_name") else "singular"
+        attr_type = "collections" if raw_attr_type in {"collection", "collections"} else raw_attr_type or inferred_type
+        name = operation.get("attribute_name") or operation.get("collection_name")
+        if not name:
+            continue
+
+        op_type = (operation.get("op") or "").lower()
+        reason = operation.get("reason", "")
+        prev_value = deepcopy(updated.get(attr_type, {}).get(name))
+        delta_payload = operation.get("delta")
+        if delta_payload is None:
+            delta_payload = operation.get("new_state")
+
+        if attr_type == "collections":
+            prev_list = (
+                prev_value
+                if isinstance(prev_value, list)
+                else ([] if prev_value is None else [prev_value])
+            )
+            if op_type == "remove":
+                removals = set()
+                if isinstance(delta_payload, list):
+                    removals = set(delta_payload)
+                elif delta_payload is not None:
+                    removals = {delta_payload}
+                new_list = [item for item in prev_list if item not in removals]
+            elif op_type == "add":
+                additions = (
+                    delta_payload
+                    if isinstance(delta_payload, list)
+                    else ([] if delta_payload is None else [delta_payload])
+                )
+                new_list = list(prev_list)
+                for item in additions:
+                    if item not in new_list:
+                        new_list.append(item)
+            elif op_type in {"modify", "replace", "set"}:
+                new_list = (
+                    delta_payload if isinstance(delta_payload, list) else prev_list
+                )
+            else:
+                new_list = prev_list
+            new_value = new_list
+        else:
+            # singular attribute
+            new_value = delta_payload if delta_payload is not None else prev_value
+
+        updated.setdefault(attr_type, {})[name] = new_value
+        changes[(attr_type, name)] = {
+            "previous_value": prev_value,
+            "change_reason": reason,
+            "op": op_type,
+            "attribute_type": attr_type,
+        }
+
+    return updated, changes
+
+
+def _user_attributes_state_to_list(
+    state: Dict[str, Dict[str, object]],
+    changes: Dict[tuple[str, str], Dict[str, object]] | None = None,
+) -> List[Dict[str, object]]:
+    """
+    Convert user_attributes state map into a list with change metadata.
+    """
+    changes = changes or {}
+    result: List[Dict[str, object]] = []
+    for attr_type in ("singular", "collections"):
+        entries = state.get(attr_type) or {}
+        for name, value in sorted(entries.items()):
+            item: Dict[str, object] = {
+                "name": name,
+                "attribute_type": attr_type,
+                "current_value": value,
+            }
+            change = changes.get((attr_type, name))
+            if change:
+                item["op"] = change.get("op")
+                if "previous_value" in change:
+                    item["previous_value"] = change.get("previous_value")
+                if change.get("change_reason"):
+                    item["change_reason"] = change.get("change_reason")
+            result.append(item)
+    return result
+
+
+def _init_generic_state(entries: Dict[str, object] | None) -> Dict[str, Dict[str, object]]:
+    """
+    Convert an initial {name: value} mapping into {name: {current_value: value}}.
+    """
+    state: Dict[str, Dict[str, object]] = {}
+    if isinstance(entries, dict):
+        for key, value in entries.items():
+            state[key] = {"current_value": deepcopy(value)}
+    return state
+
+
+def _apply_habit_operations(
+    state: Dict[str, Dict[str, object]],
+    operations: List[Dict[str, object]] | None,
+) -> tuple[Dict[str, Dict[str, object]], Dict[str, Dict[str, object]]]:
+    """
+    Apply habit deltas; adjust merges partial fields into the previous habit.
+    """
+    updated = deepcopy(state)
+    changes: Dict[str, Dict[str, object]] = {}
+    if not operations:
+        return updated, changes
+
+    for operation in operations:
+        if not isinstance(operation, dict):
+            continue
+        name = operation.get("habit_name")
+        if not name:
+            continue
+
+        op_type = (operation.get("op") or "").lower()
+        reason = operation.get("reason", "")
+        prev_value = deepcopy((updated.get(name) or {}).get("current_value"))
+        delta_payload = operation.get("delta")
+        if delta_payload is None:
+            delta_payload = operation.get("new_state")
+
+        if delta_payload is None:
+            candidate = {
+                k: v
+                for k, v in operation.items()
+                if k
+                not in {
+                    "habit_name",
+                    "op",
+                    "reason",
+                    "before",
+                    "after",
+                    "change_reason",
+                    "delta",
+                    "new_state",
+                    "attribute_type",
+                }
+            }
+            if candidate:
+                delta_payload = candidate
+
+        if op_type == "drop":
+            new_value = None
+        elif op_type == "adjust":
+            base = deepcopy(prev_value) if isinstance(prev_value, dict) else {}
+            if isinstance(delta_payload, dict):
+                base.update(delta_payload)
+            elif delta_payload is not None:
+                base = delta_payload
+            new_value = base
+        else:
+            # acquire or fallback
+            new_value = delta_payload if delta_payload is not None else prev_value
+
+        updated[name] = {"current_value": new_value}
+        changes[name] = {
+            "previous_value": prev_value,
+            "change_reason": reason,
+            "op": op_type,
+        }
+
+    return updated, changes
+
+
+def _apply_preference_operations(
+    state: Dict[str, Dict[str, object]],
+    operations: List[Dict[str, object]] | None,
+) -> tuple[Dict[str, Dict[str, object]], Dict[str, Dict[str, object]]]:
+    """
+    Apply preference deltas with the new delta field.
+    """
+    updated = deepcopy(state)
+    changes: Dict[str, Dict[str, object]] = {}
+    if not operations:
+        return updated, changes
+
+    for operation in operations:
+        if not isinstance(operation, dict):
+            continue
+        name = operation.get("preference_name")
+        if not name:
+            continue
+        op_type = (operation.get("op") or "").lower()
+        reason = operation.get("reason", "")
+        prev_value = deepcopy((updated.get(name) or {}).get("current_value"))
+        delta_payload = operation.get("delta")
+        if delta_payload is None:
+            delta_payload = operation.get("new_state")
+
+        if op_type in {"drop", "remove"}:
+            new_value = None
+        else:
+            new_value = delta_payload if delta_payload is not None else prev_value
+
+        updated[name] = {"current_value": new_value}
+        changes[name] = {
+            "previous_value": prev_value,
+            "change_reason": reason,
+            "op": op_type,
+        }
+
+    return updated, changes
 
 
 def _state_dict_to_list(
@@ -3353,10 +3923,15 @@ def _state_dict_to_list(
     
     result = []
     for key, entry in sorted(state.items()):
+        current_value = (
+            entry.get("current_value") if isinstance(entry, dict) else entry
+        )
         item: Dict[str, object] = {
             "name": key,
-            "current_value": entry.get("current_value"),
+            "current_value": current_value,
         }
+        if isinstance(entry, dict) and "attribute_type" in entry:
+            item["attribute_type"] = entry.get("attribute_type")
         
         # Add change information if this item changed
         if key in changes:
@@ -3375,19 +3950,17 @@ def _resolve_window_states(dynamic_profile_data: Dict) -> List[Dict]:
     Resolve initial state + deltas into full window states for downstream prompts.
     Works with the newer dynamic_profile format that has:
       - top-level "initial_state"
-      - per-window *_delta sections with {op, *_name, new_state, reason}
+      - per-window *_delta sections with {op, *_name, delta, reason}
     Preserves change information (previous_value, change_reason, op) for each state item.
     """
     resolved: List[Dict] = []
     # Build initial snapshots from the top-level initial_state
     initial_state = dynamic_profile_data.get("initial_state") or {}
-    current_attributes: Dict[str, Dict[str, object]] = _extract_initial_state_entries(
-        (initial_state.get("user_attributes_state") or {}).get("initial")
-    )
-    current_habits: Dict[str, Dict[str, object]] = _extract_initial_state_entries(
+    current_attributes = _init_user_attributes_state(initial_state)
+    current_habits = _init_generic_state(
         (initial_state.get("habits_state") or {}).get("initial")
     )
-    current_preferences: Dict[str, Dict[str, object]] = _extract_initial_state_entries(
+    current_preferences = _init_generic_state(
         (initial_state.get("preferences_state") or {}).get("initial")
     )
 
@@ -3397,33 +3970,19 @@ def _resolve_window_states(dynamic_profile_data: Dict) -> List[Dict]:
             continue
 
         # Track changes for each state type
-        attributes_changes: Dict[str, Dict[str, object]] = {}
-        habits_changes: Dict[str, Dict[str, object]] = {}
-        preferences_changes: Dict[str, Dict[str, object]] = {}
-
-        # Start from the current snapshots and apply this window's deltas
-        attributes_snapshot = deepcopy(current_attributes)
-        attributes_changes = _apply_delta_operations(
-            attributes_snapshot,
+        attributes_snapshot, attributes_changes = _apply_user_attribute_operations(
+            current_attributes,
             _get_delta_operations(window.get("user_attributes_delta")),
-            # New schema uses "attribute_name"
-            name_field="attribute_name",
         )
 
-        habits_snapshot = deepcopy(current_habits)
-        habits_changes = _apply_delta_operations(
-            habits_snapshot,
+        habits_snapshot, habits_changes = _apply_habit_operations(
+            current_habits,
             _get_delta_operations(window.get("habits_delta")),
-            # New schema uses "habit_name"
-            name_field="habit_name",
         )
 
-        preferences_snapshot = deepcopy(current_preferences)
-        preferences_changes = _apply_delta_operations(
-            preferences_snapshot,
+        preferences_snapshot, preferences_changes = _apply_preference_operations(
+            current_preferences,
             _get_delta_operations(window.get("preferences_delta")),
-            # New schema uses "preference_name"
-            name_field="preference_name",
         )
 
         resolved.append(
@@ -3432,7 +3991,7 @@ def _resolve_window_states(dynamic_profile_data: Dict) -> List[Dict]:
                 "time_range": window.get("time_range"),
                 "window_description": window.get("window_description"),
                 "summary": window.get("summary", ""),
-                "user_attributes_state": _state_dict_to_list(
+                "user_attributes_state": _user_attributes_state_to_list(
                     attributes_snapshot, changes=attributes_changes
                 ),
                 "habits_state": _state_dict_to_list(
@@ -3501,12 +4060,21 @@ def _reorganize_by_key(resolved_windows: List[Dict]) -> Dict:
             state_list = window.get(state_type, [])
             for item in state_list:
                 key_name = item.get("name")
+                attr_type = item.get("attribute_type")
                 if not key_name:
                     continue
-                
+
+                composite_key = (
+                    f"{attr_type}.{key_name}"
+                    if state_type == "user_attributes_state" and attr_type
+                    else key_name
+                )
+
                 # Initialize timeline for this key if not exists
-                if key_name not in reorganized[state_type]:
-                    reorganized[state_type][key_name] = {"timeline": []}
+                if composite_key not in reorganized[state_type]:
+                    reorganized[state_type][composite_key] = {"timeline": []}
+                    if state_type == "user_attributes_state" and attr_type:
+                        reorganized[state_type][composite_key]["attribute_type"] = attr_type
                 
                 # Create timeline entry (with window_id for now, will be removed after merging)
                 timeline_entry: Dict[str, object] = {
@@ -3514,6 +4082,8 @@ def _reorganize_by_key(resolved_windows: List[Dict]) -> Dict:
                     "time_range": time_range,
                     "current_value": item.get("current_value"),
                 }
+                if state_type == "user_attributes_state" and attr_type:
+                    timeline_entry["attribute_type"] = attr_type
                 
                 # Add change information if present
                 if "op" in item:
@@ -3523,7 +4093,7 @@ def _reorganize_by_key(resolved_windows: List[Dict]) -> Dict:
                     if "change_reason" in item:
                         timeline_entry["change_reason"] = item.get("change_reason")
                 
-                reorganized[state_type][key_name]["timeline"].append(timeline_entry)
+                reorganized[state_type][composite_key]["timeline"].append(timeline_entry)
     
     # Second pass: merge consecutive entries with no changes
     for state_type in ["user_attributes_state", "habits_state", "preferences_state"]:
@@ -3545,6 +4115,8 @@ def _reorganize_by_key(resolved_windows: List[Dict]) -> Dict:
                         "current_value": current_entry["current_value"],
                         "op": current_entry["op"],
                     }
+                    if "attribute_type" in current_entry:
+                        merged_entry["attribute_type"] = current_entry["attribute_type"]
                     if "previous_value" in current_entry:
                         merged_entry["previous_value"] = current_entry["previous_value"]
                     if "change_reason" in current_entry:
@@ -3558,6 +4130,8 @@ def _reorganize_by_key(resolved_windows: List[Dict]) -> Dict:
                     "time_range": list(current_entry["time_range"]),  # copy
                     "current_value": current_entry["current_value"],
                 }
+                if "attribute_type" in current_entry:
+                    merged_entry["attribute_type"] = current_entry["attribute_type"]
                 j = i + 1
                 
                 # Merge consecutive entries with no op and same current_value
@@ -3635,10 +4209,21 @@ def _identify_stable_states(resolved_windows: List[Dict]) -> Dict[str, Dict[str,
         for state_type in ["user_attributes_state", "habits_state", "preferences_state"]:
             for item in window_state.get(state_type, []) or []:
                 name = item.get("name")
+                attr_type = item.get("attribute_type")
                 if not name:
                     continue
+                state_key = (
+                    f"{attr_type}.{name}"
+                    if state_type == "user_attributes_state" and attr_type
+                    else name
+                )
                 record = tracker[state_type].setdefault(
-                    name, {"entries": [], "has_op": False}
+                    state_key,
+                    {
+                        "entries": [],
+                        "has_op": False,
+                        "attribute_type": attr_type,
+                    },
                 )
                 record["entries"].append(
                     {"window_id": window_id, "value": item.get("current_value")}
@@ -3661,6 +4246,10 @@ def _identify_stable_states(resolved_windows: List[Dict]) -> Dict[str, Dict[str,
                     "value": entries[0]["value"],
                     "window_ids": [entry["window_id"] for entry in entries],
                 }
+                if info.get("attribute_type"):
+                    stable_states[state_type][name]["attribute_type"] = info.get(
+                        "attribute_type"
+                    )
 
     return stable_states
 
@@ -3723,7 +4312,13 @@ def _filter_window_state_for_semantic_events(
         filtered_state: List[Dict[str, object]] = []
         for item in window_state.get(state_type, []) or []:
             name = item.get("name")
-            plan_entry = plan_for_type.get(name)
+            attr_type = item.get("attribute_type")
+            state_key = (
+                f"{attr_type}.{name}"
+                if state_type == "user_attributes_state" and attr_type
+                else name
+            )
+            plan_entry = plan_for_type.get(state_key)
             if plan_entry:
                 reveal_windows = plan_entry.get("reveal_in_windows") or []
                 if window_id not in reveal_windows:
@@ -4081,26 +4676,6 @@ def load_domains_from_file(path: str | Path) -> List[Domain]:
     return domains
 
 
-def select_domains_for_user(
-    specs: Sequence[domainSpec],
-    *,
-    optional_probability: float,
-    seed: int | None = None,
-) -> tuple[List[domainSpec], Dict[str, Dict[str, object]]]:
-    optional_probability = max(0.0, min(1.0, optional_probability))
-    rng = random.Random(seed)
-    selected: List[domainSpec] = []
-    metadata: Dict[str, Dict[str, object]] = {}
-    for spec in specs:
-        include = spec.is_essential or rng.random() < optional_probability
-        metadata[spec.name] = {
-            "is_essential": spec.is_essential,
-            "included": include,
-        }
-        if include:
-            selected.append(spec)
-    return selected, metadata
-
 
 class GenerationPipeline:
     def __init__(
@@ -4320,7 +4895,7 @@ class GenerationPipeline:
                     dynamic_profile = json.loads(exist_path.read_text())
                     usage = {"dynamic_profile": {}}
                 else:
-                    # import pdb; pdb.set_trace()
+                    import pdb; pdb.set_trace()
                     dynamic_profile, usage = self.generate_dynamic_profile_for_domain(
                         domain,
                         user_profile=user_profile_text,
@@ -4328,7 +4903,9 @@ class GenerationPipeline:
                         life_domain_list=life_domain_list,
                     )
                 ### read from file if exists
-                # import pdb; pdb.set_trace()
+                ## save
+                _write_json(exist_path, dynamic_profile)
+                import pdb; pdb.set_trace()
                 reviewed_result, revised_dynamic_profile, review_usage = self.review_revise_dynamic_profile_for_domain(
                     domain,
                     dynamic_profile=dynamic_profile,
@@ -4919,7 +5496,6 @@ class GenerationPipeline:
         slug = _slugify(domain.domain_name)
         events_chain_windows: List[Dict] = []
 
-
         ## resolved_windows is a list of dicts, each dict is a window state
         resolved_windows = _resolve_window_states(domain_profile)
         resolved_windows_path = self.output_dir / f"{slug}_resolved_windows.json"
@@ -4931,7 +5507,6 @@ class GenerationPipeline:
         )
         summary_all_by_window: Dict[str, str] = {}
         summary_by_window_domain: Dict[str, str] = {}
-
 
         for window_id, entry in user_full_state_summaries.items():
             if not window_id or not isinstance(entry, dict):
@@ -5683,7 +6258,7 @@ def debug_dynamic_profile_generation() -> None:
     # model_name="gemini-2.5-flash-lite"
     client = GeminiJSONClient(api_key=api_key, model_name=model_name)
     base_dir = Path(__file__).resolve().parent
-    output_dir = base_dir / "generated_outputs_debug_v6" / _slugify(model_name)
+    output_dir = base_dir / "generated_outputs_debug_v7" / _slugify(model_name)
     domains_path = base_dir / "domains.json"
     # domains_path = base_dir / "domains_test.json"
     domains = load_domains_from_file(domains_path)
@@ -5964,7 +6539,7 @@ def debug_generate_real_data() -> None:
 
 if __name__ == "__main__":
     # example_usage()
-    # debug_dynamic_profile_generation()
+    debug_dynamic_profile_generation()
     # debug_review_revise_dynamic_profile_from_file()
     # debug_resolve_conflicts_from_file()
 
@@ -5981,7 +6556,7 @@ if __name__ == "__main__":
     # ===== prepare context for semantic events generation =====
     # debug_prepare_context_for_semantic_events_generation()
     # debug_generate_semantic_events()
-    debug_generate_real_data()
+    # debug_generate_real_data()
     # ===== prepare context for semantic events generation =====
 
 
