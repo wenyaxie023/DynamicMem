@@ -14,6 +14,12 @@ dynamic_profile_template = Template("""You are an expert simulator of long-horiz
 ### Your task:
 Given the world background, the basic user profile, and ONE life domain, time windows, generate a **time-windowed user profile trajectory** for this life domain over the provided time windows.
 
+**Simulation approach**: We use an **initial state + incremental deltas** model:
+- Define the baseline state at time 0 (initial_state)
+- For each subsequent time window, specify only what CHANGED (deltas)
+- Changes are represented as structured operations (add, remove, modify, acquire, drop, adjust, shift, refine)
+- This allows efficient tracking of profile evolution over time
+
 ### Input Provided:
 
 **All life domains in this system:**
@@ -50,11 +56,9 @@ Before proceeding, you must understand these core concepts:
   Examples of singular attributes:
   ```json
   "singular": {
-    "primary_residence": "Rented studio apartment in downtown area, 450 sq ft",
-    "primary_job": "Software Engineer at mid-size tech startup, full-time",
-    "marital_status": "Single, never married",
-    "primary_vehicle": "2018 Honda Civic (reliable sedan for daily commute)",
-    "highest_education": "Master's degree in Computer Science from State University"
+    "primary_health_insurance": "Blue Cross Blue Shield PPO plan through employer (Family coverage, $300/month copay)",
+    "primary_banking_institution": "Chase Bank checking account ending in 4521 (main account for direct deposit and bills)",
+    "commute_mode": "Driving personal car to office (25-minute commute each way on weekdays)",
   }
   ```
   
@@ -192,109 +196,301 @@ Before proceeding, you must understand these core concepts:
 
 - **Habits**:
   Definition: Recurring behavioral patterns (e.g., morning jogging routine, weekly meal prep), which can be identified and consolidated from repeated observations.
-  Each habit MUST be represented as a structured JSON object (dictionary) capturing action, frequency, timing, and context.
+  Each habit MUST be represented as a structured JSON object capturing action, schedule, timing, and context.
 
-  A habit object MUST have the following fields:
-  - action: a concrete, unambiguous action label.
-  - frequency: how often the habit occurs (e.g., "daily", "3_times_per_week", "weekdays_only").
-  - timing: when it typically happens(e.g., "before work (6:00 AM–6:30 AM)", "after dinner (7:00 PM–7:30 PM)", "Sunday mornings (9:00 AM–11:00 AM)").
-  - context: where / in what setting it happens (e.g., "in a small home gym", "walking around the neighborhood", "at a local coffee shop").
-  - description: a short natural language description (5–20 words) summarizing the habit in human-readable form.
+  **Required fields:**
+  
+  - **action**: Concrete action label (string).
+    Examples: "walk_dog_on_leash", "morning_jog", "grocery_shopping", "video_call_with_parents"
+  
+  - **schedule**: When this habit occurs. MUST use one of these standardized formats:
+    
+    ```
+    Daily: {"frequency_type": "daily"}
+    
+    Weekly: {"frequency_type": "weekly", "days_of_week": [0,2,4]}
+    // days_of_week: 0=Mon, 1=Tue, 2=Wed, 3=Thu, 4=Fri, 5=Sat, 6=Sun
+    // MUST specify exact days. NO vague "3 times per week".
+    
+    Biweekly: {"frequency_type": "biweekly", "days_of_week": [6], "week_parity": "odd"}
+    // week_parity: "odd" or "even" (odd/even numbered weeks of year)
+    
+    Monthly: {"frequency_type": "monthly", "days_of_month": [1,15]}
+    // days_of_month: 1-31
+    // MUST specify exact dates. NO vague "once a month".
+    
+    Monthly by weekday: {"frequency_type": "monthly_by_weekday", "week_of_month": 1, "day_of_week": 0}
+    // week_of_month: 1-4 or "last" (e.g., 1=first week, "last"=last week)
+    // day_of_week: 0-6 (0=Mon, 1=Tue, ..., 6=Sun - includes weekends)
+    // Example: first Monday, last Friday, second Saturday of each month
+    ```
+  
+  - **timing**: Time window (object).
+    ```
+    {"start_time": "06:30", "end_time": "07:00"}
+    ```
+    - 24-hour format (HH:MM)
+    - end_time must be after start_time
+    - Duration (end - start) MUST NOT exceed 3 hours
+  
+  - **context**: Where it happens (string, 5-15 words).
+    Examples: "around residential neighborhood", "at 24 Hour Fitness gym on Main St"
+  
+  - **priority**: Importance for scheduling (ENUM).
+    MUST be one of: "critical" | "high" | "medium" | "low"
+  
+  - **description**: Natural language summary (string, 10-30 words).
 
-  Examples:
+  **CRITICAL constraints:**
+  
+  1. **frequency_type is ENUM**: Only use "daily", "weekly", "biweekly", "monthly", or "monthly_by_weekday"
+  2. **All schedules fully specified**: List exact days/dates, not vague frequencies
+  3. **Max duration**: 3 hours per occurrence
+  4. **Fixed timing**: All timings are fixed (no flexibility parameter)
+
+  **Complete example:**
   ```json
-  "user_walks_dog_morning": {
+  "morning_dog_walk": {
     "action": "walk_dog_on_leash",
-    "frequency": "daily",
-    "timing": "early morning before work (6:30 AM - 7:00 AM)",
-    "context": "around the residential neighborhood for 20–30 minutes",
-    "description": "User walks the dog every morning before work for 20–30 minutes."
+    "schedule": {"frequency_type": "daily"},
+    "timing": {"start_time": "06:30", "end_time": "07:00"},
+    "context": "around residential neighborhood park",
+    "priority": "high",
+    "description": "Daily morning walk with the dog around the neighborhood, about 30 minutes before work."
   }
   ```
 
-  Constraints:
-  - All habit fields must be concrete and unambiguous.
-  - Avoid vague action names such as "hiking", "walking", "training", or "going out" when the actor, purpose, or context is unclear.
-    For example, use "dog_training" rather than "training" when the actor is a dog.
-  - The frequency should be reasonable and realistic for a human user.
+  ```json
+  "gym_strength_training": {
+    "action": "strength_training_at_gym",
+    "schedule": {"frequency_type": "weekly", "days_of_week": [1, 3, 5]},
+    "timing": {"start_time": "18:00", "end_time": "19:30"},
+    "context": "at 24 Hour Fitness gym near workplace",
+    "priority": "high",
+    "description": "Strength training three times weekly on Tuesday, Thursday, Saturday evenings after work."
+  }
+  ```
 
-  Allowed types of habit change:
-  - **acquire**:
-    Meaning: a new habit appears in this window.
-    **DELTA FORMAT**: Provide the complete habit object
+  ```json
+  "monthly_budget_review": {
+    "action": "review_expenses_and_budget",
+    "schedule": {"frequency_type": "monthly", "days_of_month": [1]},
+    "timing": {"start_time": "19:00", "end_time": "20:00"},
+    "context": "at home using personal finance software",
+    "priority": "medium",
+    "description": "Monthly financial review on the first day of each month to track expenses and update budget."
+  }
+  ```
+
+  **Allowed operations:**
+  
+  - **acquire**: New habit appears. Delta = complete habit object.
+  - **drop**: Existing habit ceases. Delta = null.
+  - **adjust**: Modify existing habit. 
+    **CRITICAL**: Must change at least one substantial field (schedule, timing, context, or priority).
+    Cannot only change description.
+    Delta = only changed fields (partial object).
     
-  - **drop**:
-    Meaning: a **previously existing habit** ceases entirely.
-    **DELTA FORMAT**: Set value to null
+    Example (change schedule):
+    ```json
+    {
+      "op": "adjust",
+      "habit_name": "morning_jog",
+      "delta": {
+        "schedule": {"frequency_type": "daily"},
+        "description": "Increased to daily for better fitness"
+      },
+      "reason": "..."
+    }
+    ```
     
-  - **adjust**:
-    Meaning: frequency, timing, duration, or context of a habit changes.
-    **CRITICAL**: You can ONLY use "adjust" if this habit already exists in a previous window.
-    **DELTA FORMAT**: Provide only the fields that are changing (partial habit object)
-    
-    Example:
-      Current state: {
-        "action": "morning_jog",
-        "frequency": "3_times_per_week",
-        "timing": "6:00 AM - 6:30 AM",
-        "context": "neighborhood streets",
-        "description": "..."
-      }
-      Delta (adjust frequency): {
-        "frequency": "5_times_per_week",
-        "description": "Increased jogging frequency to 5 times per week for better fitness"
-      }
+    Example (change timing):
+    ```json
+    {
+      "op": "adjust",
+      "habit_name": "evening_reading",
+      "delta": {
+        "timing": {"start_time": "21:00", "end_time": "22:00"},
+        "description": "Moved reading time one hour later to accommodate new schedule"
+      },
+      "reason": "..."
+    }
+    ```
 
 - **Preferences**:
   Definition: Subjective inclinations that guide choices (e.g., preferring window seats, favoring spicy food).
   It describes *what* the user tends to choose when multiple alternatives exist.
-  Preference changes trigger when new experiences, significant events, world/seasonal factors, or new equipment/resources are encountered.
+  
+  Each preference MUST be represented as a structured object with a statement and supporting signals.
 
-  For this domain, you MUST:
-  - propose a small set of **2-4 distinct preference dimensions** that are most important for this domain and this user,
-  - dimensions should be:
-    - non-redundant,
-    - interpretable,
-    - sufficient to describe meaningful variation in this domain.
-  - Values should reflect **relative inclination** (e.g., prefer A over B), not abstract intensity scores.
+  **Structure:**
+  ```json
+  "preference_name": {
+    "statement": "<concrete preference statement, 10-30 words>",
+    "signals": [
+      "<observable behavior or evidence 1>",
+      "<observable behavior or evidence 2>",
+      "<observable behavior or evidence 3>"
+    ]
+  }
+  ```
 
-  Common triggers of preference change:
-  - new experiences (e.g., first time photographing a solar eclipse)
-  - significant events (e.g., pet illness → preference for higher-quality food)
-  - world/seasonal factors (e.g., winter → preference for indoor activities)
-  - new equipment/resources (e.g., prime lens → preference for street photography)
+  - **statement**: A clear, concrete preference statement describing what the user prefers.
+    - Must use comparative language: "prefers A over B", "favors X rather than Y"
+    - Can include intensity: "strongly prefers", "somewhat prefers", "slightly favors"
+    - Should be specific to this domain and actionable
+  
+  - **signals**: Array of 2-4 observable behaviors or evidence that support this preference.
+    - Must be concrete and verifiable (not abstract feelings)
+    - Should demonstrate the preference through actions, choices, or patterns
+    - Examples: purchasing decisions, repeated behaviors, explicit rejections
 
-  Examples of preferences:
+  **Examples:**
   ```json
   "preferences_state": {
     "initial": {
-      "investment_focus": "Prefers long-term investments in technology stocks and diversified index funds over short-term trading",
-      "exercise_style": "Prefers solo outdoor activities like running and cycling over group gym classes",
-      "learning_approach": "Prefers hands-on project-based learning over passive video tutorials"
+      "exercise_setting": {
+        "statement": "Prefers solo outdoor activities like running and cycling over group gym classes",
+        "signals": [
+          "Consistently chooses morning runs over gym memberships",
+          "Declined multiple invitations to join group fitness classes",
+          "Invested in running gear and bicycle rather than gym equipment"
+        ]
+      },
+      "investment_focus": {
+        "statement": "Prefers long-term passive investments in diversified index funds over active stock trading",
+        "signals": [
+          "Allocates 90% of portfolio to low-cost index funds",
+          "Has not made individual stock trades in over a year",
+          "Reads books on passive investing strategies"
+        ]
+      },
+      "learning_approach": {
+        "statement": "Prefers hands-on project-based learning over passive video tutorials or reading",
+        "signals": [
+          "Starts building projects immediately after learning new concepts",
+          "Skips tutorial videos in favor of documentation and experimentation",
+          "Maintains a GitHub portfolio of learning projects"
+        ]
+      }
     }
   }
   ```
 
-  Constraints:
-  - All preference values must be concrete and unambiguous.
+  **Constraints:**
+  - For this domain, you MUST propose a small set of **2-4 distinct preference dimensions**
+  - Dimensions should be: non-redundant, interpretable, and meaningful for this domain
+  - All statement values must be concrete and unambiguous
     Bad: "better", "worse", "moderate", "likes it a lot" (Too vague)
     Good: "Prefers quiet solo activities over group-based social gatherings"
+  - Signals must be observable behaviors, not internal feelings
 
-  Allowed types of preference change:
+  **Common triggers of preference change:**
+  - New experiences (e.g., first time trying a new activity)
+  - Significant events (e.g., injury, life change)
+  - World/seasonal factors (e.g., winter → preference for indoor activities)
+  - New equipment/resources (e.g., new camera → preference for certain photography styles)
+
+  **Allowed operations:**
+  
   - **shift**:
-    Meaning: dominant preference changes from one option to another.
+    Meaning: Preference direction changes (from preferring A to preferring B).
     **CRITICAL**: You can ONLY use "shift" if this preference already exists in a previous window.
-    **DELTA FORMAT**: Provide the new preference value (string)
+    **DELTA FORMAT**: Provide the complete new preference object (statement + signals).
+    
+    Example:
+    ```json
+    // Previous state:
+    "exercise_setting": {
+      "statement": "Prefers solo outdoor activities like running and cycling over group gym classes",
+      "signals": [
+        "Consistently chooses morning runs over gym memberships",
+        "Declined multiple invitations to join group fitness classes",
+        "Invested in running gear rather than gym equipment"
+      ]
+    }
+    
+    // Delta (shift operation):
+    {
+      "op": "shift",
+      "preference_name": "exercise_setting",
+      "delta": {
+        "statement": "Prefers group fitness classes and team sports over solo outdoor activities",
+        "signals": [
+          "Joined recreational soccer league and attends twice weekly",
+          "Now regularly attends group yoga classes at local studio",
+          "Finds motivation and accountability in group settings"
+        ]
+      },
+      "reason": "After joining soccer league, discovered enjoyment and motivation from social exercise"
+    }
+    ```
 
-  - **amplify**:
-    Meaning: preference strength increases.
-    **CRITICAL**: You can ONLY use "amplify" if this preference already exists in a previous window.
-    **DELTA FORMAT**: Provide the amplified preference description (string)
-
-  - **attenuate**:
-    Meaning: preference strength weakens.
-    **CRITICAL**: You can ONLY use "attenuate" if this preference already exists in a previous window.
-    **DELTA FORMAT**: Provide the attenuated preference description (string)
+  - **refine**:
+    Meaning: Preference in the same direction is refined or adjusted in strength/specificity.
+    **CRITICAL**: You can ONLY use "refine" if this preference already exists in a previous window.
+    **DELTA FORMAT**: Provide the complete new preference object (statement + signals).
+    
+    Example (strengthening):
+    ```json
+    // Previous state:
+    "investment_focus": {
+      "statement": "Prefers long-term investments in technology stocks over short-term trading",
+      "signals": [
+        "Holds tech stocks for multiple years",
+        "Rarely checks portfolio more than monthly",
+        "Reads annual reports rather than daily news"
+      ]
+    }
+    
+    // Delta (refine operation - strengthening):
+    {
+      "op": "refine",
+      "preference_name": "investment_focus",
+      "delta": {
+        "statement": "Strongly prefers long-term buy-and-hold investments in diversified index funds, actively avoiding individual stock picking and any short-term trading",
+        "signals": [
+          "Moved 95% of portfolio from individual stocks to index funds",
+          "Set up automatic monthly contributions to avoid timing decisions",
+          "Explicitly ignores market volatility and short-term price movements",
+          "Reads research on passive investing and efficient market hypothesis"
+        ]
+      },
+      "reason": "After reading investment research and experiencing market volatility, conviction in passive long-term strategy strengthened significantly"
+    }
+    ```
+    
+    Example (weakening):
+    ```json
+    // Previous state:
+    "learning_approach": {
+      "statement": "Strongly prefers hands-on project-based learning, actively avoiding passive video tutorials or reading",
+      "signals": [
+        "Never watches tutorial videos, goes straight to building",
+        "Finds reading documentation tedious and skips it",
+        "Only learns by doing and experimenting"
+      ]
+    }
+    
+    // Delta (refine operation - weakening):
+    {
+      "op": "refine",
+      "preference_name": "learning_approach",
+      "delta": {
+        "statement": "Prefers hands-on projects but now values video tutorials for quick skill acquisition before diving in",
+        "signals": [
+          "Watches 20-minute tutorial videos before starting new projects",
+          "Finds that structured tutorials help understand basics faster",
+          "Still prefers projects as primary learning method but uses videos as supplement"
+        ]
+      },
+      "reason": "Found that video tutorials are effective for learning new tools quickly before hands-on practice"
+    }
+    ```
+  
+  **Note on operations:**
+  - **shift** = change preference direction (solo→group, active→passive)
+  - **refine** = same direction, but adjust strength/specificity (prefer → strongly prefer, or vice versa)
   
 ---
 
@@ -444,73 +640,74 @@ Return strictly valid JSON with this schema:
   "initial_state": {
     "user_attributes_state": {
       "singular": {
-        "<attribute_name>": "<concrete value string>",
-        ...
+        "<attribute_name>": "<concrete value string>"
       },
       "collections": {
         "<collection_name>": [
-          "<concrete description string 1>",
-          "<concrete description string 2>",
-          ...
-        ],
-        ...
+          "<concrete description string>"
+        ]
       }
     },
     "habits_state": {
       "initial": {
         "<habit_name>": {
-          "action": "<concrete action label>",
-          "frequency": "<frequency pattern>",
-          "timing": "<typical timing>",
-          "context": "<setting / environment>",
-          "description": "<5–20 words natural language description>"
-        },
-        ...
+          "action": "<action label>",
+          "schedule": {
+            "frequency_type": "daily | weekly | biweekly | monthly | monthly_by_weekday",
+            "...": "other required schedule fields"
+          },
+          "timing": {
+            "start_time": "HH:MM",
+            "end_time": "HH:MM"
+          },
+          "context": "<5–15 words>",
+          "priority": "critical | high | medium | low",
+          "description": "<10–30 words>"
+        }
       }
     },
     "preferences_state": {
       "initial": {
-        "<preference_name>": "<concrete preference value, 5-20 words>",
-        ...
+        "<preference_name>": {
+          "statement": "<10–30 word concrete preference statement>",
+          "signals": [
+            "<observable signal 1>",
+            "<observable signal 2>"
+          ]
+        }
       }
     },
-    "summary": "<summary of initial state>"
+    "summary": "<2–4 sentence summary of initial state>"
   },
   "time_windows": [
     {
       "window_id": "w1",
       "time_range": ["YYYY-MM-DD", "YYYY-MM-DD"],
-      "window_description": "<short description of conditions motivating changes>",
+      "window_description": "<1–3 sentences describing external + internal drivers>",
       "user_attributes_delta": {
         "operations": [
-          // For singular attributes:
           {
             "op": "modify",
             "attribute_type": "singular",
             "attribute_name": "<attribute name>",
-            "delta": "<new value string>",
+            "delta": "<new concrete value>",
             "reason": "<short reason>"
           },
-          // For collection attributes (add):
           {
             "op": "add",
             "attribute_type": "collections",
             "collection_name": "<collection name>",
             "delta": [
-              "<new description string 1>",
-              "<new description string 2>",
-              ...
+              "<concrete description string>"
             ],
             "reason": "<short reason>"
           },
-          // For collection attributes (remove):
           {
             "op": "remove",
             "attribute_type": "collections",
             "collection_name": "<collection name>",
             "delta": [
-              "<description string to remove (must match exactly)>",
-              ...
+              "<exact string to remove>"
             ],
             "reason": "<short reason>"
           }
@@ -522,11 +719,18 @@ Return strictly valid JSON with this schema:
             "op": "acquire",
             "habit_name": "<habit name>",
             "delta": {
-              "action": "<action>",
-              "frequency": "<frequency>",
-              "timing": "<timing>",
-              "context": "<context>",
-              "description": "<5–20 word description>"
+              "action": "<action label>",
+              "schedule": {
+                "frequency_type": "daily | weekly | biweekly | monthly | monthly_by_weekday",
+                "...": "other required schedule fields"
+              },
+              "timing": {
+                "start_time": "HH:MM",
+                "end_time": "HH:MM"
+              },
+              "context": "<5–15 words>",
+              "priority": "critical | high | medium | low",
+              "description": "<10–30 words>"
             },
             "reason": "<short reason>"
           },
@@ -534,8 +738,11 @@ Return strictly valid JSON with this schema:
             "op": "adjust",
             "habit_name": "<existing habit name>",
             "delta": {
-              "<field_to_change>": "<new value>",
-              "description": "<updated 5–20 word description>"
+              "schedule": { "...": "changed fields only" },
+              "timing": { "...": "changed fields only" },
+              "context": "<new context>",
+              "priority": "critical | high | medium | low",
+              "description": "<updated description>"
             },
             "reason": "<short reason>"
           },
@@ -550,16 +757,21 @@ Return strictly valid JSON with this schema:
       "preferences_delta": {
         "operations": [
           {
-            "op": "shift" | "amplify" | "attenuate",
+            "op": "shift | refine",
             "preference_name": "<existing preference name>",
-            "delta": "<new preference value, 5-20 words>",
+            "delta": {
+              "statement": "<10–30 word preference statement>",
+              "signals": [
+                "<observable signal 1>",
+                "<observable signal 2>"
+              ]
+            },
             "reason": "<short reason>"
           }
         ]
       },
-      "summary": "<summary of this window>"
-    },
-    ...
+      "summary": "<2–4 sentence synthesis explicitly linked to window_description>"
+    }
   ]
 }
 """
