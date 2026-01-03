@@ -627,7 +627,7 @@ This means:
    - Facts about the user must be stated definitively, not as guesses using words like "likely" or "probably."
 
 ---
-### Output Format (JSON only)
+### Output Format (JSON only, dict format)
 
 **CRITICAL FORMATTING REQUIREMENTS:**
 - Every window object MUST include "window_description" and "summary" fields

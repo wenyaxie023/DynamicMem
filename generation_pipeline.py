@@ -4,11 +4,11 @@ import json
 import re
 from copy import deepcopy
 from dataclasses import asdict, dataclass
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 from collections import Counter
 from pathlib import Path
 import random
-from typing import Any, Dict, List, Sequence
+from typing import Any, Dict, List, Optional, Sequence, Tuple
 from jinja2 import Template
 import dotenv
 dotenv.load_dotenv()
@@ -58,17 +58,30 @@ Expected JSON shape:
     "habits_state": {
       "initial": {
         "<habit_name>": {
-          "action": "...",
-          "frequency": "...",
-          "timing": "...",
-          "context": "...",
-          "description": "..."
+          "action": "<action label>",
+          "schedule": {
+            "frequency_type": "daily | weekly | biweekly | monthly | monthly_by_weekday",
+            "...": "required fields based on frequency_type"
+          },
+          "timing": {
+            "start_time": "HH:MM",
+            "end_time": "HH:MM"
+          },
+          "context": "<5-15 words>",
+          "priority": "critical | high | medium | low",
+          "description": "<10-30 words>"
         }
       }
     },
     "preferences_state": {
       "initial": {
-        "<preference_name>": "<preference value, 5-20 words>"
+        "<preference_name>": {
+          "statement": "<10-30 word concrete preference statement>",
+          "signals": [
+            "<observable signal 1>",
+            "<observable signal 2>"
+          ]
+        }
       }
     },
     "summary": "..."
@@ -88,12 +101,21 @@ Expected JSON shape:
             "reason": "..."
           },
           {
-            "op": "add|remove",
+            "op": "add",
             "attribute_type": "collections",
             "collection_name": "...",
             "delta": [
               "<item 1>",
               "<item 2>"
+            ],
+            "reason": "..."
+          },
+          {
+            "op": "remove",
+            "attribute_type": "collections",
+            "collection_name": "...",
+            "delta": [
+              "<exact item string to remove>"
             ],
             "reason": "..."
           }
@@ -102,15 +124,37 @@ Expected JSON shape:
       "habits_delta": {
         "operations": [
           {
-            "op": "acquire|adjust|drop",
+            "op": "acquire",
             "habit_name": "...",
-            "delta": null or {
-              "action": "...",
-              "frequency": "...",
-              "timing": "...",
-              "context": "...",
-              "description": "..."
+            "delta": {
+              "action": "<action label>",
+              "schedule": {
+                "frequency_type": "daily | weekly | biweekly | monthly | monthly_by_weekday",
+                "...": "required fields based on frequency_type"
+              },
+              "timing": {
+                "start_time": "HH:MM",
+                "end_time": "HH:MM"
+              },
+              "context": "<5-15 words>",
+              "priority": "critical | high | medium | low",
+              "description": "<10-30 words>"
             },
+            "reason": "..."
+          },
+          {
+            "op": "adjust",
+            "habit_name": "...",
+            "delta": {
+              "<changed_field_only>": "<new value>",
+              "description": "<updated 10-30 words>"
+            },
+            "reason": "..."
+          },
+          {
+            "op": "drop",
+            "habit_name": "...",
+            "delta": null,
             "reason": "..."
           }
         ]
@@ -118,9 +162,15 @@ Expected JSON shape:
       "preferences_delta": {
         "operations": [
           {
-            "op": "shift|amplify|attenuate",
+            "op": "shift | refine",
             "preference_name": "...",
-            "delta": "<concrete preference value>",
+            "delta": {
+              "statement": "<10-30 word concrete preference statement>",
+              "signals": [
+                "<observable signal 1>",
+                "<observable signal 2>"
+              ]
+            },
             "reason": "..."
           }
         ]
@@ -136,6 +186,11 @@ Life domain: {{ domain_name }}: {{ domain_scope_definition }}
 Basic user profile: {{ user_profile }}
 
 Your task: Validate the candidate JSON against the generation rules from dynamic_profile_template and fix violations.
+
+Auto-detected must-fix issues (from programmatic checks):
+- Rule 2 (operation requires prior existence): {{ auto_detected_rule2_issues }}
+- Rule 3 (required fields / schema completeness): {{ auto_detected_rule3_issues }}
+You must fix everything listed above. Still perform a full audit across ALL rules to catch any additional issues.
 
 =================================================================================
 OPERATION SEMANTICS REFERENCE
@@ -184,14 +239,11 @@ USER ATTRIBUTES ARE DIVIDED INTO TWO TYPES:
   * delta must be JSON null (not string "none" or empty object)
 
 **For preferences:**
-- "shift": Change preference to different value (preference MUST exist before)
-  * delta contains the new preference value string
+- "shift": Change the preference direction (preference MUST exist before)
+  * delta contains the full preference object (statement + 2-4 signals)
   
-- "amplify": Strengthen preference (preference MUST exist before)
-  * delta contains the amplified preference description string
-  
-- "attenuate": Weaken preference (preference MUST exist before)
-  * delta contains the attenuated preference description string
+- "refine": Keep the same direction but adjust strength/specificity (preference MUST exist before)
+  * delta contains the full preference object (statement + 2-4 signals)
 
 =================================================================================
 COMPLIANCE CHECKLIST (MUST ALL PASS)
@@ -205,7 +257,7 @@ COMPLIANCE CHECKLIST (MUST ALL PASS)
   * Temporary circumstances (e.g., "heatwave" → indoor exercise)
 
 - For each short-term change, verify that a LATER window includes:
-  * A corresponding rollback (drop/adjust/attenuate) when the factor ends
+  * A corresponding rollback (drop/adjust/refine/shift) when the factor ends
   * OR explicit reasoning why the change became permanent
 
 **How to detect:**
@@ -230,12 +282,12 @@ w2: acquire "evening_olympic_viewing" reason="watch Olympics coverage"
 ### RULE 2: MODIFICATION OPERATIONS REQUIRE PRIOR EXISTENCE
 **What to check:**
 - For SINGULAR attributes: "modify" can ONLY be used if the attribute existed in a prior state
-- For COLLECTION attributes: "add" and "remove" operations work on collections (can create new or modify existing)
-- For HABITS: "adjust" can ONLY be used if the habit existed in a prior state
-- For PREFERENCES: "shift/amplify/attenuate" can ONLY be used if the preference existed in a prior state
+- For COLLECTION attributes: "add" can create or extend collections; "remove" requires the collection already exists
+- For HABITS: "adjust" and "drop" can ONLY be used if the habit existed in a prior state
+- For PREFERENCES: "shift" and "refine" can ONLY be used if the preference existed in a prior state
 
 **How to detect:**
-- For each modify/adjust/shift/amplify/attenuate operation in window N:
+- For each modify/adjust/drop/shift/refine operation in window N:
   * Check if the target exists in initial_state OR was added/acquired in windows 1..N-1
   * If not found, this is a violation
 
@@ -250,12 +302,12 @@ w3: op="shift", preference_name="exercise_style"
 → "exercise_style" never defined in initial_state.preferences_state.initial
 
 **How to fix:**
-- If a modify/adjust/shift/amplify/attenuate operation targets a non-existent item:
+- If a modify/adjust/drop/shift/refine operation targets a non-existent item:
   * Add the missing item to initial_state with a baseline value
   * Update initial_state summary to mention it
 - OR change the operation type:
   * For attributes: change "modify" to "add" (if creating new singular) or use "add" for collections
-  * For habits: change "adjust" to "acquire"
+  * For habits: change "adjust"/"drop" to "acquire" if it never existed
   * For preferences: cannot fix this way - must add to initial_state
 
 ---
@@ -264,31 +316,40 @@ w3: op="shift", preference_name="exercise_style"
 **What to check:**
 - Every window object MUST have: "window_description", "summary"
 - initial_state object MUST have: "summary"
-- All habits MUST be complete dicts with: action, frequency, timing, context, description
-- Dropped habits MUST use JSON null (not string "none")
 - user_attributes_state MUST have both "singular" and "collections" keys (can be empty objects)
+- All habit objects (initial and acquire deltas) MUST include: action, schedule (with frequency_type + required fields), timing (start_time + end_time), context, priority, description
+- Habit adjust deltas MUST include an updated "description" AND at least one substantive field change (schedule/timing/context/priority)
+- Dropped habits MUST use JSON null (not string "none")
+- Preferences (initial and deltas) MUST include: "statement" and "signals" (2-4 concrete signals)
+- Every operation MUST include a "reason" explaining the change
 
 **How to detect:**
 - Check for missing keys in window objects
-- Validate habit structure in all habits_state.initial and habits_delta operations
+- Validate habit structure in all habits_state.initial and habits_delta operations (including schedule/timing completeness)
 - Check that drop operations set delta to null (not "none", not empty string)
-- Verify user_attributes_state structure
+- Validate preference objects have both statement and signals arrays (2-4 items)
+- Verify user_attributes_state structure and reasons on operations
 
 **Examples of violations:**
 time_windows[1] missing "window_description"
 initial_state missing "summary"
-habit object: {"action": "walk_dog", "frequency": "daily"} 
-(Missing: timing, context, description)
+habit object: {"action": "walk_dog", "schedule": {"frequency_type": "daily"}} 
+(Missing: timing, context, priority, description)
+habit adjust: delta only updates "description" without schedule/timing/context/priority change
 drop operation: "delta": "none" 
 (Should be: "delta": null)
 initial_state.user_attributes_state missing "collections" key
+preference missing "signals" array
+operation missing "reason"
 
 **How to fix:**
 - Add missing window_description based on window context
 - Generate summary by synthesizing changes in that window
-- Complete habit dicts with all required fields
+- Complete habit dicts with all required fields (including schedule + timing objects)
+- Ensure habit adjust deltas change a substantive field and include updated description
 - Replace "none" strings with JSON null
 - Add missing structure keys with appropriate empty values
+- Fill in preference statement/signals; add missing reasons
 
 ---
 
@@ -395,7 +456,7 @@ PATCH FORMAT GUIDE
 =================================================================================
 
 **Path format:**
-- Use dot notation with array indices: "time_windows[0].habits_delta.operations[1].delta.timing"
+- Use dot notation with array indices: "time_windows[0].habits_delta.operations[1].delta.timing.start_time"
 - Path should point to the MINIMAL unit that needs to change
 
 **Action types:**
@@ -429,11 +490,14 @@ Choose the most appropriate action type for the operation.
    }
 
 3. **"replace"** - Replace an existing value
-   Example: Change a timing string
+   Example: Change a timing object
    {
      "path": "time_windows[0].habits_delta.operations[1].delta.timing",
      "action": "replace",
-     "value": "8:45-9:15 AM"
+     "value": {
+       "start_time": "08:45",
+       "end_time": "09:15"
+     }
    }
    
    Example: Change operation from adjust to acquire
@@ -502,8 +566,8 @@ Return a JSON object with this structure:
             "op": "adjust",
             "habit_name": "daily_hydration",
             "delta": {
-              "frequency": "when_thirsty",
-              "description": "Reduced frequency as summer humidity makes constant hydration less necessary"
+              "schedule": {"frequency_type": "weekly", "days_of_week": [0, 2, 4]},
+              "description": "Scaled hydration focus to three structured check-ins per week after winter dryness ended"
             },
             "reason": "Summer humidity reduces need for aggressive hydration routine"
           }
@@ -511,7 +575,7 @@ Return a JSON object with this structure:
         {
           "path": "time_windows[2].summary",
           "action": "replace",
-          "value": "Due to summer's increased humidity, user reduces hydration routine frequency. Other habits continue as established."
+          "value": "Due to summer's increased humidity, the user scales hydration check-ins to three times per week and maintains other routines."
         }
       ]
     }
@@ -1481,6 +1545,12 @@ User basic profile:
 Full dynamic profiles by domain (initial state + deltas):
 {{ dynamic_profiles_json }}
 
+Auto-detected temporal conflicts (code-level hints):
+{{ detected_temporal_conflicts_json }}
+
+- Target window for this call: {{ target_window_id or "all_windows" }}. Only change that window unless a minimal cascade is unavoidable.
+- Deduped by window + habit pair with sample_dates and up to 3 overlap_examples. Includes per-window conflict graph (top nodes by degree). Resolve window-by-window (initial_state → w1 → w2 → w3...), tackling highest-degree habits first.
+
 =================================================================================
 DATA STRUCTURE REFERENCE
 =================================================================================
@@ -1504,9 +1574,13 @@ Each domain profile has this structure:
       "initial": {
         "<habit_name>": {
           "action": "...",
-          "frequency": "...",
-          "timing": "...",
+          "schedule": {
+            "frequency_type": "daily | weekly | biweekly | monthly | monthly_by_weekday",
+            "...": "required schedule fields"
+          },
+          "timing": {"start_time": "HH:MM", "end_time": "HH:MM"},
           "context": "...",
+          "priority": "critical | high | medium | low",
           "description": "..."
         },
         ...
@@ -1514,7 +1588,10 @@ Each domain profile has this structure:
     },
     "preferences_state": {
       "initial": {
-        "<preference_name>": "<value_string>",
+        "<preference_name>": {
+          "statement": "...",
+          "signals": ["...", "..."]
+        },
         ...
       }
     }
@@ -1716,7 +1793,7 @@ CONFLICT TYPE 2: TEMPORAL COLLISION
 **Definition**: User cannot physically perform two activities at the same time
 
 Habits are stored in: `initial_state.habits_state.initial.<habit_name>`
-Each habit has fields: `action`, `frequency`, `timing`, `context`, `description`
+Each habit has fields: `action`, `schedule` (frequency_type + required fields), `timing` (start_time + end_time), `context`, `priority`, `description`
 
 **Sub-types:**
 
@@ -1724,10 +1801,12 @@ Each habit has fields: `action`, `frequency`, `timing`, `context`, `description`
 
 <Example>
 Domain A - habit_weekly_class:
-  timing: "every Wednesday 7:00-8:00 PM"
+  schedule: {"frequency_type": "weekly", "days_of_week": [2]}
+  timing: {"start_time": "19:00", "end_time": "20:00"}
 
 Domain B - habit_team_meeting:
-  timing: "every Wednesday 7:00-9:00 PM"
+  schedule: {"frequency_type": "weekly", "days_of_week": [2]}
+  timing: {"start_time": "19:00", "end_time": "21:00"}
 
 → CONFLICT: Overlapping time blocks on the same day
 </Example>
@@ -1736,16 +1815,16 @@ Domain B - habit_team_meeting:
 
 <Example>
 Domain A - habit_morning_gym:
-  frequency: "daily"
-  timing: "8:30-9:00 AM"
+  schedule: {"frequency_type": "daily"}
+  timing: {"start_time": "08:30", "end_time": "09:00"}
 
 Domain B - habit_commute:
-  frequency: "daily"
-  timing: "8:00-9:00 AM"
+  schedule: {"frequency_type": "daily"}
+  timing: {"start_time": "08:00", "end_time": "09:00"}
 
 Domain C - habit_breakfast_prep:
-  frequency: "daily"
-  timing: "8:45-9:15 AM"
+  schedule: {"frequency_type": "daily"}
+  timing: {"start_time": "08:45", "end_time": "09:15"}
 
 → CONFLICT: Same day (daily), overlapping times
 </Example>
@@ -1764,22 +1843,22 @@ Patch to shift timing:
   "window_id": "initial",
   "path": "habits_state.initial.habit_weekly_class.timing",
   "operation": "replace",
-  "new_value": "every Monday 7:00-8:00 PM",
-  "reason": "Shifted to Monday to avoid Wednesday conflict with team meeting"
+  "new_value": {"start_time": "20:00", "end_time": "21:00"},
+  "reason": "Shifted later in the evening to avoid conflict with team meeting"
 }
 </Example>
 
 **Option 2: Reduce Frequency**
-Modify the habit's `frequency` field to create space.
+Modify the habit's `schedule.frequency_type` (and days if needed) to create space.
 
 <Example>
 Patch to reduce frequency:
 {
   "domain": "Domain B",
   "window_id": "initial",
-  "path": "habits_state.initial.habit_team_meeting.frequency",
+  "path": "habits_state.initial.habit_team_meeting.schedule",
   "operation": "replace",
-  "new_value": "bi-weekly",
+  "new_value": {"frequency_type": "biweekly", "days_of_week": [2], "week_parity": "even"},
   "reason": "Reduced from weekly to bi-weekly to accommodate other Wednesday commitments"
 }
 </Example>
@@ -1869,17 +1948,17 @@ Patches:
   {
     "domain": "Health & Wellness",
     "window_id": "initial",
-    "path": "habits_state.initial.morning_run.frequency",
+    "path": "habits_state.initial.morning_run.schedule",
     "operation": "replace",
-    "new_value": "4_times_per_week",
-    "reason": "Reduced from daily to 4x/week to create schedule space"
+    "new_value": {"frequency_type": "weekly", "days_of_week": [0, 2, 4, 5]},
+    "reason": "Reduced from daily to 4x/week to create schedule space while keeping fixed days"
   },
   {
     "domain": "Fitness & Exercise",
     "window_id": "initial",
-    "path": "habits_state.initial.yoga_class.frequency",
+    "path": "habits_state.initial.yoga_class.schedule",
     "operation": "replace",
-    "new_value": "2_times_per_week",
+    "new_value": {"frequency_type": "weekly", "days_of_week": [1, 4]},
     "reason": "Reduced from 3x/week to 2x/week due to overall schedule density"
   }
 ]
@@ -1894,7 +1973,7 @@ Patches:
     "window_id": "initial",
     "path": "habits_state.initial.home_cleaning.timing",
     "operation": "replace",
-    "new_value": "Friday evening (6:00-8:00 PM)",
+    "new_value": {"start_time": "18:00", "end_time": "20:00"},
     "reason": "Shifted from Saturday morning to Friday evening to reduce weekend congestion"
   }
 ]
@@ -1932,11 +2011,11 @@ Since this is a dynamic profile with temporal evolution, resolving a conflict in
 - Ensure consistency: if you change "Tuesday 7pm" to "Monday 7pm" in initial_state, and w2 says "adjust timing to 8pm", the w2 operation should reflect "Monday 8pm" not "Tuesday 8pm"
 
 <Example>
-Initial state: habit_yoga timing = "Tuesday 7:00 PM"
-Window w2: adjust habit_yoga timing delta = {"timing": "8:00 PM"}
+Initial state: habit_yoga timing = {"start_time": "19:00", "end_time": "20:00"} with schedule {"frequency_type": "weekly", "days_of_week": [1]}  // Tuesday
+Window w2: adjust habit_yoga timing delta = {"timing": {"start_time": "20:00", "end_time": "21:00"}}
 
-If you resolve a conflict by changing initial to "Monday 7:00 PM":
-→ You may need to patch w2 to clarify it becomes "Monday 8:00 PM"
+If you resolve a conflict by changing initial to Monday (schedule.days_of_week = [0]):
+→ You may need to patch w2 to clarify the adjusted timing still applies on Monday
 → OR add a note to the resolution explaining the inherited context
 </Example>
 
@@ -2093,10 +2172,8 @@ OUTPUT FORMAT (STRICT JSON)
   ]
 }
 
-If no conflicts detected, return:
-{
-  "conflicts_and_resolutions": []
-}
+Here are the temporal conflicts detected by code that you must resolve:
+{{ detected_temporal_conflicts_json }}
 """)
 
 # {
@@ -2189,24 +2266,102 @@ If no conflicts detected, return:
 #   ],
 #   "home_base": "CN.SHANGHAI"
 # }
+
+TIME_CONFLICT_RESOLUTION_PROMPT = Template("""
+You are a focused temporal conflict resolver. Fix scheduling overlaps across domains.
+
+Focus window: {{ target_window_id or "all_windows" }}
+Iteration: {{ iteration_index }}
+
+Dynamic profiles (initial + deltas):
+{{ dynamic_profiles_json }}
+
+Top conflict habits (must fix these this iteration; adjust timing/frequency or drop lowest-priority if needed):
+{{ focus_habits_json }}
+
+Relevant conflict edges (only overlapping pairs that involve the focus habits):
+{{ focus_conflicts_json }}
+
+Rules:
+- Resolve ALL conflicts touching the focus habits.
+- Prefer minimal time shifts; if impossible, reduce frequency or drop the lower-priority habit.
+- Keep data types/schemas intact.
+- Scope fixes to the focus window when possible; add cascade updates only if required.
+
+Output JSON only:
+{
+  "conflicts_and_resolutions": [
+    {
+      "conflict": { "description": "...", "window_id": "...", "habit_a": "...", "habit_b": "..." },
+      "resolution": {
+        "strategy": "adjust_timing | adjust_frequency | drop_habit | other",
+        "patches": [
+          {"path": "<dot path>", "action": "replace|append|remove|add_key", "value": <new_value_optional>, "reason": "..."}
+        ]
+      }
+    }
+  ]
+}
+Use the same patch semantics as the main conflict resolver. If no conflicts, return {"conflicts_and_resolutions": []}.
+""")
 def render_conflict_resolution_prompt(request: ConflictResolutionRequest) -> str:
-   user_basic_profile_json = json.dumps(
-       request.user_basic_profile or {}, indent=2, ensure_ascii=False
-   )
-   dynamic_profiles_json = json.dumps(
-       request.dynamic_profiles, indent=2, ensure_ascii=False
-   )
-   return CONFLICT_RESOLUTION_PROMPT.render(
-       user_basic_profile_json=user_basic_profile_json,
-       dynamic_profiles_json=dynamic_profiles_json
-   )
+    user_basic_profile_json = json.dumps(
+        request.user_basic_profile or {}, indent=2, ensure_ascii=False
+    )
+    dynamic_profiles_json = json.dumps(
+        request.dynamic_profiles, indent=2, ensure_ascii=False
+    )
+    detected_temporal_conflicts_json = json.dumps(
+        request.detected_temporal_conflicts or [], indent=2, ensure_ascii=False
+    )
+    target_window_id = request.target_window_id
+    return CONFLICT_RESOLUTION_PROMPT.render(
+        user_basic_profile_json=user_basic_profile_json,
+        dynamic_profiles_json=dynamic_profiles_json,
+        detected_temporal_conflicts_json=detected_temporal_conflicts_json,
+        target_window_id=target_window_id,
+    )
 
 
 def generate_conflict_resolution(
-   llm_client: GeminiJSONClient, request: ConflictResolutionRequest
+    llm_client: GeminiJSONClient, request: ConflictResolutionRequest
 ) -> LLMResult:
-   prompt = render_conflict_resolution_prompt(request)
-   return llm_client.generate_json(prompt)
+    prompt = render_conflict_resolution_prompt(request)
+    return llm_client.generate_json(prompt)
+
+
+def render_time_conflict_resolution_prompt(request: ConflictResolutionRequest, *, iteration_index: int, focus_habits: List[Dict[str, object]]) -> str:
+    user_basic_profile_json = json.dumps(
+        request.user_basic_profile or {}, indent=2, ensure_ascii=False
+    )
+    dynamic_profiles_json = json.dumps(
+        request.dynamic_profiles, indent=2, ensure_ascii=False
+    )
+    focus_conflicts_json = json.dumps(
+        request.detected_temporal_conflicts or {}, indent=2, ensure_ascii=False
+    )
+    focus_habits_json = json.dumps(focus_habits, indent=2, ensure_ascii=False)
+    return TIME_CONFLICT_RESOLUTION_PROMPT.render(
+        user_basic_profile_json=user_basic_profile_json,
+        dynamic_profiles_json=dynamic_profiles_json,
+        focus_conflicts_json=focus_conflicts_json,
+        focus_habits_json=focus_habits_json,
+        target_window_id=request.target_window_id,
+        iteration_index=iteration_index,
+    )
+
+
+def generate_time_conflict_resolution(
+    llm_client: GeminiJSONClient,
+    request: ConflictResolutionRequest,
+    *,
+    iteration_index: int,
+    focus_habits: List[Dict[str, object]],
+) -> LLMResult:
+    prompt = render_time_conflict_resolution_prompt(
+        request, iteration_index=iteration_index, focus_habits=focus_habits
+    )
+    return llm_client.generate_json(prompt)
 
 
 def render_life_context_baseline_prompt(
@@ -2288,6 +2443,8 @@ def generate_spatiotemporal_constraints(
 class ConflictResolutionRequest:
     user_basic_profile: Dict | None
     dynamic_profiles: Dict[str, Dict]
+    detected_temporal_conflicts: Dict[str, object] | List[Dict[str, object]] | None = None
+    target_window_id: str | None = None
 
 
 @dataclass
@@ -2421,6 +2578,381 @@ def _write_json(path: Path, payload: Dict) -> None:
 
 def _write_text(path: Path, text: str) -> None:
     path.write_text(text)
+
+
+# ==== Temporal conflict detection utilities ====
+PRIORITY_ORDER = {"critical": 3, "high": 2, "medium": 1, "low": 0}
+
+
+def _safe_parse_date(value: object) -> Optional[date]:
+    if isinstance(value, date):
+        return value
+    if isinstance(value, datetime):
+        return value.date()
+    if isinstance(value, str):
+        try:
+            return datetime.strptime(value.strip(), "%Y-%m-%d").date()
+        except ValueError:
+            return None
+    return None
+
+
+def _parse_window_date_range(time_range: object) -> Tuple[Optional[date], Optional[date]]:
+    if isinstance(time_range, (list, tuple)) and len(time_range) == 2:
+        start = _safe_parse_date(time_range[0])
+        end = _safe_parse_date(time_range[1])
+        if start and end:
+            return start, end
+    return None, None
+
+
+def _iter_dates(start_date: date, end_date: date):
+    current = start_date
+    while current <= end_date:
+        yield current
+        current += timedelta(days=1)
+
+
+def _coerce_days_of_week(raw: object) -> List[int]:
+    days: List[int] = []
+    for item in raw or []:
+        try:
+            val = int(item)
+        except (TypeError, ValueError):
+            continue
+        if 0 <= val <= 6:
+            days.append(val)
+    return days
+
+
+def _iter_month_starts(start_date: date, end_date: date):
+    current = date(start_date.year, start_date.month, 1)
+    last_month = date(end_date.year, end_date.month, 1)
+    while current <= last_month:
+        yield current
+        if current.month == 12:
+            current = date(current.year + 1, 1, 1)
+        else:
+            current = date(current.year, current.month + 1, 1)
+
+
+def _dates_from_schedule(schedule: Dict[str, Any], start_date: date, end_date: date) -> List[date]:
+    freq = (schedule.get("frequency_type") or "").lower()
+    if not freq:
+        return []
+    if freq == "daily":
+        return list(_iter_dates(start_date, end_date))
+    if freq == "weekly":
+        days = _coerce_days_of_week(schedule.get("days_of_week"))
+        days = days or list(range(7))
+        return [dt for dt in _iter_dates(start_date, end_date) if dt.weekday() in days]
+    if freq == "biweekly":
+        days = _coerce_days_of_week(schedule.get("days_of_week"))
+        days = days or list(range(7))
+        parity_raw = str(schedule.get("week_parity") or "").lower()
+        parity_flag = 1 if parity_raw == "odd" else 0 if parity_raw == "even" else None
+        matches: List[date] = []
+        for dt in _iter_dates(start_date, end_date):
+            if dt.weekday() not in days:
+                continue
+            if parity_flag is None or dt.isocalendar().week % 2 == parity_flag:
+                matches.append(dt)
+        return matches
+    if freq == "monthly":
+        days_of_month = []
+        for dom in schedule.get("days_of_month") or []:
+            try:
+                dom_int = int(dom)
+            except (TypeError, ValueError):
+                continue
+            if 1 <= dom_int <= 31:
+                days_of_month.append(dom_int)
+        return [
+            dt
+            for dt in _iter_dates(start_date, end_date)
+            if days_of_month and dt.day in days_of_month
+        ]
+    if freq == "monthly_by_weekday":
+        week_of_month = schedule.get("week_of_month")
+        day_of_week = schedule.get("day_of_week")
+        try:
+            target_week = int(week_of_month)
+        except (TypeError, ValueError):
+            target_week = None
+        if isinstance(week_of_month, str) and week_of_month.lower() == "last":
+            target_week = -1
+        try:
+            target_dow = int(day_of_week)
+        except (TypeError, ValueError):
+            target_dow = None
+        if target_dow is None:
+            return []
+
+        matches: List[date] = []
+        for month_start in _iter_month_starts(start_date, end_date):
+            days_in_month: List[date] = []
+            current = month_start
+            while current.month == month_start.month and current <= end_date:
+                if current >= start_date and current.weekday() == target_dow:
+                    days_in_month.append(current)
+                current += timedelta(days=1)
+            if not days_in_month:
+                continue
+            if target_week == -1:
+                candidate = days_in_month[-1]
+            elif target_week and 1 <= target_week <= len(days_in_month):
+                candidate = days_in_month[target_week - 1]
+            else:
+                candidate = days_in_month[0]
+            if start_date <= candidate <= end_date:
+                matches.append(candidate)
+        return matches
+    return []
+
+
+def _time_to_minutes(value: str) -> Optional[int]:
+    value = value.strip().lower()
+    match = re.match(r"(?P<h>\d{1,2}):(?P<m>\d{2})\s*(?P<ampm>am|pm)?", value)
+    if not match:
+        return None
+    hours = int(match.group("h"))
+    minutes = int(match.group("m"))
+    ampm = match.group("ampm")
+    if ampm:
+        if hours == 12:
+            hours = 0
+        if ampm == "pm":
+            hours += 12
+    return hours * 60 + minutes
+
+
+def _parse_time_range_text(text: str) -> Tuple[Optional[int], Optional[int]]:
+    match = re.search(
+        r"(\d{1,2}:\d{2}\s*(?:am|pm)?)\s*[-–]\s*(\d{1,2}:\d{2}\s*(?:am|pm)?)",
+        text,
+        re.IGNORECASE,
+    )
+    if not match:
+        return None, None
+    start = _time_to_minutes(match.group(1))
+    end = _time_to_minutes(match.group(2))
+    if start is None or end is None:
+        return None, None
+    if end <= start:
+        end += 24 * 60
+    return start, end
+
+
+def _parse_structured_timing(timing: object) -> Tuple[Optional[int], Optional[int], str]:
+    if isinstance(timing, dict):
+        start_text = str(timing.get("start_time", "")).strip()
+        end_text = str(timing.get("end_time", "")).strip()
+        label = f"{start_text}-{end_text}".strip("-") if start_text or end_text else ""
+        start = _time_to_minutes(start_text) if start_text else None
+        end = _time_to_minutes(end_text) if end_text else None
+        if start is None or end is None:
+            return None, None, label
+        if end <= start:
+            end += 24 * 60
+        return start, end, label
+    if isinstance(timing, str):
+        start, end = _parse_time_range_text(timing)
+        return start, end, timing.strip()
+    return None, None, ""
+
+
+def _materialize_habit_snapshots_for_conflicts(domain: Dict[str, Any]) -> List[Dict[str, Any]]:
+    initial = (domain.get("initial_state", {}) or {})
+    base_habits = deepcopy(((initial.get("habits_state") or {}).get("initial") or {}))
+    snapshots = [
+        {
+            "window_id": "initial_state",
+            "time_range": initial.get("time_range"),
+            "habits": deepcopy(base_habits),
+        }
+    ]
+    current = deepcopy(base_habits)
+
+    for window in domain.get("time_windows") or []:
+        for op in (window.get("habits_delta") or {}).get("operations") or []:
+            name = op.get("habit_name") or "unnamed_habit"
+            op_type = (op.get("op") or "").lower()
+            delta = op.get("delta")
+            if op_type == "acquire" and isinstance(delta, dict):
+                current[name] = deepcopy(delta)
+            elif op_type == "adjust" and isinstance(delta, dict):
+                existing = current.get(name, {})
+                if not isinstance(existing, dict):
+                    existing = {}
+                merged = deepcopy(existing)
+                merged.update(delta)
+                current[name] = merged
+            elif op_type == "drop":
+                current.pop(name, None)
+        snapshots.append(
+            {
+                "window_id": window.get("window_id") or "unknown_window",
+                "time_range": window.get("time_range"),
+                "habits": deepcopy(current),
+            }
+        )
+    return snapshots
+
+
+def _collect_temporal_events(dynamic_profiles: Dict[str, Dict]) -> List[Dict[str, object]]:
+    events: List[Dict[str, object]] = []
+    for domain_name, profile in dynamic_profiles.items():
+        for snapshot in _materialize_habit_snapshots_for_conflicts(profile or {}):
+            window_id = snapshot.get("window_id") or "unknown_window"
+            start_date, end_date = _parse_window_date_range(snapshot.get("time_range"))
+            if not start_date or not end_date:
+                continue
+            for habit_name, habit in (snapshot.get("habits") or {}).items():
+                start_min, end_min, timing_label = _parse_structured_timing(
+                    habit.get("timing")
+                )
+                if start_min is None or end_min is None:
+                    continue
+                schedule = habit.get("schedule") or {}
+                occurrences = _dates_from_schedule(schedule, start_date, end_date)
+                if not occurrences:
+                    occurrences = list(_iter_dates(start_date, end_date))
+                for dt in occurrences:
+                    events.append(
+                        {
+                            "domain": domain_name,
+                            "window_id": window_id,
+                            "window_range": snapshot.get("time_range"),
+                            "habit": habit_name,
+                            "priority": (habit.get("priority") or "").lower(),
+                            "timing": timing_label,
+                            "start_min": start_min,
+                            "end_min": end_min,
+                            "date": dt,
+                        }
+                    )
+    return events
+
+
+def _format_minutes(value: int) -> str:
+    hours = (value // 60) % 24
+    minutes = value % 60
+    return f"{hours:02d}:{minutes:02d}"
+
+
+def _conflict_habit_summary(event: Dict[str, object]) -> Dict[str, object]:
+    return {
+        "domain": event.get("domain"),
+        "habit": event.get("habit"),
+        "priority": event.get("priority"),
+        "timing": event.get("timing"),
+        "window_id": event.get("window_id"),
+    }
+
+
+def _priority_resolution_suggestion(event_a: Dict[str, object], event_b: Dict[str, object]) -> Optional[Dict[str, object]]:
+    pa = PRIORITY_ORDER.get(str(event_a.get("priority") or "").lower())
+    pb = PRIORITY_ORDER.get(str(event_b.get("priority") or "").lower())
+    if pa is None or pb is None or pa == pb:
+        return None
+    winner, loser = (event_a, event_b) if pa > pb else (event_b, event_a)
+    return {
+        "strategy": "keep_highest_priority",
+        "winner": _conflict_habit_summary(winner),
+        "loser": _conflict_habit_summary(loser),
+        "note": "Keep the higher-priority habit; shift or drop the lower-priority one to remove the overlap.",
+    }
+
+
+def _canonical_pair(
+    a: Dict[str, object], b: Dict[str, object], window_id: str | None
+) -> Tuple[Dict[str, object], Dict[str, object], Tuple[str | None, str, str, str, str]]:
+    """
+    Order pair deterministically so we don't duplicate conflicts for swapped pairs.
+    """
+    key_a = (str(a.get("domain") or ""), str(a.get("habit") or ""))
+    key_b = (str(b.get("domain") or ""), str(b.get("habit") or ""))
+    if key_a <= key_b:
+        return a, b, (window_id, key_a[0], key_a[1], key_b[0], key_b[1])
+    return b, a, (window_id, key_b[0], key_b[1], key_a[0], key_a[1])
+
+
+def detect_temporal_conflicts(dynamic_profiles: Dict[str, Dict]) -> Dict[str, object]:
+    events = _collect_temporal_events(dynamic_profiles)
+    aggregated: Dict[
+        Tuple[str | None, str, str, str, str], Dict[str, object]
+    ] = {}
+    grouped: Dict[Tuple[str, date], List[Dict[str, object]]] = {}
+    for ev in events:
+        dt = ev.get("date")
+        if not isinstance(dt, date):
+            continue
+        key = (ev.get("window_id") or "unknown_window", dt)
+        grouped.setdefault(key, []).append(ev)
+
+    for (window_id, dt), bucket in grouped.items():
+        bucket = sorted(bucket, key=lambda e: e["start_min"])
+        for i in range(len(bucket)):
+            for j in range(i + 1, len(bucket)):
+                a, b = bucket[i], bucket[j]
+                if a["start_min"] < b["end_min"] and b["start_min"] < a["end_min"]:
+                    left, right, key = _canonical_pair(a, b, window_id)
+                    overlap_range = f"{_format_minutes(max(a['start_min'], b['start_min']))}-{_format_minutes(min(a['end_min'], b['end_min']))}"
+                    entry = aggregated.setdefault(
+                        key,
+                        {
+                            "window_id": window_id,
+                            "window_range": bucket[0].get("window_range"),
+                            "habit_a": _conflict_habit_summary(left),
+                            "habit_b": _conflict_habit_summary(right),
+                            "occurrences": 0,
+                            "sample_dates": [],
+                            "overlap_examples": [],
+                        },
+                    )
+                    entry["occurrences"] = entry.get("occurrences", 0) + 1
+                    if len(entry["sample_dates"]) < 3:
+                        entry["sample_dates"].append(dt.isoformat())
+                    if len(entry["overlap_examples"]) < 3:
+                        entry["overlap_examples"].append(
+                            {"date": dt.isoformat(), "overlap": overlap_range}
+                        )
+    conflicts = list(aggregated.values())
+
+    # Build per-window conflict graph summary (node degree by habit).
+    graph_by_window: Dict[str, Dict[str, object]] = {}
+    TOP_N = 8
+    for entry in conflicts:
+        window_id = entry.get("window_id") or "unknown_window"
+        occ = int(entry.get("occurrences") or 1)
+        window_graph = graph_by_window.setdefault(
+            window_id, {"total_conflicts": 0, "node_degrees": {}}
+        )
+        window_graph["total_conflicts"] += occ
+        for habit_key in ("habit_a", "habit_b"):
+            habit_info = entry.get(habit_key) or {}
+            node_key = (habit_info.get("domain") or "", habit_info.get("habit") or "")
+            node_degrees: Dict[Tuple[str, str], int] = window_graph["node_degrees"]  # type: ignore
+            node_degrees[node_key] = node_degrees.get(node_key, 0) + occ
+
+    # Convert node_degrees to sorted top list.
+    for window_id, data in graph_by_window.items():
+        node_degrees = data.get("node_degrees", {}) or {}
+        top_nodes = sorted(
+            (
+                {
+                    "domain": domain,
+                    "habit": habit,
+                    "degree": degree,
+                }
+                for (domain, habit), degree in node_degrees.items()
+            ),
+            key=lambda x: (-x["degree"], x["domain"], x["habit"]),
+        )[:TOP_N]
+        data["top_nodes"] = top_nodes
+        data.pop("node_degrees", None)
+
+    return {"conflicts": conflicts, "graph_by_window": graph_by_window}
 
 
 def _path_key(key: object) -> object:
@@ -2613,6 +3145,365 @@ def _apply_profile_revision(original_profile: Dict, review_payload: Dict) -> Dic
     if base_from_singleton_list and isinstance(patched, dict):
         return [patched]
     return patched
+
+
+def _append_issue(
+    issues: List[Dict[str, str]], path: str, message: str, window_id: str | None = None
+) -> None:
+    entry: Dict[str, str] = {"path": path, "message": message}
+    if window_id:
+        entry["window_id"] = window_id
+    issues.append(entry)
+
+
+def _validate_schedule_structure(schedule: Any) -> List[str]:
+    if not isinstance(schedule, dict):
+        return ["schedule must be an object with frequency_type"]
+    missing: List[str] = []
+    freq = schedule.get("frequency_type")
+    allowed = {"daily", "weekly", "biweekly", "monthly", "monthly_by_weekday"}
+    if not freq:
+        missing.append("schedule.frequency_type missing")
+    elif freq not in allowed:
+        missing.append(f"schedule.frequency_type '{freq}' is invalid")
+    else:
+        if freq in {"weekly", "biweekly"} and "days_of_week" not in schedule:
+            missing.append("schedule.days_of_week missing for weekly/biweekly")
+        if freq == "biweekly" and "week_parity" not in schedule:
+            missing.append("schedule.week_parity missing for biweekly")
+        if freq == "monthly" and "days_of_month" not in schedule:
+            missing.append("schedule.days_of_month missing for monthly")
+        if freq == "monthly_by_weekday":
+            if "week_of_month" not in schedule:
+                missing.append("schedule.week_of_month missing for monthly_by_weekday")
+            if "day_of_week" not in schedule:
+                missing.append("schedule.day_of_week missing for monthly_by_weekday")
+    return missing
+
+
+def _validate_timing_structure(timing: Any) -> List[str]:
+    if not isinstance(timing, dict):
+        return ["timing must be an object with start_time and end_time"]
+    missing: List[str] = []
+    if "start_time" not in timing:
+        missing.append("timing.start_time missing")
+    if "end_time" not in timing:
+        missing.append("timing.end_time missing")
+    return missing
+
+
+def _validate_habit_object(habit_obj: Any) -> List[str]:
+    if not isinstance(habit_obj, dict):
+        return ["habit must be an object with required fields"]
+    required_fields = ["action", "schedule", "timing", "context", "priority", "description"]
+    missing = [f for f in required_fields if f not in habit_obj]
+    missing += _validate_schedule_structure(habit_obj.get("schedule"))
+    missing += _validate_timing_structure(habit_obj.get("timing"))
+    return missing
+
+
+def _validate_preference_object(pref_obj: Any) -> List[str]:
+    if not isinstance(pref_obj, dict):
+        return ["preference must be an object with statement and signals"]
+    missing: List[str] = []
+    if not pref_obj.get("statement"):
+        missing.append("statement missing")
+    signals = pref_obj.get("signals")
+    if not isinstance(signals, list) or len(signals) < 2:
+        missing.append("signals missing or too few (need 2-4)")
+    return missing
+
+
+def _detect_rule2_prior_existence_issues(profile: Dict) -> List[Dict[str, str]]:
+    # Some generators output a singleton list; normalize to dict
+    if isinstance(profile, list):
+        profile = profile[0] if profile and isinstance(profile[0], dict) else {}
+    issues: List[Dict[str, str]] = []
+    initial_state = profile.get("initial_state") or {}
+    user_attributes_state = initial_state.get("user_attributes_state") or {}
+    known_singular = set((user_attributes_state.get("singular") or {}).keys())
+    known_collections = set((user_attributes_state.get("collections") or {}).keys())
+    habits_state = initial_state.get("habits_state") or {}
+    known_habits = set((habits_state.get("initial") or {}).keys())
+    preferences_state = initial_state.get("preferences_state") or {}
+    known_preferences = set((preferences_state.get("initial") or {}).keys())
+
+    time_windows = profile.get("time_windows") or []
+    for w_idx, window in enumerate(time_windows):
+        window_id = window.get("window_id") or f"w{w_idx + 1}"
+
+        attr_ops = (window.get("user_attributes_delta") or {}).get("operations") or []
+        for op_idx, op in enumerate(attr_ops):
+            op_type = op.get("op")
+            attr_type = op.get("attribute_type")
+            if op_type == "modify" and attr_type == "singular":
+                name = op.get("attribute_name")
+                if name and name not in known_singular:
+                    _append_issue(
+                        issues,
+                        f"time_windows[{w_idx}].user_attributes_delta.operations[{op_idx}]",
+                        f"modify '{name}' before it exists in prior state",
+                        window_id,
+                    )
+                    known_singular.add(name)
+            elif op_type == "add" and attr_type == "collections":
+                name = op.get("collection_name")
+                if name:
+                    known_collections.add(name)
+            elif op_type == "remove" and attr_type == "collections":
+                name = op.get("collection_name")
+                if name and name not in known_collections:
+                    _append_issue(
+                        issues,
+                        f"time_windows[{w_idx}].user_attributes_delta.operations[{op_idx}]",
+                        f"remove collection '{name}' before it exists",
+                        window_id,
+                    )
+
+        habit_ops = (window.get("habits_delta") or {}).get("operations") or []
+        for op_idx, op in enumerate(habit_ops):
+            op_type = op.get("op")
+            habit_name = op.get("habit_name")
+            if op_type == "acquire":
+                if habit_name:
+                    known_habits.add(habit_name)
+            elif op_type in {"adjust", "drop"}:
+                if habit_name and habit_name not in known_habits:
+                    _append_issue(
+                        issues,
+                        f"time_windows[{w_idx}].habits_delta.operations[{op_idx}]",
+                        f"{op_type} '{habit_name}' before it exists in prior state",
+                        window_id,
+                    )
+                    known_habits.add(habit_name)
+                if op_type == "drop" and habit_name in known_habits:
+                    known_habits.remove(habit_name)
+
+        pref_ops = (window.get("preferences_delta") or {}).get("operations") or []
+        for op_idx, op in enumerate(pref_ops):
+            op_type = op.get("op")
+            pref_name = op.get("preference_name")
+            if op_type in {"shift", "refine"} and pref_name:
+                if pref_name not in known_preferences:
+                    _append_issue(
+                        issues,
+                        f"time_windows[{w_idx}].preferences_delta.operations[{op_idx}]",
+                        f"{op_type} '{pref_name}' before it exists in prior state",
+                        window_id,
+                    )
+                    known_preferences.add(pref_name)
+
+    return issues
+
+
+def _detect_rule3_required_field_issues(profile: Dict) -> List[Dict[str, str]]:
+    if isinstance(profile, list):
+        profile = profile[0] if profile and isinstance(profile[0], dict) else {}
+    issues: List[Dict[str, str]] = []
+    initial_state = profile.get("initial_state") or {}
+    if "summary" not in initial_state:
+        _append_issue(issues, "initial_state.summary", "initial_state missing summary")
+
+    user_attributes_state = initial_state.get("user_attributes_state")
+    if not isinstance(user_attributes_state, dict):
+        _append_issue(
+            issues,
+            "initial_state.user_attributes_state",
+            "user_attributes_state missing or not an object",
+        )
+    else:
+        if "singular" not in user_attributes_state:
+            _append_issue(
+                issues,
+                "initial_state.user_attributes_state.singular",
+                "singular attributes missing (can be empty object)",
+            )
+        if "collections" not in user_attributes_state:
+            _append_issue(
+                issues,
+                "initial_state.user_attributes_state.collections",
+                "collections missing (can be empty object)",
+            )
+
+    habits_state = (initial_state.get("habits_state") or {}).get("initial") or {}
+    for habit_name, habit_obj in habits_state.items():
+        missing = _validate_habit_object(habit_obj)
+        if missing:
+            _append_issue(
+                issues,
+                f"initial_state.habits_state.initial.{habit_name}",
+                "; ".join(missing),
+                "initial",
+            )
+
+    pref_state = (initial_state.get("preferences_state") or {}).get("initial") or {}
+    for pref_name, pref_obj in pref_state.items():
+        missing = _validate_preference_object(pref_obj)
+        if missing:
+            _append_issue(
+                issues,
+                f"initial_state.preferences_state.initial.{pref_name}",
+                "; ".join(missing),
+                "initial",
+            )
+
+    time_windows = profile.get("time_windows") or []
+    for w_idx, window in enumerate(time_windows):
+        window_id = window.get("window_id") or f"w{w_idx + 1}"
+        if "window_description" not in window:
+            _append_issue(
+                issues,
+                f"time_windows[{w_idx}].window_description",
+                "window_description missing",
+                window_id,
+            )
+        if "summary" not in window:
+            _append_issue(
+                issues,
+                f"time_windows[{w_idx}].summary",
+                "summary missing",
+                window_id,
+            )
+
+        attr_ops = (window.get("user_attributes_delta") or {}).get("operations") or []
+        for op_idx, op in enumerate(attr_ops):
+            op_path = f"time_windows[{w_idx}].user_attributes_delta.operations[{op_idx}]"
+            op_type = op.get("op")
+            if not op_type:
+                _append_issue(issues, op_path, "operation missing op", window_id)
+            if not op.get("reason"):
+                _append_issue(issues, f"{op_path}.reason", "reason missing", window_id)
+            attr_type = op.get("attribute_type")
+            if not attr_type:
+                _append_issue(
+                    issues, f"{op_path}.attribute_type", "attribute_type missing", window_id
+                )
+            if op_type == "modify":
+                if not op.get("attribute_name"):
+                    _append_issue(
+                        issues, f"{op_path}.attribute_name", "attribute_name missing", window_id
+                    )
+                if op.get("delta") in [None, ""]:
+                    _append_issue(
+                        issues, f"{op_path}.delta", "delta missing for modify", window_id
+                    )
+            elif op_type in {"add", "remove"}:
+                if not op.get("collection_name"):
+                    _append_issue(
+                        issues,
+                        f"{op_path}.collection_name",
+                        "collection_name missing",
+                        window_id,
+                    )
+                delta = op.get("delta")
+                if not isinstance(delta, list) or len(delta) == 0:
+                    _append_issue(
+                        issues,
+                        f"{op_path}.delta",
+                        f"delta list missing/empty for {op_type}",
+                        window_id,
+                    )
+
+        habit_ops = (window.get("habits_delta") or {}).get("operations") or []
+        for op_idx, op in enumerate(habit_ops):
+            op_path = f"time_windows[{w_idx}].habits_delta.operations[{op_idx}]"
+            op_type = op.get("op")
+            if not op_type:
+                _append_issue(issues, op_path, "operation missing op", window_id)
+            if not op.get("reason"):
+                _append_issue(issues, f"{op_path}.reason", "reason missing", window_id)
+
+            habit_name = op.get("habit_name")
+            if not habit_name:
+                _append_issue(
+                    issues, f"{op_path}.habit_name", "habit_name missing", window_id
+                )
+
+            if op_type == "acquire":
+                delta = op.get("delta")
+                missing = _validate_habit_object(delta)
+                if missing:
+                    _append_issue(
+                        issues, f"{op_path}.delta", "; ".join(missing), window_id
+                    )
+            elif op_type == "adjust":
+                delta = op.get("delta")
+                if not isinstance(delta, dict):
+                    _append_issue(
+                        issues,
+                        f"{op_path}.delta",
+                        "delta must be an object for adjust",
+                        window_id,
+                    )
+                else:
+                    description_present = bool(delta.get("description"))
+                    substantive_change = any(
+                        key in delta for key in ("schedule", "timing", "context", "priority")
+                    )
+                    if not description_present:
+                        _append_issue(
+                            issues,
+                            f"{op_path}.delta.description",
+                            "description missing for adjust",
+                            window_id,
+                        )
+                    if not substantive_change:
+                        _append_issue(
+                            issues,
+                            f"{op_path}.delta",
+                            "adjust must change schedule/timing/context/priority",
+                            window_id,
+                        )
+                    if "schedule" in delta:
+                        missing = _validate_schedule_structure(delta.get("schedule"))
+                        if missing:
+                            _append_issue(
+                                issues,
+                                f"{op_path}.delta.schedule",
+                                "; ".join(missing),
+                                window_id,
+                            )
+                    if "timing" in delta:
+                        missing = _validate_timing_structure(delta.get("timing"))
+                        if missing:
+                            _append_issue(
+                                issues,
+                                f"{op_path}.delta.timing",
+                                "; ".join(missing),
+                                window_id,
+                            )
+            elif op_type == "drop":
+                if op.get("delta") is not None:
+                    _append_issue(
+                        issues,
+                        f"{op_path}.delta",
+                        "drop operation must use JSON null",
+                        window_id,
+                    )
+
+        pref_ops = (window.get("preferences_delta") or {}).get("operations") or []
+        for op_idx, op in enumerate(pref_ops):
+            op_path = f"time_windows[{w_idx}].preferences_delta.operations[{op_idx}]"
+            op_type = op.get("op")
+            if not op_type:
+                _append_issue(issues, op_path, "operation missing op", window_id)
+            if not op.get("reason"):
+                _append_issue(issues, f"{op_path}.reason", "reason missing", window_id)
+            pref_name = op.get("preference_name")
+            if not pref_name:
+                _append_issue(
+                    issues, f"{op_path}.preference_name", "preference_name missing", window_id
+                )
+
+            delta = op.get("delta")
+            if op_type in {"shift", "refine"}:
+                missing = _validate_preference_object(delta)
+                if missing:
+                    _append_issue(
+                        issues, f"{op_path}.delta", "; ".join(missing), window_id
+                    )
+
+    return issues
 
 
 PRICING_TABLE: Dict[str, Dict[str, Any]] = {
@@ -3483,7 +4374,29 @@ def _apply_conflict_resolution_to_profiles(
             domain_name = patch.get("domain") or patch.get("domain_name")
             profile = resolved_profiles.get(domain_name)
             if profile is None:
-                continue
+                # Attempt to infer domain from the path prefix (e.g., "Work & Education.initial_state...")
+                tokens = _parse_path_tokens(patch.get("path"))
+                if tokens and isinstance(tokens[0], str):
+                    token_domain = tokens[0]
+                    # exact match first
+                    if token_domain in resolved_profiles:
+                        domain_name = token_domain
+                        tokens = tokens[1:]
+                        profile = resolved_profiles.get(domain_name)
+                    else:
+                        # case-insensitive match
+                        for candidate in resolved_profiles.keys():
+                            if candidate.lower() == token_domain.lower():
+                                domain_name = candidate
+                                tokens = tokens[1:]
+                                profile = resolved_profiles.get(domain_name)
+                                break
+                if profile is None:
+                    continue
+            else:
+                tokens = _parse_path_tokens(patch.get("path"))
+                if len(tokens) < 1:
+                    continue
 
             op = str(patch.get("operation") or patch.get("action") or "update").lower()
             value = None
@@ -3493,10 +4406,6 @@ def _apply_conflict_resolution_to_profiles(
                     value = patch.get(key)
                     value_provided = True
                     break
-
-            tokens = _parse_path_tokens(patch.get("path"))
-            if len(tokens) < 1:
-                continue
 
             # Prefer explicit window_id field; otherwise try to infer from second token if present.
             window_id = patch.get("window_id") or patch.get("window")
@@ -3610,7 +4519,7 @@ def _apply_delta_operations(
             # Old schema stores the new value under after["value"]
             new_value = after.get("value")
 
-            # Some generators emit flat fields (e.g., action/frequency/timing) instead
+            # Some generators emit flat fields (e.g., action/schedule/timing) instead
             # of wrapping them under new_state; treat those as the new state payload.
             if new_value is None:
                 candidate = {
@@ -4734,7 +5643,7 @@ class GenerationPipeline:
             resolved_profiles: Updated dynamic profiles per domain
             usage: Usage metadata (empty if no conflicts)
             resolution_payload: Raw LLM resolution output (empty if no conflicts)
-            conflicts_summary: Detected conflicts summary (from LLM detected_conflicts)
+            conflicts_summary: Detected conflicts summary (from code + LLM detected_conflicts)
         """
 
         key_alignment_path = self.output_dir / "key_alignment_result.json"
@@ -4762,30 +5671,118 @@ class GenerationPipeline:
             self.output_dir / "dynamic_profiles_key_aligned.json", dynamic_profiles
         )
 
-        resolution_result = generate_conflict_resolution(
+        temporal_conflicts = detect_temporal_conflicts(dynamic_profiles)
+        temporal_conflict_entries = (
+            temporal_conflicts.get("conflicts")
+            if isinstance(temporal_conflicts, dict)
+            else temporal_conflicts
+        ) or []
+        _write_json(
+            self.output_dir / "auto_detected_temporal_conflicts.json",
+            {"temporal_conflicts": temporal_conflicts},
+        )
+        resolved_profiles = deepcopy(dynamic_profiles)
+        all_conflicts_summary: List[Dict[str, object]] = list(temporal_conflict_entries)
+        per_iteration_payloads: Dict[str, object] = {}
+        per_iteration_usage: Dict[str, Dict] = {}
+
+        def _select_focus_habits(conflicts_obj: Dict[str, object]) -> List[Dict[str, object]]:
+            graph = conflicts_obj.get("graph_by_window") or {}
+            nodes: List[Dict[str, object]] = []
+            for window_id, data in graph.items():
+                for node in data.get("top_nodes", []):
+                    node = dict(node)
+                    node["window_id"] = window_id
+                    nodes.append(node)
+            nodes = sorted(nodes, key=lambda x: (-int(x.get("degree", 0)), x.get("window_id", ""), x.get("domain", ""), x.get("habit", "")))
+            return nodes[:5]
+
+        def _subset_conflicts(conflicts_list: List[Dict[str, object]], focus: List[Dict[str, object]]) -> List[Dict[str, object]]:
+            focus_set = {(f.get("domain"), f.get("habit")) for f in focus}
+            subset = []
+            for c in conflicts_list:
+                ha = c.get("habit_a") or {}
+                hb = c.get("habit_b") or {}
+                key_a = (ha.get("domain"), ha.get("habit"))
+                key_b = (hb.get("domain"), hb.get("habit"))
+                if key_a in focus_set or key_b in focus_set:
+                    subset.append(c)
+            return subset
+
+        for iteration in range(3):
+            focus_habits = _select_focus_habits(temporal_conflicts if isinstance(temporal_conflicts, dict) else {})
+            focus_conflicts = _subset_conflicts(temporal_conflict_entries, focus_habits)
+            conflict_hints = {
+                "conflicts": focus_conflicts,
+                "graph_by_window": (temporal_conflicts.get("graph_by_window") if isinstance(temporal_conflicts, dict) else {}),
+            }
+
+            import pdb; pdb.set_trace()
+
+            resolution_result = generate_time_conflict_resolution(
+                self.llm_client,
+                ConflictResolutionRequest(
+                    user_basic_profile=user_basic_profile,
+                    dynamic_profiles=resolved_profiles,
+                    detected_temporal_conflicts=conflict_hints,
+                    target_window_id=None,
+                ),
+                iteration_index=iteration + 1,
+                focus_habits=focus_habits,
+            )
+
+            
+            payload = resolution_result.data
+            per_iteration_payloads[f"iteration_{iteration + 1}"] = payload
+            per_iteration_usage[f"iteration_{iteration + 1}"] = resolution_result.usage or {}
+
+            _write_text(
+                self.output_dir / f"conflict_resolution_temporal_iter{iteration + 1}_prompt.txt",
+                resolution_result.prompt,
+            )
+            _write_json(
+                self.output_dir / f"cross_domain_conflict_resolution_temporal_iter{iteration + 1}.json",
+                payload,
+            )
+
+            resolved_profiles = _apply_conflict_resolution_to_profiles(
+                resolved_profiles,
+                payload,
+            )
+
+            detected_by_llm = payload.get("conflicts_and_resolutions") if isinstance(payload, dict) else None
+            if isinstance(detected_by_llm, list):
+                all_conflicts_summary.extend(detected_by_llm)
+
+            # Re-run detection for next iteration
+            temporal_conflicts = detect_temporal_conflicts(resolved_profiles)
+            temporal_conflict_entries = (
+                temporal_conflicts.get("conflicts")
+                if isinstance(temporal_conflicts, dict)
+                else temporal_conflicts
+            ) or []
+
+        # Final comprehensive pass using full conflict resolver
+        final_resolution = generate_conflict_resolution(
             self.llm_client,
             ConflictResolutionRequest(
                 user_basic_profile=user_basic_profile,
-                dynamic_profiles=dynamic_profiles,
+                dynamic_profiles=resolved_profiles,
+                detected_temporal_conflicts=temporal_conflicts,
             ),
         )
-        resolution_payload = resolution_result.data
-
+        final_payload = final_resolution.data
         _write_text(
             self.output_dir / "conflict_resolution_prompt.txt",
-            resolution_result.prompt,
+            final_resolution.prompt,
         )
         _write_json(
             self.output_dir / "cross_domain_conflict_resolution.json",
-            resolution_payload,
+            final_payload,
         )
-
-        with open(self.output_dir / "cross_domain_conflict_resolution.json", "r", encoding="utf-8") as f:
-            resolution_payload = json.load(f)
-
         resolved_profiles = _apply_conflict_resolution_to_profiles(
-            dynamic_profiles,
-            resolution_payload,
+            resolved_profiles,
+            final_payload,
         )
         _write_json(
             self.output_dir / "dynamic_profiles_conflict_resolved.json",
@@ -4793,11 +5790,14 @@ class GenerationPipeline:
         )
 
         usage = {
-            "conflict_resolution": resolution_result.usage,
+            "conflict_resolution": {
+                "temporal_iters": per_iteration_usage,
+                "final": final_resolution.usage,
+            },
         }
         if alignment_usage:
             usage.update(alignment_usage)
-        return resolved_profiles, usage, resolution_payload
+        return resolved_profiles, usage, {"temporal_iters": per_iteration_payloads, "final": final_payload}, all_conflicts_summary
 
     def debug_resolve_conflicts_from_file(
         self,
@@ -4857,8 +5857,8 @@ class GenerationPipeline:
     ) -> tuple[
         Dict[str, Dict],
         Dict[str, Dict],
-        List[Dict[str, object]],
         Dict[str, object],
+        List[Dict[str, object]],
     ]:
         """
         Generate (or load) dynamic profiles, optionally resolve conflicts, and
@@ -4867,6 +5867,7 @@ class GenerationPipeline:
         dynamic_profiles: Dict[str, Dict] = {}
         aggregate_usage: Dict[str, Dict] = {}
         conflict_resolution_payload: Dict[str, object] = {}
+        conflicts_summary: List[Dict[str, object]] = []
         # conflict_cache_used = False
 
         conflict_resolved_path = self.output_dir / "dynamic_profiles_conflict_resolved.json"
@@ -4874,6 +5875,19 @@ class GenerationPipeline:
             f"{domain.domain_name}"
             for domain in domains
         ]
+        temporal_conflicts_path = self.output_dir / "auto_detected_temporal_conflicts.json"
+        if temporal_conflicts_path.exists():
+            try:
+                cached_temporal = json.loads(temporal_conflicts_path.read_text())
+                cached_temporal_conflicts = cached_temporal.get("temporal_conflicts")
+                if isinstance(cached_temporal_conflicts, dict):
+                    conflicts_summary = cached_temporal_conflicts.get("conflicts") or []
+                elif isinstance(cached_temporal_conflicts, list):
+                    conflicts_summary = cached_temporal_conflicts
+                else:
+                    conflicts_summary = []
+            except Exception:
+                conflicts_summary = []
         # import pdb; pdb.set_trace()
         cached_resolved_profiles: Dict[str, Dict] | None = None
         new_dynamic_profile_generated = False
@@ -4941,6 +5955,7 @@ class GenerationPipeline:
                 dynamic_profiles,
                 conflict_usage,
                 conflict_resolution_payload,
+                conflicts_summary,
             ) = self.resolve_cross_domain_conflicts(
                 dynamic_profiles, user_basic_profile=user_basic_profile
             )
@@ -4951,6 +5966,7 @@ class GenerationPipeline:
             dynamic_profiles,
             aggregate_usage,
             conflict_resolution_payload,
+            conflicts_summary,
         )
 
     def _prepare_cross_domain_context(
@@ -5174,7 +6190,7 @@ class GenerationPipeline:
         *,
         user_description: str | None,
         world_background: str | Dict[str, str],
-    ) -> tuple[str, Dict, str, Dict[str, Dict], Dict[str, Dict], Dict[str, object]]:
+    ) -> tuple[Dict, str, Dict[str, Dict], Dict[str, Dict], Dict[str, object], List[Dict[str, object]]]:
         """
         Generate the basic profile and dynamic profiles stage of the pipeline.
         """
@@ -5195,6 +6211,7 @@ class GenerationPipeline:
             dynamic_profiles,
             dynamic_usage,
             conflict_resolution_payload,
+            conflicts_summary,
         ) = self._prepare_dynamic_profiles(
             domains,
             user_profile_text=user_profile_text,
@@ -5209,6 +6226,7 @@ class GenerationPipeline:
             dynamic_profiles,
             aggregate_usage,
             conflict_resolution_payload,
+            conflicts_summary,
         )
 
     def prepare_context_for_semantic_events_generation(
@@ -5248,6 +6266,7 @@ class GenerationPipeline:
             dynamic_profiles,
             aggregate_usage,
             conflict_resolution_payload,
+            conflicts_summary,
         ) = self.generate_dynamic_profile_inputs(
             domains,
             user_description=user_description,
@@ -5268,7 +6287,7 @@ class GenerationPipeline:
             aggregate_usage["life_context"] = life_context_usage
 
         conflict_info = {
-            "summary": [],
+            "summary": conflicts_summary,
             "resolution": conflict_resolution_payload,
         }
 
@@ -5376,18 +6395,37 @@ class GenerationPipeline:
         catch format/consistency issues (time windows, habit/preference schema) and
         apply the patch onto the original profile.
         """
+        slug = _slugify(domain.domain_name)
         # review_revise_result_path = "/export/scratch_large/wenya/mem_bench/behavior_and_conversation/generated_outputs_debug_v5/gemini_3_flash_preview/leisure_media_consumption_dynamic_profile_checked_result.json"
         # with open(review_revise_result_path, "r", encoding="utf-8") as f:
         #     review_revise_result = json.load(f)
+        rule2_issues = _detect_rule2_prior_existence_issues(dynamic_profile)
+        rule3_issues = _detect_rule3_required_field_issues(dynamic_profile)
+        autodetected_payload = {
+            "rule2_prior_existence": rule2_issues,
+            "rule3_required_fields": rule3_issues,
+        }
+        autodetected_path = self.output_dir / f"{slug}_dynamic_profile_autodetected_issues.json"
+        _write_json(autodetected_path, autodetected_payload)
         review_revise_prompt = in_domain_data_review_revise_prompt.render(
             domain_name=domain.domain_name,
             domain_scope_definition=domain.domain_scope_definition,
             user_profile=user_profile,
+            auto_detected_rule2_issues=json.dumps(
+                rule2_issues, indent=2, ensure_ascii=False
+            ),
+            auto_detected_rule3_issues=json.dumps(
+                rule3_issues, indent=2, ensure_ascii=False
+            ),
             schema_excerpt=DYNAMIC_PROFILE_TEMPLATE_EXCERPT,
             dynamic_profile_json=json.dumps(
                 dynamic_profile, indent=2, ensure_ascii=False
             ),
         )
+        ## record the prompt
+        prompt_path = self.output_dir / f"{slug}_dynamic_profile_review_revise_prompt.txt"
+        with open(prompt_path, "w", encoding="utf-8") as f:
+            f.write(review_revise_prompt)
         review_revise_result = self.llm_client.generate_json(review_revise_prompt)
         revised_profile = _apply_profile_revision(dynamic_profile, review_revise_result.data)
         usage = {"dynamic_profile_review": review_revise_result.usage}
@@ -5437,7 +6475,6 @@ class GenerationPipeline:
             dynamic_profile=dynamic_profile,
             user_profile=user_profile_text,
         )
-        slug = _slugify(domain.domain_name)
 
         # reviewed_path = self.output_dir / f"{slug}_dynamic_profile_checked_result.json"
         # _write_json(reviewed_path, reviewed_result)
@@ -6197,13 +7234,14 @@ def batch_generate_dynamic_profiles_from_elite_personas(
             dynamic_profiles,
             aggregate_usage,
             conflict_resolution_payload,
+            conflicts_summary,
         ) = pipeline.generate_dynamic_profile_inputs(
             domains=domains,
             user_description=user_description,
             world_background=world_background,
         )
         conflict_info = {
-            "summary": [],
+            "summary": conflicts_summary,
             "resolution": conflict_resolution_payload,
         }
         intermediate = {
@@ -6258,7 +7296,7 @@ def debug_dynamic_profile_generation() -> None:
     # model_name="gemini-2.5-flash-lite"
     client = GeminiJSONClient(api_key=api_key, model_name=model_name)
     base_dir = Path(__file__).resolve().parent
-    output_dir = base_dir / "generated_outputs_debug_v7" / _slugify(model_name)
+    output_dir = base_dir / "generated_outputs_debug_v9" / _slugify(model_name)
     domains_path = base_dir / "domains.json"
     # domains_path = base_dir / "domains_test.json"
     domains = load_domains_from_file(domains_path)
@@ -6276,13 +7314,14 @@ def debug_dynamic_profile_generation() -> None:
         dynamic_profiles,
         aggregate_usage,
         conflict_resolution_payload,
+        conflicts_summary,
     ) = pipeline.generate_dynamic_profile_inputs(
         domains=domains,
         user_description=user_description,
         world_background=world_background,
     )
     conflict_info = {
-        "summary": [],
+        "summary": conflicts_summary,
         "resolution": conflict_resolution_payload,
     }
     intermediate = {
@@ -6333,9 +7372,9 @@ def debug_dynamic_profile_generation() -> None:
 def debug_resolve_conflicts_from_file() -> None:
     base_dir = Path(__file__).resolve().parent
     model_name = "gemini-3-flash-preview"
-    output_dir = base_dir / "generated_outputs_debug_v6" / _slugify(model_name)
-    raw_path = base_dir / "generated_outputs_debug_v6" / _slugify(model_name) / "dynamic_profiles_raw.json"
-    user_basic_profile_path = base_dir / "generated_outputs_debug_v6" / _slugify(model_name) / "user_basic_profile.json"
+    output_dir = base_dir / "generated_outputs_debug_v9" / _slugify(model_name)
+    raw_path = base_dir / "generated_outputs_debug_v9" / _slugify(model_name) / "dynamic_profiles_raw.json"
+    user_basic_profile_path = base_dir / "generated_outputs_debug_v9" / _slugify(model_name) / "user_basic_profile.json"
     user_basic_profile = json.loads(user_basic_profile_path.read_text())
     client = GeminiJSONClient(model_name=model_name)
     pipeline = GenerationPipeline(client, output_dir=output_dir)
@@ -6539,7 +7578,8 @@ def debug_generate_real_data() -> None:
 
 if __name__ == "__main__":
     # example_usage()
-    debug_dynamic_profile_generation()
+    # debug_dynamic_profile_generation()
+    debug_resolve_conflicts_from_file()
     # debug_review_revise_dynamic_profile_from_file()
     # debug_resolve_conflicts_from_file()
 
