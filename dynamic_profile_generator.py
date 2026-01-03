@@ -71,21 +71,20 @@ Before proceeding, you must understand these core concepts:
   Examples of collection attributes:
   ```json
   "collections": {
-    "owned_devices": [
-      "Dell XPS 13 (ultrabook used mainly for software development)",
-      "Google Pixel 7 (Android smartphone for daily communication)",
-      "Apple Watch SE (entry-level fitness tracker)",
-      "iPad Air 2022 (tablet for reading and media consumption)"
+    "cooking_equipment": [
+      "KitchenAid Artisan stand mixer (5-quart capacity for baking)",
+      "Lodge cast iron skillet 12-inch (seasoned, for high-heat cooking)",
+      "Vitamix E310 blender (entry-level model for smoothies and soups)"
     ],
-    "active_subscriptions": [
-      "Netflix Standard plan (streaming service for TV shows and movies)",
-      "O'Reilly Media annual subscription (technical learning platform)",
-      "Spotify Premium family plan (ad-free music streaming)"
+    "exercise_equipment": [
+      "Bowflex SelectTech 552 adjustable dumbbells (5-52.5 lbs per hand)",
+      "Manduka PRO yoga mat (6mm thick, for home practice)",
+      "TRX Home2 suspension trainer (mounted in spare bedroom doorframe)"
     ],
-    "close_friends": [
-      "Alex (college roommate, meets monthly for dinner in downtown)",
-      "Jordan (coworker from engineering team, goes hiking together on weekends)",
-      "Sam (childhood friend from hometown, stays in touch via video calls)"
+    "professional_certifications": [
+      "AWS Certified Solutions Architect - Associate (obtained March 2023, valid until March 2026)",
+      "Project Management Professional PMP (obtained June 2022, requires renewal in 2025)",
+      "Certified ScrumMaster CSM (obtained January 2024 from Scrum Alliance)"
     ]
   }
   ```
@@ -142,32 +141,32 @@ Before proceeding, you must understand these core concepts:
     
     Example (add to existing collection):
       Current state: {
-        "owned_devices": [
-          "Dell XPS 13 (ultrabook for development)",
-          "Google Pixel 7 (Android smartphone)"
+        "fitness_gear": [
+          "Nike Air Zoom Pegasus 39 running shoes (neutral support for road running)",
+          "Garmin Forerunner 245 GPS watch (tracks runs and heart rate)"
         ]
       }
       Delta: {
         "op": "add",
         "attribute_type": "collections",
-        "collection_name": "owned_devices",
+        "collection_name": "fitness_gear",
         "delta": [
-          "Apple Watch SE (entry-level smartwatch for fitness tracking)",
-          "Sony WH-1000XM4 (noise-canceling headphones for focused work)"
+          "Aftershokz OpenRun bone conduction headphones (for safe outdoor running with music)",
+          "Nathan SpeedDraw Plus insulated water bottle (handheld 18oz for long runs)"
         ],
-        "reason": "Purchased fitness tracker and quality headphones for better productivity"
+        "reason": "Purchased accessories to improve comfort and safety during longer training runs"
       }
 
     Example (create new collection):
-      Current state: (no 'active_subscriptions' exists)
+      Current state: (no 'meal_prep_containers' exists)
       Delta: {
         "op": "add",
         "attribute_type": "collections",
-        "collection_name": "active_subscriptions",
+        "collection_name": "meal_prep_containers",
         "delta": [
-          "O'Reilly Media annual subscription (for technical learning and skill development)"
+          "Prep Naturals 5-pack glass containers with lids (3-compartment, 36oz each for weekly meal prep)"
         ],
-        "reason": "Started subscription to improve programming skills"
+        "reason": "Started meal prepping on Sundays to save time and eat healthier during work week"
       }
 
   - **remove**:
@@ -176,20 +175,20 @@ Before proceeding, you must understand these core concepts:
     
     Example:
       Current state: {
-        "owned_devices": [
-          "Dell XPS 13 (ultrabook for development)",
-          "iPhone 8 (old backup phone, rarely used)",
-          "Google Pixel 7 (Android smartphone)"
+        "photography_lenses": [
+          "Canon EF-S 18-55mm f/3.5-5.6 IS STM (kit lens, general purpose)",
+          "Canon EF 50mm f/1.8 STM (nifty fifty prime for portraits)",
+          "Sigma 10-20mm f/3.5 EX DC HSM (ultra-wide angle for landscapes)"
         ]
       }
       Delta: {
         "op": "remove",
         "attribute_type": "collections",
-        "collection_name": "owned_devices",
+        "collection_name": "photography_lenses",
         "delta": [
-          "iPhone 8 (old backup phone, rarely used)"
+          "Canon EF-S 18-55mm f/3.5-5.6 IS STM (kit lens, general purpose)"
         ],
-        "reason": "Sold old backup phone as it was no longer needed"
+        "reason": "Sold kit lens after upgrading to better general-purpose zoom lens"
       }
     
     **Important**: The description strings in the delta must match the exact strings in the current state.
@@ -205,30 +204,38 @@ Before proceeding, you must understand these core concepts:
   
   - **schedule**: When this habit occurs. MUST use one of these standardized formats:
     
-    ```
-    Daily: {"frequency_type": "daily"}
+    Daily: 
+    {"frequency_type": "daily"}
     
-    Weekly: {"frequency_type": "weekly", "days_of_week": [0,2,4]}
-    // days_of_week: 0=Mon, 1=Tue, 2=Wed, 3=Thu, 4=Fri, 5=Sat, 6=Sun
+    Weekly: 
+    {"frequency_type": "weekly", "days_of_week": [<list of day indices>]}
+    // days_of_week: Array of integers from 0-6, where 0=Mon, 1=Tue, 2=Wed, 3=Thu, 4=Fri, 5=Sat, 6=Sun
     // MUST specify exact days. NO vague "3 times per week".
+    // Can be one or multiple days (e.g., [1,3,5] for Tue/Thu/Sat, [5,6] for weekends, [0,1,2,3,4] for weekdays)
     
-    Biweekly: {"frequency_type": "biweekly", "days_of_week": [6], "week_parity": "odd"}
-    // week_parity: "odd" or "even" (odd/even numbered weeks of year)
+    Biweekly: 
+    {"frequency_type": "biweekly", "days_of_week": [<day index>], "start_date": "YYYY-MM-DD"}
+    // days_of_week: Array with single integer 0-6 (same encoding as weekly)
+    // start_date: The first occurrence date in YYYY-MM-DD format, then repeats every 2 weeks from this date
+    // Example: {"frequency_type": "biweekly", "days_of_week": [3], "start_date": "2024-03-07"} means every other Thursday starting from March 7, 2024
     
-    Monthly: {"frequency_type": "monthly", "days_of_month": [1,15]}
-    // days_of_month: 1-31
+    Monthly by date: 
+    {"frequency_type": "monthly_by_date", "days_of_month": [<list of day numbers>]}
+    // days_of_month: Array of integers from 1-28 (avoid 29-31 to prevent skipping months)
     // MUST specify exact dates. NO vague "once a month".
+    // Can be one or multiple dates (e.g., [1] for 1st of month, [1,15] for 1st and 15th)
     
-    Monthly by weekday: {"frequency_type": "monthly_by_weekday", "week_of_month": 1, "day_of_week": 0}
-    // week_of_month: 1-4 or "last" (e.g., 1=first week, "last"=last week)
-    // day_of_week: 0-6 (0=Mon, 1=Tue, ..., 6=Sun - includes weekends)
-    // Example: first Monday, last Friday, second Saturday of each month
-    ```
+    Monthly by nth weekday: 
+    {"frequency_type": "monthly_nth_weekday", "week_of_month": <1-4 or "last">, "day_of_week": <0-6>}
+    // week_of_month: Integer 1-4 or string "last" (e.g., 1=first week, 2=second week, "last"=last week)
+    // day_of_week: Integer 0-6 (0=Mon, 1=Tue, ..., 6=Sun - includes weekends)
+    // Examples: 
+    //   - First Monday: {"week_of_month": 1, "day_of_week": 0}
+    //   - Last Friday: {"week_of_month": "last", "day_of_week": 4}
+    //   - Third Saturday: {"week_of_month": 3, "day_of_week": 5}
   
   - **timing**: Time window (object).
-    ```
-    {"start_time": "06:30", "end_time": "07:00"}
-    ```
+    Example: {"start_time": "06:30", "end_time": "07:00"}
     - 24-hour format (HH:MM)
     - end_time must be after start_time
     - Duration (end - start) MUST NOT exceed 3 hours
@@ -243,7 +250,7 @@ Before proceeding, you must understand these core concepts:
 
   **CRITICAL constraints:**
   
-  1. **frequency_type is ENUM**: Only use "daily", "weekly", "biweekly", "monthly", or "monthly_by_weekday"
+  1. **frequency_type is ENUM**: Only use "daily", "weekly", "biweekly", "monthly_by_date", or "monthly_nth_weekday"
   2. **All schedules fully specified**: List exact days/dates, not vague frequencies
   3. **Max duration**: 3 hours per occurrence
   4. **Fixed timing**: All timings are fixed (no flexibility parameter)
@@ -274,7 +281,7 @@ Before proceeding, you must understand these core concepts:
   ```json
   "monthly_budget_review": {
     "action": "review_expenses_and_budget",
-    "schedule": {"frequency_type": "monthly", "days_of_month": [1]},
+    "schedule": {"frequency_type": "monthly_by_date", "days_of_month": [1]},
     "timing": {"start_time": "19:00", "end_time": "20:00"},
     "context": "at home using personal finance software",
     "priority": "medium",
@@ -342,8 +349,21 @@ Before proceeding, you must understand these core concepts:
   
   - **signals**: Array of 2-4 observable behaviors or evidence that support this preference.
     - Must be concrete and verifiable (not abstract feelings)
-    - Should demonstrate the preference through actions, choices, or patterns
-    - Examples: purchasing decisions, repeated behaviors, explicit rejections
+    - **CRITICAL**: Must be observable within a single time window (typically 1-3 months)
+    - Should demonstrate the preference through recent, specific actions or choices
+    - Avoid cross-window references like "over the past year" or "has not done X in months"
+    
+    **Good signals (observable within window):**
+    - "Chose solo morning runs over gym class invitations twice this month"
+    - "Purchased running shoes and outdoor gear rather than gym membership"
+    - "Declined three group fitness class invitations from coworkers"
+    - "Allocated 90% of new investments to index funds this quarter"
+    - "Started two new coding projects using hands-on approach without tutorials"
+    
+    **Bad signals (too vague or cross-window):**
+    - "Has not made individual stock trades in over a year" (cross-window)
+    - "Consistently chooses running" (too vague, no concrete timeframe)
+    - "Reads books on passive investing" (could mean read once or many times)
 
   **Examples:**
   ```json
@@ -352,25 +372,25 @@ Before proceeding, you must understand these core concepts:
       "exercise_setting": {
         "statement": "Prefers solo outdoor activities like running and cycling over group gym classes",
         "signals": [
-          "Consistently chooses morning runs over gym memberships",
-          "Declined multiple invitations to join group fitness classes",
-          "Invested in running gear and bicycle rather than gym equipment"
+          "Chose solo morning runs over gym class invitations twice this month",
+          "Declined coworker's invitation to join CrossFit group",
+          "Purchased running shoes and bike gear rather than considering gym membership"
         ]
       },
       "investment_focus": {
         "statement": "Prefers long-term passive investments in diversified index funds over active stock trading",
         "signals": [
-          "Allocates 90% of portfolio to low-cost index funds",
-          "Has not made individual stock trades in over a year",
-          "Reads books on passive investing strategies"
+          "Allocated 90% of this quarter's savings to Vanguard index funds",
+          "Chose to rebalance portfolio using low-cost ETFs rather than picking individual stocks",
+          "Spent time reading 'The Simple Path to Wealth' instead of day-trading guides"
         ]
       },
       "learning_approach": {
         "statement": "Prefers hands-on project-based learning over passive video tutorials or reading",
         "signals": [
-          "Starts building projects immediately after learning new concepts",
-          "Skips tutorial videos in favor of documentation and experimentation",
-          "Maintains a GitHub portfolio of learning projects"
+          "Started building a web scraper project immediately after learning basic Python syntax",
+          "Skipped tutorial videos and went straight to documentation for new React library",
+          "Created three practice projects this month to learn new frameworks"
         ]
       }
     }
@@ -383,7 +403,8 @@ Before proceeding, you must understand these core concepts:
   - All statement values must be concrete and unambiguous
     Bad: "better", "worse", "moderate", "likes it a lot" (Too vague)
     Good: "Prefers quiet solo activities over group-based social gatherings"
-  - Signals must be observable behaviors, not internal feelings
+  - **Signals must be observable within the time window** (avoid "over the past year" or similar cross-window references)
+  - Signals should be specific, recent actions or choices that clearly demonstrate the preference
 
   **Common triggers of preference change:**
   - New experiences (e.g., first time trying a new activity)
@@ -404,7 +425,7 @@ Before proceeding, you must understand these core concepts:
     "exercise_setting": {
       "statement": "Prefers solo outdoor activities like running and cycling over group gym classes",
       "signals": [
-        "Consistently chooses morning runs over gym memberships",
+        "Chose solo morning runs over gym class invitations twice last month",
         "Declined multiple invitations to join group fitness classes",
         "Invested in running gear rather than gym equipment"
       ]
@@ -417,9 +438,9 @@ Before proceeding, you must understand these core concepts:
       "delta": {
         "statement": "Prefers group fitness classes and team sports over solo outdoor activities",
         "signals": [
-          "Joined recreational soccer league and attends twice weekly",
-          "Now regularly attends group yoga classes at local studio",
-          "Finds motivation and accountability in group settings"
+          "Joined recreational soccer league and attended first two practices this month",
+          "Signed up for weekly group yoga classes at local studio",
+          "Invited two friends to join soccer league after enjoying team atmosphere"
         ]
       },
       "reason": "After joining soccer league, discovered enjoyment and motivation from social exercise"
@@ -437,9 +458,9 @@ Before proceeding, you must understand these core concepts:
     "investment_focus": {
       "statement": "Prefers long-term investments in technology stocks over short-term trading",
       "signals": [
-        "Holds tech stocks for multiple years",
-        "Rarely checks portfolio more than monthly",
-        "Reads annual reports rather than daily news"
+        "Purchased tech stocks with plan to hold for multiple years",
+        "Checked portfolio only twice this month rather than daily",
+        "Read annual reports rather than following daily market news"
       ]
     }
     
@@ -450,10 +471,10 @@ Before proceeding, you must understand these core concepts:
       "delta": {
         "statement": "Strongly prefers long-term buy-and-hold investments in diversified index funds, actively avoiding individual stock picking and any short-term trading",
         "signals": [
-          "Moved 95% of portfolio from individual stocks to index funds",
-          "Set up automatic monthly contributions to avoid timing decisions",
-          "Explicitly ignores market volatility and short-term price movements",
-          "Reads research on passive investing and efficient market hypothesis"
+          "Moved 95% of individual tech stocks into Vanguard Total Market Index Fund this month",
+          "Set up automatic monthly contributions to avoid any active trading decisions",
+          "Unsubscribed from stock-picking newsletters and installed portfolio app blocking for weekdays",
+          "Purchased 'A Random Walk Down Wall Street' and highlighted key passive investing sections"
         ]
       },
       "reason": "After reading investment research and experiencing market volatility, conviction in passive long-term strategy strengthened significantly"
@@ -466,10 +487,10 @@ Before proceeding, you must understand these core concepts:
     "learning_approach": {
       "statement": "Strongly prefers hands-on project-based learning, actively avoiding passive video tutorials or reading",
       "signals": [
-        "Never watches tutorial videos, goes straight to building",
-        "Finds reading documentation tedious and skips it",
-        "Only learns by doing and experimenting"
-      ]
+          "Started three coding projects without watching any tutorials",
+          "Skipped documentation and learned purely through trial and error",
+          "Explicitly avoided video courses despite recommendations"
+        ]
     }
     
     // Delta (refine operation - weakening):
@@ -479,9 +500,9 @@ Before proceeding, you must understand these core concepts:
       "delta": {
         "statement": "Prefers hands-on projects but now values video tutorials for quick skill acquisition before diving in",
         "signals": [
-          "Watches 20-minute tutorial videos before starting new projects",
-          "Finds that structured tutorials help understand basics faster",
-          "Still prefers projects as primary learning method but uses videos as supplement"
+          "Watched 20-minute React tutorial before starting new web project this week",
+          "Used TypeScript video course to understand basics before hands-on practice",
+          "Still built two practice projects this month but preceded each with focused tutorial viewing"
         ]
       },
       "reason": "Found that video tutorials are effective for learning new tools quickly before hands-on practice"
@@ -653,7 +674,7 @@ Return strictly valid JSON with this schema:
         "<habit_name>": {
           "action": "<action label>",
           "schedule": {
-            "frequency_type": "daily | weekly | biweekly | monthly | monthly_by_weekday",
+            "frequency_type": "daily | weekly | biweekly | monthly_by_date | monthly_nth_weekday",
             "...": "other required schedule fields"
           },
           "timing": {
@@ -671,8 +692,8 @@ Return strictly valid JSON with this schema:
         "<preference_name>": {
           "statement": "<10–30 word concrete preference statement>",
           "signals": [
-            "<observable signal 1>",
-            "<observable signal 2>"
+            "<observable signal 1 (within window)>",
+            "<observable signal 2 (within window)>"
           ]
         }
       }
@@ -721,7 +742,7 @@ Return strictly valid JSON with this schema:
             "delta": {
               "action": "<action label>",
               "schedule": {
-                "frequency_type": "daily | weekly | biweekly | monthly | monthly_by_weekday",
+                "frequency_type": "daily | weekly | biweekly | monthly_by_date | monthly_nth_weekday",
                 "...": "other required schedule fields"
               },
               "timing": {
@@ -762,8 +783,8 @@ Return strictly valid JSON with this schema:
             "delta": {
               "statement": "<10–30 word preference statement>",
               "signals": [
-                "<observable signal 1>",
-                "<observable signal 2>"
+                "<observable signal 1 (within window)>",
+                "<observable signal 2 (within window)>"
               ]
             },
             "reason": "<short reason>"
@@ -776,7 +797,6 @@ Return strictly valid JSON with this schema:
 }
 """
 )
-
 
 @dataclass
 class DynamicProfileRequest:
