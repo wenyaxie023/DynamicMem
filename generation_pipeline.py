@@ -60,7 +60,7 @@ Expected JSON shape:
         "<habit_name>": {
           "action": "<action label>",
           "schedule": {
-            "frequency_type": "daily | weekly | biweekly | monthly | monthly_by_weekday",
+            "frequency_type": "daily | weekly | biweekly | monthly_by_date | monthly_nth_weekday",
             "...": "required fields based on frequency_type"
           },
           "timing": {
@@ -129,7 +129,7 @@ Expected JSON shape:
             "delta": {
               "action": "<action label>",
               "schedule": {
-                "frequency_type": "daily | weekly | biweekly | monthly | monthly_by_weekday",
+                "frequency_type": "daily | weekly | biweekly | monthly_by_date | monthly_nth_weekday",
                 "...": "required fields based on frequency_type"
               },
               "timing": {
@@ -209,7 +209,7 @@ WHAT TO CHECK: REQUIRED FIELDS MUST BE PRESENT
 - Every window: "window_description", "summary"
 - initial_state: "summary"
 - user_attributes_state: "singular" and "collections" keys (can be empty objects)
-- All habits: action, schedule (with frequency_type + frequency-specific fields), timing (start_time + end_time), context, priority, description
+- All habits: action, schedule (frequency_type in {daily, weekly, biweekly, monthly_by_date, monthly_nth_weekday} with required fields: weekly→days_of_week, biweekly→days_of_week + start_date, monthly_by_date→days_of_month, monthly_nth_weekday→week_of_month + day_of_week), timing (start_time + end_time), context, priority, description
 - Habit adjust deltas: updated "description" + at least one substantive change (schedule/timing/context/priority)
 - Dropped habits: delta must be JSON null
 - All preferences: "statement" and "signals" array (2-4 items)
@@ -2154,7 +2154,7 @@ Each domain profile has this structure:
         "<habit_name>": {
           "action": "...",
           "schedule": {
-            "frequency_type": "daily | weekly | biweekly | monthly | monthly_by_weekday",
+            "frequency_type": "daily | weekly | biweekly | monthly_by_date | monthly_nth_weekday",
             "...": "required schedule fields"
           },
           "timing": {"start_time": "HH:MM", "end_time": "HH:MM"},
@@ -2437,7 +2437,7 @@ Patch to reduce frequency:
   "window_id": "initial",
   "path": "habits_state.initial.habit_team_meeting.schedule",
   "operation": "replace",
-  "new_value": {"frequency_type": "biweekly", "days_of_week": [2], "week_parity": "even"},
+  "new_value": {"frequency_type": "biweekly", "days_of_week": [2], "start_date": "2024-01-03"},
   "reason": "Reduced from weekly to bi-weekly to accommodate other Wednesday commitments"
 }
 </Example>
@@ -2890,6 +2890,14 @@ def render_conflict_resolution_prompt(request: ConflictResolutionRequest) -> str
     dynamic_profiles_json = json.dumps(
         request.dynamic_profiles, indent=2, ensure_ascii=False
     )
+    detected_attribute_conflicts_json = json.dumps(
+        request.detected_attribute_conflicts or [], indent=2, ensure_ascii=False
+    )
+    attribute_conflicts_note = (
+        "Attribute conflicts have already been resolved upstream; only touch attributes if timing fixes truly require it."
+        if not request.detected_attribute_conflicts
+        else "Resolve any remaining attribute conflicts if present, then handle temporal issues."
+    )
     detected_temporal_conflicts_json = json.dumps(
         request.detected_temporal_conflicts or [], indent=2, ensure_ascii=False
     )
@@ -2897,7 +2905,6 @@ def render_conflict_resolution_prompt(request: ConflictResolutionRequest) -> str
     return CONFLICT_RESOLUTION_PROMPT.render(
         user_basic_profile_json=user_basic_profile_json,
         dynamic_profiles_json=dynamic_profiles_json,
-        detected_temporal_conflicts_json=detected_temporal_conflicts_json,
         target_window_id=target_window_id,
     )
 
@@ -2940,6 +2947,32 @@ def generate_time_conflict_resolution(
     prompt = render_time_conflict_resolution_prompt(
         request, iteration_index=iteration_index, focus_habits=focus_habits
     )
+    return llm_client.generate_json(prompt)
+
+
+def render_attribute_conflict_resolution_prompt(
+    request: ConflictResolutionRequest,
+) -> str:
+    user_basic_profile_json = json.dumps(
+        request.user_basic_profile or {}, indent=2, ensure_ascii=False
+    )
+    dynamic_profiles_json = json.dumps(
+        request.dynamic_profiles, indent=2, ensure_ascii=False
+    )
+    detected_attribute_conflicts_json = json.dumps(
+        request.detected_attribute_conflicts or [], indent=2, ensure_ascii=False
+    )
+    return ATTRIBUTE_CONFLICT_RESOLUTION_PROMPT.render(
+        user_basic_profile_json=user_basic_profile_json,
+        dynamic_profiles_json=dynamic_profiles_json,
+        detected_attribute_conflicts_json=detected_attribute_conflicts_json,
+    )
+
+
+def generate_attribute_conflict_resolution(
+    llm_client: GeminiJSONClient, request: ConflictResolutionRequest
+) -> LLMResult:
+    prompt = render_attribute_conflict_resolution_prompt(request)
     return llm_client.generate_json(prompt)
 
 
@@ -3022,6 +3055,7 @@ def generate_spatiotemporal_constraints(
 class ConflictResolutionRequest:
     user_basic_profile: Dict | None
     dynamic_profiles: Dict[str, Dict]
+    detected_attribute_conflicts: Dict[str, object] | List[Dict[str, object]] | None = None
     detected_temporal_conflicts: Dict[str, object] | List[Dict[str, object]] | None = None
     target_window_id: str | None = None
 
@@ -3118,6 +3152,51 @@ def generate_key_alignment(
         user_basic_profile_json=user_basic_profile_json,
     )
     return llm_client.generate_json(prompt)
+
+
+ATTRIBUTE_CONFLICT_RESOLUTION_PROMPT = Template("""
+You are a cross-domain ATTRIBUTE conflict resolver. Fix ONLY user_attributes_state (singular + collections). Do not change habits or preferences unless absolutely required by a cascade.
+
+User basic profile:
+{{ user_basic_profile_json }}
+
+Dynamic profiles (key-aligned):
+{{ dynamic_profiles_json }}
+
+Auto-detected attribute conflicts (canonicalized):
+{{ detected_attribute_conflicts_json }}
+
+Shape:
+- List grouped by canonical key (not per window). Each entry includes "windows": [{window_id, time_range, domains:[...], overlap_items or distinct_value_count}], and "conflict_windows" where disagreements exist.
+
+Rules:
+- Resolve every listed attribute conflict before anything else.
+- Singular conflicts: same canonical key, different values across domains in the same window. Pick the most coherent value (basic profile + domain authority) and align all domains for that window.
+- Collection conflicts: same canonical key across domains. If overlap_items are provided, dedupe and keep one authoritative instance; remove duplicates from other domains. Keep collections separate per domain; DO NOT merge collections across domains.
+- Make the minimal edits in the specific window (initial or wX). Avoid touching other windows unless strictly needed for consistency.
+- Keep value shapes intact (string vs list). For collection removals, target the specific index.
+- Leave habits_state and preferences_state untouched unless a cascade is unavoidable; if changed, explain why in the reason.
+
+Output strict JSON:
+{
+  "conflicts_and_resolutions": [
+    {
+      "conflict": {
+        "description": "...",
+        "canonical_key": "...",
+        "window_id": "<initial|w1|...>"
+      },
+      "resolution": {
+        "strategy": "align_singular | dedupe_collection | drop_duplicate | other",
+        "patches": [
+          {"domain": "...", "window_id": "...", "path": "<dot path>", "action": "replace|append|remove|add_key|update", "value": <new_value_optional>, "reason": "..."}
+        ]
+      }
+    }
+  ]
+}
+If no conflicts, return {"conflicts_and_resolutions": []}.
+""")
 
 
 @dataclass
@@ -3228,16 +3307,15 @@ def _dates_from_schedule(schedule: Dict[str, Any], start_date: date, end_date: d
     if freq == "biweekly":
         days = _coerce_days_of_week(schedule.get("days_of_week"))
         days = days or list(range(7))
-        parity_raw = str(schedule.get("week_parity") or "").lower()
-        parity_flag = 1 if parity_raw == "odd" else 0 if parity_raw == "even" else None
+        anchor = _safe_parse_date(schedule.get("start_date")) or start_date
         matches: List[date] = []
         for dt in _iter_dates(start_date, end_date):
             if dt.weekday() not in days:
                 continue
-            if parity_flag is None or dt.isocalendar().week % 2 == parity_flag:
+            if anchor and dt >= anchor and (dt - anchor).days % 14 == 0:
                 matches.append(dt)
         return matches
-    if freq == "monthly":
+    if freq == "monthly_by_date":
         days_of_month = []
         for dom in schedule.get("days_of_month") or []:
             try:
@@ -3251,7 +3329,7 @@ def _dates_from_schedule(schedule: Dict[str, Any], start_date: date, end_date: d
             for dt in _iter_dates(start_date, end_date)
             if days_of_month and dt.day in days_of_month
         ]
-    if freq == "monthly_by_weekday":
+    if freq == "monthly_nth_weekday":
         week_of_month = schedule.get("week_of_month")
         day_of_week = schedule.get("day_of_week")
         try:
@@ -3625,6 +3703,18 @@ def _apply_patch_ops(base: Dict, patch_ops: List[Dict]) -> Dict:
                 target_list.append(value)
             continue
 
+        # Allow nested field updates without replacing the whole object when a key is provided
+        if key_name is not None and action in {"add", "replace", "remove", "add_key"}:
+            target_dict = _traverse_path(
+                patched, path, create_missing=action in {"add", "replace", "add_key"}
+            )
+            if isinstance(target_dict, dict):
+                if action == "remove":
+                    target_dict.pop(key_name, None)
+                else:
+                    target_dict[key_name] = value
+                continue
+
         if action == "add_key":
             target_dict = _traverse_path(patched, path, create_missing=True)
             if isinstance(target_dict, dict) and key_name is not None:
@@ -3742,23 +3832,26 @@ def _validate_schedule_structure(schedule: Any) -> List[str]:
         return ["schedule must be an object with frequency_type"]
     missing: List[str] = []
     freq = schedule.get("frequency_type")
-    allowed = {"daily", "weekly", "biweekly", "monthly", "monthly_by_weekday"}
+    allowed = {"daily", "weekly", "biweekly", "monthly_by_date", "monthly_nth_weekday"}
     if not freq:
         missing.append("schedule.frequency_type missing")
     elif freq not in allowed:
         missing.append(f"schedule.frequency_type '{freq}' is invalid")
     else:
-        if freq in {"weekly", "biweekly"} and "days_of_week" not in schedule:
-            missing.append("schedule.days_of_week missing for weekly/biweekly")
-        if freq == "biweekly" and "week_parity" not in schedule:
-            missing.append("schedule.week_parity missing for biweekly")
-        if freq == "monthly" and "days_of_month" not in schedule:
-            missing.append("schedule.days_of_month missing for monthly")
-        if freq == "monthly_by_weekday":
+        if freq == "weekly" and "days_of_week" not in schedule:
+            missing.append("schedule.days_of_week missing for weekly")
+        if freq == "biweekly":
+            if "days_of_week" not in schedule:
+                missing.append("schedule.days_of_week missing for biweekly")
+            if "start_date" not in schedule:
+                missing.append("schedule.start_date missing for biweekly")
+        if freq == "monthly_by_date" and "days_of_month" not in schedule:
+            missing.append("schedule.days_of_month missing for monthly_by_date")
+        if freq == "monthly_nth_weekday":
             if "week_of_month" not in schedule:
-                missing.append("schedule.week_of_month missing for monthly_by_weekday")
+                missing.append("schedule.week_of_month missing for monthly_nth_weekday")
             if "day_of_week" not in schedule:
-                missing.append("schedule.day_of_week missing for monthly_by_weekday")
+                missing.append("schedule.day_of_week missing for monthly_nth_weekday")
     return missing
 
 
@@ -4581,7 +4674,7 @@ def _fix_rule4_violations(
     dynamic_profile: Dict,
     detected_issues: List[Dict[str, str]],
 ) -> tuple[Dict | None, Dict]:
-    """Fix Rule 1 violations using LLM."""
+    """Fix Rule 4 violations using LLM."""
     if not detected_issues:
         return None, {}
 
@@ -4594,7 +4687,7 @@ def _fix_rule4_violations(
     )
 
     result = llm_client.generate_json(prompt)
-    return result.data, {"rule1_fix": result.usage}
+    return result.data, {"rule4_fix": result.usage}
 
 
 def _fix_rule2_violations(
@@ -4627,7 +4720,7 @@ def _fix_rule1_violations(
     dynamic_profile: Dict,
     detected_issues: List[Dict[str, str]],
 ) -> tuple[Dict | None, Dict]:
-    """Fix Rule 3 violations using LLM."""
+    """Fix Rule 1 violations using LLM."""
     if not detected_issues:
         return None, {}
 
@@ -4640,7 +4733,7 @@ def _fix_rule1_violations(
     )
 
     result = llm_client.generate_json(prompt)
-    return result.data, {"rule3_fix": result.usage}
+    return result.data, {"rule1_fix": result.usage}
 
 
 def _fix_rule3_violations(
@@ -4650,7 +4743,7 @@ def _fix_rule3_violations(
     dynamic_profile: Dict,
     detected_issues: List[Dict[str, str]],
 ) -> tuple[Dict | None, Dict]:
-    """Fix Rule 4 violations using LLM."""
+    """Fix Rule 3 violations using LLM."""
     if not detected_issues:
         return None, {}
 
@@ -4663,7 +4756,7 @@ def _fix_rule3_violations(
     )
 
     result = llm_client.generate_json(prompt)
-    return result.data, {"rule4_fix": result.usage}
+    return result.data, {"rule3_fix": result.usage}
 
 
 def _fix_rule5_violations(
@@ -4954,91 +5047,184 @@ def _normalize_attribute_value(value: object) -> object:
     return str(value)
 
 
-# def _collect_cross_domain_attribute_conflicts(
-#     dynamic_profiles: Dict[str, Dict],
-#     *,
-#     key_mapping: Dict[str, Dict[str, str]] | None = None,
-# ) -> List[Dict[str, object]]:
-#     """
-#     Seed conflict detector: finds attributes sharing a canonical key with divergent
-#     values, per window (initial + each time window).
-#     This is intentionally narrow (exact-key collisions in user_attributes_state) and
-#     serves as hints for the LLM, which performs broader semantic/temporal checks.
-#     """
-#     # window_id -> canonical_key -> list of entries
-#     grouped: Dict[str, Dict[str, List[Dict[str, object]]]] = {}
+def _normalize_collection_item(value: object) -> str:
+    """Lightweight normalization for collection items to detect overlaps."""
+    if isinstance(value, str):
+        return re.sub(r"\s+", " ", value.strip().lower())
+    if isinstance(value, dict):
+        try:
+            return json.dumps(value, ensure_ascii=False, sort_keys=True).lower()
+        except TypeError:
+            return str(value)
+    return str(value).strip().lower()
 
-#     for domain_name, profile in dynamic_profiles.items():
-#         # Initial snapshot
-#         initial_attrs = _extract_initial_state_entries(
-#             (profile.get("initial_state", {}) or {})
-#             .get("user_attributes_state", {})
-#             .get("initial")
-#         )
-#         initial_values = {
-#             name: entry.get("current_value") for name, entry in initial_attrs.items()
-#         }
-#         for attr_name, value in initial_values.items():
-#             mapped_name = (key_mapping or {}).get(domain_name, {}).get(attr_name)
-#             canonical_key = _canonical_attribute_key(mapped_name or attr_name)
-#             grouped.setdefault("initial", {}).setdefault(canonical_key, []).append(
-#                 {
-#                     "domain": domain_name,
-#                     "attribute_name": attr_name,
-#                     "value": value,
-#                     "normalized_value": _normalize_attribute_value(value),
-#                     "time_range": None,
-#                 }
-#             )
 
-#         # Per-window snapshots (apply deltas)
-#         for window in _resolve_window_states(profile):
-#             window_id = window.get("window_id")
-#             if not window_id:
-#                 continue
-#             time_range = window.get("time_range")
-#             attrs = {}
-#             for item in window.get("user_attributes_state", []):
-#                 name = item.get("name")
-#                 if not name:
-#                     continue
-#                 attrs[name] = item.get("current_value")
+def _collect_cross_domain_attribute_conflicts(
+    dynamic_profiles: Dict[str, Dict],
+    *,
+    key_mapping: Dict[str, Dict[str, str]] | None = None,
+) -> List[Dict[str, object]]:
+    """
+    Seed conflict detector: finds attributes sharing a canonical key across domains.
 
-#             for attr_name, value in attrs.items():
-#                 mapped_name = (key_mapping or {}).get(domain_name, {}).get(attr_name)
-#                 canonical_key = _canonical_attribute_key(mapped_name or attr_name)
-#                 grouped.setdefault(window_id, {}).setdefault(canonical_key, []).append(
-#                     {
-#                         "domain": domain_name,
-#                         "attribute_name": attr_name,
-#                         "value": value,
-#                         "normalized_value": _normalize_attribute_value(value),
-#                         "time_range": time_range,
-#                     }
-#                 )
+    - Singular: flag when the same canonical key has multiple distinct values in a window.
+    - Collections: flag whenever multiple domains share the same canonical key; include
+      overlap hints for duplicate items.
+    """
+    # grouped_by_key[(attr_type, canonical_key)][window_id] = list[entry]
+    grouped: Dict[Tuple[str, str], Dict[str, List[Dict[str, object]]]] = {}
 
-#     conflicts: List[Dict[str, object]] = []
-#     for window_id, canonical_map in grouped.items():
-#         for canonical_key, entries in canonical_map.items():
-#             unique_values = {entry["normalized_value"] for entry in entries}
-#             if len(unique_values) <= 1:
-#                 continue
-#             conflicts.append(
-#                 {
-#                     "window_id": window_id,
-#                     "time_range": entries[0].get("time_range"),
-#                     "canonical_key": canonical_key,
-#                     "domains": [
-#                         {
-#                             "domain": entry["domain"],
-#                             "attribute_name": entry["attribute_name"],
-#                             "value": entry["value"],
-#                         }
-#                         for entry in entries
-#                     ],
-#                 }
-#             )
-#     return conflicts
+    def _record_entry(
+        *,
+        window_id: str,
+        time_range: object,
+        attr_type: str,
+        attr_name: str,
+        value: object,
+        domain: str,
+    ) -> None:
+        canonical_name = _canonical_attribute_key(
+            (key_mapping or {}).get(domain, {}).get(attr_name, attr_name)
+        )
+        key = (("collections" if attr_type == "collections" else "singular"), canonical_name)
+        entry = {
+            "domain": domain,
+            "attribute_name": attr_name,
+            "attribute_type": key[0],
+            "value": deepcopy(value),
+            "normalized_value": _normalize_attribute_value(value),
+            "time_range": time_range,
+        }
+        grouped.setdefault(key, {}).setdefault(window_id or "initial", []).append(entry)
+
+    for domain_name, profile in dynamic_profiles.items():
+        if not isinstance(profile, dict):
+            continue
+
+        user_attrs_state = (profile.get("initial_state") or {}).get("user_attributes_state") or {}
+        for attr_type in ("singular", "collections"):
+            entries = user_attrs_state.get(attr_type)
+            if isinstance(entries, dict):
+                for attr_name, value in entries.items():
+                    _record_entry(
+                        window_id="initial",
+                        time_range=None,
+                        attr_type=attr_type,
+                        attr_name=attr_name,
+                        value=value,
+                        domain=domain_name,
+                    )
+
+        # Legacy fallback: user_attributes_state.initial
+        legacy_entries = _extract_initial_state_entries(user_attrs_state.get("initial"))
+        for attr_name, entry in legacy_entries.items():
+            _record_entry(
+                window_id="initial",
+                time_range=None,
+                attr_type="singular",
+                attr_name=attr_name,
+                value=entry.get("current_value"),
+                domain=domain_name,
+            )
+
+        for window in _resolve_window_states(profile):
+            window_id = window.get("window_id") or "unknown_window"
+            time_range = window.get("time_range")
+            for item in window.get("user_attributes_state", []) or []:
+                attr_name = item.get("name")
+                if not attr_name:
+                    continue
+                attr_type = (item.get("attribute_type") or "singular").lower()
+                _record_entry(
+                    window_id=window_id,
+                    time_range=time_range,
+                    attr_type=attr_type,
+                    attr_name=attr_name,
+                    value=item.get("current_value"),
+                    domain=domain_name,
+                )
+
+    conflicts: List[Dict[str, object]] = []
+    for (attr_type, canonical_key), windows_map in grouped.items():
+        windows_payload: List[Dict[str, object]] = []
+        conflict_windows: List[str] = []
+        overall_overlap: set[str] = set()
+
+        for window_id, entries in windows_map.items():
+            if len(entries) <= 1:
+                continue
+            time_range = next(
+                (entry.get("time_range") for entry in entries if entry.get("time_range") is not None),
+                None,
+            )
+
+            if attr_type == "collections":
+                item_counter: Counter[str] = Counter()
+                domain_payloads: List[Dict[str, object]] = []
+                for entry in entries:
+                    raw_value = entry.get("value")
+                    raw_items = raw_value if isinstance(raw_value, list) else []
+                    normalized_items = [_normalize_collection_item(item) for item in raw_items]
+                    for norm in normalized_items:
+                        item_counter[norm] += 1
+                    domain_payloads.append(
+                        {
+                            "domain": entry.get("domain"),
+                            "attribute_name": entry.get("attribute_name"),
+                            "items": raw_items,
+                            "normalized_items": normalized_items,
+                        }
+                    )
+                overlap_items = [item for item, count in item_counter.items() if count > 1]
+                if overlap_items:
+                    conflict_windows.append(window_id)
+                    overall_overlap.update(overlap_items)
+                windows_payload.append(
+                    {
+                        "window_id": window_id,
+                        "time_range": time_range,
+                        "overlap_items": overlap_items,
+                        "domains": domain_payloads,
+                    }
+                )
+                continue
+
+            distinct_values = {
+                entry["normalized_value"] for entry in entries if entry.get("normalized_value") is not None
+            }
+            window_conflicts = len(distinct_values) > 1
+            if window_conflicts:
+                conflict_windows.append(window_id)
+            windows_payload.append(
+                {
+                    "window_id": window_id,
+                    "time_range": time_range,
+                    "distinct_value_count": len(distinct_values),
+                    "domains": [
+                        {
+                            "domain": entry["domain"],
+                            "attribute_name": entry["attribute_name"],
+                            "value": entry["value"],
+                        }
+                        for entry in entries
+                    ],
+                }
+            )
+
+        if not conflict_windows:
+            continue
+        conflicts.append(
+            {
+                "kind": "attribute",
+                "attribute_type": attr_type,
+                "canonical_key": canonical_key,
+                "conflict_windows": conflict_windows,
+                "windows": windows_payload,
+                "overall_overlap_items": sorted(overall_overlap) if overall_overlap else [],
+            }
+        )
+
+    return conflicts
 
 
 def _replace_or_add_initial_attribute(
@@ -6826,7 +7012,8 @@ class GenerationPipeline:
         """
         Detect and resolve cross-domain conflicts using the LLM.
         Step 1: LLM aligns keys.
-        Step 2: LLM resolves conflicts with full dynamic profiles.
+        Step 2: Auto-detect attribute key collisions across domains.
+        Step 3: LLM resolves conflicts with full dynamic profiles.
 
         Returns:
             resolved_profiles: Updated dynamic profiles per domain
@@ -6860,7 +7047,50 @@ class GenerationPipeline:
             self.output_dir / "dynamic_profiles_key_aligned.json", dynamic_profiles
         )
 
-        temporal_conflicts = detect_temporal_conflicts(dynamic_profiles)
+        attribute_conflicts = _collect_cross_domain_attribute_conflicts(
+            dynamic_profiles, key_mapping=_key_alignment_mapping
+        )
+        _write_json(
+            self.output_dir / "auto_detected_attribute_conflicts.json",
+            {"attribute_conflicts": attribute_conflicts},
+        )
+        resolved_profiles = deepcopy(dynamic_profiles)
+        attribute_resolution_payload: Dict[str, object] = {}
+        attribute_resolution_usage: Dict = {}
+        all_conflicts_summary: List[Dict[str, object]] = list(attribute_conflicts)
+
+        if attribute_conflicts:
+            attr_resolution = generate_attribute_conflict_resolution(
+                self.llm_client,
+                ConflictResolutionRequest(
+                    user_basic_profile=user_basic_profile,
+                    dynamic_profiles=resolved_profiles,
+                    detected_attribute_conflicts=attribute_conflicts,
+                ),
+            )
+            attribute_resolution_payload = attr_resolution.data or {}
+            attribute_resolution_usage = {"attribute_resolution": attr_resolution.usage or {}}
+            _write_text(
+                self.output_dir / "conflict_resolution_attribute_prompt.txt",
+                attr_resolution.prompt,
+            )
+            _write_json(
+                self.output_dir / "cross_domain_conflict_resolution_attribute.json",
+                attribute_resolution_payload,
+            )
+            resolved_profiles = _apply_conflict_resolution_to_profiles(
+                resolved_profiles,
+                attribute_resolution_payload,
+            )
+            detected_attr_by_llm = (
+                attribute_resolution_payload.get("conflicts_and_resolutions")
+                if isinstance(attribute_resolution_payload, dict)
+                else None
+            )
+            if isinstance(detected_attr_by_llm, list):
+                all_conflicts_summary.extend(detected_attr_by_llm)
+
+        temporal_conflicts = detect_temporal_conflicts(resolved_profiles)
         temporal_conflict_entries = (
             temporal_conflicts.get("conflicts")
             if isinstance(temporal_conflicts, dict)
@@ -6870,8 +7100,7 @@ class GenerationPipeline:
             self.output_dir / "auto_detected_temporal_conflicts.json",
             {"temporal_conflicts": temporal_conflicts},
         )
-        resolved_profiles = deepcopy(dynamic_profiles)
-        all_conflicts_summary: List[Dict[str, object]] = list(temporal_conflict_entries)
+        all_conflicts_summary.extend(temporal_conflict_entries)
         per_iteration_payloads: Dict[str, object] = {}
         per_iteration_usage: Dict[str, Dict] = {}
 
@@ -6951,67 +7180,96 @@ class GenerationPipeline:
                 else temporal_conflicts
             ) or []
 
-        # Final comprehensive pass using full conflict resolver
-        final_resolution = generate_conflict_resolution(
-            self.llm_client,
-            ConflictResolutionRequest(
-                user_basic_profile=user_basic_profile,
-                dynamic_profiles=resolved_profiles,
-                detected_temporal_conflicts=temporal_conflicts,
-            ),
-        )
-        final_payload = final_resolution.data
-        _write_text(
-            self.output_dir / "conflict_resolution_prompt.txt",
-            final_resolution.prompt,
-        )
+            ## save a final conflict resolved dynamic profile
+            _write_json(
+                self.output_dir / "dynamic_profiles_conflict_resolved.json",
+                resolved_profiles,
+            )
+
+        # # Final comprehensive pass using full conflict resolver
+        # final_resolution = generate_conflict_resolution(
+        #     self.llm_client,
+        #     ConflictResolutionRequest(
+        #         user_basic_profile=user_basic_profile,
+        #         dynamic_profiles=resolved_profiles,
+        #         detected_attribute_conflicts=[],
+        #         detected_temporal_conflicts=temporal_conflicts,
+        #     ),
+        # )
+        # final_payload = final_resolution.data
+        # _write_text(
+        #     self.output_dir / "conflict_resolution_prompt.txt",
+        #     final_resolution.prompt,
+        # )
         _write_json(
             self.output_dir / "cross_domain_conflict_resolution.json",
-            final_payload,
+            {
+                "attribute": attribute_resolution_payload,
+                "temporal_iters": per_iteration_payloads,
+            },
         )
-        resolved_profiles = _apply_conflict_resolution_to_profiles(
-            resolved_profiles,
-            final_payload,
-        )
-        _write_json(
-            self.output_dir / "dynamic_profiles_conflict_resolved.json",
-            resolved_profiles,
-        )
+        # resolved_profiles = _apply_conflict_resolution_to_profiles(
+        #     resolved_profiles,
+        #     final_payload,
+        # )
+        # detected_final_by_llm = (
+        #     final_payload.get("conflicts_and_resolutions")
+        #     if isinstance(final_payload, dict)
+        #     else None
+        # )
+        # if isinstance(detected_final_by_llm, list):
+        #     all_conflicts_summary.extend(detected_final_by_llm)
+        # _write_json(
+        #     self.output_dir / "dynamic_profiles_conflict_resolved.json",
+        #     resolved_profiles,
+        # )
 
         usage = {
             "conflict_resolution": {
+                "attribute": attribute_resolution_usage,
                 "temporal_iters": per_iteration_usage,
-                "final": final_resolution.usage,
+                # "final": final_resolution.usage,
             },
         }
         if alignment_usage:
             usage.update(alignment_usage)
-        return resolved_profiles, usage, {"temporal_iters": per_iteration_payloads, "final": final_payload}, all_conflicts_summary
+        return resolved_profiles, usage, {"attribute": attribute_resolution_payload, "temporal_iters": per_iteration_payloads, "final": final_payload}, all_conflicts_summary
 
-    def debug_resolve_conflicts_from_file(
-        self,
-        raw_profiles_path: str | Path,
-        *,
-        user_basic_profile: Dict | None = None,
-    ) -> tuple[Dict[str, Dict], Dict[str, Dict], Dict[str, object], List[Dict[str, object]]]:
-        """
-        Convenience helper to re-run conflict resolution on an existing dynamic_profiles_raw.json
-        without regenerating per-domain profiles.
-        """
-        raw_profiles_path = Path(raw_profiles_path)
-        dynamic_profiles = json.loads(raw_profiles_path.read_text())
+    ## Need Refactor
+    # def debug_resolve_conflicts_from_file(
+    #     self,
+    #     domain_level_fixed_dynamic_profiles_path: str | Path,
+    #     *,
+    #     user_basic_profile: Dict | None = None,
+    # ) -> tuple[Dict[str, Dict], Dict[str, Dict], Dict[str, object], List[Dict[str, object]]]:
+    #     """
+    #     Convenience helper to re-run conflict resolution on an existing dynamic_profiles_raw.json
+    #     without regenerating per-domain profiles. If in-domain fixes exist, they are applied
+    #     before resolving cross-domain conflicts.
+    #     """
+    #     domain_level_fixed_dynamic_profiles_path = Path(domain_level_fixed_dynamic_profiles_path)
+    #     if domain_level_fixed_dynamic_profiles_path.exists():
+    #         dynamic_profiles = json.loads(domain_level_fixed_dynamic_profiles_path.read_text())
+    #     else:
+    #         ## use {domain}_all_fixed to generate combined dynamic profiles
+    #         dynamic_profiles = {}
+    #         # import pdb; pdb.set_trace()
+    #         for domain_name in domain_level_fixed_dynamic_profiles_path.parent.glob("*_dynamic_profile_all_fixes.json"):
+    #             # import pdb; pdb.set_trace()
+    #             dynamic_profiles[domain_name.stem.replace("_dynamic_profile_all_fixes", "")] = json.loads(domain_name.read_text())
+    #         _write_json(domain_level_fixed_dynamic_profiles_path, dynamic_profiles)
+    #     import pdb; pdb.set_trace()
+    #     # Load cached basic profile if not provided.
+    #     if user_basic_profile is None:
+    #         basic_profile_path = self.output_dir / "user_basic_profile.json"
+    #         if basic_profile_path.exists():
+    #             user_basic_profile = json.loads(basic_profile_path.read_text())
 
-        # Load cached basic profile if not provided.
-        if user_basic_profile is None:
-            basic_profile_path = self.output_dir / "user_basic_profile.json"
-            if basic_profile_path.exists():
-                user_basic_profile = json.loads(basic_profile_path.read_text())
-
-        # Persist the input for traceability, then run resolution.
-        _write_json(self.output_dir / "dynamic_profiles_raw.json", dynamic_profiles)
-        return self.resolve_cross_domain_conflicts(
-            dynamic_profiles, user_basic_profile=user_basic_profile
-        )
+    #     # Persist the input for traceability, then run resolution.
+    #     _write_json(self.output_dir / "dynamic_profiles_domain_level_fixes_applied.json", dynamic_profiles)
+    #     return self.resolve_cross_domain_conflicts(
+    #         dynamic_profiles, user_basic_profile=user_basic_profile
+    #     )
 
     def _prepare_basic_profile(
         self, user_description: str | None
@@ -7073,42 +7331,49 @@ class GenerationPipeline:
             cached_resolved_profiles = json.loads(conflict_resolved_path.read_text())
             # conflict_cache_used = True
         # import pdb; pdb.set_trace()
+        usage = {"dynamic_profile": {}}
+        # domains = 
+        # import pdb; pdb.set_trace()
         for domain in domains:
+            import pdb; pdb.set_trace()
             cached_profile = None
             if cached_resolved_profiles is not None:
                 cached_profile = cached_resolved_profiles.get(domain.domain_name)
 
             if cached_profile is not None:
                 dynamic_profile = cached_profile
-                usage = {"dynamic_profile": {}}
+                
             else:
-                exist_path = self.output_dir / f"{_slugify(domain.domain_name)}_dynamic_profile.json"
-                if exist_path.exists():
-                    dynamic_profile = json.loads(exist_path.read_text())
-                    usage = {"dynamic_profile": {}}
-                else:
-                    import pdb; pdb.set_trace()
+                slug = _slugify(domain.domain_name)
+                # revised_result_path = (
+                #     self.output_dir / f"{slug}_dynamic_profile_revised_result.json"
+                # )    
+                # if revised_result_path.exists():
+                #     dynamic_profile = json.loads(revised_result_path.read_text())
+                dynamic_profile = None
+                if (self.output_dir / f"{slug}_dynamic_profile.json").exists():
+                    dynamic_profile = json.loads((self.output_dir / f"{slug}_dynamic_profile.json").read_text())
+                                        # import pdb; pdb.set_trace()
+                if not dynamic_profile:
                     dynamic_profile, usage = self.generate_dynamic_profile_for_domain(
                         domain,
                         user_profile=user_profile_text,
                         world_background=world_background_text,
-                        life_domain_list=life_domain_list,
+                        life_domain_list=life_domain_list,  
                     )
-                ### read from file if exists
-                ## save
-                _write_json(exist_path, dynamic_profile)
+                ## record raw dynamic profile (domain level)
+                _write_json(self.output_dir / f"{slug}_dynamic_profile.json", dynamic_profile)
+                # Always use the in-domain revised profile downstream.
                 import pdb; pdb.set_trace()
-                reviewed_result, revised_dynamic_profile, review_usage = self.review_revise_dynamic_profile_for_domain(
-                    domain,
-                    dynamic_profile=dynamic_profile,
-                    user_profile=user_profile_text,
+                _reviewed_result, revised_dynamic_profile, review_usage = (
+                    self.review_revise_dynamic_profile_for_domain(
+                        domain,
+                        dynamic_profile=dynamic_profile,
+                        user_profile=user_profile_text,
+                    )
                 )
                 usage.update(review_usage)
-                # reviewed_path = (
-                #     self.output_dir / f"{_slugify(domain.domain_name)}_dynamic_profile_checked.json"
-                # )
-
-                # _write_json(reviewed_path, revised_dynamic_profile)
+                dynamic_profile = revised_dynamic_profile
                 new_dynamic_profile_generated = True
 
             dynamic_profiles[domain.domain_name] = dynamic_profile
@@ -7125,8 +7390,8 @@ class GenerationPipeline:
             # Persist the freshly generated, per-domain dynamic profiles before conflict resolution.
             
             ## [debug1, skip persisting raw dynamic profiles]
-            raw_dynamic_profiles_path = self.output_dir / "dynamic_profiles_raw.json"
-            _write_json(raw_dynamic_profiles_path, dynamic_profiles)
+            domain_level_fixed_dynamic_profiles_path = self.output_dir / "dynamic_profiles_domain_level_fixes_applied.json"
+            _write_json(domain_level_fixed_dynamic_profiles_path, dynamic_profiles)
             ## [debug1 end]
 
             (
@@ -7601,7 +7866,7 @@ class GenerationPipeline:
         autodetected_payload["rule1_required_fields"] = rule1_issues
 
         if rule1_issues:
-            import pdb; pdb.set_trace()
+            # import pdb; pdb.set_trace()
             fix_result, usage = _fix_rule1_violations(
                 self.llm_client, domain, user_profile, revised_profile, rule1_issues
             )
@@ -7628,7 +7893,7 @@ class GenerationPipeline:
         autodetected_payload["rule2_prior_existence"] = rule2_issues
 
         if rule2_issues:
-            import pdb; pdb.set_trace()
+            # import pdb; pdb.set_trace() 
             fix_result, usage = _fix_rule2_violations(
                 self.llm_client, domain, user_profile, revised_profile, rule2_issues
             )
@@ -7655,7 +7920,7 @@ class GenerationPipeline:
         autodetected_payload["rule3_essential_initialization"] = rule3_issues
 
         if rule3_issues:
-            import pdb; pdb.set_trace()
+            # import pdb; pdb.set_trace()
             fix_result, usage = _fix_rule3_violations(
                 self.llm_client, domain, user_profile, revised_profile, rule3_issues
             )
@@ -7682,7 +7947,7 @@ class GenerationPipeline:
         autodetected_payload["rule4_short_term_followups"] = rule4_issues
 
         if rule4_issues:
-            import pdb; pdb.set_trace()
+            # import pdb; pdb.set_trace()
             fix_result, usage = _fix_rule4_violations(
                 self.llm_client, domain, user_profile, revised_profile, rule4_issues
             )
@@ -7710,7 +7975,7 @@ class GenerationPipeline:
         autodetected_payload["rule5_time_conflicts"] = rule5_result
 
         if rule5_conflicts:
-            import pdb; pdb.set_trace()
+            # import pdb; pdb.set_trace()
             fix_result, usage, prompt = _fix_rule5_violations(
                 self.llm_client, domain, user_profile, revised_profile, rule5_result
             )
@@ -8604,7 +8869,7 @@ def debug_dynamic_profile_generation() -> None:
     # model_name="gemini-2.5-flash-lite"
     client = GeminiJSONClient(api_key=api_key, model_name=model_name)
     base_dir = Path(__file__).resolve().parent
-    output_dir = base_dir / "generated_outputs_debug_v10" / _slugify(model_name)
+    output_dir = base_dir / "generated_outputs_debug_v11" / _slugify(model_name)
     domains_path = base_dir / "domains.json"
     # domains_path = base_dir / "domains_test.json"
     domains = load_domains_from_file(domains_path)
@@ -8680,14 +8945,14 @@ def debug_dynamic_profile_generation() -> None:
 def debug_resolve_conflicts_from_file() -> None:
     base_dir = Path(__file__).resolve().parent
     model_name = "gemini-3-flash-preview"
-    output_dir = base_dir / "generated_outputs_debug_v9" / _slugify(model_name)
-    raw_path = base_dir / "generated_outputs_debug_v9" / _slugify(model_name) / "dynamic_profiles_raw.json"
-    user_basic_profile_path = base_dir / "generated_outputs_debug_v9" / _slugify(model_name) / "user_basic_profile.json"
+    output_dir = base_dir / "generated_outputs_debug_v11" / _slugify(model_name)
+    domain_level_fixed_dynamic_profiles_path = base_dir / "generated_outputs_debug_v11" / _slugify(model_name) / "dynamic_profiles_domain_level_fixes_applied.json"
+    user_basic_profile_path = base_dir / "generated_outputs_debug_v11" / _slugify(model_name) / "user_basic_profile.json"
     user_basic_profile = json.loads(user_basic_profile_path.read_text())
     client = GeminiJSONClient(model_name=model_name)
     pipeline = GenerationPipeline(client, output_dir=output_dir)
 
-    resolved, usage, payload = pipeline.debug_resolve_conflicts_from_file(raw_profiles_path=raw_path, user_basic_profile=user_basic_profile)
+    resolved, usage, payload = pipeline.debug_resolve_conflicts_from_file(domain_level_fixed_dynamic_profiles_path=domain_level_fixed_dynamic_profiles_path, user_basic_profile=user_basic_profile)
     print(json.dumps(payload, indent=2, ensure_ascii=False))
 
 def debug_review_revise_dynamic_profile_from_file() -> None:
@@ -8891,6 +9156,7 @@ def debug_generate_real_data() -> None:
 if __name__ == "__main__":
     # example_usage()
     debug_dynamic_profile_generation()
+    # debug_resolve_conflicts_from_file()
     # debug_resolve_conflicts_from_file()
     # debug_review_revise_dynamic_profile_from_file()
     # debug_review_revise_dynamic_profile_from_file()

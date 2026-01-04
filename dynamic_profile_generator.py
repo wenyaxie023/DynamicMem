@@ -246,7 +246,7 @@ Before proceeding, you must understand these core concepts:
     Example: {"start_time": "06:30", "end_time": "07:00"}
     - 24-hour format (HH:MM)
     - end_time must be after start_time
-    - Duration (end - start) MUST NOT exceed 3 hours
+    - **Duration (end - start) MUST NOT exceed 3 hours**
   
   - **context**: Where it happens (string, 5-15 words).
     Examples: "around residential neighborhood", "at 24 Hour Fitness gym on Main St"
@@ -260,7 +260,10 @@ Before proceeding, you must understand these core concepts:
   
   1. **frequency_type is ENUM**: Only use "daily", "weekly", "biweekly", "monthly_by_date", or "monthly_nth_weekday"
   2. **All schedules fully specified**: List exact days/dates, not vague frequencies
-  3. **Max duration**: 3 hours per occurrence
+  3. **Max duration**: 3 hours per occurrence (Strictly enforced)
+     **Examples of INCORRECT duration:**
+      - Bad: "childcare duties" from 07:00 to 19:00 (exceeds 3 hours and also not a discrete activity)
+      - Bad: "studying" from 08:00 to 18:00 (exceeds 3 hours)
   4. **Fixed timing**: All timings are fixed (no flexibility parameter)
   5. **Action uses spaces**: Use "dog walking" not "dog_walking", "strength training" not "strength_training"
 
@@ -295,9 +298,9 @@ Before proceeding, you must understand these core concepts:
   
   - **adjust**: Modify an existing habit without changing its core identity.
     - **Definition**: Use adjust when the habit remains fundamentally the same activity but details change.
-    - Changes that qualify for adjust: schedule, timing, context (same type of location), priority
+    - Changes that qualify for adjust: schedule, timing, context (same type of location)
     - **CRITICAL**: You can ONLY adjust habits that already exist in previous state.
-    - **CRITICAL**: Must change at least one substantial field (schedule, timing, context, or priority). Cannot only change description.
+    - **CRITICAL**: Must change at least one substantial field (schedule, timing or context). Cannot only change description.
     - Delta = only the changed fields (partial object).
     
     Example (change schedule):
@@ -694,14 +697,14 @@ This means:
    - Facts about the user must be stated definitively, not as guesses using words like "likely" or "probably."
 
 ---
-### Output Format (JSON only, dict format)
+### Output Format (JSON only, Dict format)
 
 **CRITICAL FORMATTING REQUIREMENTS:**
 - Every window object MUST include "window_description" and "summary" fields
 - The initial_state object MUST include a "summary" field
 - These fields are NOT optional - your output will be considered incomplete without them
 
-Return strictly valid JSON with this schema:
+Return strictly valid JSON with this schema (**Dict format, NOT List format**):
 {
   "life_domain": "{{ life_domain }}",
   "initial_state": {
