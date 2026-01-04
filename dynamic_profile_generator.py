@@ -8,7 +8,6 @@ from mem_bench.behavior_and_conversation.llm_client import (
     LLMResult,
 )
 
-
 dynamic_profile_template = Template("""You are an expert simulator of long-horizon dynamic user profile trajectories.
 
 ### Your task:
@@ -91,11 +90,11 @@ Before proceeding, you must understand these core concepts:
   
   **How to decide which type:**
   - Ask: "Can the user have multiple of these simultaneously?"
-    - YES → Collection (e.g., devices, friends, hobbies, subscriptions, skills)
-    - NO → Singular (e.g., primary residence, marital status, main job)
+    - YES: Collection (e.g., devices, friends, hobbies, subscriptions, skills)
+    - NO: Singular (e.g., primary residence, marital status, main job)
   - Ask: "Does it make sense to talk about 'adding' or 'removing' items?"
-    - YES → Collection
-    - NO → Singular (you modify the single value instead)
+    - YES: Collection
+    - NO: Singular (you modify the single value instead)
   
   **Constraints for all attributes:**
   - All attribute values must be concrete and unambiguous.
@@ -199,8 +198,17 @@ Before proceeding, you must understand these core concepts:
 
   **Required fields:**
   
-  - **action**: Concrete action label (string).
-    Examples: "walk_dog_on_leash", "morning_jog", "grocery_shopping", "video_call_with_parents"
+  - **habit_name**: A unique identifier for this specific habit instance.
+    - Used as the key in the habits dictionary
+    - Should be descriptive enough to distinguish this habit from others
+    - Examples: "morning_outdoor_run", "weekend_cycling", "tuesday_yoga_class"
+    - Remains stable throughout the habit's lifecycle (used to reference in adjust/drop operations)
+  
+  - **action**: The type of activity being performed (use spaces, not underscores).
+    - Describes what action is being done
+    - Examples: "jogging", "cycling", "yoga", "dog walking", "meal prep"
+    - Multiple habits can share the same action if they differ in other attributes
+    - For example: "morning_outdoor_run" and "evening_outdoor_run" can both have action="jogging"
   
   - **schedule**: When this habit occurs. MUST use one of these standardized formats:
     
@@ -254,11 +262,12 @@ Before proceeding, you must understand these core concepts:
   2. **All schedules fully specified**: List exact days/dates, not vague frequencies
   3. **Max duration**: 3 hours per occurrence
   4. **Fixed timing**: All timings are fixed (no flexibility parameter)
+  5. **Action uses spaces**: Use "dog walking" not "dog_walking", "strength training" not "strength_training"
 
-  **Complete example:**
+  **Complete examples:**
   ```json
   "morning_dog_walk": {
-    "action": "walk_dog_on_leash",
+    "action": "dog walking",
     "schedule": {"frequency_type": "daily"},
     "timing": {"start_time": "06:30", "end_time": "07:00"},
     "context": "around residential neighborhood park",
@@ -268,19 +277,8 @@ Before proceeding, you must understand these core concepts:
   ```
 
   ```json
-  "gym_strength_training": {
-    "action": "strength_training_at_gym",
-    "schedule": {"frequency_type": "weekly", "days_of_week": [1, 3, 5]},
-    "timing": {"start_time": "18:00", "end_time": "19:30"},
-    "context": "at 24 Hour Fitness gym near workplace",
-    "priority": "high",
-    "description": "Strength training three times weekly on Tuesday, Thursday, Saturday evenings after work."
-  }
-  ```
-
-  ```json
   "monthly_budget_review": {
-    "action": "review_expenses_and_budget",
+    "action": "budget review",
     "schedule": {"frequency_type": "monthly_by_date", "days_of_month": [1]},
     "timing": {"start_time": "19:00", "end_time": "20:00"},
     "context": "at home using personal finance software",
@@ -291,12 +289,16 @@ Before proceeding, you must understand these core concepts:
 
   **Allowed operations:**
   
-  - **acquire**: New habit appears. Delta = complete habit object.
-  - **drop**: Existing habit ceases. Delta = null.
-  - **adjust**: Modify existing habit. 
-    **CRITICAL**: Must change at least one substantial field (schedule, timing, context, or priority).
-    Cannot only change description.
-    Delta = only changed fields (partial object).
+  - **acquire**: Start a new habit. Delta = complete habit object.
+  
+  - **drop**: Stop an existing habit. Delta = null.
+  
+  - **adjust**: Modify an existing habit without changing its core identity.
+    - **Definition**: Use adjust when the habit remains fundamentally the same activity but details change.
+    - Changes that qualify for adjust: schedule, timing, context (same type of location), priority
+    - **CRITICAL**: You can ONLY adjust habits that already exist in previous state.
+    - **CRITICAL**: Must change at least one substantial field (schedule, timing, context, or priority). Cannot only change description.
+    - Delta = only the changed fields (partial object).
     
     Example (change schedule):
     ```json
@@ -307,7 +309,7 @@ Before proceeding, you must understand these core concepts:
         "schedule": {"frequency_type": "daily"},
         "description": "Increased to daily for better fitness"
       },
-      "reason": "..."
+      "reason": "Building up cardiovascular endurance"
     }
     ```
     
@@ -320,13 +322,28 @@ Before proceeding, you must understand these core concepts:
         "timing": {"start_time": "21:00", "end_time": "22:00"},
         "description": "Moved reading time one hour later to accommodate new schedule"
       },
-      "reason": "..."
+      "reason": "Work schedule changed, need to shift evening routine"
+    }
+    ```
+    
+    Example (change context within same type):
+    ```json
+    {
+      "op": "adjust",
+      "habit_name": "outdoor_run",
+      "delta": {
+        "context": "on new trail near state park instead of neighborhood",
+        "description": "Running on more challenging trail for variety"
+      },
+      "reason": "Discovered better running route with more scenery"
     }
     ```
 
 - **Preferences**:
   Definition: Subjective inclinations that guide choices (e.g., preferring window seats, favoring spicy food).
   It describes *what* the user tends to choose when multiple alternatives exist.
+  
+  **IMPORTANT**: Preferences are **stable internal inclinations** that represent the user's underlying tendencies. They are distinct from habits in that they reflect what the user genuinely prefers or values, not just what they do. Preferences are relatively resistant to short-term fluctuations and typically require sustained experiences or significant events to change.
   
   Each preference MUST be represented as a structured object with a statement and supporting signals.
 
@@ -407,19 +424,41 @@ Before proceeding, you must understand these core concepts:
   - Signals should be specific, recent actions or choices that clearly demonstrate the preference
 
   **Common triggers of preference change:**
-  - New experiences (e.g., first time trying a new activity)
-  - Significant events (e.g., injury, life change)
-  - World/seasonal factors (e.g., winter → preference for indoor activities)
-  - New equipment/resources (e.g., new camera → preference for certain photography styles)
+  
+  Preferences are stable and resistant to change. They typically change only through:
+  
+  1. **Sustained new experiences** (e.g., trying a new activity multiple times over weeks or months and discovering genuine enjoyment that challenges prior preferences)
+  2. **Significant life events** (e.g., injury forcing permanent adaptation, becoming a parent, major career change)
+  3. **Deliberate reflection** (e.g., reading research that challenges assumptions, extended mentorship, therapeutic insights)
+  
+  **What does NOT usually change preferences:**
+  
+  - Single seasonal shifts (winter does not make someone "prefer" indoors if they genuinely love nature)
+  - One-time events (attending one concert does not shift music taste preference)
+  - Temporary constraints (busy week does not change preference for exercise type)
+  - Short-term external factors (heatwave, special event, temporary circumstance)
+  
+  **Season/weather should affect habits, not preferences:**
+  
+  CORRECT modeling:
+  - User prefers outdoor running (preference remains stable)
+  - Winter arrives: switches to indoor treadmill (habit drop + acquire)
+  - Spring returns: resumes outdoor running (habit drop + acquire)
+  - Preference never changed throughout
+  
+  INCORRECT modeling:
+  - User prefers outdoor running (initial preference)
+  - Winter arrives: preference shifts to indoor exercise (too shallow, unrealistic)
 
   **Allowed operations:**
   
   - **shift**:
     Meaning: Preference direction changes (from preferring A to preferring B).
     **CRITICAL**: You can ONLY use "shift" if this preference already exists in a previous window.
+    **CRITICAL**: Shifts require sustained experiences or significant events, not short-term factors.
     **DELTA FORMAT**: Provide the complete new preference object (statement + signals).
     
-    Example:
+    Example (shift due to sustained experience):
     ```json
     // Previous state:
     "exercise_setting": {
@@ -431,19 +470,20 @@ Before proceeding, you must understand these core concepts:
       ]
     }
     
-    // Delta (shift operation):
+    // Delta (shift operation after sustained team sports experience):
     {
       "op": "shift",
       "preference_name": "exercise_setting",
       "delta": {
         "statement": "Prefers group fitness classes and team sports over solo outdoor activities",
         "signals": [
-          "Joined recreational soccer league and attended first two practices this month",
-          "Signed up for weekly group yoga classes at local studio",
-          "Invited two friends to join soccer league after enjoying team atmosphere"
+          "Joined recreational soccer league and attended 8 sessions over 2 months",
+          "Voluntarily invited 3 friends to join after discovering enjoyment of team dynamics",
+          "Declined solo hiking trip invitation to attend team practice",
+          "Signed up for additional group yoga classes at local studio"
         ]
       },
-      "reason": "After joining soccer league, discovered enjoyment and motivation from social exercise"
+      "reason": "After consistent participation in soccer league over 2 months, discovered deep enjoyment of social motivation and team camaraderie that outweighs previous preference for solitude"
     }
     ```
 
@@ -510,8 +550,9 @@ Before proceeding, you must understand these core concepts:
     ```
   
   **Note on operations:**
-  - **shift** = change preference direction (solo→group, active→passive)
-  - **refine** = same direction, but adjust strength/specificity (prefer → strongly prefer, or vice versa)
+  - **shift** = change preference direction (solo to group, active to passive, A to B)
+  - **refine** = same direction, but adjust strength/specificity (prefer to strongly prefer, or vice versa)
+  - Both operations require more than short-term external factors; they need sustained experiences or significant events
   
 ---
 
@@ -533,19 +574,18 @@ You are building the profile for **{{ life_domain }}** ONLY.
 - All changes should be motivated by and directly relevant to this specific domain.
 
 **Examples of INCORRECT cross-domain content:**
+
 - If building **Family & Close Relationships**, do NOT include:
-  - "daily_ai_news_recap" habit with "listen to AI-focused podcast during commute" 
-    → This belongs to **Professional Development** or **Learning & Personal Growth**
-  - "user_work_laptop" attribute 
-    → This belongs to **Professional Life & Career**
+  - "daily_industry_podcast" habit with "listen to tech podcast during commute" 
+    (This belongs to **Work & Education**)
   - "morning_gym_routine" habit 
-    → This belongs to **Health & Self-care**
+    (This belongs to **Health & Self-care**)
 
 - If building **Health & Self-care**, do NOT include:
   - "weekly_family_dinner" habit 
-    → This belongs to **Family & Close Relationships**
-  - "user_office_location" attribute 
-    → This belongs to **Work & Education**
+    (This belongs to **Family & Close Relationships**)
+  - "professional_certification_course" attribute 
+    (This belongs to **Work & Education**)
 
 ---
 
@@ -601,14 +641,14 @@ Now that you understand the core concepts and constraints, here's how to generat
 3. **Within-window coherence**:
    - The window_description should logically motivate ALL changes in that window
    - Attributes, habits, and preferences should co-evolve in directionally consistent ways
-   - Example: new fitness goal (motivation) → buys running shoes (attribute) → starts jogging routine (habit) → prefers cardio activities (preference)
+   - Example for **Health & Self-care** domain: new fitness goal (motivation) leads to buys running shoes (attribute) leads to starts jogging routine (habit) leads to prefers cardio activities (preference)
 
 4. **Essential items planned to evolve must start in initial_state**:
    - **CRITICAL**: If an item is **essential for this domain** AND you plan to **evolve it in later windows** (modify, adjust, shift), it MUST be initialized in initial_state with a baseline value.
    - Essential = things a realistic person in this situation would naturally already have.
    
    **An example of a bad case (essential item not initialized before evolution):**
-   - Finances & Material Living → NO smartphone in initial_state → adds first phone in window 3 (Unrealistic: should already own one)
+   - **Finances & Material Living** domain: NO smartphone in initial_state, then adds first phone in window 3 (Unrealistic: most people already own a smartphone as an essential item)
 
 5. **Short-term vs Long-term changes**:
    - Be aware of whether a change is driven by **short-term external factors** (e.g., seasonal changes, special events, temporary circumstances) or **long-term shifts** (e.g., lifestyle changes, permanent acquisitions)
@@ -617,12 +657,18 @@ Now that you understand the core concepts and constraints, here's how to generat
    Examples of short-term changes requiring follow-up:
    - **Seasonal adjustment**: If a user starts a daily hydration habit in winter to combat dry air, this should be adjusted back (reduced or dropped) when summer arrives
    - **Event-driven habit**: If a user acquires a habit of watching Olympic events every evening during the Olympics, this habit MUST be dropped once the Olympics end
-   - **Temporary circumstance**: If a user shifts to indoor exercise during a heatwave, they should shift back to outdoor exercise when weather normalizes
+   - **Temporary circumstance**: If a user switches from outdoor to indoor exercise during winter, they should switch back when spring arrives
    
    **How to implement**:
    - When you introduce a change motivated by a short-term factor, note this in the "reason" field
    - In a subsequent window (when the factor ends or reverses), include a corresponding delta that reverts, adjusts, or drops the temporary change
-   - Ensure the timeline is realistic (e.g., Olympics last ~2 weeks in summer; winter lasts ~3 months; heatwaves last days to weeks)
+   - Ensure the timeline is realistic (e.g., Olympics last approximately 2 weeks in summer; winter lasts approximately 3 months; heatwaves last days to weeks)
+
+6. **Special considerations for preferences**:
+   - **Preferences are inherently long-term** and should rarely change due to short-term factors
+   - If external factors (season, event, temporary constraint) affect user behavior, model this as **habit changes (drop + acquire)**, not preference shift
+   - Reserve preference changes for windows where there's evidence of **sustained experience or fundamental reassessment**
+   - Typical frequency: preferences may change every 2-4 windows at most, while habits and attributes can change more frequently
 
 ---
 

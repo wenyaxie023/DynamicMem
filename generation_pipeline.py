@@ -180,6 +180,582 @@ Expected JSON shape:
   ]
 }
 """
+# Individual rule-specific prompts for targeted fixes
+# Rule order (from structural to semantic to temporal):
+# Rule 1: Required fields (structural integrity)
+# Rule 2: Prior existence (operation legality)
+# Rule 3: Essential initialization (semantic reasonableness)
+# Rule 4: Short-term followups (semantic consistency)
+# Rule 5: Time conflicts (final feasibility)
+
+rule1_required_fields_prompt = Template("""You are fixing REQUIRED FIELDS violations in a dynamic user profile.
+
+Life domain: {{ domain_name }}: {{ domain_scope_definition }}
+Basic user profile: {{ user_profile }}
+
+Your task: Add all missing required fields.
+
+=================================================================================
+DETECTED VIOLATIONS
+=================================================================================
+
+{{ detected_issues }}
+
+=================================================================================
+WHAT TO CHECK: REQUIRED FIELDS MUST BE PRESENT
+=================================================================================
+
+**Required fields:**
+- Every window: "window_description", "summary"
+- initial_state: "summary"
+- user_attributes_state: "singular" and "collections" keys (can be empty objects)
+- All habits: action, schedule (with frequency_type + frequency-specific fields), timing (start_time + end_time), context, priority, description
+- Habit adjust deltas: updated "description" + at least one substantive change (schedule/timing/context/priority)
+- Dropped habits: delta must be JSON null
+- All preferences: "statement" and "signals" array (2-4 items)
+- All operations: "reason" field
+
+=================================================================================
+HOW TO FIX
+=================================================================================
+
+1. Add missing keys using "add_key" action
+2. Generate appropriate content based on context
+3. For habit objects, ensure all nested fields are complete
+4. Replace "none" strings with JSON null for drop operations
+
+=================================================================================
+CRITICAL REQUIREMENTS
+=================================================================================
+
+**1. ID-Based Response (MANDATORY):**
+- Each detected issue has a unique ID in the format [ID: ruleX_NNN]
+- You MUST provide a fix for EVERY detected issue by its ID
+- Your response MUST include ALL issue IDs
+- If you cannot fix an issue, explain why in the fix entry
+
+**2. NO New Windows:**
+- DO NOT create new time windows (w5, w6, etc.)
+- ONLY modify EXISTING windows in the profile
+- Add operations to existing windows, not new ones
+
+**3. Completeness Check:**
+- Count detected issues vs. your fixes
+- Ensure they match 1-to-1 by ID
+
+=================================================================================
+PATCH ACTION GUIDE
+=================================================================================
+
+**CRITICAL**: Use the correct action type:
+
+- **"add_key"**: Add missing key to object (requires "key" + "value")
+- **"append"**: Add to END of array (path = array, not array[index])
+- **"replace"**: Replace existing value
+- **"remove"**: Delete element
+
+**NEVER use "add" - Always use "append" for arrays!**
+
+=================================================================================
+OUTPUT FORMAT
+=================================================================================
+
+**IMPORTANT NOTES:**
+- The detected violations come from automatic checks and may include false positives
+- You must judge whether each detected issue truly needs fixing
+- Set fix_applied=false if the detected issue is not a real violation or doesn't need fixing
+- Include cascade_note to explain any downstream effects of your fix
+
+Return JSON with this EXACT structure:
+
+{
+  "violations_and_fixes": [
+    {
+      "issue_id": "<string>",  // Must match detected issue ID (e.g., "rule1_000")
+      "location": "<string>",  // Path to the violation location
+      "violation_description": "<string>",  // Description of what field is missing
+      "fix_applied": <boolean>,  // true if fix is needed, false if false positive
+      "fix_description": "<string>",  // Explanation of the fix applied
+      "cascade_note": "<string>",  // Explanation of downstream effects
+      "patches": [  // Array of patch objects (empty array if fix_applied is false)
+        {
+          "path": "<string>",  // JSON path to target location
+          "action": "<string>",  // One of: "add_key", "append", "replace", "remove"
+          "key": "<string>",  // Required for "add_key" action only
+          "value": <any>  // Value to add/replace (not needed for "remove")
+        }
+      ]
+    }
+  ]
+}
+
+**Dynamic profile to fix:**
+{{ dynamic_profile_json }}
+""")
+
+rule2_prior_existence_prompt = Template("""You are fixing PRIOR EXISTENCE violations in a dynamic user profile.
+
+Life domain: {{ domain_name }}: {{ domain_scope_definition }}
+Basic user profile: {{ user_profile }}
+
+Your task: Fix all operations that modify/adjust/drop/shift/refine non-existent items.
+
+=================================================================================
+DETECTED VIOLATIONS
+=================================================================================
+
+{{ detected_issues }}
+
+=================================================================================
+WHAT TO CHECK: MODIFICATION OPERATIONS REQUIRE PRIOR EXISTENCE
+=================================================================================
+
+**Operations that require prior existence:**
+- Singular attributes: "modify" requires attribute exists
+- Collection attributes: "remove" requires collection exists
+- Habits: "adjust" and "drop" require habit exists
+- Preferences: "shift" and "refine" require preference exists
+
+**Examples of violations:**
+w2: op="modify", attribute_name="primary_vehicle"
+→ "primary_vehicle" never defined in initial_state.singular
+
+w2: op="adjust", habit_name="morning_jog"
+→ "morning_jog" never in initial_state.habits_state.initial or acquired in w1
+
+=================================================================================
+HOW TO FIX
+=================================================================================
+
+For each violation, choose ONE approach:
+
+**Option A: Add to initial_state**
+- Add the missing item to initial_state with a realistic baseline
+- Update initial_state summary to mention it
+- **CASCADE:** Update any later operations if needed (e.g., change "add" to "modify")
+
+**Option B: Change operation type**
+- For attributes: change "modify" to appropriate creation operation
+- For habits: change "adjust"/"drop" to "acquire" if it never existed
+- For preferences: MUST use Option A (cannot create with shift/refine)
+
+
+=================================================================================
+CRITICAL REQUIREMENTS
+=================================================================================
+
+**1. ID-Based Response (MANDATORY):**
+- Each detected issue has a unique ID in the format [ID: ruleX_NNN]
+- You MUST provide a fix for EVERY detected issue by its ID
+- Your response MUST include ALL issue IDs
+- If you cannot fix an issue, explain why in the fix entry
+
+**2. NO New Windows:**
+- DO NOT create new time windows (w5, w6, etc.)
+- ONLY modify EXISTING windows in the profile
+- Add operations to existing windows, not new ones
+
+**3. Completeness Check:**
+- Count detected issues vs. your fixes
+- Ensure they match 1-to-1 by ID
+
+=================================================================================
+PATCH ACTION GUIDE
+=================================================================================
+
+**CRITICAL**: Use the correct action type:
+
+- **"add_key"**: Add missing key to object (requires "key" + "value")
+- **"append"**: Add to END of array (path = array, not array[index])
+- **"replace"**: Replace existing value
+- **"remove"**: Delete element
+
+**NEVER use "add" - Always use "append" for arrays!**
+
+=================================================================================
+OUTPUT FORMAT
+=================================================================================
+
+**IMPORTANT NOTES:**
+- The detected violations come from automatic checks and may include false positives
+- You must judge whether each detected issue truly needs fixing
+- Set fix_applied=false if the detected issue is not a real violation or doesn't need fixing
+- Include cascade_note to explain any downstream effects of your fix
+- When adding items to initial_state, you MUST update all later windows that reference it
+
+Return JSON with this EXACT structure:
+
+{
+  "violations_and_fixes": [
+    {
+      "issue_id": "<string>",  // Must match detected issue ID (e.g., "rule2_000")
+      "location": "<string>",  // Path to the violation location
+      "violation_description": "<string>",  // Description of the prior existence violation
+      "fix_applied": <boolean>,  // true if fix is needed, false if false positive
+      "fix_description": "<string>",  // Explanation of the fix applied
+      "cascade_note": "<string>",  // Explanation of downstream effects and cascades
+      "patches": [  // Array of patch objects (empty array if fix_applied is false)
+        {
+          "path": "<string>",  // JSON path to target location
+          "action": "<string>",  // One of: "add_key", "append", "replace", "remove"
+          "key": "<string>",  // Required for "add_key" action only
+          "value": <any>  // Value to add/replace (not needed for "remove")
+        }
+      ]
+    }
+  ]
+}
+
+**Dynamic profile to fix:**
+{{ dynamic_profile_json }}
+""")
+
+rule3_essential_initialization_prompt = Template("""You are fixing ESSENTIAL ITEM INITIALIZATION violations in a dynamic user profile.
+
+Life domain: {{ domain_name }}: {{ domain_scope_definition }}
+Basic user profile: {{ user_profile }}
+
+Your task: Ensure all essential items are initialized in initial_state before being evolved.
+
+=================================================================================
+DETECTED VIOLATIONS
+=================================================================================
+
+{{ detected_issues }}
+
+=================================================================================
+WHAT TO CHECK: ESSENTIAL ITEMS MUST BE INITIALIZED IF EVOLVED
+=================================================================================
+
+**Principle:**
+If an item is:
+1. ESSENTIAL for this domain/user (realistic baseline expectation)
+2. EVOLVED in later windows (via modify/adjust/shift operations)
+
+Then it MUST exist in initial_state with a baseline value.
+
+**Essential items by domain:**
+- Finances & Material Living: smartphone, primary bank account, payment methods
+- Health & Self-care: basic toiletries, bed, clothing, hygiene products
+- Family & Close Relationships: communication devices if family is not co-located
+- Tech & Learning: computer/laptop for professional users
+
+=================================================================================
+HOW TO FIX
+=================================================================================
+
+For each violation:
+1. Add the essential item to initial_state with realistic baseline:
+   - Singular attributes → initial_state.user_attributes_state.singular
+   - Collections → initial_state.user_attributes_state.collections
+   - Habits → initial_state.habits_state.initial
+   - Preferences → initial_state.preferences_state.initial
+2. Update initial_state summary to mention it
+3. **CASCADE:** If the item was first added via operation in a later window, update that operation accordingly
+
+
+=================================================================================
+CRITICAL REQUIREMENTS
+=================================================================================
+
+**1. ID-Based Response (MANDATORY):**
+- Each detected issue has a unique ID in the format [ID: ruleX_NNN]
+- You MUST provide a fix for EVERY detected issue by its ID
+- Your response MUST include ALL issue IDs
+- If you cannot fix an issue, explain why in the fix entry
+
+**2. NO New Windows:**
+- DO NOT create new time windows (w5, w6, etc.)
+- ONLY modify EXISTING windows in the profile
+- Add operations to existing windows, not new ones
+
+**3. Completeness Check:**
+- Count detected issues vs. your fixes
+- Ensure they match 1-to-1 by ID
+
+=================================================================================
+PATCH ACTION GUIDE
+=================================================================================
+
+**CRITICAL**: Use the correct action type:
+
+- **"add_key"**: Add missing key to object (requires "key" + "value")
+- **"append"**: Add to END of array (path = array, not array[index])
+- **"replace"**: Replace existing value
+- **"remove"**: Delete element
+
+**NEVER use "add" - Always use "append" for arrays!**
+
+=================================================================================
+OUTPUT FORMAT
+=================================================================================
+
+**IMPORTANT NOTES:**
+- The detected violations come from automatic checks and may include false positives
+- You must judge whether each detected issue truly needs fixing
+- Set fix_applied=false if the detected issue is not a real violation or doesn't need fixing
+- Include cascade_note to explain any downstream effects of your fix
+- When adding essential items to initial_state, you MUST cascade changes to all later windows
+
+Return JSON with this EXACT structure:
+
+{
+  "violations_and_fixes": [
+    {
+      "issue_id": "<string>",  // Must match detected issue ID (e.g., "rule3_000")
+      "location": "<string>",  // Path to the violation location
+      "violation_description": "<string>",  // Description of the essential initialization violation
+      "fix_applied": <boolean>,  // true if fix is needed, false if false positive
+      "fix_description": "<string>",  // Explanation of the fix applied
+      "cascade_note": "<string>",  // Explanation of downstream effects and cascades
+      "patches": [  // Array of patch objects (empty array if fix_applied is false)
+        {
+          "path": "<string>",  // JSON path to target location
+          "action": "<string>",  // One of: "add_key", "append", "replace", "remove"
+          "key": "<string>",  // Required for "add_key" action only
+          "value": <any>  // Value to add/replace (not needed for "remove")
+        }
+      ]
+    }
+  ]
+}
+
+**Dynamic profile to fix:**
+{{ dynamic_profile_json }}
+""")
+
+rule4_short_term_followup_prompt = Template("""You are fixing SHORT-TERM CHANGE FOLLOW-UP violations in a dynamic user profile.
+
+Life domain: {{ domain_name }}: {{ domain_scope_definition }}
+Basic user profile: {{ user_profile }}
+
+Your task: Fix all short-term changes that lack proper follow-ups.
+
+=================================================================================
+DETECTED VIOLATIONS
+=================================================================================
+
+{{ detected_issues }}
+
+=================================================================================
+WHAT TO CHECK: SHORT-TERM CHANGES MUST HAVE FOLLOW-UPS
+=================================================================================
+
+**Principle:**
+Changes motivated by SHORT-TERM external factors (seasonal, special events, temporary circumstances) must either:
+1. Be rolled back when the factor ends (drop/adjust/refine/shift/modify/remove operations)
+2. OR have explicit reasoning explaining why the change became permanent
+
+**Short-term keywords to watch:**
+- Seasonal: winter, summer, spring, fall, autumn, seasonal
+- Events: holiday, vacation, olympics, event, festival
+- Temporary: heatwave, cold snap, temporary, temporarily, this month, this week, during, special occasion
+
+**Examples of violations:**
+w1: acquire "daily_hydration_habit" reason="combat dry winter air"
+→ w3 (summer): no adjustment to this habit
+
+w2: acquire "evening_olympic_viewing" reason="watch Olympics coverage"
+→ w3 (after Olympics): habit still exists, not dropped
+
+=================================================================================
+HOW TO FIX
+=================================================================================
+
+For each detected violation:
+1. Add a rollback operation in an appropriate later window (drop/adjust/shift/refine/modify/remove)
+2. Update that window's summary to mention the rollback
+3. Ensure timeline is realistic (Olympics ~2 weeks, winter ~3 months, seasonal ~3-6 months)
+4. Include ALL cascade effects in your patches
+
+**Patch format:** Use JSON patches with actions: "append", "replace", "add_key", "remove"
+
+
+=================================================================================
+CRITICAL REQUIREMENTS
+=================================================================================
+
+**1. ID-Based Response (MANDATORY):**
+- Each detected issue has a unique ID in the format [ID: ruleX_NNN]
+- You MUST provide a fix for EVERY detected issue by its ID
+- Your response MUST include ALL issue IDs
+- If you cannot fix an issue, explain why in the fix entry
+
+**2. NO New Windows:**
+- DO NOT create new time windows (w5, w6, etc.)
+- ONLY modify EXISTING windows in the profile
+- Add operations to existing windows, not new ones
+
+**3. Completeness Check:**
+- Count detected issues vs. your fixes
+- Ensure they match 1-to-1 by ID
+
+=================================================================================
+PATCH ACTION GUIDE
+=================================================================================
+
+**CRITICAL**: Use the correct action type:
+
+- **"add_key"**: Add missing key to object (requires "key" + "value")
+- **"append"**: Add to END of array (path = array, not array[index])
+- **"replace"**: Replace existing value
+- **"remove"**: Delete element
+
+**NEVER use "add" - Always use "append" for arrays!**
+
+=================================================================================
+OUTPUT FORMAT
+=================================================================================
+
+**IMPORTANT NOTES:**
+- The detected violations come from automatic checks and may include false positives
+- Some short-term changes MAY be intentionally permanent (user adapted to the change)
+- You must judge whether each detected issue truly needs fixing
+- Set fix_applied=false if the change should remain permanent or detection is incorrect
+- Include cascade_note to explain the rollback and its effects on later windows
+
+Return JSON with this EXACT structure:
+
+{
+  "violations_and_fixes": [
+    {
+      "issue_id": "<string>",  // Must match detected issue ID (e.g., "rule4_000")
+      "location": "<string>",  // Path to the violation location
+      "violation_description": "<string>",  // Description of the short-term change without follow-up
+      "fix_applied": <boolean>,  // true if rollback needed, false if intentionally permanent
+      "fix_description": "<string>",  // Explanation of the fix applied
+      "cascade_note": "<string>",  // Explanation of rollback effects on later windows
+      "patches": [  // Array of patch objects (empty array if fix_applied is false)
+        {
+          "path": "<string>",  // JSON path to target location
+          "action": "<string>",  // One of: "add_key", "append", "replace", "remove"
+          "key": "<string>",  // Required for "add_key" action only
+          "value": <any>  // Value to add/replace (not needed for "remove")
+        }
+      ]
+    }
+  ]
+}
+
+**Dynamic profile to fix:**
+{{ dynamic_profile_json }}
+""")
+
+rule5_time_conflict_prompt = Template("""You are fixing TIME CONFLICT violations in a dynamic user profile.
+
+Life domain: {{ domain_name }}: {{ domain_scope_definition }}
+Basic user profile: {{ user_profile }}
+
+Your task: Resolve all habit timing conflicts using an iterative conflict resolution strategy.
+
+=================================================================================
+DETECTED CONFLICTS
+=================================================================================
+
+{{ detected_issues }}
+
+=================================================================================
+CONFLICT GRAPH ANALYSIS
+=================================================================================
+
+{{ conflict_graph }}
+
+The conflict graph shows which habits conflict with the most other habits (node degree).
+Use this to prioritize: **Fix high-degree conflicts first** to maximize impact.
+
+=================================================================================
+RESOLUTION STRATEGY (CRITICAL)
+=================================================================================
+
+**Iterative Conflict Resolution:**
+1. Identify the habit with the HIGHEST conflict degree (most conflicts with other habits)
+2. Adjust ONLY that habit's timing to avoid ALL its conflicts
+3. Find a time slot that doesn't overlap with any other habit
+4. Ensure 15-30 minute spacing between activities
+5. Repeat for the next highest-degree habit until all conflicts are resolved
+
+**Why this works:**
+- Fixing the most problematic habit first reduces the total number of conflicts most efficiently
+- Each iteration reduces the conflict graph size
+- Converges to a conflict-free schedule
+
+**Timing adjustment rules:**
+- Habits can be shifted earlier or later in the day
+- Maintain realistic timing (e.g., don't move breakfast to 11 PM)
+- Preserve habit duration where possible
+- Add 15-30 minute buffers between consecutive habits
+
+=================================================================================
+CRITICAL REQUIREMENTS
+=================================================================================
+
+**1. ID-Based Response (MANDATORY):**
+- Each detected issue has a unique ID in the format [ID: ruleX_NNN]
+- You MUST provide a fix for EVERY detected issue by its ID
+- Your response MUST include ALL issue IDs
+- If you cannot fix an issue, explain why in the fix entry
+
+**2. NO New Windows:**
+- DO NOT create new time windows (w5, w6, etc.)
+- ONLY modify EXISTING windows in the profile
+- Add operations to existing windows, not new ones
+
+**3. Completeness Check:**
+- Count detected issues vs. your fixes
+- Ensure they match 1-to-1 by ID
+
+=================================================================================
+PATCH ACTION GUIDE
+=================================================================================
+
+**CRITICAL**: Use the correct action type:
+
+- **"add_key"**: Add missing key to object (requires "key" + "value")
+- **"append"**: Add to END of array (path = array, not array[index])
+- **"replace"**: Replace existing value
+- **"remove"**: Delete element
+
+**NEVER use "add" - Always use "append" for arrays!**
+
+=================================================================================
+OUTPUT FORMAT
+=================================================================================
+
+**IMPORTANT NOTES:**
+- The detected violations come from automatic checks and may include false positives
+- Some detected conflicts may be acceptable (e.g., overlapping background activities)
+- You must judge whether each detected issue truly needs fixing
+- Set fix_applied=false if the conflict is acceptable or doesn't need resolution
+- Include cascade_note to explain timing adjustments and any downstream effects
+- When fixing timing in initial_state, check if later windows need updates too
+
+Return JSON with this EXACT structure:
+
+{
+  "violations_and_fixes": [
+    {
+      "issue_id": "<string>",  // Must match detected issue ID (e.g., "rule5_000")
+      "location": "<string>",  // Path to the violation location
+      "violation_description": "<string>",  // Description of the timing conflict
+      "fix_applied": <boolean>,  // true if fix needed, false if acceptable overlap
+      "fix_description": "<string>",  // Explanation of the timing adjustment
+      "cascade_note": "<string>",  // Explanation of timing adjustments and downstream effects
+      "patches": [  // Array of patch objects (empty array if fix_applied is false)
+        {
+          "path": "<string>",  // JSON path to target location
+          "action": "<string>",  // One of: "add_key", "append", "replace", "remove"
+          "key": "<string>",  // Required for "add_key" action only
+          "value": <any>  // Value to add/replace (not needed for "remove")
+        }
+      ]
+    }
+  ]
+}
+
+**Dynamic profile to fix:**
+{{ dynamic_profile_json }}
+""")
+
 in_domain_data_review_revise_prompt = Template("""You are a strict compliance auditor for dynamic user profiles.
 
 Life domain: {{ domain_name }}: {{ domain_scope_definition }}
@@ -188,8 +764,11 @@ Basic user profile: {{ user_profile }}
 Your task: Validate the candidate JSON against the generation rules from dynamic_profile_template and fix violations.
 
 Auto-detected must-fix issues (from programmatic checks):
+- Rule 1 (short-term changes require follow-ups): {{ auto_detected_rule1_issues }}
 - Rule 2 (operation requires prior existence): {{ auto_detected_rule2_issues }}
 - Rule 3 (required fields / schema completeness): {{ auto_detected_rule3_issues }}
+- Rule 4 (essential items must be initialized if evolved): {{ auto_detected_rule4_issues }}
+- Rule 5 (temporal feasibility / time conflicts): {{ auto_detected_rule5_issues }}
 You must fix everything listed above. Still perform a full audit across ALL rules to catch any additional issues.
 
 =================================================================================
@@ -3148,11 +3727,13 @@ def _apply_profile_revision(original_profile: Dict, review_payload: Dict) -> Dic
 
 
 def _append_issue(
-    issues: List[Dict[str, str]], path: str, message: str, window_id: str | None = None
+    issues: List[Dict[str, str]], path: str, message: str, window_id: str | None = None, issue_id: str | None = None
 ) -> None:
     entry: Dict[str, str] = {"path": path, "message": message}
     if window_id:
         entry["window_id"] = window_id
+    if issue_id:
+        entry["id"] = issue_id
     issues.append(entry)
 
 
@@ -3293,10 +3874,17 @@ def _detect_rule2_prior_existence_issues(profile: Dict) -> List[Dict[str, str]]:
                     )
                     known_preferences.add(pref_name)
 
+    
+    # Add unique IDs to all issues
+    for idx, issue in enumerate(issues):
+        if "id" not in issue:
+            issue["id"] = f"rule2_{idx:03d}"
+            issue["message"] = f"[ID: {issue['id']}] {issue['message']}"
+    
     return issues
 
 
-def _detect_rule3_required_field_issues(profile: Dict) -> List[Dict[str, str]]:
+def _detect_rule1_required_field_issues(profile: Dict) -> List[Dict[str, str]]:
     if isinstance(profile, list):
         profile = profile[0] if profile and isinstance(profile[0], dict) else {}
     issues: List[Dict[str, str]] = []
@@ -3503,7 +4091,608 @@ def _detect_rule3_required_field_issues(profile: Dict) -> List[Dict[str, str]]:
                         issues, f"{op_path}.delta", "; ".join(missing), window_id
                     )
 
+    
+    # Add unique IDs to all issues
+    for idx, issue in enumerate(issues):
+        if "id" not in issue:
+            issue["id"] = f"rule1_{idx:03d}"
+            issue["message"] = f"[ID: {issue['id']}] {issue['message']}"
+    
     return issues
+
+
+def _detect_rule4_short_term_issues(profile: Dict) -> List[Dict[str, str]]:
+    """
+    Detect short-term changes (seasonal, special events, temporary circumstances)
+    that lack appropriate follow-up operations (rollback or permanence reasoning).
+
+    Only checks habits and attributes (NOT preferences).
+    Ignores short-term changes in the LAST window (no follow-up window available).
+    """
+    if isinstance(profile, list):
+        profile = profile[0] if profile and isinstance(profile[0], dict) else {}
+
+    issues: List[Dict[str, str]] = []
+
+    # Keywords indicating short-term reasons
+    short_term_keywords = [
+        "winter", "summer", "spring", "fall", "autumn", "seasonal",
+        "holiday", "vacation", "olympics", "event", "festival",
+        "heatwave", "cold snap", "temporary", "temporarily",
+        "this month", "this week", "during", "special occasion"
+    ]
+
+    # Track short-term changes: (window_idx, type, name, reason, keywords_found)
+    short_term_changes: List[tuple] = []
+
+    time_windows = profile.get("time_windows") or []
+    last_window_idx = len(time_windows) - 1
+
+    # First pass: identify short-term changes (but NOT in the last window)
+    for w_idx, window in enumerate(time_windows):
+        # Skip the last window - no follow-up window available
+        if w_idx == last_window_idx:
+            continue
+
+        window_id = window.get("window_id") or f"w{w_idx + 1}"
+
+        # Check habits_delta operations
+        habit_ops = (window.get("habits_delta") or {}).get("operations") or []
+        for op_idx, op in enumerate(habit_ops):
+            op_type = op.get("op")
+            habit_name = op.get("habit_name")
+            reason = (op.get("reason") or "").lower()
+
+            # Check for short-term keywords in acquire or adjust operations
+            if op_type in {"acquire", "adjust"} and reason:
+                found_keywords = [kw for kw in short_term_keywords if kw in reason]
+                if found_keywords:
+                    short_term_changes.append((
+                        w_idx, "habit", habit_name, reason, found_keywords
+                    ))
+
+        # Check user_attributes_delta operations
+        attr_ops = (window.get("user_attributes_delta") or {}).get("operations") or []
+        for op_idx, op in enumerate(attr_ops):
+            op_type = op.get("op")
+            reason = (op.get("reason") or "").lower()
+
+            if op_type in {"modify", "add"} and reason:
+                found_keywords = [kw for kw in short_term_keywords if kw in reason]
+                if found_keywords:
+                    attr_name = op.get("attribute_name") or op.get("collection_name")
+                    short_term_changes.append((
+                        w_idx, "attribute", attr_name, reason, found_keywords
+                    ))
+
+    # Second pass: check for follow-ups
+    issue_id_counter = 0
+    for orig_w_idx, change_type, change_name, change_reason, keywords in short_term_changes:
+        has_followup = False
+
+        # Check subsequent windows for rollback or permanence mention
+        for check_w_idx in range(orig_w_idx + 1, len(time_windows)):
+            window = time_windows[check_w_idx]
+
+            if change_type == "habit":
+                habit_ops = (window.get("habits_delta") or {}).get("operations") or []
+                for op in habit_ops:
+                    if op.get("habit_name") == change_name:
+                        # Found a follow-up operation (adjust or drop)
+                        if op.get("op") in {"adjust", "drop"}:
+                            has_followup = True
+                            break
+                        # Or explicit reasoning about permanence
+                        reason = (op.get("reason") or "").lower()
+                        if any(kw in reason for kw in ["permanent", "decided to keep", "became habit"]):
+                            has_followup = True
+                            break
+
+            elif change_type == "attribute":
+                attr_ops = (window.get("user_attributes_delta") or {}).get("operations") or []
+                for op in attr_ops:
+                    attr_name = op.get("attribute_name") or op.get("collection_name")
+                    if attr_name == change_name:
+                        # Found a follow-up operation (modify or remove)
+                        if op.get("op") in {"modify", "remove"}:
+                            has_followup = True
+                            break
+                        reason = (op.get("reason") or "").lower()
+                        if any(kw in reason for kw in ["permanent", "decided to keep"]):
+                            has_followup = True
+                            break
+
+            if has_followup:
+                break
+
+        if not has_followup:
+            window_id = time_windows[orig_w_idx].get("window_id") or f"w{orig_w_idx + 1}"
+            issue_id = f"rule4_{issue_id_counter:03d}"
+            issue_id_counter += 1
+            _append_issue(
+                issues,
+                f"time_windows[{orig_w_idx}]",
+                f"[ID: {issue_id}] Short-term {change_type} '{change_name}' (keywords: {', '.join(keywords)}) lacks follow-up in later windows. "
+                f"Need rollback operation (drop/adjust/modify/remove) or explicit reasoning about permanence.",
+                window_id,
+            )
+            # Add ID to the issue dict
+            if issues:
+                issues[-1]["id"] = issue_id
+
+    return issues
+
+
+def _detect_rule3_first_add_issues(profile: Dict) -> List[Dict[str, str]]:
+    """
+    Detect essential items that appear for the first time via modify/adjust/shift operations
+    instead of being initialized in initial_state.
+    """
+    if isinstance(profile, list):
+        profile = profile[0] if profile and isinstance(profile[0], dict) else {}
+
+    issues: List[Dict[str, str]] = []
+
+    # Track what exists in initial_state
+    initial_state = profile.get("initial_state") or {}
+    user_attributes_state = initial_state.get("user_attributes_state") or {}
+    known_singular = set((user_attributes_state.get("singular") or {}).keys())
+    known_collections = set((user_attributes_state.get("collections") or {}).keys())
+    habits_state = initial_state.get("habits_state") or {}
+    known_habits = set((habits_state.get("initial") or {}).keys())
+    preferences_state = initial_state.get("preferences_state") or {}
+    known_preferences = set((preferences_state.get("initial") or {}).keys())
+
+    # Essential items that are commonly expected (domain-agnostic basics)
+    essential_keywords = {
+        "phone", "smartphone", "mobile", "laptop", "computer",
+        "bank", "account", "payment", "credit card", "debit card",
+        "bed", "clothing", "clothes", "toiletries", "hygiene",
+        "transportation", "vehicle", "residence", "home", "apartment"
+    }
+
+    time_windows = profile.get("time_windows") or []
+
+    # Track first appearance of items
+    for w_idx, window in enumerate(time_windows):
+        window_id = window.get("window_id") or f"w{w_idx + 1}"
+
+        # Check user_attributes_delta
+        attr_ops = (window.get("user_attributes_delta") or {}).get("operations") or []
+        for op_idx, op in enumerate(attr_ops):
+            op_type = op.get("op")
+
+            # First modify of a singular attribute - should have been in initial_state
+            if op_type == "modify":
+                attr_name = op.get("attribute_name") or ""
+                if attr_name and attr_name not in known_singular:
+                    # Check if it's an essential item
+                    is_essential = any(kw in attr_name.lower() for kw in essential_keywords)
+                    if is_essential:
+                        _append_issue(
+                            issues,
+                            f"time_windows[{w_idx}].user_attributes_delta.operations[{op_idx}]",
+                            f"Essential singular attribute '{attr_name}' first appears via 'modify' in {window_id}. "
+                            f"Should be initialized in initial_state with realistic baseline.",
+                            window_id,
+                        )
+                    known_singular.add(attr_name)
+
+            # First add to a collection that seems essential
+            elif op_type == "add":
+                collection_name = op.get("collection_name") or ""
+                delta = op.get("delta") or []
+
+                if collection_name and collection_name not in known_collections:
+                    # Check if collection name or items suggest essential items
+                    is_essential = any(kw in collection_name.lower() for kw in essential_keywords)
+                    if not is_essential and isinstance(delta, list):
+                        # Check items in delta
+                        for item in delta:
+                            if isinstance(item, str) and any(kw in item.lower() for kw in essential_keywords):
+                                is_essential = True
+                                break
+
+                    if is_essential:
+                        _append_issue(
+                            issues,
+                            f"time_windows[{w_idx}].user_attributes_delta.operations[{op_idx}]",
+                            f"Essential collection '{collection_name}' first appears via 'add' in {window_id}. "
+                            f"Should be initialized in initial_state with realistic baseline items.",
+                            window_id,
+                        )
+
+                known_collections.add(collection_name)
+
+        # Check habits_delta
+        habit_ops = (window.get("habits_delta") or {}).get("operations") or []
+        for op_idx, op in enumerate(habit_ops):
+            op_type = op.get("op")
+            habit_name = op.get("habit_name") or ""
+
+            # First adjust of a habit - should have been in initial_state
+            if op_type == "adjust" and habit_name:
+                if habit_name not in known_habits:
+                    # Check if it's an essential habit
+                    is_essential = any(kw in habit_name.lower() for kw in ["sleep", "eat", "hygiene", "commute", "work"])
+                    if is_essential:
+                        _append_issue(
+                            issues,
+                            f"time_windows[{w_idx}].habits_delta.operations[{op_idx}]",
+                            f"Essential habit '{habit_name}' first appears via 'adjust' in {window_id}. "
+                            f"Should be initialized in initial_state.",
+                            window_id,
+                        )
+                    known_habits.add(habit_name)
+            elif op_type == "acquire" and habit_name:
+                known_habits.add(habit_name)
+            elif op_type == "drop" and habit_name in known_habits:
+                known_habits.remove(habit_name)
+
+        # Check preferences_delta
+        pref_ops = (window.get("preferences_delta") or {}).get("operations") or []
+        for op_idx, op in enumerate(pref_ops):
+            op_type = op.get("op")
+            pref_name = op.get("preference_name") or ""
+
+            # First shift/refine of a preference - should have been in initial_state
+            if op_type in {"shift", "refine"} and pref_name:
+                if pref_name not in known_preferences:
+                    _append_issue(
+                        issues,
+                        f"time_windows[{w_idx}].preferences_delta.operations[{op_idx}]",
+                        f"Preference '{pref_name}' first appears via '{op_type}' in {window_id}. "
+                        f"Preferences can only be shifted/refined if they exist in initial_state.",
+                        window_id,
+                    )
+                    known_preferences.add(pref_name)
+
+    
+    # Add unique IDs to all issues
+    for idx, issue in enumerate(issues):
+        if "id" not in issue:
+            issue["id"] = f"rule3_{idx:03d}"
+            issue["message"] = f"[ID: {issue['id']}] {issue['message']}"
+    
+    return issues
+
+
+def _parse_time(time_str: str) -> tuple[int, int] | None:
+    """Parse time string like '6:00 AM' or '18:30' to (hour, minute) in 24h format."""
+    if not time_str:
+        return None
+
+    time_str = time_str.strip().upper()
+
+    # Handle AM/PM format
+    if 'AM' in time_str or 'PM' in time_str:
+        is_pm = 'PM' in time_str
+        time_str = time_str.replace('AM', '').replace('PM', '').strip()
+
+        if ':' in time_str:
+            parts = time_str.split(':')
+            try:
+                hour = int(parts[0])
+                minute = int(parts[1]) if len(parts) > 1 else 0
+
+                # Convert to 24h
+                if is_pm and hour != 12:
+                    hour += 12
+                elif not is_pm and hour == 12:
+                    hour = 0
+
+                return (hour, minute)
+            except (ValueError, IndexError):
+                return None
+
+    # Handle 24h format
+    if ':' in time_str:
+        parts = time_str.split(':')
+        try:
+            hour = int(parts[0])
+            minute = int(parts[1]) if len(parts) > 1 else 0
+            return (hour, minute)
+        except (ValueError, IndexError):
+            return None
+
+    return None
+
+
+def _detect_rule5_time_conflict_issues(profile: Dict) -> Dict[str, object]:
+    """
+    Detect time conflicts using date-aware temporal event expansion (same logic as cross-domain).
+
+    Key improvements over old implementation:
+    1. Considers actual dates - habits on different dates don't conflict
+    2. Respects schedule frequency (daily/weekly/monthly)
+    3. Counts actual occurrence conflicts, not just habit pair conflicts
+    4. Groups events by (window_id, date) before checking overlaps
+
+    Returns:
+        {
+            "conflicts": [...],  # List of conflict entries with occurrence counts
+            "graph_by_window": {  # Conflict graph analysis
+                "window_id": {
+                    "total_conflicts": int (total occurrences),
+                    "top_nodes": [{"habit": str, "degree": int}, ...]
+                }
+            }
+        }
+    """
+    if isinstance(profile, list):
+        profile = profile[0] if profile and isinstance(profile[0], dict) else {}
+
+    # Collect all temporal events (expanded by date)
+    events: List[Dict[str, object]] = []
+    for snapshot in _materialize_habit_snapshots_for_conflicts(profile or {}):
+        window_id = snapshot.get("window_id") or "unknown_window"
+        start_date, end_date = _parse_window_date_range(snapshot.get("time_range"))
+        if not start_date or not end_date:
+            continue
+
+        for habit_name, habit in (snapshot.get("habits") or {}).items():
+            start_min, end_min, timing_label = _parse_structured_timing(habit.get("timing"))
+            if start_min is None or end_min is None:
+                continue
+
+            schedule = habit.get("schedule") or {}
+            occurrences = _dates_from_schedule(schedule, start_date, end_date)
+            if not occurrences:
+                # No schedule specified, assume daily
+                occurrences = list(_iter_dates(start_date, end_date))
+
+            for dt in occurrences:
+                events.append({
+                    "window_id": window_id,
+                    "window_range": snapshot.get("time_range"),
+                    "habit": habit_name,
+                    "timing": timing_label,
+                    "start_min": start_min,
+                    "end_min": end_min,
+                    "date": dt,
+                })
+
+    # Group events by (window_id, date) and detect conflicts
+    aggregated: Dict[Tuple[str, str, str], Dict[str, object]] = {}
+    grouped: Dict[Tuple[str, date], List[Dict[str, object]]] = {}
+
+    for ev in events:
+        dt = ev.get("date")
+        if not isinstance(dt, date):
+            continue
+        key = (ev.get("window_id") or "unknown_window", dt)
+        grouped.setdefault(key, []).append(ev)
+
+    # Check for overlaps within each (window, date) bucket
+    for (window_id, dt), bucket in grouped.items():
+        bucket = sorted(bucket, key=lambda e: e["start_min"])
+        for i in range(len(bucket)):
+            for j in range(i + 1, len(bucket)):
+                a, b = bucket[i], bucket[j]
+                # Check for temporal overlap
+                if a["start_min"] < b["end_min"] and b["start_min"] < a["end_min"]:
+                    # Canonical pair key to aggregate same habit pairs
+                    habit_a = str(a.get("habit") or "")
+                    habit_b = str(b.get("habit") or "")
+                    if habit_a <= habit_b:
+                        pair_key = (window_id, habit_a, habit_b)
+                        left, right = a, b
+                    else:
+                        pair_key = (window_id, habit_b, habit_a)
+                        left, right = b, a
+
+                    overlap_range = f"{_format_minutes(max(a['start_min'], b['start_min']))}-{_format_minutes(min(a['end_min'], b['end_min']))}"
+
+                    # Aggregate by pair key
+                    entry = aggregated.setdefault(pair_key, {
+                        "window_id": window_id,
+                        "window_range": bucket[0].get("window_range"),
+                        "habit_a": habit_a,
+                        "habit_b": habit_b,
+                        "habit_a_timing": left.get("timing"),
+                        "habit_b_timing": right.get("timing"),
+                        "occurrences": 0,
+                        "sample_dates": [],
+                        "overlap_examples": [],
+                    })
+                    entry["occurrences"] = entry.get("occurrences", 0) + 1
+                    if len(entry["sample_dates"]) < 3:
+                        entry["sample_dates"].append(dt.isoformat())
+                    if len(entry["overlap_examples"]) < 3:
+                        entry["overlap_examples"].append({
+                            "date": dt.isoformat(),
+                            "overlap": overlap_range,
+                        })
+
+    conflicts = list(aggregated.values())
+
+    # Build conflict graph by window
+    graph_by_window: Dict[str, Dict[str, object]] = {}
+    TOP_N = 8
+
+    for entry in conflicts:
+        window_id = entry.get("window_id") or "unknown_window"
+        occ = int(entry.get("occurrences") or 1)
+        window_graph = graph_by_window.setdefault(
+            window_id, {"total_conflicts": 0, "node_degrees": {}}
+        )
+        window_graph["total_conflicts"] += occ
+
+        # Count degree for each habit (number of conflict occurrences)
+        for habit_key in ("habit_a", "habit_b"):
+            habit_name = entry.get(habit_key) or ""
+            node_degrees: Dict[str, int] = window_graph["node_degrees"]  # type: ignore
+            node_degrees[habit_name] = node_degrees.get(habit_name, 0) + occ
+
+    # Convert node_degrees to sorted top list
+    for window_id, data in graph_by_window.items():
+        node_degrees = data.get("node_degrees", {}) or {}
+        top_nodes = sorted(
+            [{"habit": habit, "degree": degree} for habit, degree in node_degrees.items()],
+            key=lambda x: (-x["degree"], x["habit"])
+        )[:TOP_N]
+        data["top_nodes"] = top_nodes
+        data.pop("node_degrees", None)
+
+    # Add unique IDs to conflicts
+    for idx, conflict in enumerate(conflicts):
+        if "id" not in conflict:
+            conflict["id"] = f"rule5_{idx:03d}"
+            # Build message with occurrence info
+            habit_a = conflict.get("habit_a")
+            habit_b = conflict.get("habit_b")
+            timing_a = conflict.get("habit_a_timing")
+            timing_b = conflict.get("habit_b_timing")
+            occ_count = conflict.get("occurrences", 1)
+            window_id = conflict.get("window_id")
+
+            conflict["message"] = (
+                f"[ID: {conflict['id']}] Time conflict in {window_id}: "
+                f"'{habit_a}' ({timing_a}) overlaps with '{habit_b}' ({timing_b}). "
+                f"Occurs {occ_count} time(s) in this window."
+            )
+
+    return {
+        "conflicts": conflicts,
+        "graph_by_window": graph_by_window,
+    }
+
+
+def _format_minutes(minutes: int) -> str:
+    """Convert minutes since midnight to time string like '6:30 AM'."""
+    hours = minutes // 60
+    mins = minutes % 60
+
+    if hours >= 12:
+        period = "PM"
+        display_hour = hours if hours == 12 else hours - 12
+    else:
+        period = "AM"
+        display_hour = hours if hours > 0 else 12
+
+    return f"{display_hour}:{mins:02d} {period}"
+
+
+# Individual rule fix functions
+def _fix_rule4_violations(
+    llm_client,
+    domain,
+    user_profile: str,
+    dynamic_profile: Dict,
+    detected_issues: List[Dict[str, str]],
+) -> tuple[Dict | None, Dict]:
+    """Fix Rule 1 violations using LLM."""
+    if not detected_issues:
+        return None, {}
+
+    prompt = rule4_short_term_followup_prompt.render(
+        domain_name=domain.domain_name,
+        domain_scope_definition=domain.domain_scope_definition,
+        user_profile=user_profile,
+        detected_issues=json.dumps(detected_issues, indent=2, ensure_ascii=False),
+        dynamic_profile_json=json.dumps(dynamic_profile, indent=2, ensure_ascii=False),
+    )
+
+    result = llm_client.generate_json(prompt)
+    return result.data, {"rule1_fix": result.usage}
+
+
+def _fix_rule2_violations(
+    llm_client,
+    domain,
+    user_profile: str,
+    dynamic_profile: Dict,
+    detected_issues: List[Dict[str, str]],
+) -> tuple[Dict | None, Dict]:
+    """Fix Rule 2 violations using LLM."""
+    if not detected_issues:
+        return None, {}
+
+    prompt = rule2_prior_existence_prompt.render(
+        domain_name=domain.domain_name,
+        domain_scope_definition=domain.domain_scope_definition,
+        user_profile=user_profile,
+        detected_issues=json.dumps(detected_issues, indent=2, ensure_ascii=False),
+        dynamic_profile_json=json.dumps(dynamic_profile, indent=2, ensure_ascii=False),
+    )
+
+    result = llm_client.generate_json(prompt)
+    return result.data, {"rule2_fix": result.usage}
+
+
+def _fix_rule1_violations(
+    llm_client,
+    domain,
+    user_profile: str,
+    dynamic_profile: Dict,
+    detected_issues: List[Dict[str, str]],
+) -> tuple[Dict | None, Dict]:
+    """Fix Rule 3 violations using LLM."""
+    if not detected_issues:
+        return None, {}
+
+    prompt = rule1_required_fields_prompt.render(
+        domain_name=domain.domain_name,
+        domain_scope_definition=domain.domain_scope_definition,
+        user_profile=user_profile,
+        detected_issues=json.dumps(detected_issues, indent=2, ensure_ascii=False),
+        dynamic_profile_json=json.dumps(dynamic_profile, indent=2, ensure_ascii=False),
+    )
+
+    result = llm_client.generate_json(prompt)
+    return result.data, {"rule3_fix": result.usage}
+
+
+def _fix_rule3_violations(
+    llm_client,
+    domain,
+    user_profile: str,
+    dynamic_profile: Dict,
+    detected_issues: List[Dict[str, str]],
+) -> tuple[Dict | None, Dict]:
+    """Fix Rule 4 violations using LLM."""
+    if not detected_issues:
+        return None, {}
+
+    prompt = rule3_essential_initialization_prompt.render(
+        domain_name=domain.domain_name,
+        domain_scope_definition=domain.domain_scope_definition,
+        user_profile=user_profile,
+        detected_issues=json.dumps(detected_issues, indent=2, ensure_ascii=False),
+        dynamic_profile_json=json.dumps(dynamic_profile, indent=2, ensure_ascii=False),
+    )
+
+    result = llm_client.generate_json(prompt)
+    return result.data, {"rule4_fix": result.usage}
+
+
+def _fix_rule5_violations(
+    llm_client,
+    domain,
+    user_profile: str,
+    dynamic_profile: Dict,
+    detected_conflicts: Dict[str, object],
+) -> tuple[Dict | None, Dict]:
+    """Fix Rule 5 violations using LLM with conflict graph analysis."""
+    conflicts_list = detected_conflicts.get("conflicts") or []
+    if not conflicts_list:
+        return None, {}
+
+    conflict_graph = detected_conflicts.get("graph_by_window") or {}
+
+    prompt = rule5_time_conflict_prompt.render(
+        domain_name=domain.domain_name,
+        domain_scope_definition=domain.domain_scope_definition,
+        user_profile=user_profile,
+        detected_issues=json.dumps(conflicts_list, indent=2, ensure_ascii=False),
+        conflict_graph=json.dumps(conflict_graph, indent=2, ensure_ascii=False),
+        dynamic_profile_json=json.dumps(dynamic_profile, indent=2, ensure_ascii=False),
+    )
+
+    result = llm_client.generate_json(prompt)
+    ## record prompt and result to file
+
+    return result.data, {"rule5_fix": result.usage}, prompt
 
 
 PRICING_TABLE: Dict[str, Dict[str, Any]] = {
@@ -5875,19 +7064,8 @@ class GenerationPipeline:
             f"{domain.domain_name}"
             for domain in domains
         ]
-        temporal_conflicts_path = self.output_dir / "auto_detected_temporal_conflicts.json"
-        if temporal_conflicts_path.exists():
-            try:
-                cached_temporal = json.loads(temporal_conflicts_path.read_text())
-                cached_temporal_conflicts = cached_temporal.get("temporal_conflicts")
-                if isinstance(cached_temporal_conflicts, dict):
-                    conflicts_summary = cached_temporal_conflicts.get("conflicts") or []
-                elif isinstance(cached_temporal_conflicts, list):
-                    conflicts_summary = cached_temporal_conflicts
-                else:
-                    conflicts_summary = []
-            except Exception:
-                conflicts_summary = []
+
+        conflicts_summary = []
         # import pdb; pdb.set_trace()
         cached_resolved_profiles: Dict[str, Dict] | None = None
         new_dynamic_profile_generated = False
@@ -6389,56 +7567,186 @@ class GenerationPipeline:
         *,
         dynamic_profile: Dict,
         user_profile: str,
-    ) -> tuple[Dict, Dict]:
+    ) -> tuple[Dict, Dict, Dict]:
         """
-        Run a structured audit + repair pass on a generated dynamic profile to
-        catch format/consistency issues (time windows, habit/preference schema) and
-        apply the patch onto the original profile.
+        Run a structured audit + repair pass on a generated dynamic profile.
+        Each rule is detected and fixed in CASCADE mode:
+
+        Rule 1: Required fields (structural integrity)
+            → detect on original profile → fix → revised_profile_1
+        Rule 2: Prior existence (operation legality)
+            → detect on revised_profile_1 → fix → revised_profile_2
+        Rule 3: Essential initialization (semantic reasonableness)
+            → detect on revised_profile_2 → fix → revised_profile_3
+        Rule 4: Short-term followups (semantic consistency)
+            → detect on revised_profile_3 → fix → revised_profile_4
+        Rule 5: Time conflicts (final feasibility)
+            → detect on revised_profile_4 → fix → final_profile
+
+        Only rules with violations are sent to the LLM for fixing.
         """
         slug = _slugify(domain.domain_name)
-        # review_revise_result_path = "/export/scratch_large/wenya/mem_bench/behavior_and_conversation/generated_outputs_debug_v5/gemini_3_flash_preview/leisure_media_consumption_dynamic_profile_checked_result.json"
-        # with open(review_revise_result_path, "r", encoding="utf-8") as f:
-        #     review_revise_result = json.load(f)
-        rule2_issues = _detect_rule2_prior_existence_issues(dynamic_profile)
-        rule3_issues = _detect_rule3_required_field_issues(dynamic_profile)
-        autodetected_payload = {
-            "rule2_prior_existence": rule2_issues,
-            "rule3_required_fields": rule3_issues,
-        }
+
+        # Initialize cascade: start with original profile
+        revised_profile = deepcopy(dynamic_profile)
+
+        # Track all detected issues for reporting
+        autodetected_payload = {}
+        all_fixes = {}
+        aggregate_usage = {}
+
+        # ========== Rule 1: Required fields (structural integrity) ==========
+        # Detect on current profile (initially the original dynamic_profile)
+        rule1_issues = _detect_rule1_required_field_issues(revised_profile)
+        autodetected_payload["rule1_required_fields"] = rule1_issues
+
+        if rule1_issues:
+            import pdb; pdb.set_trace()
+            fix_result, usage = _fix_rule1_violations(
+                self.llm_client, domain, user_profile, revised_profile, rule1_issues
+            )
+            if fix_result:
+                all_fixes["rule1_required_fields"] = fix_result
+                revised_profile = _apply_profile_revision(revised_profile, fix_result)
+                aggregate_usage.update(usage)
+                _write_json(
+                    self.output_dir / f"{slug}_rule1_required_fields_fix.json",
+                    fix_result
+                )
+                _write_json(
+                    self.output_dir / f"{slug}_rule1_required_fields_fixed_result.json",
+                    revised_profile
+                )
+                _write_json(
+                    self.output_dir / f"{slug}_rule1_required_fields_autodetected_issues.json",
+                    rule1_issues
+                )
+
+        # ========== Rule 2: Prior existence (operation legality) ==========
+        # Detect on revised_profile (after Rule 1 fixes applied)
+        rule2_issues = _detect_rule2_prior_existence_issues(revised_profile)
+        autodetected_payload["rule2_prior_existence"] = rule2_issues
+
+        if rule2_issues:
+            import pdb; pdb.set_trace()
+            fix_result, usage = _fix_rule2_violations(
+                self.llm_client, domain, user_profile, revised_profile, rule2_issues
+            )
+            if fix_result:
+                all_fixes["rule2_prior_existence"] = fix_result
+                revised_profile = _apply_profile_revision(revised_profile, fix_result)
+                aggregate_usage.update(usage)
+                _write_json(
+                    self.output_dir / f"{slug}_rule2_prior_existence_fix.json",
+                    fix_result
+                )
+                _write_json(
+                    self.output_dir / f"{slug}_rule2_prior_existence_fixed_result.json",
+                    revised_profile
+                )
+                _write_json(
+                    self.output_dir / f"{slug}_rule2_prior_existence_autodetected_issues.json",
+                    rule2_issues
+                )
+
+        # ========== Rule 3: Essential initialization (semantic reasonableness) ==========
+        # Detect on revised_profile (after Rule 1-2 fixes applied)
+        rule3_issues = _detect_rule3_first_add_issues(revised_profile)
+        autodetected_payload["rule3_essential_initialization"] = rule3_issues
+
+        if rule3_issues:
+            import pdb; pdb.set_trace()
+            fix_result, usage = _fix_rule3_violations(
+                self.llm_client, domain, user_profile, revised_profile, rule3_issues
+            )
+            if fix_result:
+                all_fixes["rule3_essential_initialization"] = fix_result
+                revised_profile = _apply_profile_revision(revised_profile, fix_result)
+                aggregate_usage.update(usage)
+                _write_json(
+                    self.output_dir / f"{slug}_rule3_essential_initialization_fix.json",
+                    fix_result
+                )
+                _write_json(
+                    self.output_dir / f"{slug}_rule3_essential_initialization_fixed_result.json",
+                    revised_profile
+                )
+                _write_json(
+                    self.output_dir / f"{slug}_rule3_essential_initialization_autodetected_issues.json",
+                    rule3_issues
+                )
+
+        # ========== Rule 4: Short-term followups (semantic consistency) ==========
+        # Detect on revised_profile (after Rule 1-3 fixes applied)
+        rule4_issues = _detect_rule4_short_term_issues(revised_profile)
+        autodetected_payload["rule4_short_term_followups"] = rule4_issues
+
+        if rule4_issues:
+            import pdb; pdb.set_trace()
+            fix_result, usage = _fix_rule4_violations(
+                self.llm_client, domain, user_profile, revised_profile, rule4_issues
+            )
+            if fix_result:
+                all_fixes["rule4_short_term_followups"] = fix_result
+                revised_profile = _apply_profile_revision(revised_profile, fix_result)
+                aggregate_usage.update(usage)
+                _write_json(
+                    self.output_dir / f"{slug}_rule4_short_term_followups_fix.json",
+                    fix_result
+                )
+                _write_json(
+                    self.output_dir / f"{slug}_rule4_short_term_followups_fixed_result.json",
+                    revised_profile
+                )
+                _write_json(
+                    self.output_dir / f"{slug}_rule4_short_term_followups_autodetected_issues.json",
+                    rule4_issues
+                )
+
+        # ========== Rule 5: Time conflicts (final feasibility) ==========
+        # Detect on revised_profile (after Rule 1-4 fixes applied)
+        rule5_result = _detect_rule5_time_conflict_issues(revised_profile)
+        rule5_conflicts = rule5_result.get("conflicts") if isinstance(rule5_result, dict) else []
+        autodetected_payload["rule5_time_conflicts"] = rule5_result
+
+        if rule5_conflicts:
+            import pdb; pdb.set_trace()
+            fix_result, usage, prompt = _fix_rule5_violations(
+                self.llm_client, domain, user_profile, revised_profile, rule5_result
+            )
+            if fix_result:
+                all_fixes["rule5_time_conflicts"] = fix_result
+                revised_profile = _apply_profile_revision(revised_profile, fix_result)
+                aggregate_usage.update(usage)
+                _write_json(
+                    self.output_dir / f"{slug}_rule5_time_conflicts_fix.json",
+                    fix_result
+                )
+                _write_json(
+                    self.output_dir / f"{slug}_rule5_time_conflicts_fixed_result.json",
+                    revised_profile
+                )
+                _write_json(
+                    self.output_dir / f"{slug}_rule5_time_conflicts_autodetected_issues.json",
+                    rule5_result
+                )
+                _write_json(
+                    self.output_dir / f"{slug}_rule5_time_conflicts_prompt.json",
+                    prompt
+                )
+
+        # Save all auto-detected issues (cascade detection results)
         autodetected_path = self.output_dir / f"{slug}_dynamic_profile_autodetected_issues.json"
         _write_json(autodetected_path, autodetected_payload)
-        review_revise_prompt = in_domain_data_review_revise_prompt.render(
-            domain_name=domain.domain_name,
-            domain_scope_definition=domain.domain_scope_definition,
-            user_profile=user_profile,
-            auto_detected_rule2_issues=json.dumps(
-                rule2_issues, indent=2, ensure_ascii=False
-            ),
-            auto_detected_rule3_issues=json.dumps(
-                rule3_issues, indent=2, ensure_ascii=False
-            ),
-            schema_excerpt=DYNAMIC_PROFILE_TEMPLATE_EXCERPT,
-            dynamic_profile_json=json.dumps(
-                dynamic_profile, indent=2, ensure_ascii=False
-            ),
-        )
-        ## record the prompt
-        prompt_path = self.output_dir / f"{slug}_dynamic_profile_review_revise_prompt.txt"
-        with open(prompt_path, "w", encoding="utf-8") as f:
-            f.write(review_revise_prompt)
-        review_revise_result = self.llm_client.generate_json(review_revise_prompt)
-        revised_profile = _apply_profile_revision(dynamic_profile, review_revise_result.data)
-        usage = {"dynamic_profile_review": review_revise_result.usage}
-    
-        # save result
-        
-        slug = _slugify(domain.domain_name)
-        reviewed_path = self.output_dir / f"{slug}_dynamic_profile_checked_result.json"
-        _write_json(reviewed_path, review_revise_result.data)
+
+        # Save all fixes summary
+        all_fixes_path = self.output_dir / f"{slug}_dynamic_profile_all_fixes.json"
+        _write_json(all_fixes_path, all_fixes)
+
         revised_path = self.output_dir / f"{slug}_dynamic_profile_revised_result.json"
         _write_json(revised_path, revised_profile)
-        
-        return review_revise_result.data, revised_profile, usage
+
+        return all_fixes, revised_profile, aggregate_usage
 
     # # Backward-compatible alias
     # def _review_revise_dynamic_profile_for_domain(
@@ -7296,7 +8604,7 @@ def debug_dynamic_profile_generation() -> None:
     # model_name="gemini-2.5-flash-lite"
     client = GeminiJSONClient(api_key=api_key, model_name=model_name)
     base_dir = Path(__file__).resolve().parent
-    output_dir = base_dir / "generated_outputs_debug_v9" / _slugify(model_name)
+    output_dir = base_dir / "generated_outputs_debug_v10" / _slugify(model_name)
     domains_path = base_dir / "domains.json"
     # domains_path = base_dir / "domains_test.json"
     domains = load_domains_from_file(domains_path)
@@ -7385,7 +8693,7 @@ def debug_resolve_conflicts_from_file() -> None:
 def debug_review_revise_dynamic_profile_from_file() -> None:
     base_dir = Path(__file__).resolve().parent
     model_name = "gemini-3-flash-preview"
-    output_dir = base_dir / "generated_outputs_debug_v5" / _slugify(model_name)
+    output_dir = base_dir / "generated_outputs_debug_v10" / _slugify(model_name)
     client = GeminiJSONClient(model_name=model_name)
 
 
@@ -7394,10 +8702,14 @@ def debug_review_revise_dynamic_profile_from_file() -> None:
         output_dir=output_dir
     )
     # domain_name = "Health & Self-care"
-    domain_name = "Leisure & Media Consumption"
+    # domain_name = "Leisure & Media Consumption"
     # domain_scope_definition="Encompasses users' physical and mental well-being, including health conditions, lifestyle habits, and self-care practices such as exercise, diet, sleep, and healthcare-seeking behavior. It describes how users manage and optimize their health over time."
-    domain_scope_definition="Captures users' recreational activities and content preferences, including entertainment, hobbies, travel, and consumption of digital media such as videos, music, games, and books. It reflects how users spend discretionary time and pursue enjoyment."
+    # domain_scope_definition="Captures users' recreational activities and content preferences, including entertainment, hobbies, travel, and consumption of digital media such as videos, music, games, and books. It reflects how users spend discretionary time and pursue enjoyment."
+    # domain_name = "Health & Self-care"
+    # domain_scope_definition="Encompasses users' physical and mental well-being, including health conditions, lifestyle habits, and self-care practices such as exercise, diet, sleep, and healthcare-seeking behavior. It describes how users manage and optimize their health over time."
 
+    domain_name = "Family & Close Relationships"
+    domain_scope_definition = "Describes users' family structure and intimate relationships, such as partnerships, parenting roles, and household responsibilities. It captures close interpersonal bonds that shape daily routines, obligations, and life decisions."
 
     domain = Domain(domain_name=domain_name, domain_scope_definition=domain_scope_definition)
     slug = _slugify(domain.domain_name)
@@ -7578,8 +8890,9 @@ def debug_generate_real_data() -> None:
 
 if __name__ == "__main__":
     # example_usage()
-    # debug_dynamic_profile_generation()
-    debug_resolve_conflicts_from_file()
+    debug_dynamic_profile_generation()
+    # debug_resolve_conflicts_from_file()
+    # debug_review_revise_dynamic_profile_from_file()
     # debug_review_revise_dynamic_profile_from_file()
     # debug_resolve_conflicts_from_file()
 
