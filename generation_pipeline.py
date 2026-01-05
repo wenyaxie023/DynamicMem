@@ -2895,9 +2895,6 @@ Iteration: {{ iteration_index }}
 **Dynamic Profiles (to be patched):**
 {{ dynamic_profiles_json }}
 
-**Conflict Graph (for context):**
-{{ graph_snapshot_json }}
-
 =================================================================================
 RESOLUTION RULES
 =================================================================================
@@ -2916,63 +2913,106 @@ OUTPUT FORMAT
 Return JSON with this EXACT structure:
 
 {
-  "conflicts_and_resolutions": [
-    {
-      "conflict": {
-        "focus_habit": {
-          "domain": "<focus habit domain>",
-          "habit_name": "<focus habit name>",
-          "timing": {
-            "start_time": "<start time>",
-            "end_time": "<end time>"
-          },
-          "frequency": "<frequency>"
-        },
-        "against_habits": [
-          {
-            "domain": "<domain>",
-            "habit_name": "<habit name>",
-            "timing": {
-              "start_time": "<start time>",
-              "end_time": "<end time>"
-            },
-            "overlap_examples": [
-              {
-                "date": "<date>",
-                "overlap": "<overlap time range>"
-              }
-            ]
-          }
-        ]
-      },
-      "resolution": {
-        "strategy": "adjust_timing | adjust_frequency | drop_habit | other",
-        "fix_description": "<string describing what you changed and why>",
-        "cascade_note": "<string explaining downstream effects; 'No downstream changes needed' if none>",
-        "patches": [
-          {
-            "path": "<string: dot path to target location, e.g., 'initial_state.habits.morning_meditation.timing.start_time'>",
+    "strategy": "adjust_timing | adjust_frequency | drop_habit | other",
+    "fix_description": "<string describing what you changed and why>",
+    "cascade_note": "<string explaining downstream effects; 'No downstream changes needed' if none>",
+    "patches": [
+        {
+            "domain": "<string: domain name from focus_habit>",
+            "path": "<string: dot path to target location>",
             "action": "<string: replace | append | remove | add_key>",
-            "key": "<string: required for add_key action only>",
-            "value": <any: new value for replace/append/add_key>,
-            "reason": "<string: why this specific patch is needed>"
-          }
-        ]
-      }
-    }
-  ]
+            "key": "<string: for add_key only>",
+            "value": <any: new value>,
+            "reason": "<string: explanation of this specific change and its impact>"
+        }
+    ]
 }
 
-**Patch Actions:**
-- "replace": Replace existing value at path
-- "append": Add to array at path
-- "remove": Delete key/value at path
-- "add_key": Add new key to object (requires "key" and "value" fields)
+=================================================================================
+PATCH EXAMPLES
+=================================================================================
 
-**Important Notes:**
-- patches array must include ALL cascading changes in chronological order (initial_state first, then w1, w2, etc.)
-- Always include "cascade_note" explaining downstream effects
-- If no conflicts or no resolution possible, return {"conflicts_and_resolutions": []}
+**Example 1: Adjust timing in initial_state**
+{
+  "domain": "Health & Wellness",
+  "path": "initial_state.habits_state.morning_meditation.timing.start_time",
+  "action": "replace",
+  "value": "06:30",
+  "reason": "Shifting morning meditation 30 minutes earlier to avoid conflict with breakfast routine"
+}
+
+**Example 2: Adjust timing in a time window's habits_delta operation**
+First, find the operation index in the Dynamic Profiles, then:
+{
+  "domain": "Work & Education",
+  "path": "time_windows[window_id=w2].habits_delta.operations[0].delta.timing.start_time",
+  "action": "replace",
+  "value": "09:00",
+  "reason": "Adjusting study session start time in the delta operation to resolve overlap"
+}
+
+**Example 3: Drop a habit by removing its acquisition operation**
+{
+  "domain": "Leisure & Entertainment",
+  "path": "time_windows[window_id=w3].habits_delta.operations[1]",
+  "action": "remove",
+  "reason": "Removing the acquisition of 'evening_gaming' habit that creates unresolvable conflicts"
+}
+
+**Example 4: Update window summary after changes**
+{
+  "domain": "Family & Relationships",
+  "path": "time_windows[window_id=w2].summary",
+  "action": "replace",
+  "value": "Adjusted bedtime story routine to earlier time slot to accommodate work schedule changes.",
+  "reason": "Updating summary to reflect the timing adjustment made to resolve conflicts"
+}
+
+**Example 5: Update operation reason field**
+{
+  "domain": "Health & Wellness",
+  "path": "time_windows[window_id=w1].habits_delta.operations[2].reason",
+  "action": "replace",
+  "value": "Adjusted timing to avoid overlap with work meetings",
+  "reason": "Clarifying why this operation was modified from its original plan"
+}
+
+=================================================================================
+PATH CONSTRUCTION RULES
+=================================================================================
+
+1. **For habits in initial_state:**
+   - Format: `initial_state.habits_state.<habit_name>.<field>`
+   - Example: `initial_state.habits_state.daily_exercise.timing.start_time`
+
+2. **For operations in time windows:**
+   - **CRITICAL**: You MUST first inspect the Dynamic Profiles JSON to find the operation's array index
+   - Format: `time_windows[window_id=<id>].habits_delta.operations[<index>].<field>`
+   - Example: `time_windows[window_id=w2].habits_delta.operations[0].delta.timing`
+   - To remove entire operation: `time_windows[window_id=w2].habits_delta.operations[0]`
+
+3. **For window-level fields:**
+   - Summary: `time_windows[window_id=<id>].summary`
+   - Window description: `time_windows[window_id=<id>].window_description`
+
+4. **Patch Actions:**
+   - `replace`: Replace value at path (most common)
+   - `remove`: Delete the key/value or array element at path
+   - `append`: Add to an array (rarely needed for conflict resolution)
+   - `add_key`: Add new key to object (rarely needed)
+
+=================================================================================
+IMPORTANT NOTES
+=================================================================================
+
+1. **CRITICAL**: Every patch MUST include "domain" field matching focus_habit's domain
+2. **CRITICAL**: Always inspect Dynamic Profiles to find correct array indices for operations
+3. **Reason field**: Explain the specific impact of THIS patch (not general resolution strategy)
+4. **Cascade changes**: If modifying initial_state or early windows, update later window operations that reference the same habit
+5. **Summary updates**: When you modify operations, also update the window's summary field to reflect changes
+6. **Operation reason updates**: If you change an operation's behavior, update its "reason" field too
+7. **Order matters**: List patches in chronological order (initial_state first, then w1, w2, etc.)
+8. If no conflicts or resolution impossible, return {"conflicts_and_resolutions": []}
 """)
 def render_conflict_resolution_prompt(request: ConflictResolutionRequest) -> str:
     user_basic_profile_json = json.dumps(
@@ -3024,56 +3064,91 @@ def render_time_conflict_resolution_prompt(
     conflict_times = conflict_hints.get("conflict_times") or []
 
     # Build structured conflict object according to the new format
-    # Group conflict_times by against_habit to create overlap_examples
+    # Extract against_habits from conflicts_for_focus
+    # Each conflict has habit_a and habit_b; we need to find the "other" habit (not the focus)
+    focus_key = (focus_habit_data.get("domain"), focus_habit_data.get("habit"))
     against_habits_map = {}
+
     for conflict_item in conflicts_for_focus:
-        habit_key = f"{conflict_item.get('domain', '')}:{conflict_item.get('habit_name', '')}"
+        # conflict_item structure: {habit_a: {...}, habit_b: {...}, overlap_examples: [...], ...}
+        ha = conflict_item.get("habit_a") or {}
+        hb = conflict_item.get("habit_b") or {}
+        key_a = (ha.get("domain"), ha.get("habit"))
+        key_b = (hb.get("domain"), hb.get("habit"))
+
+        # Determine which is the "other" habit (not focus)
+        other = hb if key_a == focus_key else ha
+        habit_key = f"{other.get('domain', '')}:{other.get('habit', '')}"
+
         if habit_key not in against_habits_map:
             against_habits_map[habit_key] = {
-                "domain": conflict_item.get("domain", ""),
-                "habit_name": conflict_item.get("habit_name", ""),
-                "timing": conflict_item.get("timing", {}),
+                "domain": other.get("domain", ""),
+                "habit_name": other.get("habit", ""),
+                "timing": other.get("timing", {}),
                 "overlap_examples": []
             }
 
-    # Add overlap examples from conflict_times
-    for time_entry in conflict_times:
-        # time_entry structure: {"date": "...", "against_habit": "...", "overlap": "..."}
-        against_habit_info = time_entry.get("against_habit", "")
-        if isinstance(against_habit_info, dict):
-            habit_key = f"{against_habit_info.get('domain', '')}:{against_habit_info.get('habit_name', '')}"
-        else:
-            # Fallback if against_habit is just a string
-            habit_key = str(against_habit_info)
+        # Add overlap examples from this conflict entry
+        overlap_examples = conflict_item.get("overlap_examples", [])
+        if isinstance(overlap_examples, list):
+            for example in overlap_examples:
+                if isinstance(example, dict):
+                    against_habits_map[habit_key]["overlap_examples"].append({
+                        "date": example.get("date", ""),
+                        "overlap": example.get("overlap_time", "") or example.get("overlap", "")
+                    })
 
-        if habit_key in against_habits_map:
-            against_habits_map[habit_key]["overlap_examples"].append({
-                "date": time_entry.get("date", ""),
-                "overlap": time_entry.get("overlap", "")
-            })
+    # Also add from conflict_times if available
+    for time_entry in conflict_times:
+        # time_entry structure from _collect_conflict_times_for_focus:
+        # {"window_id": ..., "against": {"domain": ..., "habit": ..., "timing": ...}, "overlap_examples": [...]}
+        against_info = time_entry.get("against", {})
+        habit_key = f"{against_info.get('domain', '')}:{against_info.get('habit', '')}"
+
+        if habit_key not in against_habits_map:
+            against_habits_map[habit_key] = {
+                "domain": against_info.get("domain", ""),
+                "habit_name": against_info.get("habit", ""),
+                "timing": against_info.get("timing", {}),
+                "overlap_examples": []
+            }
+
+        # Add overlap examples from conflict_times
+        overlap_examples = time_entry.get("overlap_examples", [])
+        sample_dates = time_entry.get("sample_dates", [])
+
+        if isinstance(overlap_examples, list):
+            for example in overlap_examples:
+                if isinstance(example, dict):
+                    against_habits_map[habit_key]["overlap_examples"].append({
+                        "date": example.get("date", ""),
+                        "overlap": example.get("overlap_time", "") or example.get("overlap", "")
+                    })
+        elif isinstance(sample_dates, list) and len(sample_dates) > 0:
+            # Fallback: use sample_dates if overlap_examples not available
+            for date in sample_dates[:5]:  # Limit to first 5 examples
+                against_habits_map[habit_key]["overlap_examples"].append({
+                    "date": str(date),
+                    "overlap": "timing conflict"  # Generic message if specific overlap not available
+                })
 
     # Construct the conflict JSON structure
     conflict_structured = {
         "focus_habit": {
             "domain": focus_habit_data.get("domain", ""),
-            "habit_name": focus_habit_data.get("habit_name", ""),
+            "habit_name": focus_habit_data.get("habit") or focus_habit_data.get("habit_name", ""),
             "timing": focus_habit_data.get("timing", {}),
-            "frequency": focus_habit_data.get("frequency", "")
+            "frequency": focus_habit_data.get("frequency", "") or focus_habit_data.get("schedule", {}).get("frequency_type", "")
         },
         "against_habits": list(against_habits_map.values())
     }
 
     conflict_json = json.dumps(conflict_structured, indent=2, ensure_ascii=False)
 
-    graph_snapshot_json = json.dumps(
-        conflict_hints.get("graph_by_window") or {}, indent=2, ensure_ascii=False
-    )
-
     return TIME_CONFLICT_RESOLUTION_PROMPT.render(
         user_basic_profile_json=user_basic_profile_json,
         dynamic_profiles_json=dynamic_profiles_json,
         conflict_json=conflict_json,
-        graph_snapshot_json=graph_snapshot_json,
         target_window_id=request.target_window_id,
         iteration_index=iteration_index,
     )
