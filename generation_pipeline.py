@@ -2847,41 +2847,132 @@ Here are the temporal conflicts detected by code that you must resolve:
 # }
 
 TIME_CONFLICT_RESOLUTION_PROMPT = Template("""
-You are a focused temporal conflict resolver. Fix scheduling overlaps across domains.
+You are a focused temporal conflict resolver. Each iteration you must resolve conflicts for ONE habit: the one with the highest conflict degree.
+
+=================================================================================
+TASK DESCRIPTION
+=================================================================================
+
+Your task is to fix timing conflicts by adjusting the focus habit's schedule, timing, or frequency. You must:
+1. Analyze all timing overlaps between the focus habit and conflicting habits
+2. Choose an appropriate resolution strategy (adjust_timing, adjust_frequency, drop_habit, or other)
+3. Generate patches to modify the focus habit (NOT the conflicting habits)
+4. Document cascade effects - if you modify a habit in initial_state or an earlier window, you MUST update all later windows that reference it
+
+**CRITICAL:** When you modify a habit's timing/schedule in initial_state or any time window, you must check if later windows reference that habit (via adjust/drop operations). If they do, you may need to update those operations to reflect the new timing.
+
+=================================================================================
+AVAILABLE RESOLUTION OPERATIONS
+=================================================================================
+
+1. **adjust_timing**: Shift start_time/end_time to avoid overlaps
+   - Example: Move "morning meditation" from 7:00-7:30 to 6:30-7:00
+
+2. **adjust_frequency**: Reduce frequency to eliminate conflicts
+   - Example: Change from "daily" to "weekly on Mon/Wed/Fri"
+   - Requires updating schedule.frequency_type and related fields (days_of_week, etc.)
+
+3. **drop_habit**: Remove the habit entirely if conflicts cannot be resolved
+   - This should be a last resort
+   - Requires setting the habit to JSON null in the appropriate delta
+
+4. **other**: Combination of above or creative solutions
+   - Example: Split habit into smaller time slots
+
+=================================================================================
+INPUT DATA
+=================================================================================
 
 Focus window: {{ target_window_id or "all_windows" }}
 Iteration: {{ iteration_index }}
 
-Dynamic profiles (initial + deltas):
+**Conflict Information:**
+{{ conflict_json }}
+
+**User Basic Profile:**
+{{ user_basic_profile_json }}
+
+**Dynamic Profiles (to be patched):**
 {{ dynamic_profiles_json }}
 
-Top conflict habits (must fix these this iteration; adjust timing/frequency or drop lowest-priority if needed):
-{{ focus_habits_json }}
+**Conflict Graph (for context):**
+{{ graph_snapshot_json }}
 
-Relevant conflict edges (only overlapping pairs that involve the focus habits):
-{{ focus_conflicts_json }}
+=================================================================================
+RESOLUTION RULES
+=================================================================================
 
-Rules:
-- Resolve ALL conflicts touching the focus habits.
-- Prefer minimal time shifts; if impossible, reduce frequency or drop the lower-priority habit.
-- Keep data types/schemas intact.
-- Scope fixes to the focus window when possible; add cascade updates only if required.
+1. **Single Focus**: Only modify the focus habit. Do NOT edit conflicting habits.
+2. **Complete Resolution**: Clear ALL overlaps listed in overlap_examples.
+3. **Minimal Changes**: Prefer the smallest adjustment that resolves all conflicts.
+4. **Schema Integrity**: Keep data types/schemas intact.
+5. **Window Scope**: When possible, limit changes to the relevant window.
+6. **Cascade Awareness**: If you modify initial_state or an earlier window, check if later windows need updates.
 
-Output JSON only:
+=================================================================================
+OUTPUT FORMAT
+=================================================================================
+
+Return JSON with this EXACT structure:
+
 {
   "conflicts_and_resolutions": [
     {
-      "conflict": { "description": "...", "window_id": "...", "habit_a": "...", "habit_b": "..." },
+      "conflict": {
+        "focus_habit": {
+          "domain": "<focus habit domain>",
+          "habit_name": "<focus habit name>",
+          "timing": {
+            "start_time": "<start time>",
+            "end_time": "<end time>"
+          },
+          "frequency": "<frequency>"
+        },
+        "against_habits": [
+          {
+            "domain": "<domain>",
+            "habit_name": "<habit name>",
+            "timing": {
+              "start_time": "<start time>",
+              "end_time": "<end time>"
+            },
+            "overlap_examples": [
+              {
+                "date": "<date>",
+                "overlap": "<overlap time range>"
+              }
+            ]
+          }
+        ]
+      },
       "resolution": {
         "strategy": "adjust_timing | adjust_frequency | drop_habit | other",
+        "fix_description": "<string describing what you changed and why>",
+        "cascade_note": "<string explaining downstream effects; 'No downstream changes needed' if none>",
         "patches": [
-          {"path": "<dot path>", "action": "replace|append|remove|add_key", "value": <new_value_optional>, "reason": "..."}
+          {
+            "path": "<string: dot path to target location, e.g., 'initial_state.habits.morning_meditation.timing.start_time'>",
+            "action": "<string: replace | append | remove | add_key>",
+            "key": "<string: required for add_key action only>",
+            "value": <any: new value for replace/append/add_key>,
+            "reason": "<string: why this specific patch is needed>"
+          }
         ]
       }
     }
   ]
 }
-Use the same patch semantics as the main conflict resolver. If no conflicts, return {"conflicts_and_resolutions": []}.
+
+**Patch Actions:**
+- "replace": Replace existing value at path
+- "append": Add to array at path
+- "remove": Delete key/value at path
+- "add_key": Add new key to object (requires "key" and "value" fields)
+
+**Important Notes:**
+- patches array must include ALL cascading changes in chronological order (initial_state first, then w1, w2, etc.)
+- Always include "cascade_note" explaining downstream effects
+- If no conflicts or no resolution possible, return {"conflicts_and_resolutions": []}
 """)
 def render_conflict_resolution_prompt(request: ConflictResolutionRequest) -> str:
     user_basic_profile_json = json.dumps(
@@ -2916,22 +3007,73 @@ def generate_conflict_resolution(
     return llm_client.generate_json(prompt)
 
 
-def render_time_conflict_resolution_prompt(request: ConflictResolutionRequest, *, iteration_index: int, focus_habits: List[Dict[str, object]]) -> str:
+def render_time_conflict_resolution_prompt(
+    request: ConflictResolutionRequest, *, iteration_index: int
+) -> str:
     user_basic_profile_json = json.dumps(
         request.user_basic_profile or {}, indent=2, ensure_ascii=False
     )
     dynamic_profiles_json = json.dumps(
         request.dynamic_profiles, indent=2, ensure_ascii=False
     )
-    focus_conflicts_json = json.dumps(
-        request.detected_temporal_conflicts or {}, indent=2, ensure_ascii=False
+
+    # Extract conflict information from request
+    conflict_hints = request.detected_temporal_conflicts or {}
+    focus_habit_data = conflict_hints.get("focus_habit") or {}
+    conflicts_for_focus = conflict_hints.get("conflicts_for_focus") or []
+    conflict_times = conflict_hints.get("conflict_times") or []
+
+    # Build structured conflict object according to the new format
+    # Group conflict_times by against_habit to create overlap_examples
+    against_habits_map = {}
+    for conflict_item in conflicts_for_focus:
+        habit_key = f"{conflict_item.get('domain', '')}:{conflict_item.get('habit_name', '')}"
+        if habit_key not in against_habits_map:
+            against_habits_map[habit_key] = {
+                "domain": conflict_item.get("domain", ""),
+                "habit_name": conflict_item.get("habit_name", ""),
+                "timing": conflict_item.get("timing", {}),
+                "overlap_examples": []
+            }
+
+    # Add overlap examples from conflict_times
+    for time_entry in conflict_times:
+        # time_entry structure: {"date": "...", "against_habit": "...", "overlap": "..."}
+        against_habit_info = time_entry.get("against_habit", "")
+        if isinstance(against_habit_info, dict):
+            habit_key = f"{against_habit_info.get('domain', '')}:{against_habit_info.get('habit_name', '')}"
+        else:
+            # Fallback if against_habit is just a string
+            habit_key = str(against_habit_info)
+
+        if habit_key in against_habits_map:
+            against_habits_map[habit_key]["overlap_examples"].append({
+                "date": time_entry.get("date", ""),
+                "overlap": time_entry.get("overlap", "")
+            })
+
+    # Construct the conflict JSON structure
+    conflict_structured = {
+        "focus_habit": {
+            "domain": focus_habit_data.get("domain", ""),
+            "habit_name": focus_habit_data.get("habit_name", ""),
+            "timing": focus_habit_data.get("timing", {}),
+            "frequency": focus_habit_data.get("frequency", "")
+        },
+        "against_habits": list(against_habits_map.values())
+    }
+
+    conflict_json = json.dumps(conflict_structured, indent=2, ensure_ascii=False)
+
+    graph_snapshot_json = json.dumps(
+        conflict_hints.get("graph_by_window") or {}, indent=2, ensure_ascii=False
     )
-    focus_habits_json = json.dumps(focus_habits, indent=2, ensure_ascii=False)
+
     return TIME_CONFLICT_RESOLUTION_PROMPT.render(
         user_basic_profile_json=user_basic_profile_json,
         dynamic_profiles_json=dynamic_profiles_json,
-        focus_conflicts_json=focus_conflicts_json,
-        focus_habits_json=focus_habits_json,
+        conflict_json=conflict_json,
+        graph_snapshot_json=graph_snapshot_json,
         target_window_id=request.target_window_id,
         iteration_index=iteration_index,
     )
@@ -2942,11 +3084,8 @@ def generate_time_conflict_resolution(
     request: ConflictResolutionRequest,
     *,
     iteration_index: int,
-    focus_habits: List[Dict[str, object]],
 ) -> LLMResult:
-    prompt = render_time_conflict_resolution_prompt(
-        request, iteration_index=iteration_index, focus_habits=focus_habits
-    )
+    prompt = render_time_conflict_resolution_prompt(request, iteration_index=iteration_index)
     return llm_client.generate_json(prompt)
 
 
@@ -5568,18 +5707,35 @@ def _apply_conflict_resolution_to_profiles(
         """
         Split a dotted path like "habits_delta.operations[0].new_state.timing"
         into ["habits_delta", "operations", 0, "new_state", "timing"].
+        Supports selectors: [window_id=w3] or [habit_name=foo] → {"_selector_key": "...", "_selector_value": "..."}.
         """
         if not isinstance(path, str):
             return []
+
+        def _make_selector(raw: str) -> Dict[str, str] | str | int:
+            raw = raw.strip()
+            if raw.isdigit():
+                return int(raw)
+            if "=" in raw:
+                key, value = raw.split("=", 1)
+                return {"_selector_key": key.strip(), "_selector_value": value.strip()}
+            return raw
+
         tokens: List[object] = []
         for segment in path.split("."):
-            for match in re.finditer(r"([^\[\]]+)|\[(\d+)\]", segment):
-                key, idx = match.groups()
-                if key:
-                    tokens.append(key)
-                elif idx:
-                    tokens.append(int(idx))
+            if not segment:
+                continue
+            for match in re.finditer(r"([^\[\]]+)|\[(.*?)\]", segment):
+                plain, bracket = match.groups()
+                if plain:
+                    tokens.append(plain)
+                elif bracket:
+                    selector = _make_selector(bracket)
+                    tokens.append(selector)
         return tokens
+
+    def _is_selector_token(token: object) -> bool:
+        return isinstance(token, dict) and "_selector_key" in token and "_selector_value" in token
 
     def _normalize_window_id(window_id: str | None) -> str:
         """
@@ -5644,14 +5800,30 @@ def _apply_conflict_resolution_to_profiles(
                 tokens = [tokens[0]] + tokens[2:]
 
         # Drop leading explicit container references like time_windows[2] or initial_state.*
-        if len(tokens) >= 2 and tokens[0] == "time_windows" and isinstance(tokens[1], int):
+        if len(tokens) >= 2 and tokens[0] == "time_windows" and (
+            isinstance(tokens[1], int) or _is_selector_token(tokens[1])
+        ):
             tokens = tokens[2:]
-        if tokens and isinstance(tokens[0], str) and tokens[0].lower() in {
-            "initial_state",
-            "time_windows",
-        }:
-            tokens = tokens[1:]
+        if tokens:
+            first = tokens[0]
+            if isinstance(first, str) and first.lower() in {"initial_state", "time_windows"}:
+                tokens = tokens[1:]
 
+        return tokens
+
+    def _strip_context_prefix(tokens: List[object]) -> List[object]:
+        """
+        Remove leading context markers (e.g., 'Dynamic profiles') that aren't part of the domain path.
+        """
+        prefixes = {
+            "dynamic profiles",
+            "dynamic profile",
+            "dynamic_profiles",
+            "dynamic_profile",
+            "dynamicprofiles",
+        }
+        while tokens and isinstance(tokens[0], str) and tokens[0].strip().lower() in prefixes:
+            tokens = tokens[1:]
         return tokens
 
     def _apply_path_update(
@@ -5670,7 +5842,30 @@ def _apply_conflict_resolution_to_profiles(
         for idx, token in enumerate(tokens[:-1]):
             next_token = tokens[idx + 1] if idx + 1 < len(tokens) else None
 
-            if isinstance(token, str):
+            if _is_selector_token(token):
+                key = token["_selector_key"]  # type: ignore
+                val = token["_selector_value"]  # type: ignore
+                if not isinstance(parent, list):
+                    return
+                match_idx = None
+                for i, item in enumerate(parent):
+                    if isinstance(item, dict) and str(item.get(key)) == str(val):
+                        match_idx = i
+                        break
+                if match_idx is None:
+                    if is_delete:
+                        return
+                    new_item: Dict[str, object] = {key: val}
+                    if isinstance(next_token, int):
+                        new_item[key] = []
+                    parent.append(new_item)
+                    match_idx = len(parent) - 1
+                if not isinstance(parent[match_idx], (dict, list)):
+                    if is_delete:
+                        return
+                    parent[match_idx] = {} if isinstance(next_token, (str, dict)) else []  # type: ignore
+                parent = parent[match_idx]  # type: ignore
+            elif isinstance(token, str):
                 if not isinstance(parent, dict):
                     if is_delete:
                         return
@@ -5685,12 +5880,14 @@ def _apply_conflict_resolution_to_profiles(
                     return
                 while len(parent) <= token:  # type: ignore
                     parent.append({} if isinstance(next_token, str) else None)  # type: ignore
-                if not isinstance(parent[token], (dict, list)) and isinstance(next_token, (str, int)):
+                if not isinstance(parent[token], (dict, list)) and isinstance(next_token, (str, int, dict)):
                     if not is_delete:
-                        parent[token] = {} if isinstance(next_token, str) else []  # type: ignore
+                        parent[token] = {} if isinstance(next_token, (str, dict)) else []  # type: ignore
                 parent = parent[token]  # type: ignore
 
         last = tokens[-1]
+        if _is_selector_token(last):
+            return  # selectors should not be terminal
         if isinstance(last, str):
             if not isinstance(parent, dict):
                 return
@@ -5747,10 +5944,10 @@ def _apply_conflict_resolution_to_profiles(
             if not isinstance(patch, dict):
                 continue
             domain_name = patch.get("domain") or patch.get("domain_name")
-            profile = resolved_profiles.get(domain_name)
+            profile = resolved_profiles.get(domain_name) if domain_name else None
+            tokens = _strip_context_prefix(_parse_path_tokens(patch.get("path")))
             if profile is None:
                 # Attempt to infer domain from the path prefix (e.g., "Work & Education.initial_state...")
-                tokens = _parse_path_tokens(patch.get("path"))
                 if tokens and isinstance(tokens[0], str):
                     token_domain = tokens[0]
                     # exact match first
@@ -5769,9 +5966,11 @@ def _apply_conflict_resolution_to_profiles(
                 if profile is None:
                     continue
             else:
-                tokens = _parse_path_tokens(patch.get("path"))
                 if len(tokens) < 1:
                     continue
+
+            if tokens and isinstance(tokens[0], str) and domain_name and tokens[0].lower() == str(domain_name).lower():
+                tokens = tokens[1:]
 
             op = str(patch.get("operation") or patch.get("action") or "update").lower()
             value = None
@@ -5794,6 +5993,9 @@ def _apply_conflict_resolution_to_profiles(
                         if re.fullmatch(r"w\d+", token_lower):
                             window_id = token
                             break
+                    elif _is_selector_token(token) and str(token.get("_selector_key", "")).lower() == "window_id":
+                        window_id = token.get("_selector_value")
+                        break
 
             normalized_window_id = _normalize_window_id(window_id)
             root = _get_window_root(profile, normalized_window_id)
@@ -7104,7 +7306,7 @@ class GenerationPipeline:
         per_iteration_payloads: Dict[str, object] = {}
         per_iteration_usage: Dict[str, Dict] = {}
 
-        def _select_focus_habits(conflicts_obj: Dict[str, object]) -> List[Dict[str, object]]:
+        def _select_focus_habit(conflicts_obj: Dict[str, object]) -> Optional[Dict[str, object]]:
             graph = conflicts_obj.get("graph_by_window") or {}
             nodes: List[Dict[str, object]] = []
             for window_id, data in graph.items():
@@ -7112,45 +7314,113 @@ class GenerationPipeline:
                     node = dict(node)
                     node["window_id"] = window_id
                     nodes.append(node)
-            nodes = sorted(nodes, key=lambda x: (-int(x.get("degree", 0)), x.get("window_id", ""), x.get("domain", ""), x.get("habit", "")))
-            return nodes[:5]
+            nodes = sorted(
+                nodes,
+                key=lambda x: (
+                    -int(x.get("degree", 0)),
+                    x.get("window_id", ""),
+                    x.get("domain", ""),
+                    x.get("habit", ""),
+                ),
+            )
+            return nodes[0] if nodes else None
 
-        def _subset_conflicts(conflicts_list: List[Dict[str, object]], focus: List[Dict[str, object]]) -> List[Dict[str, object]]:
-            focus_set = {(f.get("domain"), f.get("habit")) for f in focus}
+        def _subset_conflicts(conflicts_list: List[Dict[str, object]], focus: Dict[str, object] | None) -> List[Dict[str, object]]:
+            if not focus:
+                return []
+            focus_key = (focus.get("domain"), focus.get("habit"))
             subset = []
             for c in conflicts_list:
                 ha = c.get("habit_a") or {}
                 hb = c.get("habit_b") or {}
                 key_a = (ha.get("domain"), ha.get("habit"))
                 key_b = (hb.get("domain"), hb.get("habit"))
-                if key_a in focus_set or key_b in focus_set:
+                if key_a == focus_key or key_b == focus_key:
                     subset.append(c)
             return subset
 
+        def _enrich_focus_habit(focus: Dict[str, object] | None, conflicts_for_focus: List[Dict[str, object]]) -> Dict[str, object]:
+            if not focus:
+                return {}
+            enriched = dict(focus)
+            focus_key = (enriched.get("domain"), enriched.get("habit"))
+            for entry in conflicts_for_focus:
+                for habit_key in ("habit_a", "habit_b"):
+                    habit_info = entry.get(habit_key) or {}
+                    if (habit_info.get("domain"), habit_info.get("habit")) != focus_key:
+                        continue
+                    for field in ("priority", "timing", "window_id"):
+                        if habit_info.get(field) and not enriched.get(field):
+                            enriched[field] = habit_info[field]
+            return enriched
+
+        def _collect_conflict_times_for_focus(focus: Dict[str, object], conflicts_for_focus: List[Dict[str, object]]) -> List[Dict[str, object]]:
+            conflict_times: List[Dict[str, object]] = []
+            seen = set()
+            focus_key = (focus.get("domain"), focus.get("habit"))
+            for entry in conflicts_for_focus:
+                ha = entry.get("habit_a") or {}
+                hb = entry.get("habit_b") or {}
+                key_a = (ha.get("domain"), ha.get("habit"))
+                key_b = (hb.get("domain"), hb.get("habit"))
+                other = hb if key_a == focus_key else ha
+                summary = {
+                    "window_id": entry.get("window_id"),
+                    "window_range": entry.get("window_range"),
+                    "against": {
+                        "domain": other.get("domain"),
+                        "habit": other.get("habit"),
+                        "priority": other.get("priority"),
+                        "timing": other.get("timing"),
+                        "window_id": other.get("window_id"),
+                    },
+                    "occurrences": entry.get("occurrences"),
+                    "sample_dates": entry.get("sample_dates"),
+                    "overlap_examples": entry.get("overlap_examples"),
+                }
+                key = (
+                    summary["window_id"],
+                    summary["against"]["domain"],
+                    summary["against"]["habit"],
+                )
+                if key not in seen:
+                    seen.add(key)
+                    conflict_times.append(summary)
+            return conflict_times
+
         for iteration in range(3):
-            focus_habits = _select_focus_habits(temporal_conflicts if isinstance(temporal_conflicts, dict) else {})
-            focus_conflicts = _subset_conflicts(temporal_conflict_entries, focus_habits)
+            focus_habit = _select_focus_habit(temporal_conflicts if isinstance(temporal_conflicts, dict) else {})
+            if not focus_habit:
+                break
+            focus_conflicts = _subset_conflicts(temporal_conflict_entries, focus_habit)
+            focus_habit = _enrich_focus_habit(focus_habit, focus_conflicts)
             conflict_hints = {
-                "conflicts": focus_conflicts,
+                "focus_habit": focus_habit,
+                "conflicts_for_focus": focus_conflicts,
+                "conflict_times": _collect_conflict_times_for_focus(focus_habit, focus_conflicts),
                 "graph_by_window": (temporal_conflicts.get("graph_by_window") if isinstance(temporal_conflicts, dict) else {}),
             }
 
             import pdb; pdb.set_trace()
-
+            # resolution_result_path = self.output_dir / f"cross_domain_conflict_resolution_temporal_claude.json"
+            # resolution_result_path = self.output_dir / f"cross_domain_conflict_resolution_temporal_gpt.json"
+            # resolution_result = LLMResult(data={}, prompt="", usage={}, raw_text="")
+            # with open(resolution_result_path, "r") as f:
+            #     resolution_result.data = json.load(f)
             resolution_result = generate_time_conflict_resolution(
                 self.llm_client,
                 ConflictResolutionRequest(
                     user_basic_profile=user_basic_profile,
                     dynamic_profiles=resolved_profiles,
                     detected_temporal_conflicts=conflict_hints,
-                    target_window_id=None,
+                    target_window_id=focus_habit.get("window_id"),
                 ),
                 iteration_index=iteration + 1,
-                focus_habits=focus_habits,
             )
 
             
             payload = resolution_result.data
+            # import pdb; pdb.set_trace()
             per_iteration_payloads[f"iteration_{iteration + 1}"] = payload
             per_iteration_usage[f"iteration_{iteration + 1}"] = resolution_result.usage or {}
 
@@ -7167,6 +7437,7 @@ class GenerationPipeline:
                 resolved_profiles,
                 payload,
             )
+            
 
             detected_by_llm = payload.get("conflicts_and_resolutions") if isinstance(payload, dict) else None
             if isinstance(detected_by_llm, list):
@@ -7182,9 +7453,10 @@ class GenerationPipeline:
 
             ## save a final conflict resolved dynamic profile
             _write_json(
-                self.output_dir / "dynamic_profiles_conflict_resolved.json",
+                self.output_dir / f"dynamic_profiles_conflict_resolved_iter{iteration + 1}.json",
                 resolved_profiles,
             )
+            import pdb; pdb.set_trace()
 
         # # Final comprehensive pass using full conflict resolver
         # final_resolution = generate_conflict_resolution(
@@ -7324,16 +7596,22 @@ class GenerationPipeline:
         ]
 
         conflicts_summary = []
+        need_cross_domain_conflict_resolution = True
         # import pdb; pdb.set_trace()
         cached_resolved_profiles: Dict[str, Dict] | None = None
         new_dynamic_profile_generated = False
         if conflict_resolved_path.exists():
             cached_resolved_profiles = json.loads(conflict_resolved_path.read_text())
+            need_cross_domain_conflict_resolution = False
             # conflict_cache_used = True
         # import pdb; pdb.set_trace()
         usage = {"dynamic_profile": {}}
         # domains = 
         # import pdb; pdb.set_trace()
+        domain_level_fixed_dynamic_profiles_path = self.output_dir / "dynamic_profiles_domain_level_fixes_applied.json"
+        if domain_level_fixed_dynamic_profiles_path.exists():
+            cached_resolved_profiles = json.loads(domain_level_fixed_dynamic_profiles_path.read_text())
+            need_cross_domain_conflict_resolution = True
         for domain in domains:
             import pdb; pdb.set_trace()
             cached_profile = None
@@ -7386,12 +7664,13 @@ class GenerationPipeline:
         # import pdb; pdb.set_trace()
         # new_dynamic_profile_generated = True
         
-        if new_dynamic_profile_generated:
+        # if new_dynamic_profile_generated:
+        if need_cross_domain_conflict_resolution:
             # Persist the freshly generated, per-domain dynamic profiles before conflict resolution.
             
             ## [debug1, skip persisting raw dynamic profiles]
-            domain_level_fixed_dynamic_profiles_path = self.output_dir / "dynamic_profiles_domain_level_fixes_applied.json"
-            _write_json(domain_level_fixed_dynamic_profiles_path, dynamic_profiles)
+            # domain_level_fixed_dynamic_profiles_path = self.output_dir / "dynamic_profiles_domain_level_fixes_applied.json"
+            # _write_json(domain_level_fixed_dynamic_profiles_path, dynamic_profiles)
             ## [debug1 end]
 
             (
@@ -9153,7 +9432,23 @@ def debug_generate_real_data() -> None:
     print(json.dumps(real_data_windows, indent=2, ensure_ascii=False))
     print(json.dumps(aggregate_usage, indent=2, ensure_ascii=False))
 
+def debug_cross_domain_conflict_resolution_temporal() -> None:
+    ## use /export/scratch_large/wenya/mem_bench/behavior_and_conversation/generated_outputs_debug_v11/gemini_3_flash_preview/cross_domain_conflict_resolution_temporal_claude.json
+    ## apply resolution to dynamic profiles
+    ## save the resolved dynamic profiles to /export/scratch_large/wenya/mem_bench/behavior_and_conversation/generated_outputs_debug_v11/gemini_3_flash_preview/cross_domain_conflict_resolution_temporal_iter1.json
+    base_dir = Path(__file__).resolve().parent
+    model_name = "gemini-3-flash-preview"
+    output_dir = base_dir / "generated_outputs_debug_v11" / _slugify(model_name)
+    with open(output_dir / "cross_domain_conflict_resolution_temporal_claude.json", "r") as f:
+        data = json.load(f)
+    dynamic_profiles_path = output_dir / "dynamic_profiles_domain_level_fixes_applied.json"
+    with open(dynamic_profiles_path, "r") as f:
+        dynamic_profiles = json.load(f)
+    resolved_profiles = _apply_conflict_resolution_to_profiles(dynamic_profiles, data)
+    _write_json(output_dir / "dynamic_profiles_conflict_resolved_claude.json", resolved_profiles)
+
 if __name__ == "__main__":
+    # debug_cross_domain_conflict_resolution_temporal()
     # example_usage()
     debug_dynamic_profile_generation()
     # debug_resolve_conflicts_from_file()
