@@ -15,9 +15,8 @@ Given the world background, the basic user profile, and ONE life domain, time wi
 
 **Simulation approach**: We use an **initial state + incremental deltas** model:
 - Define the baseline state at time 0 (initial_state)
-- For each subsequent time window, specify only what CHANGED (deltas)
-- Changes are represented as structured operations (add, remove, modify, acquire, drop, adjust, shift, refine)
-- This allows efficient tracking of profile evolution over time
+- For each subsequent time window, specify only what CHANGED (deltas), using valid operations to represent the change.
+
 
 ### Input Provided:
 
@@ -50,25 +49,40 @@ Before proceeding, you must understand these core concepts:
   #### Type 1: Singular Attributes
   - **Semantics**: Dimensions that have exactly ONE value at any given time, but the value can change over time.
   - **Structure**: Simple key-value pairs where each key is an attribute name and the value is a concrete description string.
-  - **Operations**: Only **modify** (replace the current value with a new value)
   
   Examples of singular attributes:
-  ```json
   "singular": {
     "primary_health_insurance": "Blue Cross Blue Shield PPO plan through employer (Family coverage, $300/month copay)",
     "primary_banking_institution": "Chase Bank checking account ending in 4521 (main account for direct deposit and bills)",
     "commute_mode": "Driving personal car to office (25-minute commute each way on weekdays)",
   }
-  ```
+  
+  - **Delta Format**: Use modify operation to represent the change.
+  For singular attributes, only the **modify** operation is valid, because it is a single value and cannot be added or removed.
+  - Details of the **modify** operation:
+    - **modify**:
+      Meaning: Replace the current value with a new value.
+      **CRITICAL**: You can ONLY modify attributes that already exist in previous state.
+      **DELTA FORMAT**: Provide the new value as a string.
+      
+      Example:
+        Current state: {
+          "primary_residence": "Rented studio apartment in downtown area"
+        }
+        Delta: {
+          "op": "modify",
+          "attribute_type": "singular",
+          "attribute_name": "primary_residence",
+          "delta": "Recently purchased two-bedroom apartment in suburban area",
+          "reason": "Bought first home after saving for down payment"
+        }
   
   #### Type 2: Collection Attributes
   - **Semantics**: Dimensions that can have MULTIPLE items simultaneously, where items can be added or removed independently.
   - **Structure**: Key-value pairs where each key is a collection name and the value is an **array of concrete description strings**.
-  - **Operations**: **add** (append new items to the array), **remove** (remove specific items from the array)
   - **Important**: Each description string should be sufficiently specific to be uniquely identifiable (include brand, model, key details).
   
   Examples of collection attributes:
-  ```json
   "collections": {
     "cooking_equipment": [
       "KitchenAid Artisan stand mixer (5-quart capacity for baking)",
@@ -86,8 +100,71 @@ Before proceeding, you must understand these core concepts:
       "Certified ScrumMaster CSM (obtained January 2024 from Scrum Alliance)"
     ]
   }
-  ```
-  
+
+  - **Delta Format**: Use add and remove operations to represent the change.
+    For collection attributes, the **add** and **remove** operations are allowed, because it is a multi-item collection and can be added or removed. Modify is not allowed, it can be represented as a combination of **add** and **remove**.
+    - Details of the **add** and **remove** operations:
+      - **add**:
+        Meaning: Add new items to a collection array. This covers:
+          (1) The collection already exists: append new items to the existing array
+          (2) The collection doesn't exist: create the collection with initial items
+
+        **DELTA FORMAT**: Provide an array of new description strings to add
+        
+        Example (add to existing collection):
+          Current state: {
+            "fitness_gear": [
+              "Nike Air Zoom Pegasus 39 running shoes (neutral support for road running)",
+              "Garmin Forerunner 245 GPS watch (tracks runs and heart rate)"
+            ]
+          }
+          Delta: {
+            "op": "add",
+            "attribute_type": "collections",
+            "collection_name": "fitness_gear",
+            "delta": [
+              "Aftershokz OpenRun bone conduction headphones (for safe outdoor running with music)",
+              "Nathan SpeedDraw Plus insulated water bottle (handheld 18oz for long runs)"
+            ],
+            "reason": "Purchased accessories to improve comfort and safety during longer training runs"
+          }
+
+        Example (create new collection):
+          Current state: (no 'meal_prep_containers' exists)
+          Delta: {
+            "op": "add",
+            "attribute_type": "collections",
+            "collection_name": "meal_prep_containers",
+            "delta": [
+              "Prep Naturals 5-pack glass containers with lids (3-compartment, 36oz each for weekly meal prep)"
+            ],
+            "reason": "Started meal prepping on Sundays to save time and eat healthier during work week"
+          }
+
+      - **remove**:
+        Meaning: Remove specific items from a collection array.
+        **DELTA FORMAT**: Provide an array of description strings to remove (must match exactly).
+        
+        Example:
+          Current state: {
+            "photography_lenses": [
+              "Canon EF-S 18-55mm f/3.5-5.6 IS STM (kit lens, general purpose)",
+              "Canon EF 50mm f/1.8 STM (nifty fifty prime for portraits)",
+              "Sigma 10-20mm f/3.5 EX DC HSM (ultra-wide angle for landscapes)"
+            ]
+          }
+          Delta: {
+            "op": "remove",
+            "attribute_type": "collections",
+            "collection_name": "photography_lenses",
+            "delta": [
+              "Canon EF-S 18-55mm f/3.5-5.6 IS STM (kit lens, general purpose)"
+            ],
+            "reason": "Sold kit lens after upgrading to better general-purpose zoom lens"
+          }
+        
+        **Important**: The description strings in the delta must match the exact strings in the current state.
+
   **How to decide which type:**
   - Ask: "Can the user have multiple of these simultaneously?"
     - YES: Collection (e.g., devices, friends, hobbies, subscriptions, skills)
@@ -107,154 +184,93 @@ Before proceeding, you must understand these core concepts:
   
   - For collection items, each description must be specific enough to be uniquely identifiable.
     This typically means including: brand/name, model/type, and key distinguishing details.
-  
-  **Allowed operations:**
 
-  ##### For Singular Attributes:
-  
-  - **modify**:
-    Meaning: Replace the current value with a new value.
-    **CRITICAL**: You can ONLY modify attributes that already exist in previous state.
-    **DELTA FORMAT**: Provide the new value as a string.
-    
-    Example:
-      Current state: {
-        "primary_residence": "Rented studio apartment in downtown area"
-      }
-      Delta: {
-        "op": "modify",
-        "attribute_type": "singular",
-        "attribute_name": "primary_residence",
-        "delta": "Recently purchased two-bedroom apartment in suburban area",
-        "reason": "Bought first home after saving for down payment"
-      }
-
-  ##### For Collection Attributes:
-
-  - **add**:
-    Meaning: Add new items to a collection array. This covers:
-      (1) The collection already exists: append new items to the existing array
-      (2) The collection doesn't exist: create the collection with initial items
-
-    **DELTA FORMAT**: Provide an array of new description strings to add
-    
-    Example (add to existing collection):
-      Current state: {
-        "fitness_gear": [
-          "Nike Air Zoom Pegasus 39 running shoes (neutral support for road running)",
-          "Garmin Forerunner 245 GPS watch (tracks runs and heart rate)"
-        ]
-      }
-      Delta: {
-        "op": "add",
-        "attribute_type": "collections",
-        "collection_name": "fitness_gear",
-        "delta": [
-          "Aftershokz OpenRun bone conduction headphones (for safe outdoor running with music)",
-          "Nathan SpeedDraw Plus insulated water bottle (handheld 18oz for long runs)"
-        ],
-        "reason": "Purchased accessories to improve comfort and safety during longer training runs"
-      }
-
-    Example (create new collection):
-      Current state: (no 'meal_prep_containers' exists)
-      Delta: {
-        "op": "add",
-        "attribute_type": "collections",
-        "collection_name": "meal_prep_containers",
-        "delta": [
-          "Prep Naturals 5-pack glass containers with lids (3-compartment, 36oz each for weekly meal prep)"
-        ],
-        "reason": "Started meal prepping on Sundays to save time and eat healthier during work week"
-      }
-
-  - **remove**:
-    Meaning: Remove specific items from a collection array.
-    **DELTA FORMAT**: Provide an array of description strings to remove (must match exactly).
-    
-    Example:
-      Current state: {
-        "photography_lenses": [
-          "Canon EF-S 18-55mm f/3.5-5.6 IS STM (kit lens, general purpose)",
-          "Canon EF 50mm f/1.8 STM (nifty fifty prime for portraits)",
-          "Sigma 10-20mm f/3.5 EX DC HSM (ultra-wide angle for landscapes)"
-        ]
-      }
-      Delta: {
-        "op": "remove",
-        "attribute_type": "collections",
-        "collection_name": "photography_lenses",
-        "delta": [
-          "Canon EF-S 18-55mm f/3.5-5.6 IS STM (kit lens, general purpose)"
-        ],
-        "reason": "Sold kit lens after upgrading to better general-purpose zoom lens"
-      }
-    
-    **Important**: The description strings in the delta must match the exact strings in the current state.
 
 - **Habits**:
   Definition: Recurring behavioral patterns (e.g., morning jogging routine, weekly meal prep), which can be identified and consolidated from repeated observations.
-  Each habit MUST be represented as a structured JSON object capturing action, schedule, timing, and context.
+  Each habit MUST be represented as a structured JSON object capturing schedule, timing, location, and priority.
 
   **Required fields:**
   
-  - **habit_name**: A unique identifier for this specific habit instance.
-    - Used as the key in the habits dictionary
-    - Should be descriptive enough to distinguish this habit from others
-    - Examples: "morning_outdoor_run", "weekend_cycling", "tuesday_yoga_class"
-    - Remains stable throughout the habit's lifecycle (used to reference in adjust/drop operations)
+  - **habit_name**: A unique identifier for this specific habit instance (used as dictionary key).
+    - **Purpose**: Identifies the essential nature/identity of THIS particular habit
+    - **Naming convention**: Use underscore_case, describe WHAT the habit is (not WHEN)
+    - **Examples**:
+      - "outdoor_run"
+      - "gym_strength_training"
+      - "dog_walk"
+    - **Anti-examples (DO NOT use time/frequency words in habit_name)**:
+      - "morning_jog" → "outdoor_jog" ✓
+      - "weekly_meal_prep" → "meal_prep" ✓
+      - "daily_meditation" → "meditation" ✓
   
-  - **action**: The type of activity being performed (use spaces, not underscores).
-    - Describes what action is being done
-    - Examples: "jogging", "cycling", "yoga", "dog walking", "meal prep"
-    - Multiple habits can share the same action if they differ in other attributes
-    - For example: "morning_outdoor_run" and "evening_outdoor_run" can both have action="jogging"
+  - **schedule**: When this habit occurs.
+    **Format**: JSON object with "frequency_type" key plus additional required fields based on type.
+    **Structure**: {"frequency_type": <type>, <additional_required_fields>}
+
+    **Type 1: Daily**
+    Format: {"frequency_type": "daily"}
+    Example: {"frequency_type": "daily"}
+
+    **Type 2: Weekly**
+    Format: {"frequency_type": "weekly", "days_of_week": [<day_indices>]}
+    Required fields:
+      - frequency_type: "weekly"
+      - days_of_week: Array of integers from 0-6, where 0=Mon, 1=Tue, 2=Wed, 3=Thu, 4=Fri, 5=Sat, 6=Sun
+    MUST specify exact days. NO vague "3 times per week".
+    Can be one or multiple days.
+    Examples:
+      - {"frequency_type": "weekly", "days_of_week": [1, 3, 5]} // Tue/Thu/Sat
+      - {"frequency_type": "weekly", "days_of_week": [5, 6]} // Weekends only
+      - {"frequency_type": "weekly", "days_of_week": [0, 1, 2, 3, 4]} // Weekdays only
+
+    **Type 3: Biweekly**
+    Format: {"frequency_type": "biweekly", "days_of_week": [<day_index>], "start_date": "YYYY-MM-DD"}
+    Required fields:
+      - frequency_type: "biweekly"
+      - days_of_week: Array with single integer 0-6 (same encoding as weekly)
+      - start_date: The first occurrence date in YYYY-MM-DD format
+    Repeats every 2 weeks from the start_date.
+    Example: {"frequency_type": "biweekly", "days_of_week": [3], "start_date": "2024-03-07"} // Every other Thursday starting March 7, 2024
+
+    **Type 4: Monthly by date**
+    Format: {"frequency_type": "monthly_by_date", "days_of_month": [<day_numbers>]}
+    Required fields:
+      - frequency_type: "monthly_by_date"
+      - days_of_month: Array of integers from 1-28 (avoid 29-31 to prevent skipping months)
+    MUST specify exact dates. NO vague "once a month".
+    Can be one or multiple dates.
+    Examples:
+      - {"frequency_type": "monthly_by_date", "days_of_month": [1]} // 1st of every month
+      - {"frequency_type": "monthly_by_date", "days_of_month": [1, 15]} // 1st and 15th of every month
+
+    **Type 5: Monthly by nth weekday**
+    Format: {"frequency_type": "monthly_nth_weekday", "week_of_month": <1-4 or "last">, "day_of_week": <0-6>}
+    Required fields:
+      - frequency_type: "monthly_nth_weekday"
+      - week_of_month: Integer 1-4 or string "last" (1=first week, 2=second week, "last"=last week)
+      - day_of_week: Integer 0-6 (0=Mon, 1=Tue, ..., 6=Sun)
+    Examples:
+      - {"frequency_type": "monthly_nth_weekday", "week_of_month": 1, "day_of_week": 0} // First Monday of every month
+      - {"frequency_type": "monthly_nth_weekday", "week_of_month": "last", "day_of_week": 4} // Last Friday of every month
+      - {"frequency_type": "monthly_nth_weekday", "week_of_month": 3, "day_of_week": 5} // Third Saturday of every month
+
+  - **timing**: Time window when the habit occurs.
+    **Format**: JSON object with exactly two keys: "start_time" and "end_time"
+    **Structure**: {"start_time": "HH:MM", "end_time": "HH:MM"}
+    **Requirements**:
+      - Both times must use 24-hour format (HH:MM)
+      - end_time must be after start_time
+      - Duration (end_time - start_time) MUST NOT exceed 3 hours
+    **Examples**:
+      - {"start_time": "06:30", "end_time": "07:00"} // 30-minute morning activity
+      - {"start_time": "14:00", "end_time": "16:00"} // 2 hour afternoon activity (acceptable, under 3 hours)
   
-  - **schedule**: When this habit occurs. MUST use one of these standardized formats:
-    
-    Daily: 
-    {"frequency_type": "daily"}
-    
-    Weekly: 
-    {"frequency_type": "weekly", "days_of_week": [<list of day indices>]}
-    // days_of_week: Array of integers from 0-6, where 0=Mon, 1=Tue, 2=Wed, 3=Thu, 4=Fri, 5=Sat, 6=Sun
-    // MUST specify exact days. NO vague "3 times per week".
-    // Can be one or multiple days (e.g., [1,3,5] for Tue/Thu/Sat, [5,6] for weekends, [0,1,2,3,4] for weekdays)
-    
-    Biweekly: 
-    {"frequency_type": "biweekly", "days_of_week": [<day index>], "start_date": "YYYY-MM-DD"}
-    // days_of_week: Array with single integer 0-6 (same encoding as weekly)
-    // start_date: The first occurrence date in YYYY-MM-DD format, then repeats every 2 weeks from this date
-    // Example: {"frequency_type": "biweekly", "days_of_week": [3], "start_date": "2024-03-07"} means every other Thursday starting from March 7, 2024
-    
-    Monthly by date: 
-    {"frequency_type": "monthly_by_date", "days_of_month": [<list of day numbers>]}
-    // days_of_month: Array of integers from 1-28 (avoid 29-31 to prevent skipping months)
-    // MUST specify exact dates. NO vague "once a month".
-    // Can be one or multiple dates (e.g., [1] for 1st of month, [1,15] for 1st and 15th)
-    
-    Monthly by nth weekday: 
-    {"frequency_type": "monthly_nth_weekday", "week_of_month": <1-4 or "last">, "day_of_week": <0-6>}
-    // week_of_month: Integer 1-4 or string "last" (e.g., 1=first week, 2=second week, "last"=last week)
-    // day_of_week: Integer 0-6 (0=Mon, 1=Tue, ..., 6=Sun - includes weekends)
-    // Examples: 
-    //   - First Monday: {"week_of_month": 1, "day_of_week": 0}
-    //   - Last Friday: {"week_of_month": "last", "day_of_week": 4}
-    //   - Third Saturday: {"week_of_month": 3, "day_of_week": 5}
-  
-  - **timing**: Time window (object).
-    Example: {"start_time": "06:30", "end_time": "07:00"}
-    - 24-hour format (HH:MM)
-    - end_time must be after start_time
-    - **Duration (end - start) MUST NOT exceed 3 hours**
-  
-  - **context**: Where it happens (string, 5-15 words).
-    Examples: "around residential neighborhood", "at 24 Hour Fitness gym on Main St"
+  - **location**: Where it happens (string, 3-10 words). Pure location only.
+    Examples: "neighborhood park", "24 Hour Fitness on Main St", "home office"
   
   - **priority**: Importance for scheduling (ENUM).
     MUST be one of: "critical" | "high" | "medium" | "low"
-  
-  - **description**: Natural language summary (string, 10-30 words).
 
   **CRITICAL constraints:**
   
@@ -265,32 +281,24 @@ Before proceeding, you must understand these core concepts:
       - Bad: "childcare duties" from 07:00 to 19:00 (exceeds 3 hours and also not a discrete activity)
       - Bad: "studying" from 08:00 to 18:00 (exceeds 3 hours)
   4. **Fixed timing**: All timings are fixed (no flexibility parameter)
-  5. **Action uses spaces**: Use "dog walking" not "dog_walking", "strength training" not "strength_training"
+  5. **No time/frequency words in habit_name**: Use schedule field for timing info
 
   **Complete examples:**
-  ```json
-  "morning_dog_walk": {
-    "action": "dog walking",
+  "dog_walk": {
     "schedule": {"frequency_type": "daily"},
     "timing": {"start_time": "06:30", "end_time": "07:00"},
-    "context": "around residential neighborhood park",
-    "priority": "high",
-    "description": "Daily morning walk with the dog around the neighborhood, about 30 minutes before work."
+    "location": "neighborhood park",
+    "priority": "high"
   }
-  ```
-
-  ```json
-  "monthly_budget_review": {
-    "action": "budget review",
+  "budget_review": {
     "schedule": {"frequency_type": "monthly_by_date", "days_of_month": [1]},
     "timing": {"start_time": "19:00", "end_time": "20:00"},
-    "context": "at home using personal finance software",
-    "priority": "medium",
-    "description": "Monthly financial review on the first day of each month to track expenses and update budget."
+    "location": "home",
+    "priority": "medium"
   }
-  ```
 
   **Allowed operations:**
+  User can acquire a new habit, drop an existing habit, or adjust an existing habit.
   
   - **acquire**: Start a new habit. Delta = complete habit object.
   
@@ -298,49 +306,40 @@ Before proceeding, you must understand these core concepts:
   
   - **adjust**: Modify an existing habit without changing its core identity.
     - **Definition**: Use adjust when the habit remains fundamentally the same activity but details change.
-    - Changes that qualify for adjust: schedule, timing, context (same type of location)
+    - Changes that qualify for adjust: schedule, timing, location, priority
     - **CRITICAL**: You can ONLY adjust habits that already exist in previous state.
-    - **CRITICAL**: Must change at least one substantial field (schedule, timing or context). Cannot only change description.
+    - **CRITICAL**: Must change at least one field (schedule, timing, location).
     - Delta = only the changed fields (partial object).
     
     Example (change schedule):
-    ```json
     {
       "op": "adjust",
-      "habit_name": "morning_jog",
+      "habit_name": "outdoor_jog",
       "delta": {
-        "schedule": {"frequency_type": "daily"},
-        "description": "Increased to daily for better fitness"
+        "schedule": {"frequency_type": "daily"}
       },
-      "reason": "Building up cardiovascular endurance"
+      "reason": "Building up cardiovascular endurance, increased from 3x/week to daily"
     }
-    ```
     
     Example (change timing):
-    ```json
     {
       "op": "adjust",
-      "habit_name": "evening_reading",
+      "habit_name": "reading",
       "delta": {
-        "timing": {"start_time": "21:00", "end_time": "22:00"},
-        "description": "Moved reading time one hour later to accommodate new schedule"
+        "timing": {"start_time": "21:00", "end_time": "22:00"}
       },
-      "reason": "Work schedule changed, need to shift evening routine"
+      "reason": "Work schedule changed, shifted reading time one hour later"
     }
-    ```
-    
-    Example (change context within same type):
-    ```json
+
+    Example (change location):
     {
       "op": "adjust",
       "habit_name": "outdoor_run",
       "delta": {
-        "context": "on new trail near state park instead of neighborhood",
-        "description": "Running on more challenging trail for variety"
+        "location": "state park trail"
       },
       "reason": "Discovered better running route with more scenery"
     }
-    ```
 
 - **Preferences**:
   Definition: Subjective inclinations that guide choices (e.g., preferring window seats, favoring spicy food).
@@ -377,8 +376,6 @@ Before proceeding, you must understand these core concepts:
     - "Chose solo morning runs over gym class invitations twice this month"
     - "Purchased running shoes and outdoor gear rather than gym membership"
     - "Declined three group fitness class invitations from coworkers"
-    - "Allocated 90% of new investments to index funds this quarter"
-    - "Started two new coding projects using hands-on approach without tutorials"
     
     **Bad signals (too vague or cross-window):**
     - "Has not made individual stock trades in over a year" (cross-window)
@@ -604,9 +601,9 @@ Now that you understand the core concepts and constraints, here's how to generat
 1. **First, write the window_description**: Identify the salient external factors (from world background: seasons, events, circumstances) and the user's internal motivations/focus during this period. This is the **latent causal variable** that will drive coordinated changes across attributes, habits, and preferences.
 
 2. **Then, generate the trajectory deltas**: Based on the window_description, determine how attributes, habits, and preferences evolve together in directionally coherent ways:
-   - user_attributes_delta: what gets added, removed, or modified (delta format)
+   - user_attributes_delta: what singular attributes get modified, collections get added, or collections get removed (delta format)
    - habits_delta: what habits are acquired, adjusted, or dropped (delta format)
-   - preferences_delta: what preferences shift, amplify, or attenuate (delta format)
+   - preferences_delta: what preferences shift or refine (delta format)
    
 3. **Finally, write the summary**: Synthesize all changes and explicitly connect them back to the window_description's driving factors (format: "Due to [context], the user [changed X, Y, Z]...")
 
@@ -719,32 +716,26 @@ Return strictly valid JSON with this schema (**Dict format, NOT List format**):
       }
     },
     "habits_state": {
-      "initial": {
-        "<habit_name>": {
-          "action": "<action label>",
-          "schedule": {
-            "frequency_type": "daily | weekly | biweekly | monthly_by_date | monthly_nth_weekday",
-            "...": "other required schedule fields"
-          },
-          "timing": {
-            "start_time": "HH:MM",
-            "end_time": "HH:MM"
-          },
-          "context": "<5–15 words>",
-          "priority": "critical | high | medium | low",
-          "description": "<10–30 words>"
-        }
+      "<habit_name>": {
+        "schedule": {
+          "frequency_type": "daily | weekly | biweekly | monthly_by_date | monthly_nth_weekday",
+          "...": "other required schedule fields"
+        },
+        "timing": {
+          "start_time": "HH:MM",
+          "end_time": "HH:MM"
+        },
+        "location": "<3–10 words>",
+        "priority": "critical | high | medium | low"
       }
     },
     "preferences_state": {
-      "initial": {
-        "<preference_name>": {
-          "statement": "<10–30 word concrete preference statement>",
-          "signals": [
-            "<observable signal 1 (within window)>",
-            "<observable signal 2 (within window)>"
-          ]
-        }
+      "<preference_name>": {
+        "statement": "<10–30 word concrete preference statement>",
+        "signals": [
+          "<observable signal 1 (within window)>",
+          "<observable signal 2 (within window)>"
+        ]
       }
     },
     "summary": "<2–4 sentence summary of initial state>"
@@ -757,39 +748,21 @@ Return strictly valid JSON with this schema (**Dict format, NOT List format**):
       "user_attributes_delta": {
         "operations": [
           {
-            "op": "modify",
-            "attribute_type": "singular",
-            "attribute_name": "<attribute name>",
-            "delta": "<new concrete value>",
-            "reason": "<short reason>"
+            "op": "<modify | add | remove>",
+            "attribute_type": "<singular | collections>",
+            "attribute_name": "<singular attribute name | collection name>",
+            "delta": "<new concrete value | new items to add | items to remove>",
+            "reason": "<short reason for the change>"
           },
-          {
-            "op": "add",
-            "attribute_type": "collections",
-            "collection_name": "<collection name>",
-            "delta": [
-              "<concrete description string>"
-            ],
-            "reason": "<short reason>"
-          },
-          {
-            "op": "remove",
-            "attribute_type": "collections",
-            "collection_name": "<collection name>",
-            "delta": [
-              "<exact string to remove>"
-            ],
-            "reason": "<short reason>"
-          }
+          ...
         ]
       },
       "habits_delta": {
         "operations": [
           {
-            "op": "acquire",
+            "op": "<acquire | adjust | drop>",
             "habit_name": "<habit name>",
             "delta": {
-              "action": "<action label>",
               "schedule": {
                 "frequency_type": "daily | weekly | biweekly | monthly_by_date | monthly_nth_weekday",
                 "...": "other required schedule fields"
@@ -798,30 +771,12 @@ Return strictly valid JSON with this schema (**Dict format, NOT List format**):
                 "start_time": "HH:MM",
                 "end_time": "HH:MM"
               },
-              "context": "<5–15 words>",
-              "priority": "critical | high | medium | low",
-              "description": "<10–30 words>"
+              "location": "<3–10 words>",
+              "priority": "critical | high | medium | low"
             },
             "reason": "<short reason>"
           },
-          {
-            "op": "adjust",
-            "habit_name": "<existing habit name>",
-            "delta": {
-              "schedule": { "...": "changed fields only" },
-              "timing": { "...": "changed fields only" },
-              "context": "<new context>",
-              "priority": "critical | high | medium | low",
-              "description": "<updated description>"
-            },
-            "reason": "<short reason>"
-          },
-          {
-            "op": "drop",
-            "habit_name": "<existing habit name>",
-            "delta": null,
-            "reason": "<short reason>"
-          }
+          ...
         ]
       },
       "preferences_delta": {
