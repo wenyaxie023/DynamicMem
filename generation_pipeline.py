@@ -40,7 +40,7 @@ from mem_bench.behavior_and_conversation.semantic_events_generator import (
 )
 
 DYNAMIC_PROFILE_TEMPLATE_EXCERPT = """
-Expected JSON shape:
+Expected JSON format:
 {
   "life_domain": "...",
   "initial_state": {
@@ -203,18 +203,6 @@ SCHEMA REFERENCE
 =================================================================================
 
 {{ schema_excerpt }}
-
-=================================================================================
-COMMON ERROR PATTERNS
-=================================================================================
-**Required fields:**
-- Every window: "window_description", "summary"
-- initial_state: "summary"
-- All habits: schedule (frequency_type in {daily, weekly, biweekly, monthly_by_date, monthly_nth_weekday} with required fields: weekly→days_of_week, biweekly→days_of_week + start_date, monthly_by_date→days_of_month, monthly_nth_weekday→week_of_month + day_of_week), timing (start_time + end_time), location, priority
-- Habit adjust deltas: updated "description" + at least one substantive change (schedule/timing/context/priority)
-- Dropped habits: delta must be JSON null
-- All preferences: "statement" and "signals" array (2-4 items)
-- All operations: "reason" field
 
 =================================================================================
 PATCH ACTION GUIDE
@@ -803,7 +791,6 @@ USER ATTRIBUTES ARE DIVIDED INTO TWO TYPES:
   
 - "adjust": Modify an existing habit (habit MUST exist in initial_state or prior windows)
   * delta contains ONLY the fields being changed (partial habit object)
-  * Must include updated "description" field
   
 - "drop": Remove a habit entirely
   * delta must be JSON null (not string "none" or empty object)
@@ -3910,22 +3897,31 @@ def _parse_structured_timing(timing: object) -> Tuple[Optional[int], Optional[in
 def _materialize_habit_snapshots_for_conflicts(domain: Dict[str, Any]) -> List[Dict[str, Any]]:
     initial = (domain.get("initial_state", {}) or {})
     base_habits = deepcopy(initial.get("habits_state") or {})
+
+    # Track where each habit is defined (for path construction in Rule 5)
+    habit_sources: Dict[str, str] = {}
+    for habit_name in base_habits.keys():
+        habit_sources[habit_name] = "initial_state.habits_state"
+
     snapshots = [
         {
             "window_id": "initial_state",
             "time_range": initial.get("time_range"),
             "habits": deepcopy(base_habits),
+            "habit_sources": deepcopy(habit_sources),
         }
     ]
     current = deepcopy(base_habits)
 
-    for window in domain.get("time_windows") or []:
+    for w_idx, window in enumerate(domain.get("time_windows") or []):
+        window_id = window.get("window_id") or f"w{w_idx}"
         for op in (window.get("habits_delta") or {}).get("operations") or []:
             name = op.get("habit_name") or "unnamed_habit"
             op_type = (op.get("op") or "").lower()
             delta = op.get("delta")
             if op_type == "acquire" and isinstance(delta, dict):
                 current[name] = deepcopy(delta)
+                habit_sources[name] = f"time_windows[{w_idx}].habits_delta.operations[?habit_name='{name}']"
             elif op_type == "adjust" and isinstance(delta, dict):
                 existing = current.get(name, {})
                 if not isinstance(existing, dict):
@@ -3933,13 +3929,18 @@ def _materialize_habit_snapshots_for_conflicts(domain: Dict[str, Any]) -> List[D
                 merged = deepcopy(existing)
                 merged.update(delta)
                 current[name] = merged
+                # For adjust, the habit was defined earlier, but we track the latest modification
+                if name not in habit_sources:
+                    habit_sources[name] = f"time_windows[{w_idx}].habits_delta.operations[?habit_name='{name}']"
             elif op_type == "drop":
                 current.pop(name, None)
+                habit_sources.pop(name, None)
         snapshots.append(
             {
-                "window_id": window.get("window_id") or "unknown_window",
+                "window_id": window_id,
                 "time_range": window.get("time_range"),
                 "habits": deepcopy(current),
+                "habit_sources": deepcopy(habit_sources),
             }
         )
     return snapshots
@@ -4646,11 +4647,11 @@ def _detect_rule1_required_field_issues(profile: Dict) -> List[Dict[str, str]]:
                         issues, f"{op_path}.delta", "delta missing for modify", window_id
                     )
             elif op_type in {"add", "remove"}:
-                if not op.get("collection_name"):
+                if not op.get("attribute_name"):
                     _append_issue(
                         issues,
-                        f"{op_path}.collection_name",
-                        "collection_name missing",
+                        f"{op_path}.attribute_name",
+                        "attribute_name missing",
                         window_id,
                     )
                 delta = op.get("delta")
@@ -4694,17 +4695,9 @@ def _detect_rule1_required_field_issues(profile: Dict) -> List[Dict[str, str]]:
                         window_id,
                     )
                 else:
-                    description_present = bool(delta.get("description"))
                     substantive_change = any(
                         key in delta for key in ("schedule", "timing", "location", "priority")
                     )
-                    if not description_present:
-                        _append_issue(
-                            issues,
-                            f"{op_path}.delta.description",
-                            "description missing for adjust",
-                            window_id,
-                        )
                     if not substantive_change:
                         _append_issue(
                             issues,
@@ -4882,8 +4875,8 @@ def _detect_rule4_short_term_issues(profile: Dict) -> List[Dict[str, str]]:
             _append_issue(
                 issues,
                 f"time_windows[{orig_w_idx}]",
-                f"[ID: {issue_id}] Short-term {change_type} '{change_name}' (keywords: {', '.join(keywords)}) lacks follow-up in later windows. "
-                f"Need rollback operation (drop/adjust/modify/remove) or explicit reasoning about permanence.",
+                f"[ID: {issue_id}] Short-term {change_type} '{change_name}' (keywords: {', '.join(keywords)}) maybe lacks follow-up in later windows. "
+                f"Maybe need rollback operation (drop/adjust/modify/remove) or explicit reasoning about permanence.",
                 window_id,
             )
             # Add ID to the issue dict
@@ -4933,7 +4926,7 @@ def _detect_rule3_first_add_issues(profile: Dict) -> List[Dict[str, str]]:
                         f"time_windows[{w_idx}].user_attributes_delta.operations[{op_idx}]",
                         f"Collection '{collection_name}' first appears via 'add' operation in {window_id}. "
                         f"If this is an essential collection for the user, it should be initialized in initial_state "
-                        f"with realistic baseline items (even if empty array is semantically appropriate).",
+                        f"with realistic baseline items.",
                         window_id,
                     )
                     # Mark as known to avoid duplicate reports
@@ -5017,6 +5010,7 @@ def _detect_rule5_time_conflict_issues(profile: Dict) -> Dict[str, object]:
     events: List[Dict[str, object]] = []
     for snapshot in _materialize_habit_snapshots_for_conflicts(profile or {}):
         window_id = snapshot.get("window_id") or "unknown_window"
+        habit_sources = snapshot.get("habit_sources") or {}
         start_date, end_date = _parse_window_date_range(snapshot.get("time_range"))
         if not start_date or not end_date:
             continue
@@ -5033,6 +5027,7 @@ def _detect_rule5_time_conflict_issues(profile: Dict) -> Dict[str, object]:
                 occurrences = list(_iter_dates(start_date, end_date))
 
             location = habit.get("location", "")
+            habit_source_path = habit_sources.get(habit_name, "")
 
             for dt in occurrences:
                 events.append({
@@ -5044,6 +5039,7 @@ def _detect_rule5_time_conflict_issues(profile: Dict) -> Dict[str, object]:
                     "end_min": end_min,
                     "location": location,
                     "date": dt,
+                    "habit_source_path": habit_source_path,
                 })
 
     # Group events by (window_id, date) and detect conflicts
@@ -5103,6 +5099,26 @@ def _detect_rule5_time_conflict_issues(profile: Dict) -> Dict[str, object]:
 
                     overlap_range = f"{_format_minutes(max(a['start_min'], b['start_min']))}-{_format_minutes(min(a['end_min'], b['end_min']))}"
 
+                    # Get the source paths for both habits
+                    path_a = str(a.get("habit_source_path") or "")
+                    path_b = str(b.get("habit_source_path") or "")
+
+                    # If source paths are not available, construct default paths
+                    if not path_a:
+                        if window_id == "initial_state":
+                            path_a = f"initial_state.habits_state.{habit_a}"
+                        else:
+                            path_a = f"{window_id}.habits.{habit_a}"
+
+                    if not path_b:
+                        if window_id == "initial_state":
+                            path_b = f"initial_state.habits_state.{habit_b}"
+                        else:
+                            path_b = f"{window_id}.habits.{habit_b}"
+
+                    # Use a combined path for the conflict
+                    path = f"{path_a} <-> {path_b}"
+
                     # Aggregate by pair key
                     entry = aggregated.setdefault(pair_key, {
                         "window_id": window_id,
@@ -5114,6 +5130,7 @@ def _detect_rule5_time_conflict_issues(profile: Dict) -> Dict[str, object]:
                         "habit_a_location": left.get("location", ""),
                         "habit_b_location": right.get("location", ""),
                         "conflict_type": conflict_type,
+                        "path": path,  # Add path field with actual source locations
                         "occurrences": 0,
                         "overlap_examples": [],
                     })
@@ -7660,6 +7677,8 @@ class GenerationPipeline:
             self.output_dir / "dynamic_profiles_key_aligned.json", dynamic_profiles
         )
 
+        import pdb; pdb.set_trace()
+
         attribute_conflicts = _collect_cross_domain_attribute_conflicts(
             dynamic_profiles
         )
@@ -7691,6 +7710,7 @@ class GenerationPipeline:
                 self.output_dir / "cross_domain_conflict_resolution_attribute.json",
                 attribute_resolution_payload,
             )
+            import pdb; pdb.set_trace()
             resolved_profiles = _apply_conflict_resolution_to_profiles(
                 resolved_profiles,
                 attribute_resolution_payload,
@@ -7915,6 +7935,7 @@ class GenerationPipeline:
             updated_counter = current_counter
 
             for _ in range(100):
+                
                 window_conflicts = detect_temporal_conflicts(updated_profiles)
                 window_conflict_entries = [
                     c for c in (window_conflicts.get("conflicts") or [])
@@ -7994,6 +8015,7 @@ class GenerationPipeline:
                     self.output_dir / f"dynamic_profiles_conflict_resolved_{target_window_label}_iter{updated_counter}.json",
                     updated_profiles,
                 )
+                import pdb; pdb.set_trace()
 
             return updated_profiles, updated_counter
 
@@ -8028,13 +8050,42 @@ class GenerationPipeline:
             },
         )
 
-        # ========== Final Rule Validation for Each Domain ==========
-        print("\n=== Final Rule Validation (Rules 1-5) for Each Domain ===")
+        usage = {
+            "conflict_resolution": {
+                "attribute": attribute_resolution_usage,
+                "temporal_iters": per_iteration_usage,
+            },
+        }
+        if alignment_usage:
+            usage.update(alignment_usage)
+        return resolved_profiles, usage, {"attribute": attribute_resolution_payload, "temporal_iters": per_iteration_payloads, "final": final_payload}, all_conflicts_summary
+
+    def _validate_final_rules(
+        self,
+        dynamic_profiles: Dict[str, Dict],
+        domains: Sequence[Domain],
+        *,
+        user_basic_profile: Dict | None = None,
+    ) -> tuple[Dict[str, Dict], Dict[str, Dict]]:
+        """
+        Final sanity check: validate Rules 1-2 for each domain after cross-domain conflict resolution.
+        This prevents cascade errors from introducing new rule violations.
+
+        Returns:
+            updated_profiles: Dynamic profiles with rule fixes applied
+            final_rule_usage: Usage metadata for rule fixes
+        """
+        print("\n=== Final Rule Validation (Rules 1-2) for Each Domain ===")
         final_rule_fixes: Dict[str, Dict] = {}
         final_rule_usage: Dict[str, Dict] = {}
 
         # Get user_profile text for rule fixes
         user_profile_text = json.dumps(user_basic_profile or {}, indent=2, ensure_ascii=False)
+
+        # Create domain lookup by name
+        domain_lookup = {domain.domain_name: domain for domain in domains}
+
+        resolved_profiles = deepcopy(dynamic_profiles)
 
         for domain_name, profile in resolved_profiles.items():
             print(f"\nValidating domain: {domain_name}")
@@ -8042,14 +8093,12 @@ class GenerationPipeline:
             domain_usage: Dict = {}
             current_profile = profile
 
-            # Create a minimal Domain object for rule fixing
-            from dataclasses import dataclass
-            @dataclass
-            class MinimalDomain:
-                domain_name: str
-                domain_scope_definition: str = ""
-
-            domain_obj = MinimalDomain(domain_name=domain_name)
+            # Get the actual Domain object
+            domain_obj = domain_lookup.get(domain_name)
+            if domain_obj is None:
+                # This should not happen if domains were properly loaded
+                print(f"  WARNING: Domain '{domain_name}' not found in domains list. Skipping validation.")
+                continue
 
             # Rule 1: Required fields
             rule1_issues = _detect_rule1_required_field_issues(current_profile)
@@ -8075,43 +8124,6 @@ class GenerationPipeline:
                     current_profile = _apply_profile_revision(current_profile, fix_result)
                     domain_usage.update(usage)
 
-            # Rule 3: Essential initialization
-            rule3_issues = _detect_rule3_first_add_issues(current_profile)
-            if rule3_issues:
-                print(f"  - Rule 3: Found {len(rule3_issues)} essential initialization issues")
-                fix_result, usage = _fix_rule3_violations(
-                    self.llm_client, domain_obj, user_profile_text, current_profile, rule3_issues
-                )
-                if fix_result:
-                    domain_fixes["rule3"] = fix_result
-                    current_profile = _apply_profile_revision(current_profile, fix_result)
-                    domain_usage.update(usage)
-
-            # Rule 4: Short-term followups
-            rule4_issues = _detect_rule4_short_term_issues(current_profile)
-            if rule4_issues:
-                print(f"  - Rule 4: Found {len(rule4_issues)} short-term followup issues")
-                fix_result, usage = _fix_rule4_violations(
-                    self.llm_client, domain_obj, user_profile_text, current_profile, rule4_issues
-                )
-                if fix_result:
-                    domain_fixes["rule4"] = fix_result
-                    current_profile = _apply_profile_revision(current_profile, fix_result)
-                    domain_usage.update(usage)
-
-            # Rule 5: Time conflicts
-            rule5_result = _detect_rule5_time_conflict_issues(current_profile)
-            rule5_conflicts = rule5_result.get("conflicts") if isinstance(rule5_result, dict) else []
-            if rule5_conflicts:
-                print(f"  - Rule 5: Found {len(rule5_conflicts)} time conflicts")
-                fix_result, usage, prompt = _fix_rule5_violations(
-                    self.llm_client, domain_obj, user_profile_text, current_profile, rule5_result
-                )
-                if fix_result:
-                    domain_fixes["rule5"] = fix_result
-                    current_profile = _apply_profile_revision(current_profile, fix_result)
-                    domain_usage.update(usage)
-
             # Update resolved_profiles with the final cleaned profile
             if domain_fixes:
                 resolved_profiles[domain_name] = current_profile
@@ -8131,16 +8143,7 @@ class GenerationPipeline:
             )
             print("\n✓ Final rule validation completed. All domains are now clean.")
 
-        usage = {
-            "conflict_resolution": {
-                "attribute": attribute_resolution_usage,
-                "temporal_iters": per_iteration_usage,
-            },
-            "final_rule_validation": final_rule_usage,
-        }
-        if alignment_usage:
-            usage.update(alignment_usage)
-        return resolved_profiles, usage, {"attribute": attribute_resolution_payload, "temporal_iters": per_iteration_payloads, "final": final_payload}, all_conflicts_summary
+        return resolved_profiles, final_rule_usage
 
     ## Need Refactor
     # def debug_resolve_conflicts_from_file(
@@ -8286,7 +8289,7 @@ class GenerationPipeline:
                 )
                 usage.update(review_usage)
                 dynamic_profile = revised_dynamic_profile
-                _write_json(self.output_dir / f"{slug}_reviewed_dynamic_profile.json", dynamic_profile)
+                # _write_json(self.output_dir / f"{slug}_domain_fixed_dynamic_profile.json", dynamic_profile)
                 # new_dynamic_profile_generated = True
 
             dynamic_profiles[domain.domain_name] = dynamic_profile
@@ -8318,7 +8321,16 @@ class GenerationPipeline:
             )
             if conflict_usage:
                 aggregate_usage["_conflict_resolution"] = conflict_usage
-        
+
+            # Final Rule Validation (sanity check after cross-domain conflict resolution)
+            # This prevents cascade errors from introducing new rule violations
+            import pdb; pdb.set_trace()
+            dynamic_profiles, final_rule_usage = self._validate_final_rules(
+                dynamic_profiles, domains, user_basic_profile=user_basic_profile
+            )
+            if final_rule_usage:
+                aggregate_usage["_final_rule_validation"] = final_rule_usage
+
         return (
             dynamic_profiles,
             aggregate_usage,
@@ -8734,8 +8746,8 @@ class GenerationPipeline:
                 life_domain_list=life_domain_list,
             ),
         )
-        latent_path = self.output_dir / f"{slug}_dynamic_profile.json"
-        _write_json(latent_path, latent_result.data)
+        # latent_path = self.output_dir / f"{slug}_dynamic_profile.json"
+        # _write_json(latent_path, latent_result.data)
 
         usage = {"dynamic_profile": latent_result.usage}
         return latent_result.data, usage
@@ -9783,7 +9795,7 @@ def debug_dynamic_profile_generation() -> None:
     # model_name="gemini-2.5-flash-lite"
     client = GeminiJSONClient(api_key=api_key, model_name=model_name)
     base_dir = Path(__file__).resolve().parent
-    output_dir = base_dir / "generated_outputs_debug_v12" / _slugify(model_name)
+    output_dir = base_dir / "generated_outputs_debug_v14" / _slugify(model_name)
     domains_path = base_dir / "domains.json"
     # domains_path = base_dir / "domains_test.json"
     domains = load_domains_from_file(domains_path)
