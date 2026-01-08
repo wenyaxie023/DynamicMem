@@ -765,7 +765,7 @@ Return strictly valid JSON with this schema (**Dict format, NOT List format**):
             "delta": {
               "schedule": {
                 "frequency_type": "daily | weekly | biweekly | monthly_by_date | monthly_nth_weekday",
-                "...": "other required schedule fields"
+                "...": "other required schedule fields, no need for daily, weekly need .."
               },
               "timing": {
                 "start_time": "HH:MM",

@@ -56,25 +56,20 @@ Expected JSON shape:
       }
     },
     "habits_state": {
-      "initial": {
         "<habit_name>": {
-          "action": "<action label>",
           "schedule": {
             "frequency_type": "daily | weekly | biweekly | monthly_by_date | monthly_nth_weekday",
-            "...": "required fields based on frequency_type"
+            "...": "required fields based on frequency_type, see schedule_format below"
           },
           "timing": {
             "start_time": "HH:MM",
             "end_time": "HH:MM"
           },
-          "context": "<5-15 words>",
+          "location": "<1-10 words>",
           "priority": "critical | high | medium | low",
-          "description": "<10-30 words>"
         }
-      }
     },
     "preferences_state": {
-      "initial": {
         "<preference_name>": {
           "statement": "<10-30 word concrete preference statement>",
           "signals": [
@@ -82,7 +77,6 @@ Expected JSON shape:
             "<observable signal 2>"
           ]
         }
-      }
     },
     "summary": "..."
   },
@@ -101,21 +95,12 @@ Expected JSON shape:
             "reason": "..."
           },
           {
-            "op": "add",
+            "op": "add|remove",
             "attribute_type": "collections",
             "collection_name": "...",
             "delta": [
               "<item 1>",
               "<item 2>"
-            ],
-            "reason": "..."
-          },
-          {
-            "op": "remove",
-            "attribute_type": "collections",
-            "collection_name": "...",
-            "delta": [
-              "<exact item string to remove>"
             ],
             "reason": "..."
           }
@@ -124,37 +109,20 @@ Expected JSON shape:
       "habits_delta": {
         "operations": [
           {
-            "op": "acquire",
+            "op": "acquire|adjust|drop",
             "habit_name": "...",
             "delta": {
-              "action": "<action label>",
               "schedule": {
                 "frequency_type": "daily | weekly | biweekly | monthly_by_date | monthly_nth_weekday",
-                "...": "required fields based on frequency_type"
+                "...": "required fields based on frequency_type, see schedule_format below"
               },
               "timing": {
                 "start_time": "HH:MM",
                 "end_time": "HH:MM"
               },
-              "context": "<5-15 words>",
+              "location": "<5-15 words>",
               "priority": "critical | high | medium | low",
-              "description": "<10-30 words>"
             },
-            "reason": "..."
-          },
-          {
-            "op": "adjust",
-            "habit_name": "...",
-            "delta": {
-              "<changed_field_only>": "<new value>",
-              "description": "<updated 10-30 words>"
-            },
-            "reason": "..."
-          },
-          {
-            "op": "drop",
-            "habit_name": "...",
-            "delta": null,
             "reason": "..."
           }
         ]
@@ -179,6 +147,30 @@ Expected JSON shape:
     }
   ]
 }
+
+schedule_format = {
+    "daily": {
+      "frequency_type": "daily"
+    },
+    "weekly": {
+      "frequency_type": "weekly",
+      "days_of_week": "[0-6 integers array, 0=Mon...6=Sun, e.g. [1,3,5] for Tue/Thu/Sat]"
+    },
+    "biweekly": {
+      "frequency_type": "biweekly",
+      "days_of_week": "[single integer 0-6]",
+      "start_date": "YYYY-MM-DD (first occurrence)"
+    },
+    "monthly_by_date": {
+      "frequency_type": "monthly_by_date",
+      "days_of_month": "[1-28 integers array, e.g. [1,15] for 1st and 15th]"
+    },
+    "monthly_nth_weekday": {
+      "frequency_type": "monthly_nth_weekday",
+      "week_of_month": "1-4 or 'last'",
+      "day_of_week": "0-6 integer (0=Mon...6=Sun)"
+    }
+}
 """
 # Individual rule-specific prompts for targeted fixes
 # Rule order (from structural to semantic to temporal):
@@ -188,12 +180,17 @@ Expected JSON shape:
 # Rule 4: Short-term followups (semantic consistency)
 # Rule 5: Time conflicts (final feasibility)
 
-rule1_required_fields_prompt = Template("""You are fixing REQUIRED FIELDS violations in a dynamic user profile.
-
-Life domain: {{ domain_name }}: {{ domain_scope_definition }}
-Basic user profile: {{ user_profile }}
+rule1_required_fields_prompt = Template("""You are a strict auditor for fixing VIOLATIONS in dynamic user profiles.
 
 Your task: Add all missing required fields.
+
+A complete dynamic user profile must follow the required schema. I will provide a reference format and a list of missing fields detected automatically. Review them and apply fixes according to the instructions below.
+
+To keep your fixes reasonable, here is the background:
+
+Life domain: {{ domain_name }}: {{ domain_scope_definition }}
+
+Basic user profile: {{ user_profile }}
 
 =================================================================================
 DETECTED VIOLATIONS
@@ -202,46 +199,22 @@ DETECTED VIOLATIONS
 {{ detected_issues }}
 
 =================================================================================
-WHAT TO CHECK: REQUIRED FIELDS MUST BE PRESENT
+SCHEMA REFERENCE
 =================================================================================
 
+{{ schema_excerpt }}
+
+=================================================================================
+COMMON ERROR PATTERNS
+=================================================================================
 **Required fields:**
 - Every window: "window_description", "summary"
 - initial_state: "summary"
-- user_attributes_state: "singular" and "collections" keys (can be empty objects)
-- All habits: action, schedule (frequency_type in {daily, weekly, biweekly, monthly_by_date, monthly_nth_weekday} with required fields: weekly→days_of_week, biweekly→days_of_week + start_date, monthly_by_date→days_of_month, monthly_nth_weekday→week_of_month + day_of_week), timing (start_time + end_time), context, priority, description
+- All habits: schedule (frequency_type in {daily, weekly, biweekly, monthly_by_date, monthly_nth_weekday} with required fields: weekly→days_of_week, biweekly→days_of_week + start_date, monthly_by_date→days_of_month, monthly_nth_weekday→week_of_month + day_of_week), timing (start_time + end_time), location, priority
 - Habit adjust deltas: updated "description" + at least one substantive change (schedule/timing/context/priority)
 - Dropped habits: delta must be JSON null
 - All preferences: "statement" and "signals" array (2-4 items)
 - All operations: "reason" field
-
-=================================================================================
-HOW TO FIX
-=================================================================================
-
-1. Add missing keys using "add_key" action
-2. Generate appropriate content based on context
-3. For habit objects, ensure all nested fields are complete
-4. Replace "none" strings with JSON null for drop operations
-
-=================================================================================
-CRITICAL REQUIREMENTS
-=================================================================================
-
-**1. ID-Based Response (MANDATORY):**
-- Each detected issue has a unique ID in the format [ID: ruleX_NNN]
-- You MUST provide a fix for EVERY detected issue by its ID
-- Your response MUST include ALL issue IDs
-- If you cannot fix an issue, explain why in the fix entry
-
-**2. NO New Windows:**
-- DO NOT create new time windows (w5, w6, etc.)
-- ONLY modify EXISTING windows in the profile
-- Add operations to existing windows, not new ones
-
-**3. Completeness Check:**
-- Count detected issues vs. your fixes
-- Ensure they match 1-to-1 by ID
 
 =================================================================================
 PATCH ACTION GUIDE
@@ -257,26 +230,29 @@ PATCH ACTION GUIDE
 **NEVER use "add" - Always use "append" for arrays!**
 
 =================================================================================
+HOW TO FIX
+=================================================================================
+
+1. Add missing keys using "add_key" action
+2. Generate appropriate content based on context
+3. For habit objects, ensure all nested fields are complete
+4. Replace "none" strings with JSON null for drop operations
+5. Consider Cascade Effects: When fixing missing fields, check if your changes affect downstream operations or other fields(e.g., summary) and also fixed them in patches.
+
+=================================================================================
 OUTPUT FORMAT
 =================================================================================
 
-**IMPORTANT NOTES:**
-- The detected violations come from automatic checks and may include false positives
-- You must judge whether each detected issue truly needs fixing
-- Set fix_applied=false if the detected issue is not a real violation or doesn't need fixing
-- Include cascade_note to explain any downstream effects of your fix
-
-Return JSON with this EXACT structure:
-
+Return JSON with this EXACT structure (dict):
 {
   "violations_and_fixes": [
     {
       "issue_id": "<string>",  // Must match detected issue ID (e.g., "rule1_000")
       "location": "<string>",  // Path to the violation location
       "violation_description": "<string>",  // Description of what field is missing
-      "fix_applied": <boolean>,  // true if fix is needed, false if false positive
+      "fix_applied": <boolean>,  // true if fix is needed, false if the automatically detected issue is not a real violation or doesn't need fixing
       "fix_description": "<string>",  // Explanation of the fix applied
-      "cascade_note": "<string>",  // Explanation of downstream effects
+      "cascade_note": "<string>",  // Make sure you consider the cascade effects and update the corresponding fields in patches
       "patches": [  // Array of patch objects (empty array if fix_applied is false)
         {
           "path": "<string>",  // JSON path to target location
@@ -289,16 +265,33 @@ Return JSON with this EXACT structure:
   ]
 }
 
+=================================================================================
+CRITICAL CONSTRAINTS
+=================================================================================
+
+**1. ID-Based Response:**
+- Each detected issue has a unique ID in the format [ID: ruleX_NNN]
+- Make sure you fix all issues (if you think they are false positives, set fix_applied=false) and they match 1-to-1 by ID
+
+**2. NO New Windows:**
+- DO NOT create new time windows (w5, w6, etc.) and ONLY modify EXISTING windows in the profile
+
 **Dynamic profile to fix:**
 {{ dynamic_profile_json }}
 """)
 
-rule2_prior_existence_prompt = Template("""You are fixing PRIOR EXISTENCE violations in a dynamic user profile.
+rule2_prior_existence_prompt = Template("""You are fixing INVALID OPERATION violations in a dynamic user profile.
+
+Your task: Fix all invalid operations including:
+1. Operations that modify/adjust/drop/shift/refine non-existent items
+2. Invalid operation types for attribute types
+3. Invalid habit adjust operations (only changing priority)
+
+To keep your fixes reasonable, here is the background:
 
 Life domain: {{ domain_name }}: {{ domain_scope_definition }}
-Basic user profile: {{ user_profile }}
 
-Your task: Fix all operations that modify/adjust/drop/shift/refine non-existent items.
+Basic user profile: {{ user_profile }}
 
 =================================================================================
 DETECTED VIOLATIONS
@@ -307,57 +300,46 @@ DETECTED VIOLATIONS
 {{ detected_issues }}
 
 =================================================================================
-WHAT TO CHECK: MODIFICATION OPERATIONS REQUIRE PRIOR EXISTENCE
+WHAT TO FIX: RULE 2 VIOLATIONS
 =================================================================================
 
-**Operations that require prior existence:**
-- Singular attributes: "modify" requires attribute exists
-- Collection attributes: "remove" requires collection exists
-- Habits: "adjust" and "drop" require habit exists
-- Preferences: "shift" and "refine" require preference exists
+**RULE 2A: Valid Operation Types by Attribute Type**
+- Singular attributes: ONLY "modify" is allowed
+  Invalid: add, drop, remove, adjust on singular
+  Valid: modify on singular
+
+- Collection attributes: ONLY "add" or "remove" are allowed
+  Invalid: modify, adjust, refine on collections
+  Valid: add or drop on collections
+
+**RULE 2B: Operations Require Prior Existence**
+- Singular attributes: "modify" requires attribute exists in initial_state.singular or added earlier
+- Collection attributes: "drop" requires collection exists in initial_state.collections or added earlier
+- Habits: "adjust" and "drop" require habit exists in initial_state.habits_state or acquired earlier
+- Preferences: "shift" and "refine" require preference exists in initial_state.preferences_state
+
+**RULE 2C: Habit Adjust Must Have Structural Changes**
+- Habit "adjust" operations MUST modify at least one of: schedule, timing, location, or context
+- Adjusting ONLY priority is INVALID (priority changes should be minimal/implicit)
+  Invalid: delta: {"priority": "high"} only
+  Valid: delta: {"schedule": {...}, "priority": "high"}
+  Valid: delta: {"timing": {...}}
 
 **Examples of violations:**
+w2: op="add", attribute_type="singular", attribute_name="primary_vehicle"
+→ Invalid operation type: singular only supports "modify"
+
+w2: op="modify", attribute_type="collections", collection_name="visited_countries"
+→ Invalid operation type: collections only support "add" or "remove"
+
 w2: op="modify", attribute_name="primary_vehicle"
 → "primary_vehicle" never defined in initial_state.singular
 
-w2: op="adjust", habit_name="morning_jog"
-→ "morning_jog" never in initial_state.habits_state.initial or acquired in w1
+w2: op="adjust", habit_name="morning_run", delta: {"priority": "high"}
+→ Adjust only changes priority, must modify schedule/timing/location
 
-=================================================================================
-HOW TO FIX
-=================================================================================
-
-For each violation, choose ONE approach:
-
-**Option A: Add to initial_state**
-- Add the missing item to initial_state with a realistic baseline
-- Update initial_state summary to mention it
-- **CASCADE:** Update any later operations if needed (e.g., change "add" to "modify")
-
-**Option B: Change operation type**
-- For attributes: change "modify" to appropriate creation operation
-- For habits: change "adjust"/"drop" to "acquire" if it never existed
-- For preferences: MUST use Option A (cannot create with shift/refine)
-
-
-=================================================================================
-CRITICAL REQUIREMENTS
-=================================================================================
-
-**1. ID-Based Response (MANDATORY):**
-- Each detected issue has a unique ID in the format [ID: ruleX_NNN]
-- You MUST provide a fix for EVERY detected issue by its ID
-- Your response MUST include ALL issue IDs
-- If you cannot fix an issue, explain why in the fix entry
-
-**2. NO New Windows:**
-- DO NOT create new time windows (w5, w6, etc.)
-- ONLY modify EXISTING windows in the profile
-- Add operations to existing windows, not new ones
-
-**3. Completeness Check:**
-- Count detected issues vs. your fixes
-- Ensure they match 1-to-1 by ID
+w2: op="drop", habit_name="dog_walking"
+→ "dog_walking" never in initial_state.habits_state or acquired in previous windows
 
 =================================================================================
 PATCH ACTION GUIDE
@@ -373,15 +355,40 @@ PATCH ACTION GUIDE
 **NEVER use "add" - Always use "append" for arrays!**
 
 =================================================================================
-OUTPUT FORMAT
+HOW TO FIX
 =================================================================================
 
-**IMPORTANT NOTES:**
-- The detected violations come from automatic checks and may include false positives
-- You must judge whether each detected issue truly needs fixing
-- Set fix_applied=false if the detected issue is not a real violation or doesn't need fixing
-- Include cascade_note to explain any downstream effects of your fix
-- When adding items to initial_state, you MUST update all later windows that reference it
+**For RULE 2A violations (invalid operation type):**
+- Change the operation to a valid type for that attribute:
+  * Singular: change to "modify" (or remove if not needed)
+  * Collections: change to "add" or "remove" (or remove if not needed)
+- Update the operation structure to match the new operation type
+- Adjust the "reason" field to reflect the corrected operation
+
+**For RULE 2B violations (prior existence):**
+- If a remove/modify/adjust/drop/shift/refine operation targets a non-existent item:
+  * Add the missing item to initial_state with a baseline value
+  * Update initial_state summary to mention it
+
+**For RULE 2C violations (habit adjust without structural changes):**
+- Add meaningful structural changes (timing/frequency/location) to the habit delta
+- Keep priority if it makes sense, but ensure it's not the ONLY change
+- If the adjustment is truly trivial, consider removing the operation entirely
+
+=================================================================================
+CRITICAL CONSTRAINTS
+=================================================================================
+
+**1. ID-Based Response:**
+- Each detected issue has a unique ID in the format [ID: ruleX_NNN]
+- Make sure you fix all issues (if you think they are false positives, set fix_applied=false) and they match 1-to-1 by ID
+
+**2. NO New Windows:**
+- DO NOT create new time windows (w5, w6, etc.) and ONLY modify EXISTING windows in the profile
+
+=================================================================================
+OUTPUT FORMAT
+=================================================================================
 
 Return JSON with this EXACT structure:
 
@@ -410,12 +417,15 @@ Return JSON with this EXACT structure:
 {{ dynamic_profile_json }}
 """)
 
-rule3_essential_initialization_prompt = Template("""You are fixing ESSENTIAL ITEM INITIALIZATION violations in a dynamic user profile.
+rule3_essential_initialization_prompt = Template("""You are fixing ESSENTIAL COLLECTION INITIALIZATION violations in a dynamic user profile.
+
+Your task: Fix collections that first appear via 'add' operations instead of being initialized in initial_state.
+
+To keep your fixes reasonable, here is the background:
 
 Life domain: {{ domain_name }}: {{ domain_scope_definition }}
-Basic user profile: {{ user_profile }}
 
-Your task: Ensure all essential items are initialized in initial_state before being evolved.
+Basic user profile: {{ user_profile }}
 
 =================================================================================
 DETECTED VIOLATIONS
@@ -424,54 +434,51 @@ DETECTED VIOLATIONS
 {{ detected_issues }}
 
 =================================================================================
-WHAT TO CHECK: ESSENTIAL ITEMS MUST BE INITIALIZED IF EVOLVED
+WHAT TO CHECK: COLLECTION ATTRIBUTES MUST BE INITIALIZED BEFORE FIRST 'ADD'
 =================================================================================
 
 **Principle:**
-If an item is:
-1. ESSENTIAL for this domain/user (realistic baseline expectation)
-2. EVOLVED in later windows (via modify/adjust/shift operations)
+Collections should be initialized in initial_state before they are modified via 'add' operations.
+This prevents unrealistic scenarios like a user getting their first smartphone in w3.
 
-Then it MUST exist in initial_state with a baseline value.
+**Examples of violations:**
+Scenario 1 (VIOLATION):
+- initial_state.user_attributes_state.collections: {} (no "owned_devices" key)
+- w3: add operation adds {"collection_name": "owned_devices", "delta": ["iPhone 12"]}
+→ Violation: User's first device appears in w3, unrealistic for modern adult
 
-**Essential items by domain:**
-- Finances & Material Living: smartphone, primary bank account, payment methods
-- Health & Self-care: basic toiletries, bed, clothing, hygiene products
-- Family & Close Relationships: communication devices if family is not co-located
-- Tech & Learning: computer/laptop for professional users
+Scenario 2 (CORRECT):
+- initial_state.user_attributes_state.collections.owned_devices: ["Samsung Galaxy S10"]
+- w3: add operation adds {"collection_name": "owned_devices", "delta": ["iPad Pro"]}
+→ Correct: User already had a phone, now adding a tablet
 
 =================================================================================
 HOW TO FIX
 =================================================================================
 
-For each violation:
-1. Add the essential item to initial_state with realistic baseline:
-   - Singular attributes → initial_state.user_attributes_state.singular
-   - Collections → initial_state.user_attributes_state.collections
-   - Habits → initial_state.habits_state.initial
-   - Preferences → initial_state.preferences_state.initial
-2. Update initial_state summary to mention it
-3. **CASCADE:** If the item was first added via operation in a later window, update that operation accordingly
+For each detected violation, evaluate if the collection is essential for this user:
 
+**If essential (e.g., owned_devices for modern adult):**
+1. Initialize the collection in initial_state.user_attributes_state.collections with baseline items
+   Example: "owned_devices": ["Samsung Galaxy S10 (purchased 2020)"]
+2. Update initial_state.summary to mention this baseline
+3. **CASCADE:** Modify the first 'add' operation to reflect it's adding TO existing items
+   - Keep the operation, just adjust the reason/context if needed
+
+**If NOT essential or legitimately first-time (e.g., hobby equipment collection):**
+1. Set fix_applied=false
+2. Explain why this is acceptable in fix_description
 
 =================================================================================
-CRITICAL REQUIREMENTS
+CRITICAL CONSTRAINTS
 =================================================================================
 
-**1. ID-Based Response (MANDATORY):**
+**1. ID-Based Response:**
 - Each detected issue has a unique ID in the format [ID: ruleX_NNN]
-- You MUST provide a fix for EVERY detected issue by its ID
-- Your response MUST include ALL issue IDs
-- If you cannot fix an issue, explain why in the fix entry
+- Make sure you fix all issues (if you think they are false positives, set fix_applied=false) and they match 1-to-1 by ID
 
 **2. NO New Windows:**
-- DO NOT create new time windows (w5, w6, etc.)
-- ONLY modify EXISTING windows in the profile
-- Add operations to existing windows, not new ones
-
-**3. Completeness Check:**
-- Count detected issues vs. your fixes
-- Ensure they match 1-to-1 by ID
+- DO NOT create new time windows (w5, w6, etc.) and ONLY modify EXISTING windows in the profile
 
 =================================================================================
 PATCH ACTION GUIDE
@@ -486,16 +493,26 @@ PATCH ACTION GUIDE
 
 **NEVER use "add" - Always use "append" for arrays!**
 
+**Common patch patterns:**
+1. Add collection to initial_state:
+   {"path": "initial_state.user_attributes_state.collections", "action": "add_key", "key": "owned_devices", "value": ["Samsung Galaxy S10"]}
+
+2. Update initial_state summary:
+   {"path": "initial_state.summary", "action": "replace", "value": <updated summary>}
+
+3. Update first add operation's reason:
+   {"path": "time_windows[2].user_attributes_delta.operations[0].reason", "action": "replace", "value": <updated reason>}
+
 =================================================================================
 OUTPUT FORMAT
 =================================================================================
 
 **IMPORTANT NOTES:**
 - The detected violations come from automatic checks and may include false positives
-- You must judge whether each detected issue truly needs fixing
-- Set fix_applied=false if the detected issue is not a real violation or doesn't need fixing
-- Include cascade_note to explain any downstream effects of your fix
-- When adding essential items to initial_state, you MUST cascade changes to all later windows
+- You must judge whether each detected collection is essential for this user
+- Set fix_applied=false if the collection is legitimately first-time (not essential baseline)
+- Include cascade_note to explain how initial_state addition affects later operations
+- When adding collections to initial_state, consider updating the first 'add' operation's context
 
 Return JSON with this EXACT structure:
 
@@ -504,10 +521,10 @@ Return JSON with this EXACT structure:
     {
       "issue_id": "<string>",  // Must match detected issue ID (e.g., "rule3_000")
       "location": "<string>",  // Path to the violation location
-      "violation_description": "<string>",  // Description of the essential initialization violation
-      "fix_applied": <boolean>,  // true if fix is needed, false if false positive
-      "fix_description": "<string>",  // Explanation of the fix applied
-      "cascade_note": "<string>",  // Explanation of downstream effects and cascades
+      "violation_description": "<string>",  // Description of the collection initialization violation
+      "fix_applied": <boolean>,  // true if collection should be in initial_state, false if legitimately first-time
+      "fix_description": "<string>",  // Explanation of the fix applied or why no fix needed
+      "cascade_note": "<string>",  // Explanation of how initialization affects later operations
       "patches": [  // Array of patch objects (empty array if fix_applied is false)
         {
           "path": "<string>",  // JSON path to target location
@@ -526,10 +543,13 @@ Return JSON with this EXACT structure:
 
 rule4_short_term_followup_prompt = Template("""You are fixing SHORT-TERM CHANGE FOLLOW-UP violations in a dynamic user profile.
 
-Life domain: {{ domain_name }}: {{ domain_scope_definition }}
-Basic user profile: {{ user_profile }}
-
 Your task: Fix all short-term changes that lack proper follow-ups.
+
+To keep your fixes reasonable, here is the background:
+
+Life domain: {{ domain_name }}: {{ domain_scope_definition }}
+
+Basic user profile: {{ user_profile }}
 
 =================================================================================
 DETECTED VIOLATIONS
@@ -546,11 +566,6 @@ Changes motivated by SHORT-TERM external factors (seasonal, special events, temp
 1. Be rolled back when the factor ends (drop/adjust/refine/shift/modify/remove operations)
 2. OR have explicit reasoning explaining why the change became permanent
 
-**Short-term keywords to watch:**
-- Seasonal: winter, summer, spring, fall, autumn, seasonal
-- Events: holiday, vacation, olympics, event, festival
-- Temporary: heatwave, cold snap, temporary, temporarily, this month, this week, during, special occasion
-
 **Examples of violations:**
 w1: acquire "daily_hydration_habit" reason="combat dry winter air"
 → w3 (summer): no adjustment to this habit
@@ -558,37 +573,6 @@ w1: acquire "daily_hydration_habit" reason="combat dry winter air"
 w2: acquire "evening_olympic_viewing" reason="watch Olympics coverage"
 → w3 (after Olympics): habit still exists, not dropped
 
-=================================================================================
-HOW TO FIX
-=================================================================================
-
-For each detected violation:
-1. Add a rollback operation in an appropriate later window (drop/adjust/shift/refine/modify/remove)
-2. Update that window's summary to mention the rollback
-3. Ensure timeline is realistic (Olympics ~2 weeks, winter ~3 months, seasonal ~3-6 months)
-4. Include ALL cascade effects in your patches
-
-**Patch format:** Use JSON patches with actions: "append", "replace", "add_key", "remove"
-
-
-=================================================================================
-CRITICAL REQUIREMENTS
-=================================================================================
-
-**1. ID-Based Response (MANDATORY):**
-- Each detected issue has a unique ID in the format [ID: ruleX_NNN]
-- You MUST provide a fix for EVERY detected issue by its ID
-- Your response MUST include ALL issue IDs
-- If you cannot fix an issue, explain why in the fix entry
-
-**2. NO New Windows:**
-- DO NOT create new time windows (w5, w6, etc.)
-- ONLY modify EXISTING windows in the profile
-- Add operations to existing windows, not new ones
-
-**3. Completeness Check:**
-- Count detected issues vs. your fixes
-- Ensure they match 1-to-1 by ID
 
 =================================================================================
 PATCH ACTION GUIDE
@@ -604,15 +588,38 @@ PATCH ACTION GUIDE
 **NEVER use "add" - Always use "append" for arrays!**
 
 =================================================================================
-OUTPUT FORMAT
+HOW TO FIX
 =================================================================================
 
-**IMPORTANT NOTES:**
+For each detected violation:
+1. Add a rollback operation in an appropriate later window (drop/adjust/shift/refine/modify/remove)
+2. Update that window's summary to mention the rollback
+3. Ensure timeline is realistic (Olympics ~2 weeks, winter ~3 months, seasonal ~3-6 months)
+4. Include ALL cascade effects in your patches
+
+**Patch format:** Use JSON patches with actions: "append", "replace", "add_key", "remove"
+
+Note:
 - The detected violations come from automatic checks and may include false positives
 - Some short-term changes MAY be intentionally permanent (user adapted to the change)
 - You must judge whether each detected issue truly needs fixing
 - Set fix_applied=false if the change should remain permanent or detection is incorrect
 - Include cascade_note to explain the rollback and its effects on later windows
+
+=================================================================================
+CRITICAL CONSTRAINTS
+=================================================================================
+
+**1. ID-Based Response:**
+- Each detected issue has a unique ID in the format [ID: ruleX_NNN]
+- Make sure you fix all issues (if you think they are false positives, set fix_applied=false) and they match 1-to-1 by ID
+
+**2. NO New Windows:**
+- DO NOT create new time windows (w5, w6, etc.) and ONLY modify EXISTING windows in the profile
+
+=================================================================================
+OUTPUT FORMAT
+=================================================================================
 
 Return JSON with this EXACT structure:
 
@@ -643,10 +650,13 @@ Return JSON with this EXACT structure:
 
 rule5_time_conflict_prompt = Template("""You are fixing TIME CONFLICT violations in a dynamic user profile.
 
-Life domain: {{ domain_name }}: {{ domain_scope_definition }}
-Basic user profile: {{ user_profile }}
+Your task: Resolve ALL habit timing conflicts in one pass.
 
-Your task: Resolve all habit timing conflicts using an iterative conflict resolution strategy.
+To keep your fixes reasonable, here is the background:
+
+Life domain: {{ domain_name }}: {{ domain_scope_definition }}
+
+Basic user profile: {{ user_profile }}
 
 =================================================================================
 DETECTED CONFLICTS
@@ -655,54 +665,32 @@ DETECTED CONFLICTS
 {{ detected_issues }}
 
 =================================================================================
-CONFLICT GRAPH ANALYSIS
-=================================================================================
-
-{{ conflict_graph }}
-
-The conflict graph shows which habits conflict with the most other habits (node degree).
-Use this to prioritize: **Fix high-degree conflicts first** to maximize impact.
-
-=================================================================================
 RESOLUTION STRATEGY (CRITICAL)
 =================================================================================
 
-**Iterative Conflict Resolution:**
-1. Identify the habit with the HIGHEST conflict degree (most conflicts with other habits)
-2. Adjust ONLY that habit's timing to avoid ALL its conflicts
-3. Find a time slot that doesn't overlap with any other habit
-4. Ensure 15-30 minute spacing between activities
-5. Repeat for the next highest-degree habit until all conflicts are resolved
+**Location-Based Conflict Rules:**
+1. **Same location conflicts**: If two habits are at the SAME location, they conflict if their times overlap at all
+2. **Different location conflicts**: If two habits are at DIFFERENT locations, they need at least 30 minutes gap between them for travel time
+   - Gap is measured from the end of the first habit to the start of the second habit
+   - Example: Habit A ends at 9:00 AM at Location X, Habit B starts at 9:20 AM at Location Y → CONFLICT (only 20 min gap)
+   - Example: Habit A ends at 9:00 AM at Location X, Habit B starts at 9:30 AM at Location Y → OK (30 min gap)
 
-**Why this works:**
-- Fixing the most problematic habit first reduces the total number of conflicts most efficiently
-- Each iteration reduces the conflict graph size
-- Converges to a conflict-free schedule
+**Resolution Approach:**
+- Fix ALL conflicts in the domain at once (no need for iterative fixing since conflicts within a single domain are typically few)
+- Adjust habit timings to eliminate all conflicts
+- When adjusting times, consider:
+  - Maintain realistic timing (e.g., don't move breakfast to 11 PM)
+  - Preserve habit duration where possible
+  - For same location: ensure no time overlap
+  - For different locations: ensure at least 30 minute gap between activities
 
-**Timing adjustment rules:**
-- Habits can be shifted earlier or later in the day
-- Maintain realistic timing (e.g., don't move breakfast to 11 PM)
-- Preserve habit duration where possible
-- Add 15-30 minute buffers between consecutive habits
-
-=================================================================================
-CRITICAL REQUIREMENTS
-=================================================================================
-
-**1. ID-Based Response (MANDATORY):**
-- Each detected issue has a unique ID in the format [ID: ruleX_NNN]
-- You MUST provide a fix for EVERY detected issue by its ID
-- Your response MUST include ALL issue IDs
-- If you cannot fix an issue, explain why in the fix entry
-
-**2. NO New Windows:**
-- DO NOT create new time windows (w5, w6, etc.)
-- ONLY modify EXISTING windows in the profile
-- Add operations to existing windows, not new ones
-
-**3. Completeness Check:**
-- Count detected issues vs. your fixes
-- Ensure they match 1-to-1 by ID
+**IMPORTANT NOTES:**
+- The detected violations come from automatic checks and may include false positives
+- Some detected conflicts may be acceptable (e.g., overlapping background activities)
+- You must judge whether each detected issue truly needs fixing
+- Set fix_applied=false if the conflict is acceptable or doesn't need resolution
+- When fixing timing in initial/time windows, check if later windows need updates too
+- Include cascade_note to make sure you consider the cascade effects (e.g., modify summary or reason field or later window operations) and update the corresponding fields in patches
 
 =================================================================================
 PATCH ACTION GUIDE
@@ -718,16 +706,19 @@ PATCH ACTION GUIDE
 **NEVER use "add" - Always use "append" for arrays!**
 
 =================================================================================
-OUTPUT FORMAT
+CRITICAL CONSTRAINTS
 =================================================================================
 
-**IMPORTANT NOTES:**
-- The detected violations come from automatic checks and may include false positives
-- Some detected conflicts may be acceptable (e.g., overlapping background activities)
-- You must judge whether each detected issue truly needs fixing
-- Set fix_applied=false if the conflict is acceptable or doesn't need resolution
-- Include cascade_note to explain timing adjustments and any downstream effects
-- When fixing timing in initial_state, check if later windows need updates too
+**1. ID-Based Response:**
+- Each detected issue has a unique ID in the format [ID: ruleX_NNN]
+- Make sure you fix all issues (if you think they are false positives, set fix_applied=false) and they match 1-to-1 by ID
+
+**2. NO New Windows:**
+- DO NOT create new time windows (w5, w6, etc.) and ONLY modify EXISTING windows in the profile
+
+=================================================================================
+OUTPUT FORMAT
+=================================================================================
 
 Return JSON with this EXACT structure:
 
@@ -739,7 +730,7 @@ Return JSON with this EXACT structure:
       "violation_description": "<string>",  // Description of the timing conflict
       "fix_applied": <boolean>,  // true if fix needed, false if acceptable overlap
       "fix_description": "<string>",  // Explanation of the timing adjustment
-      "cascade_note": "<string>",  // Explanation of timing adjustments and downstream effects
+      "cascade_note": "<string>",  // Make sure you consider the cascade effects and update the corresponding fields in patches
       "patches": [  // Array of patch objects (empty array if fix_applied is false)
         {
           "path": "<string>",  // JSON path to target location
@@ -875,10 +866,10 @@ w2: op="modify", attribute_name="primary_vehicle"
 → "primary_vehicle" never defined in initial_state.singular
 
 w2: op="adjust", habit_name="morning_jog"
-→ "morning_jog" never defined in initial_state.habits_state.initial or acquired in w1
+→ "morning_jog" never defined in initial_state.habits_state or acquired in w1
 
 w3: op="shift", preference_name="exercise_style"
-→ "exercise_style" never defined in initial_state.preferences_state.initial
+→ "exercise_style" never defined in initial_state.preferences_state
 
 **How to fix:**
 - If a modify/adjust/drop/shift/refine operation targets a non-existent item:
@@ -904,7 +895,7 @@ w3: op="shift", preference_name="exercise_style"
 
 **How to detect:**
 - Check for missing keys in window objects
-- Validate habit structure in all habits_state.initial and habits_delta operations (including schedule/timing completeness)
+- Validate habit structure in all habits_state and habits_delta operations (including schedule/timing completeness)
 - Check that drop operations set delta to null (not "none", not empty string)
 - Validate preference objects have both statement and signals arrays (2-4 items)
 - Verify user_attributes_state structure and reasons on operations
@@ -955,7 +946,7 @@ initial_state.user_attributes_state.collections.owned_devices: [] (empty)
 → w3: add operation adds first smartphone
 (Violation: A modern adult should already own a phone in initial_state)
 
-initial_state.preferences_state.initial: no "exercise_style" preference
+initial_state.preferences_state: no "exercise_style" preference
 → w2: shift operation changes "exercise_style"
 (Violation: Must initialize the preference in initial_state before shifting it)
 
@@ -963,8 +954,8 @@ initial_state.preferences_state.initial: no "exercise_style" preference
 - Add the missing item to initial_state with a realistic baseline value:
   * For singular attributes: add to initial_state.user_attributes_state.singular
   * For collection attributes: add to initial_state.user_attributes_state.collections
-  * For habits: add to initial_state.habits_state.initial
-  * For preferences: add to initial_state.preferences_state.initial
+  * For habits: add to initial_state.habits_state
+  * For preferences: add to initial_state.preferences_state
 - Update initial_state summary to mention it
 - Ensure the baseline is appropriate for the user's profile (income, tech literacy, etc.)
 
@@ -2106,654 +2097,654 @@ Generate the constraint deltas now.
 # - Preserve attribute shapes (list/dict/string) when resolving.
 # - Be explicit in per_domain_resolutions for every field that needs updating; specify window_id.
 # """)
-CONFLICT_RESOLUTION_PROMPT = Template("""You are a cross-domain consistency auditor and profile reasonableness validator. 
 
-Your task is to:
-1. Detect and resolve CONFLICTS across different life domains in the user's dynamic profile
-2. Identify and fix UNREASONABLE patterns that emerge when domains are combined
-3. Ensure the integrated profile reflects a realistic, livable human schedule and lifestyle
+# CONFLICT_RESOLUTION_PROMPT = Template("""You are a cross-domain consistency auditor and profile reasonableness validator. 
 
-IMPORTANT CONTEXT:
-- All attribute keys are already normalized across domains
-- Intra-domain conflicts have been resolved; focus ONLY on cross-domain issues
-- Your output will be directly applied as patches to the profile
+# Your task is to:
+# 1. Detect and resolve CONFLICTS across different life domains in the user's dynamic profile
+# 2. Identify and fix UNREASONABLE patterns that emerge when domains are combined
+# 3. Ensure the integrated profile reflects a realistic, livable human schedule and lifestyle
 
-User basic profile:
-{{ user_basic_profile_json }}
+# IMPORTANT CONTEXT:
+# - All attribute keys are already normalized across domains
+# - Intra-domain conflicts have been resolved; focus ONLY on cross-domain issues
+# - Your output will be directly applied as patches to the profile
 
-Full dynamic profiles by domain (initial state + deltas):
-{{ dynamic_profiles_json }}
+# User basic profile:
+# {{ user_basic_profile_json }}
 
-Auto-detected temporal conflicts (code-level hints):
-{{ detected_temporal_conflicts_json }}
+# Full dynamic profiles by domain (initial state + deltas):
+# {{ dynamic_profiles_json }}
 
-- Target window for this call: {{ target_window_id or "all_windows" }}. Only change that window unless a minimal cascade is unavoidable.
-- Deduped by window + habit pair with sample_dates and up to 3 overlap_examples. Includes per-window conflict graph (top nodes by degree). Resolve window-by-window (initial_state → w1 → w2 → w3...), tackling highest-degree habits first.
+# Auto-detected temporal conflicts (code-level hints):
+# {{ detected_temporal_conflicts_json }}
 
-=================================================================================
-DATA STRUCTURE REFERENCE
-=================================================================================
+# - Target window for this call: {{ target_window_id or "all_windows" }}. Only change that window unless a minimal cascade is unavoidable.
+# - Deduped by window + habit pair with sample_dates and up to 3 overlap_examples. Includes per-window conflict graph (top nodes by degree). Resolve window-by-window (initial_state → w1 → w2 → w3...), tackling highest-degree habits first.
 
-Each domain profile has this structure:
+# =================================================================================
+# DATA STRUCTURE REFERENCE
+# =================================================================================
 
-{
-  "life_domain": "<domain_name>",
-  "initial_state": {
-    "user_attributes_state": {
-      "singular": {
-        "<attribute_name>": "<value_string>",
-        ...
-      },
-      "collections": {
-        "<collection_name>": ["<item_1>", "<item_2>", ...],
-        ...
-      }
-    },
-    "habits_state": {
-      "initial": {
-        "<habit_name>": {
-          "action": "...",
-          "schedule": {
-            "frequency_type": "daily | weekly | biweekly | monthly_by_date | monthly_nth_weekday",
-            "...": "required schedule fields"
-          },
-          "timing": {"start_time": "HH:MM", "end_time": "HH:MM"},
-          "context": "...",
-          "priority": "critical | high | medium | low",
-          "description": "..."
-        },
-        ...
-      }
-    },
-    "preferences_state": {
-      "initial": {
-        "<preference_name>": {
-          "statement": "...",
-          "signals": ["...", "..."]
-        },
-        ...
-      }
-    }
-  },
-  "time_windows": [
-    {
-      "window_id": "w1",
-      "user_attributes_delta": {
-        "operations": [
-          {
-            "op": "modify" | "add" | "remove",
-            "attribute_type": "singular" | "collections",
-            "attribute_name" | "collection_name": "...",
-            "delta": <value>,
-            "reason": "..."
-          }
-        ]
-      },
-      "habits_delta": { ... },
-      "preferences_delta": { ... }
-    }
-  ]
-}
+# Each domain profile has this structure:
 
-=================================================================================
-CONFLICT TYPE 1: ATTRIBUTE CONFLICT
-=================================================================================
+# {
+#   "life_domain": "<domain_name>",
+#   "initial_state": {
+#     "user_attributes_state": {
+#       "singular": {
+#         "<attribute_name>": "<value_string>",
+#         ...
+#       },
+#       "collections": {
+#         "<collection_name>": ["<item_1>", "<item_2>", ...],
+#         ...
+#       }
+#     },
+#     "habits_state": {
+#       "initial": {
+#         "<habit_name>": {
+#           "action": "...",
+#           "schedule": {
+#             "frequency_type": "daily | weekly | biweekly | monthly_by_date | monthly_nth_weekday",
+#             "...": "required schedule fields"
+#           },
+#           "timing": {"start_time": "HH:MM", "end_time": "HH:MM"},
+#           "context": "...",
+#           "priority": "critical | high | medium | low",
+#         },
+#         ...
+#       }
+#     },
+#     "preferences_state": {
+#       "initial": {
+#         "<preference_name>": {
+#           "statement": "...",
+#           "signals": ["...", "..."]
+#         },
+#         ...
+#       }
+#     }
+#   },
+#   "time_windows": [
+#     {
+#       "window_id": "w1",
+#       "user_attributes_delta": {
+#         "operations": [
+#           {
+#             "op": "modify" | "add" | "remove",
+#             "attribute_type": "singular" | "collections",
+#             "attribute_name" | "collection_name": "...",
+#             "delta": <value>,
+#             "reason": "..."
+#           }
+#         ]
+#       },
+#       "habits_delta": { ... },
+#       "preferences_delta": { ... }
+#     }
+#   ]
+# }
 
-## Definition & Detection
+# =================================================================================
+# CONFLICT TYPE 1: ATTRIBUTE CONFLICT
+# =================================================================================
 
-**For Singular Attributes:**
-If the same singular attribute key exists in multiple domains with DIFFERENT values in the SAME window (including initial_state), it is a conflict.
+# ## Definition & Detection
 
-Path format: `<domain>.initial_state.user_attributes_state.singular.<attribute_name>`
+# **For Singular Attributes:**
+# If the same singular attribute key exists in multiple domains with DIFFERENT values in the SAME window (including initial_state), it is a conflict.
 
-<Example>
-Job Title Conflict:
-// Domain: Work & Education @ initial_state.user_attributes_state.singular
-"primary_job": "Director of Product Management"
+# Path format: `<domain>.initial_state.user_attributes_state.singular.<attribute_name>`
 
-// Domain: Finances & Material Living @ initial_state.user_attributes_state.singular
-"primary_job": "Senior Product Manager"
+# <Example>
+# Job Title Conflict:
+# // Domain: Work & Education @ initial_state.user_attributes_state.singular
+# "primary_job": "Director of Product Management"
 
-→ CONFLICT: Same singular attribute key, different values across domains
-</Example>
+# // Domain: Finances & Material Living @ initial_state.user_attributes_state.singular
+# "primary_job": "Senior Product Manager"
 
-**For Collection Attributes:**
-If the same collection key exists in multiple domains, the collections themselves are NOT automatically a conflict (they can coexist in different domains). However, if individual items WITHIN the collections are contradictory OR overlapping, it IS a conflict.
+# → CONFLICT: Same singular attribute key, different values across domains
+# </Example>
 
-Path format: `<domain>.initial_state.user_attributes_state.collections.<collection_name>`
+# **For Collection Attributes:**
+# If the same collection key exists in multiple domains, the collections themselves are NOT automatically a conflict (they can coexist in different domains). However, if individual items WITHIN the collections are contradictory OR overlapping, it IS a conflict.
 
-**Understanding Contradictory Items (Category Exclusivity):**
-Contradictory items belong to the same device/product category where a user typically owns only ONE primary item. Common exclusive categories include:
-- Smartphones: User has one primary phone (e.g., "iPhone 14" OR "Google Pixel 7", not both)
-- Laptops: User has one primary laptop (e.g., "MacBook Pro" OR "Lenovo ThinkPad", not both)
-- Tablets: User has one primary tablet (e.g., "iPad Pro" OR "Samsung Galaxy Tab", not both)
-- Fitness trackers: User wears one primary tracker (e.g., "Apple Watch" OR "Fitbit", not both)
+# Path format: `<domain>.initial_state.user_attributes_state.collections.<collection_name>`
 
-**Understanding Overlapping Items (Exact Duplicates):**
-Overlapping items are the EXACT SAME item (or highly similar description) listed in multiple domains.
+# **Understanding Contradictory Items (Category Exclusivity):**
+# Contradictory items belong to the same device/product category where a user typically owns only ONE primary item. Common exclusive categories include:
+# - Smartphones: User has one primary phone (e.g., "iPhone 14" OR "Google Pixel 7", not both)
+# - Laptops: User has one primary laptop (e.g., "MacBook Pro" OR "Lenovo ThinkPad", not both)
+# - Tablets: User has one primary tablet (e.g., "iPad Pro" OR "Samsung Galaxy Tab", not both)
+# - Fitness trackers: User wears one primary tracker (e.g., "Apple Watch" OR "Fitbit", not both)
 
-<Example>
-Device Inventory - Contradictory Items:
-// Domain A: Technology & Digital Life
-collections.owned_devices: [
-  "iPhone 14 (smartphone for daily communication)",
-  "MacBook Pro 2021 (laptop for development work)"
-]
+# **Understanding Overlapping Items (Exact Duplicates):**
+# Overlapping items are the EXACT SAME item (or highly similar description) listed in multiple domains.
 
-// Domain B: Work & Education
-collections.work_devices: [
-  "Google Pixel 7 (Android phone for work)",
-  "Lenovo ThinkPad X1 (work laptop)"
-]
+# <Example>
+# Device Inventory - Contradictory Items:
+# // Domain A: Technology & Digital Life
+# collections.owned_devices: [
+#   "iPhone 14 (smartphone for daily communication)",
+#   "MacBook Pro 2021 (laptop for development work)"
+# ]
 
-→ CONFLICT: Collections contain contradictory items within the same device category
-   - "iPhone 14" (Domain A) vs "Google Pixel 7" (Domain B): Both are smartphones
-   - "MacBook Pro" (Domain A) vs "Lenovo ThinkPad" (Domain B): Both are laptops
+# // Domain B: Work & Education
+# collections.work_devices: [
+#   "Google Pixel 7 (Android phone for work)",
+#   "Lenovo ThinkPad X1 (work laptop)"
+# ]
 
-Resolution Approach:
-   - Evaluate which devices are more reasonable based on user's basic profile
-   - If user profile indicates Apple ecosystem preference:
-     * Keep "iPhone 14" and "MacBook Pro" in Domain A
-     * REMOVE "Google Pixel 7" from Domain B's collection
-     * REMOVE "Lenovo ThinkPad" from Domain B's collection
-</Example>
+# → CONFLICT: Collections contain contradictory items within the same device category
+#    - "iPhone 14" (Domain A) vs "Google Pixel 7" (Domain B): Both are smartphones
+#    - "MacBook Pro" (Domain A) vs "Lenovo ThinkPad" (Domain B): Both are laptops
 
-<Example>
-Device Inventory - Overlapping Items:
-// Domain A: Technology & Digital Life
-collections.owned_devices: [
-  "iPhone 14 (smartphone for daily communication)",
-  "MacBook Pro 2021 (laptop)"
-]
+# Resolution Approach:
+#    - Evaluate which devices are more reasonable based on user's basic profile
+#    - If user profile indicates Apple ecosystem preference:
+#      * Keep "iPhone 14" and "MacBook Pro" in Domain A
+#      * REMOVE "Google Pixel 7" from Domain B's collection
+#      * REMOVE "Lenovo ThinkPad" from Domain B's collection
+# </Example>
 
-// Domain B: Finances & Material Living
-collections.tracked_assets: [
-  "iPhone 14 (smartphone)",
-  "AirPods Pro (wireless earbuds)"
-]
+# <Example>
+# Device Inventory - Overlapping Items:
+# // Domain A: Technology & Digital Life
+# collections.owned_devices: [
+#   "iPhone 14 (smartphone for daily communication)",
+#   "MacBook Pro 2021 (laptop)"
+# ]
 
-→ OVERLAP CONFLICT: "iPhone 14" appears in both domains
-Resolution: Keep in MOST AUTHORITATIVE domain (Technology) and remove from other domain (Finances)
-</Example>
+# // Domain B: Finances & Material Living
+# collections.tracked_assets: [
+#   "iPhone 14 (smartphone)",
+#   "AirPods Pro (wireless earbuds)"
+# ]
 
-<Example>
-Subscription Coexistence (**NOT a conflict**):
-// Domain A: Entertainment & Leisure
-collections.streaming_subscriptions: [
-  "Netflix Standard (streaming service)",
-  "Spotify Premium (music streaming)"
-]
+# → OVERLAP CONFLICT: "iPhone 14" appears in both domains
+# Resolution: Keep in MOST AUTHORITATIVE domain (Technology) and remove from other domain (Finances)
+# </Example>
 
-// Domain B: Learning & Personal Growth
-collections.learning_subscriptions: [
-  "O'Reilly Media (technical learning platform)"
-]
+# <Example>
+# Subscription Coexistence (**NOT a conflict**):
+# // Domain A: Entertainment & Leisure
+# collections.streaming_subscriptions: [
+#   "Netflix Standard (streaming service)",
+#   "Spotify Premium (music streaming)"
+# ]
 
-→ NO CONFLICT: All items are unique across domains. User can have all simultaneously.
-</Example>
+# // Domain B: Learning & Personal Growth
+# collections.learning_subscriptions: [
+#   "O'Reilly Media (technical learning platform)"
+# ]
 
-**Key Distinction:**
-- Collection attributes can exist in multiple domains (no automatic merging)
-- **Contradictory items** = mutually exclusive items (competing devices, incompatible plans)
-- **Overlapping items** = exact duplicates appearing in multiple domains
-- When items are contradictory, identify and drop the less reasonable items
-- When items overlap, keep in the MOST AUTHORITATIVE domain and remove from others
+# → NO CONFLICT: All items are unique across domains. User can have all simultaneously.
+# </Example>
 
----
+# **Key Distinction:**
+# - Collection attributes can exist in multiple domains (no automatic merging)
+# - **Contradictory items** = mutually exclusive items (competing devices, incompatible plans)
+# - **Overlapping items** = exact duplicates appearing in multiple domains
+# - When items are contradictory, identify and drop the less reasonable items
+# - When items overlap, keep in the MOST AUTHORITATIVE domain and remove from others
 
-## Resolution Strategies
+# ---
 
-**For Singular Attributes:**
-1. Analyze all conflicting values across domains
-2. Select the MOST REASONABLE value based on:
-   - Consistency with user's basic profile
-   - Domain authority (e.g., "Work & Education" is authoritative for job_title)
-3. Update ALL domains to use the selected canonical value
-4. Document which values were dropped and why
+# ## Resolution Strategies
 
-**For Collection Attributes:**
-1. Identify specific ITEMS within collections that are contradictory or overlapping
-2. For **contradictory items**: Evaluate each for reasonableness and drop the less reasonable ones
-3. For **overlapping items**: Determine the most authoritative domain and remove duplicates from other domains
-4. Keep collections separate per domain; do NOT merge across domains
-5. Use "remove" operation targeting specific array indices
+# **For Singular Attributes:**
+# 1. Analyze all conflicting values across domains
+# 2. Select the MOST REASONABLE value based on:
+#    - Consistency with user's basic profile
+#    - Domain authority (e.g., "Work & Education" is authoritative for job_title)
+# 3. Update ALL domains to use the selected canonical value
+# 4. Document which values were dropped and why
 
-<Example>
-Before:
-  Domain A "Technology & Digital Life" - collections.owned_devices:
-    ["iPhone 14 (smartphone)", "MacBook Pro (laptop)", "AirPods Pro (earbuds)"]
+# **For Collection Attributes:**
+# 1. Identify specific ITEMS within collections that are contradictory or overlapping
+# 2. For **contradictory items**: Evaluate each for reasonableness and drop the less reasonable ones
+# 3. For **overlapping items**: Determine the most authoritative domain and remove duplicates from other domains
+# 4. Keep collections separate per domain; do NOT merge across domains
+# 5. Use "remove" operation targeting specific array indices
+
+# <Example>
+# Before:
+#   Domain A "Technology & Digital Life" - collections.owned_devices:
+#     ["iPhone 14 (smartphone)", "MacBook Pro (laptop)", "AirPods Pro (earbuds)"]
   
-  Domain B "Work & Education" - collections.work_devices:
-    ["Google Pixel 7 (work phone)", "iPad Pro (tablet)", "AirPods Pro (earbuds)"]
+#   Domain B "Work & Education" - collections.work_devices:
+#     ["Google Pixel 7 (work phone)", "iPad Pro (tablet)", "AirPods Pro (earbuds)"]
 
-Analysis: 
-  - "iPhone 14" vs "Google Pixel 7": Contradictory (mutually exclusive phones)
-  - "AirPods Pro": Overlapping (duplicate in both domains)
+# Analysis: 
+#   - "iPhone 14" vs "Google Pixel 7": Contradictory (mutually exclusive phones)
+#   - "AirPods Pro": Overlapping (duplicate in both domains)
 
-Resolution (if user prefers Apple ecosystem):
-  Domain A: Keep as-is
-  Domain B: Remove contradictions and overlaps
+# Resolution (if user prefers Apple ecosystem):
+#   Domain A: Keep as-is
+#   Domain B: Remove contradictions and overlaps
   
-Patches:
-  [
-    {
-      "domain": "Work & Education",
-      "window_id": "initial",
-      "path": "user_attributes_state.collections.work_devices[0]",
-      "operation": "remove",
-      "reason": "Remove contradictory phone - user has iPhone 14 as primary device"
-    },
-    {
-      "domain": "Work & Education",
-      "window_id": "initial",
-      "path": "user_attributes_state.collections.work_devices[2]",
-      "operation": "remove",
-      "reason": "Remove duplicate AirPods - already tracked in Technology domain"
-    }
-  ]
-</Example>
+# Patches:
+#   [
+#     {
+#       "domain": "Work & Education",
+#       "window_id": "initial",
+#       "path": "user_attributes_state.collections.work_devices[0]",
+#       "operation": "remove",
+#       "reason": "Remove contradictory phone - user has iPhone 14 as primary device"
+#     },
+#     {
+#       "domain": "Work & Education",
+#       "window_id": "initial",
+#       "path": "user_attributes_state.collections.work_devices[2]",
+#       "operation": "remove",
+#       "reason": "Remove duplicate AirPods - already tracked in Technology domain"
+#     }
+#   ]
+# </Example>
 
-**Priority Rules for Determining Authoritative Domain (for overlapping items):**
-1. If an item naturally belongs to a domain's core purpose (e.g., "work_laptop" in Work & Education), that domain is authoritative
-2. For general items (devices, subscriptions), prioritize:
-   - Dedicated domain (e.g., "Technology & Digital Life" for devices)
-   - Financial tracking domain (e.g., "Finances & Material Living" for subscriptions)
-   - Context-specific domain (e.g., "Health & Wellness" for fitness devices)
-3. When in doubt, keep the item in the domain with more contextual detail
+# **Priority Rules for Determining Authoritative Domain (for overlapping items):**
+# 1. If an item naturally belongs to a domain's core purpose (e.g., "work_laptop" in Work & Education), that domain is authoritative
+# 2. For general items (devices, subscriptions), prioritize:
+#    - Dedicated domain (e.g., "Technology & Digital Life" for devices)
+#    - Financial tracking domain (e.g., "Finances & Material Living" for subscriptions)
+#    - Context-specific domain (e.g., "Health & Wellness" for fitness devices)
+# 3. When in doubt, keep the item in the domain with more contextual detail
 
----
+# ---
 
-=================================================================================
-CONFLICT TYPE 2: TEMPORAL COLLISION
-=================================================================================
+# =================================================================================
+# CONFLICT TYPE 2: TEMPORAL COLLISION
+# =================================================================================
 
-## Definition & Detection
+# ## Definition & Detection
 
-**Definition**: User cannot physically perform two activities at the same time
+# **Definition**: User cannot physically perform two activities at the same time
 
-Habits are stored in: `initial_state.habits_state.initial.<habit_name>`
-Each habit has fields: `action`, `schedule` (frequency_type + required fields), `timing` (start_time + end_time), `context`, `priority`, `description`
+# Habits are stored in: `initial_state.habits_state.<habit_name>`
+# Each habit has fields: `action`, `schedule` (frequency_type + required fields), `timing` (start_time + end_time), `context`, `priority`, `description`
 
-**Sub-types:**
+# **Sub-types:**
 
-### 2a. Direct Time Overlap
+# ### 2a. Direct Time Overlap
 
-<Example>
-Domain A - habit_weekly_class:
-  schedule: {"frequency_type": "weekly", "days_of_week": [2]}
-  timing: {"start_time": "19:00", "end_time": "20:00"}
+# <Example>
+# Domain A - habit_weekly_class:
+#   schedule: {"frequency_type": "weekly", "days_of_week": [2]}
+#   timing: {"start_time": "19:00", "end_time": "20:00"}
 
-Domain B - habit_team_meeting:
-  schedule: {"frequency_type": "weekly", "days_of_week": [2]}
-  timing: {"start_time": "19:00", "end_time": "21:00"}
+# Domain B - habit_team_meeting:
+#   schedule: {"frequency_type": "weekly", "days_of_week": [2]}
+#   timing: {"start_time": "19:00", "end_time": "21:00"}
 
-→ CONFLICT: Overlapping time blocks on the same day
-</Example>
+# → CONFLICT: Overlapping time blocks on the same day
+# </Example>
 
-### 2b. Frequency Saturation
+# ### 2b. Frequency Saturation
 
-<Example>
-Domain A - habit_morning_gym:
-  schedule: {"frequency_type": "daily"}
-  timing: {"start_time": "08:30", "end_time": "09:00"}
+# <Example>
+# Domain A - habit_morning_gym:
+#   schedule: {"frequency_type": "daily"}
+#   timing: {"start_time": "08:30", "end_time": "09:00"}
 
-Domain B - habit_commute:
-  schedule: {"frequency_type": "daily"}
-  timing: {"start_time": "08:00", "end_time": "09:00"}
+# Domain B - habit_commute:
+#   schedule: {"frequency_type": "daily"}
+#   timing: {"start_time": "08:00", "end_time": "09:00"}
 
-Domain C - habit_breakfast_prep:
-  schedule: {"frequency_type": "daily"}
-  timing: {"start_time": "08:45", "end_time": "09:15"}
+# Domain C - habit_breakfast_prep:
+#   schedule: {"frequency_type": "daily"}
+#   timing: {"start_time": "08:45", "end_time": "09:15"}
 
-→ CONFLICT: Same day (daily), overlapping times
-</Example>
+# → CONFLICT: Same day (daily), overlapping times
+# </Example>
 
----
+# ---
 
-## Resolution Strategies
+# ## Resolution Strategies
 
-**Option 1: Shift Timing**
-Modify the habit's `timing` field to a different time slot.
+# **Option 1: Shift Timing**
+# Modify the habit's `timing` field to a different time slot.
 
-<Example>
-Patch to shift timing:
-{
-  "domain": "Domain A",
-  "window_id": "initial",
-  "path": "habits_state.initial.habit_weekly_class.timing",
-  "operation": "replace",
-  "new_value": {"start_time": "20:00", "end_time": "21:00"},
-  "reason": "Shifted later in the evening to avoid conflict with team meeting"
-}
-</Example>
+# <Example>
+# Patch to shift timing:
+# {
+#   "domain": "Domain A",
+#   "window_id": "initial",
+#   "path": "habits_state.habit_weekly_class.timing",
+#   "operation": "replace",
+#   "new_value": {"start_time": "20:00", "end_time": "21:00"},
+#   "reason": "Shifted later in the evening to avoid conflict with team meeting"
+# }
+# </Example>
 
-**Option 2: Reduce Frequency**
-Modify the habit's `schedule.frequency_type` (and days if needed) to create space.
+# **Option 2: Reduce Frequency**
+# Modify the habit's `schedule.frequency_type` (and days if needed) to create space.
 
-<Example>
-Patch to reduce frequency:
-{
-  "domain": "Domain B",
-  "window_id": "initial",
-  "path": "habits_state.initial.habit_team_meeting.schedule",
-  "operation": "replace",
-  "new_value": {"frequency_type": "biweekly", "days_of_week": [2], "start_date": "2024-01-03"},
-  "reason": "Reduced from weekly to bi-weekly to accommodate other Wednesday commitments"
-}
-</Example>
+# <Example>
+# Patch to reduce frequency:
+# {
+#   "domain": "Domain B",
+#   "window_id": "initial",
+#   "path": "habits_state.habit_team_meeting.schedule",
+#   "operation": "replace",
+#   "new_value": {"frequency_type": "biweekly", "days_of_week": [2], "start_date": "2024-01-03"},
+#   "reason": "Reduced from weekly to bi-weekly to accommodate other Wednesday commitments"
+# }
+# </Example>
 
-**Option 3: Remove Lower-Priority Habit**
-If timing adjustment is impractical, remove the entire habit.
+# **Option 3: Remove Lower-Priority Habit**
+# If timing adjustment is impractical, remove the entire habit.
 
-<Example>
-Patch to remove habit:
-{
-  "domain": "Domain C",
-  "window_id": "initial",
-  "path": "habits_state.initial.habit_breakfast_prep",
-  "operation": "remove",
-  "reason": "Removed lower-priority breakfast habit due to morning schedule conflicts"
-}
-</Example>
+# <Example>
+# Patch to remove habit:
+# {
+#   "domain": "Domain C",
+#   "window_id": "initial",
+#   "path": "habits_state.habit_breakfast_prep",
+#   "operation": "remove",
+#   "reason": "Removed lower-priority breakfast habit due to morning schedule conflicts"
+# }
+# </Example>
 
----
+# ---
 
-=================================================================================
-CONFLICT TYPE 3: SCHEDULE OVERLOAD/UNREASONABLE
-=================================================================================
+# =================================================================================
+# CONFLICT TYPE 3: SCHEDULE OVERLOAD/UNREASONABLE
+# =================================================================================
 
-## Definition & Detection
+# ## Definition & Detection
 
-**Definition**: While activities don't directly overlap, the overall schedule is unrealistically packed
+# **Definition**: While activities don't directly overlap, the overall schedule is unrealistically packed
 
-**Detection Criteria:**
+# **Detection Criteria:**
 
-### 3a. Single Time Slot Overcrowding
-Multiple habits scheduled for the same general time period (e.g., "Saturday morning", "weekday evenings")
+# ### 3a. Single Time Slot Overcrowding
+# Multiple habits scheduled for the same general time period (e.g., "Saturday morning", "weekday evenings")
 
-<Example>
-Saturday morning habits across domains:
-- Domain A: habit_grocery_shopping (9:00-10:30 AM)
-- Domain B: habit_family_breakfast (9:00-11:00 AM)
-- Domain C: habit_soccer_practice (9:00-10:00 AM)
-- Domain D: habit_home_cleaning (8:00-10:00 AM)
-- Domain E: habit_yoga_class (9:30-10:30 AM)
+# <Example>
+# Saturday morning habits across domains:
+# - Domain A: habit_grocery_shopping (9:00-10:30 AM)
+# - Domain B: habit_family_breakfast (9:00-11:00 AM)
+# - Domain C: habit_soccer_practice (9:00-10:00 AM)
+# - Domain D: habit_home_cleaning (8:00-10:00 AM)
+# - Domain E: habit_yoga_class (9:30-10:30 AM)
 
-→ UNREASONABLE: Five activities in a 2-hour window
-</Example>
+# → UNREASONABLE: Five activities in a 2-hour window
+# </Example>
 
-### 3b. Daily/Weekly Time Budget Exhaustion
-Total time commitment leaves no room for:
-- Work/sleep (assume ~8 hours each for working adults)
-- Meals and basic routines
-- Buffer time and flexibility
-- Unscheduled downtime
+# ### 3b. Daily/Weekly Time Budget Exhaustion
+# Total time commitment leaves no room for:
+# - Work/sleep (assume ~8 hours each for working adults)
+# - Meals and basic routines
+# - Buffer time and flexibility
+# - Unscheduled downtime
 
-<Example>
-Daily habits totaling 16+ hours plus 8 hours sleep = 24 hours with ZERO buffer
-→ UNREASONABLE
-</Example>
+# <Example>
+# Daily habits totaling 16+ hours plus 8 hours sleep = 24 hours with ZERO buffer
+# → UNREASONABLE
+# </Example>
 
-### 3c. Frequency Overlap Within Same Time Slot
-Multiple "daily" or high-frequency habits scheduled for the same time-of-day
+# ### 3c. Frequency Overlap Within Same Time Slot
+# Multiple "daily" or high-frequency habits scheduled for the same time-of-day
 
-<Example>
-"Every weekday evening after work" across domains:
-- Domain A: gym_session (daily, 6:00-7:30 PM)
-- Domain B: online_course (3x/week, 6:30-8:00 PM)
-- Domain C: family_dinner_prep (daily, 6:00-7:00 PM)
+# <Example>
+# "Every weekday evening after work" across domains:
+# - Domain A: gym_session (daily, 6:00-7:30 PM)
+# - Domain B: online_course (3x/week, 6:30-8:00 PM)
+# - Domain C: family_dinner_prep (daily, 6:00-7:00 PM)
 
-→ UNREASONABLE: Combined pattern is implausible
-</Example>
+# → UNREASONABLE: Combined pattern is implausible
+# </Example>
 
----
+# ---
 
-## Resolution Strategies
+# ## Resolution Strategies
 
-**Guiding Principle**: Ensure the profile represents a REALISTIC, SUSTAINABLE human lifestyle
+# **Guiding Principle**: Ensure the profile represents a REALISTIC, SUSTAINABLE human lifestyle
 
-**Step 1: Assess Priority**
-Rank activities using user's basic profile and domain context:
-- Core needs (work, sleep, meals) > social commitments > hobbies
-- Health-critical activities > optional recreation
-- Recurring commitments > flexible activities
+# **Step 1: Assess Priority**
+# Rank activities using user's basic profile and domain context:
+# - Core needs (work, sleep, meals) > social commitments > hobbies
+# - Health-critical activities > optional recreation
+# - Recurring commitments > flexible activities
 
-**Step 2: Apply Thinning Strategy**
+# **Step 2: Apply Thinning Strategy**
 
-**Option A: Reduce Frequency**
-<Example>
-Patches:
-[
-  {
-    "domain": "Health & Wellness",
-    "window_id": "initial",
-    "path": "habits_state.initial.morning_run.schedule",
-    "operation": "replace",
-    "new_value": {"frequency_type": "weekly", "days_of_week": [0, 2, 4, 5]},
-    "reason": "Reduced from daily to 4x/week to create schedule space while keeping fixed days"
-  },
-  {
-    "domain": "Fitness & Exercise",
-    "window_id": "initial",
-    "path": "habits_state.initial.yoga_class.schedule",
-    "operation": "replace",
-    "new_value": {"frequency_type": "weekly", "days_of_week": [1, 4]},
-    "reason": "Reduced from 3x/week to 2x/week due to overall schedule density"
-  }
-]
-</Example>
+# **Option A: Reduce Frequency**
+# <Example>
+# Patches:
+# [
+#   {
+#     "domain": "Health & Wellness",
+#     "window_id": "initial",
+#     "path": "habits_state.morning_run.schedule",
+#     "operation": "replace",
+#     "new_value": {"frequency_type": "weekly", "days_of_week": [0, 2, 4, 5]},
+#     "reason": "Reduced from daily to 4x/week to create schedule space while keeping fixed days"
+#   },
+#   {
+#     "domain": "Fitness & Exercise",
+#     "window_id": "initial",
+#     "path": "habits_state.yoga_class.schedule",
+#     "operation": "replace",
+#     "new_value": {"frequency_type": "weekly", "days_of_week": [1, 4]},
+#     "reason": "Reduced from 3x/week to 2x/week due to overall schedule density"
+#   }
+# ]
+# </Example>
 
-**Option B: Shift to Different Time Slots**
-<Example>
-Patches:
-[
-  {
-    "domain": "Home & Living",
-    "window_id": "initial",
-    "path": "habits_state.initial.home_cleaning.timing",
-    "operation": "replace",
-    "new_value": {"start_time": "18:00", "end_time": "20:00"},
-    "reason": "Shifted from Saturday morning to Friday evening to reduce weekend congestion"
-  }
-]
-</Example>
+# **Option B: Shift to Different Time Slots**
+# <Example>
+# Patches:
+# [
+#   {
+#     "domain": "Home & Living",
+#     "window_id": "initial",
+#     "path": "habits_state.home_cleaning.timing",
+#     "operation": "replace",
+#     "new_value": {"start_time": "18:00", "end_time": "20:00"},
+#     "reason": "Shifted from Saturday morning to Friday evening to reduce weekend congestion"
+#   }
+# ]
+# </Example>
 
-**Option C: Remove Lower-Priority Habits**
-<Example>
-Patch:
-{
-  "domain": "Entertainment & Leisure",
-  "window_id": "initial",
-  "path": "habits_state.initial.podcast_listening",
-  "operation": "remove",
-  "reason": "Removed low-priority habit due to weekday evening overload; user can listen during commute instead"
-}
-</Example>
+# **Option C: Remove Lower-Priority Habits**
+# <Example>
+# Patch:
+# {
+#   "domain": "Entertainment & Leisure",
+#   "window_id": "initial",
+#   "path": "habits_state.podcast_listening",
+#   "operation": "remove",
+#   "reason": "Removed low-priority habit due to weekday evening overload; user can listen during commute instead"
+# }
+# </Example>
 
-**Step 3: Validate Reasonableness**
-After adjustments, verify:
-- No single time slot has more than 2-3 activities per week
-- Daily total time commitment leaves at least 2-3 hours unscheduled buffer
-- At least 1-2 free evenings per week
-- Weekend includes some unstructured time
+# **Step 3: Validate Reasonableness**
+# After adjustments, verify:
+# - No single time slot has more than 2-3 activities per week
+# - Daily total time commitment leaves at least 2-3 hours unscheduled buffer
+# - At least 1-2 free evenings per week
+# - Weekend includes some unstructured time
 
----
+# ---
 
-=================================================================================
-CRITICAL: CASCADE CHANGES ACROSS WINDOWS
-=================================================================================
+# =================================================================================
+# CRITICAL: CASCADE CHANGES ACROSS WINDOWS
+# =================================================================================
 
-Since this is a dynamic profile with temporal evolution, resolving a conflict in initial_state may affect subsequent time_windows. When generating patches, carefully consider the ripple effects:
+# Since this is a dynamic profile with temporal evolution, resolving a conflict in initial_state may affect subsequent time_windows. When generating patches, carefully consider the ripple effects:
 
-- If you adjust a habit's timing in `initial_state`, check if any time_windows have operations that reference that habit
-- If a time_window delta modifies the adjusted habit, verify the modification is still coherent
-- Ensure consistency: if you change "Tuesday 7pm" to "Monday 7pm" in initial_state, and w2 says "adjust timing to 8pm", the w2 operation should reflect "Monday 8pm" not "Tuesday 8pm"
+# - If you adjust a habit's timing in `initial_state`, check if any time_windows have operations that reference that habit
+# - If a time_window delta modifies the adjusted habit, verify the modification is still coherent
+# - Ensure consistency: if you change "Tuesday 7pm" to "Monday 7pm" in initial_state, and w2 says "adjust timing to 8pm", the w2 operation should reflect "Monday 8pm" not "Tuesday 8pm"
 
-<Example>
-Initial state: habit_yoga timing = {"start_time": "19:00", "end_time": "20:00"} with schedule {"frequency_type": "weekly", "days_of_week": [1]}  // Tuesday
-Window w2: adjust habit_yoga timing delta = {"timing": {"start_time": "20:00", "end_time": "21:00"}}
+# <Example>
+# Initial state: habit_yoga timing = {"start_time": "19:00", "end_time": "20:00"} with schedule {"frequency_type": "weekly", "days_of_week": [1]}  // Tuesday
+# Window w2: adjust habit_yoga timing delta = {"timing": {"start_time": "20:00", "end_time": "21:00"}}
 
-If you resolve a conflict by changing initial to Monday (schedule.days_of_week = [0]):
-→ You may need to patch w2 to clarify the adjusted timing still applies on Monday
-→ OR add a note to the resolution explaining the inherited context
-</Example>
+# If you resolve a conflict by changing initial to Monday (schedule.days_of_week = [0]):
+# → You may need to patch w2 to clarify the adjusted timing still applies on Monday
+# → OR add a note to the resolution explaining the inherited context
+# </Example>
 
-However, in most cases, delta operations inherit the day context from the initial state, so only the time portion changes. Be judicious about whether cascade patches are truly needed.
+# However, in most cases, delta operations inherit the day context from the initial state, so only the time portion changes. Be judicious about whether cascade patches are truly needed.
 
-=================================================================================
-CRITICAL REQUIREMENTS
-=================================================================================
+# =================================================================================
+# CRITICAL REQUIREMENTS
+# =================================================================================
 
-1. **Window-specific**: Each patch must specify exact window_id ("initial" for initial_state, "w1", "w2", etc. for time_windows)
-2. **Minimal but sufficient changes**: Only patch what's necessary, but ensure profile is livable
-3. **Preserve structure**: Don't change data types (string→string, array→array)
-4. **Cascade awareness**: When modifying habits in initial_state, check and update references in subsequent time_windows if necessary
-5. **One patch per change**: Don't combine multiple operations in one patch
-6. **Clear reasoning**: Always include "reason" field explaining the resolution
-7. **Holistic validation**: After resolving individual conflicts, validate that the overall schedule is reasonable
-8. **Correct paths**: Use the new structure paths:
-   - Singular: `user_attributes_state.singular.<attr_name>`
-   - Collections: `user_attributes_state.collections.<collection_name>[<index>]`
-   - Habits: `habits_state.initial.<habit_name>.<field>`
+# 1. **Window-specific**: Each patch must specify exact window_id ("initial" for initial_state, "w1", "w2", etc. for time_windows)
+# 2. **Minimal but sufficient changes**: Only patch what's necessary, but ensure profile is livable
+# 3. **Preserve structure**: Don't change data types (string→string, array→array)
+# 4. **Cascade awareness**: When modifying habits in initial_state, check and update references in subsequent time_windows if necessary
+# 5. **One patch per change**: Don't combine multiple operations in one patch
+# 6. **Clear reasoning**: Always include "reason" field explaining the resolution
+# 7. **Holistic validation**: After resolving individual conflicts, validate that the overall schedule is reasonable
+# 8. **Correct paths**: Use the new structure paths:
+#    - Singular: `user_attributes_state.singular.<attr_name>`
+#    - Collections: `user_attributes_state.collections.<collection_name>[<index>]`
+#    - Habits: `habits_state.<habit_name>.<field>`
 
-=================================================================================
-PATCH FORMAT GUIDE
-=================================================================================
+# =================================================================================
+# PATCH FORMAT GUIDE
+# =================================================================================
 
-**Path format:**
-Use dot notation with array indices where applicable:
-- For singular attributes: `"user_attributes_state.singular.primary_job"`
-- For collection items: `"user_attributes_state.collections.owned_devices[2]"` (to target specific item)
-- For habit fields: `"habits_state.initial.morning_jog.timing"`
-- For entire habit: `"habits_state.initial.morning_jog"` (to remove entire habit)
+# **Path format:**
+# Use dot notation with array indices where applicable:
+# - For singular attributes: `"user_attributes_state.singular.primary_job"`
+# - For collection items: `"user_attributes_state.collections.owned_devices[2]"` (to target specific item)
+# - For habit fields: `"habits_state.morning_jog.timing"`
+# - For entire habit: `"habits_state.morning_jog"` (to remove entire habit)
 
-**Action types:**
+# **Action types:**
 
-1. **"remove"** - Delete an element from array or remove a key from object
+# 1. **"remove"** - Delete an element from array or remove a key from object
    
-   Remove item from collection by index:
-   {
-     "path": "user_attributes_state.collections.owned_devices[1]",
-     "operation": "remove",
-     "reason": "Remove contradictory device"
-   }
+#    Remove item from collection by index:
+#    {
+#      "path": "user_attributes_state.collections.owned_devices[1]",
+#      "operation": "remove",
+#      "reason": "Remove contradictory device"
+#    }
    
-   Remove entire habit:
-   {
-     "path": "habits_state.initial.habit_name",
-     "operation": "remove",
-     "reason": "Remove lower-priority habit due to schedule conflict"
-   }
+#    Remove entire habit:
+#    {
+#      "path": "habits_state.habit_name",
+#      "operation": "remove",
+#      "reason": "Remove lower-priority habit due to schedule conflict"
+#    }
 
-2. **"replace"** - Replace an existing value
+# 2. **"replace"** - Replace an existing value
    
-   Replace singular attribute value:
-   {
-     "path": "user_attributes_state.singular.primary_job",
-     "operation": "replace",
-     "new_value": "Director of Product Management",
-     "reason": "Align to canonical job title from Work domain"
-   }
+#    Replace singular attribute value:
+#    {
+#      "path": "user_attributes_state.singular.primary_job",
+#      "operation": "replace",
+#      "new_value": "Director of Product Management",
+#      "reason": "Align to canonical job title from Work domain"
+#    }
    
-   Replace habit timing:
-   {
-     "path": "habits_state.initial.morning_jog.timing",
-     "operation": "replace",
-     "new_value": "6:00-7:00 AM on weekdays",
-     "reason": "Shifted timing to avoid conflict with commute"
-   }
+#    Replace habit timing:
+#    {
+#      "path": "habits_state.morning_jog.timing",
+#      "operation": "replace",
+#      "new_value": "6:00-7:00 AM on weekdays",
+#      "reason": "Shifted timing to avoid conflict with commute"
+#    }
 
-3. **"append"** - Add to the end of an array (rarely used in conflict resolution)
-   {
-     "path": "user_attributes_state.collections.owned_devices",
-     "operation": "append",
-     "new_value": "iPad Pro (tablet for work)",
-     "reason": "Add missing device for completeness"
-   }
+# 3. **"append"** - Add to the end of an array (rarely used in conflict resolution)
+#    {
+#      "path": "user_attributes_state.collections.owned_devices",
+#      "operation": "append",
+#      "new_value": "iPad Pro (tablet for work)",
+#      "reason": "Add missing device for completeness"
+#    }
 
-=================================================================================
-OUTPUT FORMAT (STRICT JSON)
-=================================================================================
+# =================================================================================
+# OUTPUT FORMAT (STRICT JSON)
+# =================================================================================
 
-{
-  "conflicts_and_resolutions": [
-    {
-      "conflict": {
-        "type": "singular_conflict" | "collection_item_conflict" | "temporal_collision" | "schedule_overload",
-        "description": "<brief description of the conflict>",
-        "involved_data": [
-          {
-            "domain": "<domain_name>",
-            "window_id": "initial" | "w1" | "w2" | ...,
-            "path": "<full path to the conflicting element>",
-            "value": "<current value or description>"
-          },
-          ...
-        ]
-      },
-      "resolution": {
-        "strategy": "unify_singular_value" | "delete_contradictory_items" | "delete_overlapping_items" | "adjust_timing" | "reduce_frequency" | "drop_habit",
-        "explanation": "<detailed explanation of why this resolution was chosen>",
-        "patches": [
-          {
-            "domain": "<domain_name>",
-            "window_id": "initial" | "w1" | "w2" | ...,
-            "path": "<path to the element to modify>",
-            "operation": "remove" | "replace" | "append",
-            "new_value": <new value, if operation is replace or append>,
-            "reason": "<specific reason for this patch>"
-          },
-          ...
-        ]
-      }
-    },
-    ...
-  ]
-}
+# {
+#   "conflicts_and_resolutions": [
+#     {
+#       "conflict": {
+#         "type": "singular_conflict" | "collection_item_conflict" | "temporal_collision" | "schedule_overload",
+#         "description": "<brief description of the conflict>",
+#         "involved_data": [
+#           {
+#             "domain": "<domain_name>",
+#             "window_id": "initial" | "w1" | "w2" | ...,
+#             "path": "<full path to the conflicting element>",
+#             "value": "<current value or description>"
+#           },
+#           ...
+#         ]
+#       },
+#       "resolution": {
+#         "strategy": "unify_singular_value" | "delete_contradictory_items" | "delete_overlapping_items" | "adjust_timing" | "reduce_frequency" | "drop_habit",
+#         "explanation": "<detailed explanation of why this resolution was chosen>",
+#         "patches": [
+#           {
+#             "domain": "<domain_name>",
+#             "window_id": "initial" | "w1" | "w2" | ...,
+#             "path": "<path to the element to modify>",
+#             "operation": "remove" | "replace" | "append",
+#             "new_value": <new value, if operation is replace or append>,
+#             "reason": "<specific reason for this patch>"
+#           },
+#           ...
+#         ]
+#       }
+#     },
+#     ...
+#   ]
+# }
 
-**Example output:**
+# **Example output:**
 
-{
-  "conflicts_and_resolutions": [
-    {
-      "conflict": {
-        "type": "collection_item_conflict",
-        "description": "Contradictory smartphones found in Technology and Work domains",
-        "involved_data": [
-          {
-            "domain": "Technology & Digital Life",
-            "window_id": "initial",
-            "path": "user_attributes_state.collections.owned_devices[0]",
-            "value": "iPhone 14 (smartphone for daily communication)"
-          },
-          {
-            "domain": "Work & Education",
-            "window_id": "initial",
-            "path": "user_attributes_state.collections.work_devices[0]",
-            "value": "Google Pixel 7 (Android phone for work)"
-          }
-        ]
-      },
-      "resolution": {
-        "strategy": "delete_contradictory_items",
-        "explanation": "User's basic profile indicates preference for Apple ecosystem. Keep iPhone 14 as primary phone and remove the contradictory Google Pixel 7 from work devices.",
-        "patches": [
-          {
-            "domain": "Work & Education",
-            "window_id": "initial",
-            "path": "user_attributes_state.collections.work_devices[0]",
-            "operation": "remove",
-            "reason": "Remove contradictory phone - user has iPhone 14 as primary smartphone in Technology domain"
-          }
-        ]
-      }
-    }
-  ]
-}
+# {
+#   "conflicts_and_resolutions": [
+#     {
+#       "conflict": {
+#         "type": "collection_item_conflict",
+#         "description": "Contradictory smartphones found in Technology and Work domains",
+#         "involved_data": [
+#           {
+#             "domain": "Technology & Digital Life",
+#             "window_id": "initial",
+#             "path": "user_attributes_state.collections.owned_devices[0]",
+#             "value": "iPhone 14 (smartphone for daily communication)"
+#           },
+#           {
+#             "domain": "Work & Education",
+#             "window_id": "initial",
+#             "path": "user_attributes_state.collections.work_devices[0]",
+#             "value": "Google Pixel 7 (Android phone for work)"
+#           }
+#         ]
+#       },
+#       "resolution": {
+#         "strategy": "delete_contradictory_items",
+#         "explanation": "User's basic profile indicates preference for Apple ecosystem. Keep iPhone 14 as primary phone and remove the contradictory Google Pixel 7 from work devices.",
+#         "patches": [
+#           {
+#             "domain": "Work & Education",
+#             "window_id": "initial",
+#             "path": "user_attributes_state.collections.work_devices[0]",
+#             "operation": "remove",
+#             "reason": "Remove contradictory phone - user has iPhone 14 as primary smartphone in Technology domain"
+#           }
+#         ]
+#       }
+#     }
+#   ]
+# }
 
-Here are the temporal conflicts detected by code that you must resolve:
-{{ detected_temporal_conflicts_json }}
-""")
+# Here are the temporal conflicts detected by code that you must resolve:
+# {{ detected_temporal_conflicts_json }}
+# """)
 
 # {
 #       "conflict": {
@@ -2763,13 +2754,13 @@ Here are the temporal conflicts detected by code that you must resolve:
 #           {
 #             "domain": "Work & Education",
 #             "window_id": "initial",
-#             "path": "habits_state.initial.weekly_technical_upskilling.timing",
+#             "path": "habits_state.weekly_technical_upskilling.timing",
 #             "value": "Tuesday and Thursday evenings from 7:00-8:00 PM"
 #           },
 #           {
 #             "domain": "Health & Self-care",
 #             "window_id": "initial",
-#             "path": "habits_state.initial.indoor_cycling_sessions.timing",
+#             "path": "habits_state.indoor_cycling_sessions.timing",
 #             "value": "after work around 7:00 PM"
 #           }
 #         ]
@@ -2780,7 +2771,7 @@ Here are the temporal conflicts detected by code that you must resolve:
 #           {
 #             "domain": "Health & Self-care",
 #             "window_id": "initial",
-#             "path": "habits_state.initial.indoor_cycling_sessions.timing",
+#             "path": "habits_state.indoor_cycling_sessions.timing",
 #             "operation": "update",
 #             "old_value": "after work around 7:00 PM",
 #             "new_value": "after work around 8:00 PM",
@@ -2803,7 +2794,7 @@ Here are the temporal conflicts detected by code that you must resolve:
 #           {
 #             "domain": "Health & Self-care",
 #             "window_id": "initial",
-#             "path": "habits_state.initial.yoga_class.timing",
+#             "path": "habits_state.yoga_class.timing",
 #             "value": "Weekly Wednesday 7:30 PM"
 #           }
 #         ]
@@ -2854,20 +2845,23 @@ TASK DESCRIPTION
 
 **Input:**
 You will receive:
-1. Conflict information - details about the focus habit and which habits it conflicts with in the current window
+1. Conflict information - a list of conflicts with automatic ID, messages, and focus habit designation
 2. User basic profile - user's background and context
 3. Dynamic profiles - complete user dynamic profiles (all windows) that need patching
 
 **Goal:**
 Fix timing conflicts in the CURRENT window/state by generating patches to modify the **focus habit only**. You must:
-- Analyze all timing overlaps between the focus habit and conflicting habits within THIS window
-- Choose an appropriate resolution strategy
-- Generate patches to adjust the focus habit's schedule and/or timing
+- Each conflict entry has "focus_habit" and "conflicting_habit" fields
+- The focus habit is automatically selected as the one with the MOST conflicts in this window
+- You MUST ONLY modify the focus_habit - DO NOT edit the conflicting_habit
+- The conflict "message" field provides a clear description including locations and conflict type
+- Analyze all conflicts and generate patches to resolve them
 - Ensure semantic consistency with existing narratives
 
 **Important Context:**
-- You receive the FULL dynamic profiles (initial_state + all time_windows), but your task is to resolve conflicts ONLY in the current window specified in the conflict information
-- Focus solely on resolving conflicts within this window - subsequent windows will be handled in later iterations
+- The focus habit is already selected for you (the habit with the most conflicts)
+- Each conflict has an ID (e.g., "cross_domain_000") that you must reference in your fix
+- You receive the FULL dynamic profiles (initial_state + all time_windows), but your task is to resolve conflicts ONLY in the current window
 - When modifying habits, ensure your timing adjustments align with existing narrative context (operation reasons, window summaries)
 
 =================================================================================
@@ -2878,6 +2872,14 @@ DEFINITIONS
 - All times use 24-hour format (HH:MM)
 - timing field: {"start_time": "06:30", "end_time": "07:00"}
 - Duration (end - start) MUST NOT exceed 3 hours
+
+**Location-Based Conflict Rules:**
+- **Same location**: If two habits are at the SAME location, they conflict if their times overlap at all
+- **Different locations**: If two habits are at DIFFERENT locations, they need at least 30 minutes gap between them for travel time
+  - Gap is measured from the end of the first habit to the start of the second habit
+  - Example: Habit A ends at 9:00 AM at Location X, Habit B starts at 9:20 AM at Location Y → CONFLICT (only 20 min gap)
+  - Example: Habit A ends at 9:00 AM at Location X, Habit B starts at 9:30 AM at Location Y → OK (30 min gap)
+- **No location specified**: Treat as same location (time overlap = conflict)
 
 **Schedule Format:**
 Must use one of these standardized formats:
@@ -2915,8 +2917,8 @@ Each patch must include:
 
 **Path Construction:**
 1. For habits in initial_state:
-   Format: `initial_state.habits_state.initial.<habit_name>.<field>`
-   Example: `initial_state.habits_state.initial.morning_jog.timing.start_time`
+   Format: `initial_state.habits_state.<habit_name>.<field>`
+   Example: `initial_state.habits_state.morning_jog.timing.start_time`
 
 2. For operations in time windows:
    Format: `time_windows[window_id=<id>].habits_delta.operations[<index>].<field>`
@@ -2953,12 +2955,16 @@ RESOLUTION STRATEGIES & CONSIDERATIONS
 =================================================================================
 
 **Core Resolution Principles:**
-1. **Single Focus**: Only modify the focus habit. Do NOT edit conflicting habits
-2. **Complete Resolution**: Clear ALL overlaps within the current window
+1. **Single Focus**: Only modify the focus_habit. Do NOT edit conflicting_habit
+2. **Complete Resolution**: Clear ALL conflicts for the focus habit within the current window
 3. **Minimal Changes**: Prefer the smallest adjustment that resolves all conflicts
 4. **Current Window Scope**: Only patch the current window (initial_state or the specified time_window)
 5. **Schema Integrity**: Keep data types and schemas intact
 6. **Semantic Consistency**: Update operation.reason and window.summary when timing changes would contradict existing narratives
+7. **Location Awareness**: When adjusting timing, respect location-based conflict rules:
+   - For same location: ensure no time overlap
+   - For different locations: ensure at least 30-minute gap for travel time
+8. **Use Conflict IDs**: Reference the conflict ID in your fix_description to clearly identify which conflicts are being resolved
 
 **Resolution Strategies:**
 
@@ -3020,14 +3026,14 @@ Resolution:
     "patches": [
         {
             "domain": "Health & Self-care",
-            "path": "initial_state.habits_state.initial.morning_jog.timing.start_time",
+            "path": "initial_state.habits_state.morning_jog.timing.start_time",
             "action": "replace",
             "value": "06:30",
             "fix_reason": "Move jog start time 30 minutes earlier to end before breakfast begins at 7:15"
         },
         {
             "domain": "Health & Self-care",
-            "path": "initial_state.habits_state.initial.morning_jog.timing.end_time",
+            "path": "initial_state.habits_state.morning_jog.timing.end_time",
             "action": "replace",
             "value": "07:00",
             "fix_reason": "Adjust end time to maintain 30-minute duration and eliminate overlap with breakfast"
@@ -3157,10 +3163,6 @@ Return JSON with this EXACT structure:
     ]
 }
 
-**Special cases:**
-- If no conflicts exist or resolution is impossible, return: {"strategy": "other", "fix_description": "No conflicts found or resolution impossible", "patches": []}
-- Every patch MUST include the "domain" field matching focus_habit's domain
-- Use window_id selectors in paths (e.g., `time_windows[window_id=w2]...`) for clarity and robustness
 """)
 
 
@@ -3237,157 +3239,137 @@ def _filter_dynamic_profiles_for_window(
 
 
 def render_time_conflict_resolution_prompt(
-    request: ConflictResolutionRequest, *, iteration_index: int
+    request: ConflictResolutionRequest, *, iteration_index: int,
 ) -> str:
     user_basic_profile_json = json.dumps(
         request.user_basic_profile or {}, indent=2, ensure_ascii=False
     )
 
-    # Extract conflict information from request
-    conflict_hints = request.detected_temporal_conflicts or {}
-    focus_habit_data = conflict_hints.get("focus_habit") or {}
-    conflicts_for_focus = conflict_hints.get("conflicts_for_focus") or []
-    conflict_times = conflict_hints.get("conflict_times") or []
-
-    # Build focus habit structure (no habit_detail)
-    focus_habit_struct = {
-        "domain": focus_habit_data.get("domain", ""),
-        "habit_name": focus_habit_data.get("habit") or focus_habit_data.get("habit_name", ""),
-        "timing": focus_habit_data.get("timing", ""),
-        "frequency": focus_habit_data.get("frequency", "") or focus_habit_data.get("schedule", {}).get("frequency_type", ""),
-        "priority": focus_habit_data.get("priority"),
-        "context": focus_habit_data.get("context", ""),
-        "description": focus_habit_data.get("description", ""),
-        "schedule": focus_habit_data.get("schedule") or {},
-    }
-
-    # Get window info
-    window_id = _normalize_window_id_label(
-        request.target_window_id or focus_habit_data.get("window_id")
-    )
-    window_range = focus_habit_data.get("window_range")
     # Use full dynamic profiles instead of filtering
     dynamic_profiles_json = json.dumps(
         request.dynamic_profiles, indent=2, ensure_ascii=False
     )
 
-    focus_key = (focus_habit_data.get("domain"), focus_habit_data.get("habit"))
-    conflicts_by_key: Dict[Tuple[str, str], Dict[str, object]] = {}
+    # Extract conflict data from request
+    conflict_data = request.detected_temporal_conflicts or {}
+    all_conflicts = conflict_data.get("conflicts") or []
+    graph_by_window = conflict_data.get("graph_by_window") or {}
 
-    def _cap_examples(examples: object) -> List[Dict[str, object]]:
-        capped: List[Dict[str, object]] = []
-        if isinstance(examples, list):
-            for example in examples:
-                if not isinstance(example, dict):
-                    continue
-                capped.append(
-                    {
-                        "date": example.get("date", ""),
-                        "overlap": example.get("overlap_time", "") or example.get("overlap", ""),
-                    }
-                )
-                if len(capped) >= 3:
-                    break
-        return capped
+    # Get target window
+    window_id = _normalize_window_id_label(request.target_window_id or "initial")
 
-    def _get_conflict_entry(domain: str, habit_name: str) -> Dict[str, object]:
-        key = (domain, habit_name)
-        if key not in conflicts_by_key:
-            conflicts_by_key[key] = {
-                "domain": domain,
-                "habit_name": habit_name,
-                "overlap_examples": [],
-                "sample_dates": [],
-            }
-        return conflicts_by_key[key]
+    # Filter conflicts for this window only
+    window_conflicts = [
+        c for c in all_conflicts
+        if _normalize_window_id_label(c.get("window_id") or "") == window_id
+    ]
 
-    # Collect conflict information from conflict_times
-    for time_entry in conflict_times:
-        against_info = time_entry.get("against") or {}
-        domain = against_info.get("domain", "")
-        habit_name = against_info.get("habit", "") or against_info.get("habit_name", "")
+    if not window_conflicts:
+        # No conflicts in this window, return empty structure
+        conflict_json = json.dumps({"conflicts": []}, indent=2, ensure_ascii=False)
+        return TIME_CONFLICT_RESOLUTION_PROMPT.render(
+            user_basic_profile_json=user_basic_profile_json,
+            dynamic_profiles_json=dynamic_profiles_json,
+            conflict_json=conflict_json,
+            target_window_id=window_id,
+        )
 
-        if not domain or not habit_name:
-            continue
+    # Build conflict degree map: count how many conflicts each habit has
+    conflict_degrees: Dict[Tuple[str, str], int] = {}  # (domain, habit) -> count
+    for conflict in window_conflicts:
+        habit_a = conflict.get("habit_a") or {}
+        habit_b = conflict.get("habit_b") or {}
 
-        entry = _get_conflict_entry(domain, habit_name)
+        key_a = (habit_a.get("domain", ""), habit_a.get("habit", ""))
+        key_b = (habit_b.get("domain", ""), habit_b.get("habit", ""))
 
-        # Copy basic fields (no habit_detail)
-        for field in ("priority", "timing", "context", "description", "schedule"):
-            if against_info.get(field) and not entry.get(field):
-                entry[field] = against_info[field]
+        occ = conflict.get("occurrences", 1)
+        conflict_degrees[key_a] = conflict_degrees.get(key_a, 0) + occ
+        conflict_degrees[key_b] = conflict_degrees.get(key_b, 0) + occ
 
-        overlap_examples = time_entry.get("overlap_examples")
-        if isinstance(overlap_examples, list):
-            entry["overlap_examples"].extend(overlap_examples)
+    # Select the habit with the most conflicts as focus_habit
+    if conflict_degrees:
+        focus_key = max(conflict_degrees.items(), key=lambda x: x[1])[0]
+        focus_domain, focus_habit_name = focus_key
+    else:
+        # Fallback: use first habit from first conflict
+        first_conflict = window_conflicts[0]
+        habit_a = first_conflict.get("habit_a") or {}
+        focus_domain = habit_a.get("domain", "")
+        focus_habit_name = habit_a.get("habit", "")
+        focus_key = (focus_domain, focus_habit_name)
 
-        sample_dates = time_entry.get("sample_dates")
-        if isinstance(sample_dates, list):
-            entry["sample_dates"].extend(sample_dates[:3])
+    # Restructure conflicts with focus_habit and conflicting_habit
+    restructured_conflicts = []
+    for idx, conflict in enumerate(window_conflicts):
+        # Determine which habit is the focus
+        habit_a = conflict.get("habit_a") or {}
+        habit_b = conflict.get("habit_b") or {}
 
-        if time_entry.get("occurrences") is not None and entry.get("occurrences") is None:
-            entry["occurrences"] = time_entry.get("occurrences")
+        key_a = (habit_a.get("domain", ""), habit_a.get("habit", ""))
+        key_b = (habit_b.get("domain", ""), habit_b.get("habit", ""))
 
-    # Merge information from conflicts_for_focus
-    for conflict_item in conflicts_for_focus:
-        ha = conflict_item.get("habit_a") or {}
-        hb = conflict_item.get("habit_b") or {}
-        key_a = (ha.get("domain"), ha.get("habit"))
-        key_b = (hb.get("domain"), hb.get("habit"))
-        other = hb if key_a == focus_key else ha
-
-        domain = other.get("domain", "")
-        habit_name = other.get("habit", "") or other.get("habit_name", "")
-
-        if not domain or not habit_name:
-            continue
-
-        entry = _get_conflict_entry(domain, habit_name)
-
-        for field in ("priority", "timing", "context", "description", "schedule"):
-            if other.get(field) and not entry.get(field):
-                entry[field] = other[field]
-
-        overlap_examples = conflict_item.get("overlap_examples")
-        if isinstance(overlap_examples, list):
-            entry["overlap_examples"].extend(overlap_examples)
-
-        sample_dates = conflict_item.get("sample_dates")
-        if isinstance(sample_dates, list):
-            entry["sample_dates"].extend(sample_dates[:3])
-
-    # Format conflicts output
-    conflicts_output: List[Dict[str, object]] = []
-    for entry in conflicts_by_key.values():
-        # Cap examples to 3
-        entry["overlap_examples"] = _cap_examples(entry.get("overlap_examples"))
-        if isinstance(entry.get("sample_dates"), list):
-            entry["sample_dates"] = entry["sample_dates"][:3]
+        if key_a == focus_key:
+            focus_info = habit_a
+            other_info = habit_b
         else:
-            entry["sample_dates"] = []
+            focus_info = habit_b
+            other_info = habit_a
 
-        # Add overlap_info structure
-        entry["overlap_info"] = {
-            "overlap_time": entry.get("overlap_examples", [{}])[0].get("overlap", "") if entry.get("overlap_examples") else "",
-            "sample_dates": entry.get("sample_dates", []),
-            "occurrences": entry.get("occurrences", 0),
+        # Generate automatic message
+        focus_habit_name = focus_info.get("habit", "")
+        other_habit_name = other_info.get("habit", "")
+        focus_timing = focus_info.get("timing", "")
+        other_timing = other_info.get("timing", "")
+        focus_domain_str = focus_info.get("domain", "")
+        other_domain = other_info.get("domain", "")
+
+        loc_focus = focus_info.get("location", "")
+        loc_other = other_info.get("location", "")
+        conflict_type = conflict.get("conflict_type", "")
+        occ_count = conflict.get("occurrences", 1)
+        window_id_str = conflict.get("window_id", "")
+
+        # Build location description
+        loc_desc = ""
+        if conflict_type == "same_location_time_overlap":
+            loc_desc = f" (both at '{loc_focus}')"
+        elif conflict_type == "different_location_insufficient_gap":
+            loc_desc = f" ('{focus_habit_name}' at '{loc_focus}', '{other_habit_name}' at '{loc_other}' - insufficient travel time)"
+        elif loc_focus or loc_other:
+            loc_desc = f" ('{focus_habit_name}' at '{loc_focus}', '{other_habit_name}' at '{loc_other}')"
+
+        conflict_id = f"cross_domain_{idx:03d}"
+        message = (
+            f"[ID: {conflict_id}] Time conflict in {window_id_str}: "
+            f"[FOCUS] '{focus_habit_name}' ({focus_domain_str}, {focus_timing}) conflicts with "
+            f"'{other_habit_name}' ({other_domain}, {other_timing}){loc_desc}. "
+            f"Occurs {occ_count} time(s). You must adjust the FOCUS habit only."
+        )
+
+        # Create restructured conflict with focus_habit and conflicting_habit
+        restructured_conflict = {
+            "id": conflict_id,
+            "window_id": window_id_str,
+            "window_range": conflict.get("window_range"),
+            "focus_habit": focus_info,
+            "conflicting_habit": other_info,
+            "conflict_type": conflict_type,
+            "occurrences": occ_count,
+            "overlap_examples": conflict.get("overlap_examples", []),
+            "message": message,
         }
+        restructured_conflicts.append(restructured_conflict)
 
-        # Remove redundant fields after moving to overlap_info
-        entry.pop("overlap_examples", None)
-        entry.pop("sample_dates", None)
-        entry.pop("occurrences", None)
-
-        conflicts_output.append(entry)
-
-    # Construct the simplified conflict JSON structure
+    # Construct the conflict JSON structure (similar to rule5)
     conflict_structured = {
-        "current_window": {
-            "window_id": window_id,
-            "window_range": window_range,
-        },
-        "focus_habit": focus_habit_struct,
-        "conflicting_habits_in_this_window": conflicts_output,
+        "conflicts": restructured_conflicts,
+        "focus_habit_info": {
+            "domain": focus_domain,
+            "habit_name": focus_habit_name,
+            "total_conflicts": conflict_degrees.get(focus_key, 0),
+            "note": "This is the habit with the most conflicts. You MUST adjust this habit to resolve all conflicts."
+        }
     }
 
     conflict_json = json.dumps(conflict_structured, indent=2, ensure_ascii=False)
@@ -3614,28 +3596,74 @@ def generate_key_alignment(
     return llm_client.generate_json(prompt)
 
 
-ATTRIBUTE_CONFLICT_RESOLUTION_PROMPT = Template("""
-You are a cross-domain ATTRIBUTE conflict resolver. Fix ONLY user_attributes_state (singular + collections). Do not change habits or preferences unless absolutely required by a cascade.
+ATTRIBUTE_CONFLICT_RESOLUTION_PROMPT = Template("""You are a cross-domain ATTRIBUTE conflict resolver.
 
-User basic profile:
+Your task: Detect and resolve conflicts in user_attributes_state (singular + collections) across domains. Do not change habits or preferences unless absolutely required by a cascade.
+
+To keep your fixes reasonable, here is the background:
+
+Basic user profile:
 {{ user_basic_profile_json }}
 
-Dynamic profiles (key-aligned):
-{{ dynamic_profiles_json }}
+=================================================================================
+SHARED ATTRIBUTES ACROSS DOMAINS
+=================================================================================
 
-Auto-detected attribute conflicts (canonicalized):
 {{ detected_attribute_conflicts_json }}
 
-Shape:
-- List grouped by canonical key (not per window). Each entry includes "windows": [{window_id, time_range, domains:[...], overlap_items or distinct_value_count}], and "conflict_windows" where disagreements exist.
+**Data format explanation:**
+- After key alignment, attributes with the same name across domains are listed here
+- Each entry shows a "shared_key" (the aligned attribute name after normalization)
+- "windows" shows each window where this attribute appears in multiple domains
+- For each window, "domains" lists the value in each domain
+- Your job: check if the values across domains are consistent or conflicting
 
-Rules:
-- Resolve every listed attribute conflict before anything else.
-- Singular conflicts: same canonical key, different values across domains in the same window. Pick the most coherent value (basic profile + domain authority) and align all domains for that window.
-- Collection conflicts: same canonical key across domains. If overlap_items are provided, dedupe and keep one authoritative instance; remove duplicates from other domains. Keep collections separate per domain; DO NOT merge collections across domains.
-- Make the minimal edits in the specific window (initial or wX). Avoid touching other windows unless strictly needed for consistency.
-- Keep value shapes intact (string vs list). For collection removals, target the specific index.
-- Leave habits_state and preferences_state untouched unless a cascade is unavoidable; if changed, explain why in the reason.
+=================================================================================
+DYNAMIC PROFILES (KEY-ALIGNED)
+=================================================================================
+
+{{ dynamic_profiles_json }}
+
+=================================================================================
+CONFLICT DETECTION AND RESOLUTION RULES (CRITICAL)
+=================================================================================
+
+**Core principles:**
+- Review each shared attribute to determine if there is an actual conflict
+- Only create resolutions for attributes that have genuine conflicts
+- Make minimal edits in the specific window (initial or wX)
+- Avoid touching other windows unless strictly needed for consistency
+- Keep value shapes intact (string vs list)
+- Leave habits_state and preferences_state untouched unless a cascade is unavoidable
+
+**Conflict detection criteria:**
+
+1. **Singular attributes**: A conflict exists if the same attribute has different values across domains in the same window
+   - Example conflict: domain A has "occupation: engineer", domain B has "occupation: teacher" in the same window
+   - Example NOT a conflict: domain A has "occupation: engineer", domain B has "occupation: engineer" (same value)
+
+2. **Collection attributes**: A conflict exists if there are duplicate items across domains
+   - Example conflict: domain A has ["project_x", "project_y"], domain B has ["project_y", "project_z"] (project_y is duplicated)
+   - Example NOT a conflict: domain A has ["project_x"], domain B has ["project_y"] (no overlap, each domain can have its own items)
+
+**Resolution strategies:**
+
+1. **For singular conflicts**:
+   - Pick the most coherent value (based on basic profile + domain authority)
+   - Align all domains for that window to use this value
+
+2. **For collection conflicts** (duplicates):
+   - Dedupe: keep one authoritative instance of the duplicate item
+   - Remove the duplicate from other domains
+   - IMPORTANT: Keep collections separate per domain; DO NOT merge all items into one domain
+   - For removals, specify the target by index or by matching the item value
+
+3. **Cascade changes**: if you must change habits or preferences
+   - Explain why in the reason field
+
+=================================================================================
+OUTPUT FORMAT
+=================================================================================
 
 Output strict JSON:
 {
@@ -3643,7 +3671,7 @@ Output strict JSON:
     {
       "conflict": {
         "description": "...",
-        "canonical_key": "...",
+        "shared_key": "...",
         "window_id": "<initial|w1|...>"
       },
       "resolution": {
@@ -3655,7 +3683,8 @@ Output strict JSON:
     }
   ]
 }
-If no conflicts, return {"conflicts_and_resolutions": []}.
+
+**Important**: Only include conflicts that genuinely need resolution. If a shared attribute has the same values across domains, or collections have no overlaps, do NOT treat it as a conflict.
 """)
 
 
@@ -3880,7 +3909,7 @@ def _parse_structured_timing(timing: object) -> Tuple[Optional[int], Optional[in
 
 def _materialize_habit_snapshots_for_conflicts(domain: Dict[str, Any]) -> List[Dict[str, Any]]:
     initial = (domain.get("initial_state", {}) or {})
-    base_habits = deepcopy(((initial.get("habits_state") or {}).get("initial") or {}))
+    base_habits = deepcopy(initial.get("habits_state") or {})
     snapshots = [
         {
             "window_id": "initial_state",
@@ -3944,6 +3973,7 @@ def _collect_temporal_events(dynamic_profiles: Dict[str, Dict]) -> List[Dict[str
                 occurrences = _dates_from_schedule(schedule, start_date, end_date)
                 if not occurrences:
                     occurrences = list(_iter_dates(start_date, end_date))
+                location = habit.get("location", "")
                 for dt in occurrences:
                     events.append(
                         {
@@ -3955,6 +3985,7 @@ def _collect_temporal_events(dynamic_profiles: Dict[str, Dict]) -> List[Dict[str
                             "timing": timing_label,
                             "start_min": start_min,
                             "end_min": end_min,
+                            "location": location,
                             "date": dt,
                         }
                     )
@@ -3973,6 +4004,7 @@ def _conflict_habit_summary(event: Dict[str, object]) -> Dict[str, object]:
         "habit": event.get("habit"),
         "priority": event.get("priority"),
         "timing": event.get("timing"),
+        "location": event.get("location", ""),
         "window_id": event.get("window_id"),
     }
 
@@ -4022,9 +4054,36 @@ def detect_temporal_conflicts(dynamic_profiles: Dict[str, Dict]) -> Dict[str, ob
         for i in range(len(bucket)):
             for j in range(i + 1, len(bucket)):
                 a, b = bucket[i], bucket[j]
-                if a["start_min"] < b["end_min"] and b["start_min"] < a["end_min"]:
+
+                # Get locations
+                loc_a = str(a.get("location") or "").strip()
+                loc_b = str(b.get("location") or "").strip()
+
+                # Determine if there's a conflict based on location
+                has_conflict = False
+                conflict_type = ""
+
+                if loc_a and loc_b and loc_a == loc_b:
+                    # Same location: conflict if time overlaps
+                    if a["start_min"] < b["end_min"] and b["start_min"] < a["end_min"]:
+                        has_conflict = True
+                        conflict_type = "same_location_time_overlap"
+                elif loc_a and loc_b and loc_a != loc_b:
+                    # Different locations: conflict if less than 30 min gap
+                    gap_min = b["start_min"] - a["end_min"]
+                    if gap_min < 30:
+                        has_conflict = True
+                        conflict_type = "different_location_insufficient_gap"
+                else:
+                    # One or both locations are empty, treat as same location
+                    if a["start_min"] < b["end_min"] and b["start_min"] < a["end_min"]:
+                        has_conflict = True
+                        conflict_type = "time_overlap_no_location"
+
+                if has_conflict:
                     left, right, key = _canonical_pair(a, b, window_id)
                     overlap_range = f"{_format_minutes(max(a['start_min'], b['start_min']))}-{_format_minutes(min(a['end_min'], b['end_min']))}"
+
                     entry = aggregated.setdefault(
                         key,
                         {
@@ -4032,6 +4091,7 @@ def detect_temporal_conflicts(dynamic_profiles: Dict[str, Dict]) -> Dict[str, ob
                             "window_range": bucket[0].get("window_range"),
                             "habit_a": _conflict_habit_summary(left),
                             "habit_b": _conflict_habit_summary(right),
+                            "conflict_type": conflict_type,
                             "occurrences": 0,
                             "sample_dates": [],
                             "overlap_examples": [],
@@ -4041,8 +4101,12 @@ def detect_temporal_conflicts(dynamic_profiles: Dict[str, Dict]) -> Dict[str, ob
                     if len(entry["sample_dates"]) < 3:
                         entry["sample_dates"].append(dt.isoformat())
                     if len(entry["overlap_examples"]) < 3:
+                        gap_info = ""
+                        if conflict_type == "different_location_insufficient_gap":
+                            gap_min = b["start_min"] - a["end_min"]
+                            gap_info = f", gap: {gap_min} min"
                         entry["overlap_examples"].append(
-                            {"date": dt.isoformat(), "overlap": overlap_range}
+                            {"date": dt.isoformat(), "overlap": overlap_range + gap_info}
                         )
     conflicts = list(aggregated.values())
 
@@ -4339,7 +4403,7 @@ def _validate_timing_structure(timing: Any) -> List[str]:
 def _validate_habit_object(habit_obj: Any) -> List[str]:
     if not isinstance(habit_obj, dict):
         return ["habit must be an object with required fields"]
-    required_fields = ["action", "schedule", "timing", "context", "priority", "description"]
+    required_fields = ["schedule", "timing", "location", "priority"]
     missing = [f for f in required_fields if f not in habit_obj]
     missing += _validate_schedule_structure(habit_obj.get("schedule"))
     missing += _validate_timing_structure(habit_obj.get("timing"))
@@ -4368,9 +4432,9 @@ def _detect_rule2_prior_existence_issues(profile: Dict) -> List[Dict[str, str]]:
     known_singular = set((user_attributes_state.get("singular") or {}).keys())
     known_collections = set((user_attributes_state.get("collections") or {}).keys())
     habits_state = initial_state.get("habits_state") or {}
-    known_habits = set((habits_state.get("initial") or {}).keys())
+    known_habits = set(habits_state.keys())
     preferences_state = initial_state.get("preferences_state") or {}
-    known_preferences = set((preferences_state.get("initial") or {}).keys())
+    known_preferences = set(preferences_state.keys())
 
     time_windows = profile.get("time_windows") or []
     for w_idx, window in enumerate(time_windows):
@@ -4380,6 +4444,28 @@ def _detect_rule2_prior_existence_issues(profile: Dict) -> List[Dict[str, str]]:
         for op_idx, op in enumerate(attr_ops):
             op_type = op.get("op")
             attr_type = op.get("attribute_type")
+
+            # Check 1: singular attributes can ONLY use "modify"
+            if attr_type == "singular" and op_type != "modify":
+                name = op.get("attribute_name")
+                _append_issue(
+                    issues,
+                    f"time_windows[{w_idx}].user_attributes_delta.operations[{op_idx}]",
+                    f"invalid operation '{op_type}' on singular attribute '{name}' (singular only supports 'modify')",
+                    window_id,
+                )
+
+            # Check 2: collections can ONLY use "add" or "remove"
+            if attr_type == "collections" and op_type not in {"add", "remove"}:
+                name = op.get("collection_name")
+                _append_issue(
+                    issues,
+                    f"time_windows[{w_idx}].user_attributes_delta.operations[{op_idx}]",
+                    f"invalid operation '{op_type}' on collection '{name}' (collections only support 'add' or 'drop')",
+                    window_id,
+                )
+
+            # Check 3: modify on singular requires prior existence
             if op_type == "modify" and attr_type == "singular":
                 name = op.get("attribute_name")
                 if name and name not in known_singular:
@@ -4390,17 +4476,21 @@ def _detect_rule2_prior_existence_issues(profile: Dict) -> List[Dict[str, str]]:
                         window_id,
                     )
                     known_singular.add(name)
+
+            # Track collections
             elif op_type == "add" and attr_type == "collections":
                 name = op.get("collection_name")
                 if name:
                     known_collections.add(name)
+
+            # Check 4: drop on collection requires prior existence
             elif op_type == "remove" and attr_type == "collections":
                 name = op.get("collection_name")
                 if name and name not in known_collections:
                     _append_issue(
                         issues,
                         f"time_windows[{w_idx}].user_attributes_delta.operations[{op_idx}]",
-                        f"remove collection '{name}' before it exists",
+                        f"drop collection '{name}' before it exists",
                         window_id,
                     )
 
@@ -4420,6 +4510,23 @@ def _detect_rule2_prior_existence_issues(profile: Dict) -> List[Dict[str, str]]:
                         window_id,
                     )
                     known_habits.add(habit_name)
+
+                # Check 5: adjust on habit must modify schedule/timing/location, not just priority
+                if op_type == "adjust":
+                    delta = op.get("delta") or {}
+                    if isinstance(delta, dict):
+                        # Check if only priority is being modified
+                        has_structural_change = any(
+                            key in delta for key in ["schedule", "timing", "location"]
+                        )
+                        if not has_structural_change and "priority" in delta:
+                            _append_issue(
+                                issues,
+                                f"time_windows[{w_idx}].habits_delta.operations[{op_idx}]",
+                                f"adjust '{habit_name}' only modifies priority (must modify at least one of: schedule, timing, location, context)",
+                                window_id,
+                            )
+
                 if op_type == "drop" and habit_name in known_habits:
                     known_habits.remove(habit_name)
 
@@ -4476,24 +4583,24 @@ def _detect_rule1_required_field_issues(profile: Dict) -> List[Dict[str, str]]:
                 "collections missing (can be empty object)",
             )
 
-    habits_state = (initial_state.get("habits_state") or {}).get("initial") or {}
+    habits_state = initial_state.get("habits_state") or {}
     for habit_name, habit_obj in habits_state.items():
         missing = _validate_habit_object(habit_obj)
         if missing:
             _append_issue(
                 issues,
-                f"initial_state.habits_state.initial.{habit_name}",
+                f"initial_state.habits_state.{habit_name}",
                 "; ".join(missing),
                 "initial",
             )
 
-    pref_state = (initial_state.get("preferences_state") or {}).get("initial") or {}
+    pref_state = initial_state.get("preferences_state") or {}
     for pref_name, pref_obj in pref_state.items():
         missing = _validate_preference_object(pref_obj)
         if missing:
             _append_issue(
                 issues,
-                f"initial_state.preferences_state.initial.{pref_name}",
+                f"initial_state.preferences_state.{pref_name}",
                 "; ".join(missing),
                 "initial",
             )
@@ -4589,7 +4696,7 @@ def _detect_rule1_required_field_issues(profile: Dict) -> List[Dict[str, str]]:
                 else:
                     description_present = bool(delta.get("description"))
                     substantive_change = any(
-                        key in delta for key in ("schedule", "timing", "context", "priority")
+                        key in delta for key in ("schedule", "timing", "location", "priority")
                     )
                     if not description_present:
                         _append_issue(
@@ -4602,7 +4709,7 @@ def _detect_rule1_required_field_issues(profile: Dict) -> List[Dict[str, str]]:
                         _append_issue(
                             issues,
                             f"{op_path}.delta",
-                            "adjust must change schedule/timing/context/priority",
+                            "adjust must change schedule/timing/location",
                             window_id,
                         )
                     if "schedule" in delta:
@@ -4788,135 +4895,56 @@ def _detect_rule4_short_term_issues(profile: Dict) -> List[Dict[str, str]]:
 
 def _detect_rule3_first_add_issues(profile: Dict) -> List[Dict[str, str]]:
     """
-    Detect essential items that appear for the first time via modify/adjust/shift operations
+    Detect collection-type attributes that first appear via 'add' operation
     instead of being initialized in initial_state.
+
+    This catches unrealistic scenarios like getting a first smartphone in w3,
+    when it should already exist in initial_state.
     """
     if isinstance(profile, list):
         profile = profile[0] if profile and isinstance(profile[0], dict) else {}
 
     issues: List[Dict[str, str]] = []
 
-    # Track what exists in initial_state
+    # Track what collection attributes exist in initial_state
     initial_state = profile.get("initial_state") or {}
     user_attributes_state = initial_state.get("user_attributes_state") or {}
-    known_singular = set((user_attributes_state.get("singular") or {}).keys())
     known_collections = set((user_attributes_state.get("collections") or {}).keys())
-    habits_state = initial_state.get("habits_state") or {}
-    known_habits = set((habits_state.get("initial") or {}).keys())
-    preferences_state = initial_state.get("preferences_state") or {}
-    known_preferences = set((preferences_state.get("initial") or {}).keys())
-
-    # Essential items that are commonly expected (domain-agnostic basics)
-    essential_keywords = {
-        "phone", "smartphone", "mobile", "laptop", "computer",
-        "bank", "account", "payment", "credit card", "debit card",
-        "bed", "clothing", "clothes", "toiletries", "hygiene",
-        "transportation", "vehicle", "residence", "home", "apartment"
-    }
 
     time_windows = profile.get("time_windows") or []
 
-    # Track first appearance of items
+    # Track first 'add' operations for collection attributes
     for w_idx, window in enumerate(time_windows):
         window_id = window.get("window_id") or f"w{w_idx + 1}"
 
-        # Check user_attributes_delta
+        # Check user_attributes_delta for 'add' operations
         attr_ops = (window.get("user_attributes_delta") or {}).get("operations") or []
         for op_idx, op in enumerate(attr_ops):
             op_type = op.get("op")
 
-            # First modify of a singular attribute - should have been in initial_state
-            if op_type == "modify":
-                attr_name = op.get("attribute_name") or ""
-                if attr_name and attr_name not in known_singular:
-                    # Check if it's an essential item
-                    is_essential = any(kw in attr_name.lower() for kw in essential_keywords)
-                    if is_essential:
-                        _append_issue(
-                            issues,
-                            f"time_windows[{w_idx}].user_attributes_delta.operations[{op_idx}]",
-                            f"Essential singular attribute '{attr_name}' first appears via 'modify' in {window_id}. "
-                            f"Should be initialized in initial_state with realistic baseline.",
-                            window_id,
-                        )
-                    known_singular.add(attr_name)
-
-            # First add to a collection that seems essential
-            elif op_type == "add":
+            # Check for first 'add' to a collection
+            if op_type == "add":
                 collection_name = op.get("collection_name") or ""
-                delta = op.get("delta") or []
 
+                # If this collection doesn't exist in initial_state, it's a first-time add
                 if collection_name and collection_name not in known_collections:
-                    # Check if collection name or items suggest essential items
-                    is_essential = any(kw in collection_name.lower() for kw in essential_keywords)
-                    if not is_essential and isinstance(delta, list):
-                        # Check items in delta
-                        for item in delta:
-                            if isinstance(item, str) and any(kw in item.lower() for kw in essential_keywords):
-                                is_essential = True
-                                break
-
-                    if is_essential:
-                        _append_issue(
-                            issues,
-                            f"time_windows[{w_idx}].user_attributes_delta.operations[{op_idx}]",
-                            f"Essential collection '{collection_name}' first appears via 'add' in {window_id}. "
-                            f"Should be initialized in initial_state with realistic baseline items.",
-                            window_id,
-                        )
-
-                known_collections.add(collection_name)
-
-        # Check habits_delta
-        habit_ops = (window.get("habits_delta") or {}).get("operations") or []
-        for op_idx, op in enumerate(habit_ops):
-            op_type = op.get("op")
-            habit_name = op.get("habit_name") or ""
-
-            # First adjust of a habit - should have been in initial_state
-            if op_type == "adjust" and habit_name:
-                if habit_name not in known_habits:
-                    # Check if it's an essential habit
-                    is_essential = any(kw in habit_name.lower() for kw in ["sleep", "eat", "hygiene", "commute", "work"])
-                    if is_essential:
-                        _append_issue(
-                            issues,
-                            f"time_windows[{w_idx}].habits_delta.operations[{op_idx}]",
-                            f"Essential habit '{habit_name}' first appears via 'adjust' in {window_id}. "
-                            f"Should be initialized in initial_state.",
-                            window_id,
-                        )
-                    known_habits.add(habit_name)
-            elif op_type == "acquire" and habit_name:
-                known_habits.add(habit_name)
-            elif op_type == "drop" and habit_name in known_habits:
-                known_habits.remove(habit_name)
-
-        # Check preferences_delta
-        pref_ops = (window.get("preferences_delta") or {}).get("operations") or []
-        for op_idx, op in enumerate(pref_ops):
-            op_type = op.get("op")
-            pref_name = op.get("preference_name") or ""
-
-            # First shift/refine of a preference - should have been in initial_state
-            if op_type in {"shift", "refine"} and pref_name:
-                if pref_name not in known_preferences:
                     _append_issue(
                         issues,
-                        f"time_windows[{w_idx}].preferences_delta.operations[{op_idx}]",
-                        f"Preference '{pref_name}' first appears via '{op_type}' in {window_id}. "
-                        f"Preferences can only be shifted/refined if they exist in initial_state.",
+                        f"time_windows[{w_idx}].user_attributes_delta.operations[{op_idx}]",
+                        f"Collection '{collection_name}' first appears via 'add' operation in {window_id}. "
+                        f"If this is an essential collection for the user, it should be initialized in initial_state "
+                        f"with realistic baseline items (even if empty array is semantically appropriate).",
                         window_id,
                     )
-                    known_preferences.add(pref_name)
+                    # Mark as known to avoid duplicate reports
+                    known_collections.add(collection_name)
 
-    
     # Add unique IDs to all issues
     for idx, issue in enumerate(issues):
         if "id" not in issue:
             issue["id"] = f"rule3_{idx:03d}"
             issue["message"] = f"[ID: {issue['id']}] {issue['message']}"
-    
+
     return issues
 
 
@@ -5004,6 +5032,8 @@ def _detect_rule5_time_conflict_issues(profile: Dict) -> Dict[str, object]:
                 # No schedule specified, assume daily
                 occurrences = list(_iter_dates(start_date, end_date))
 
+            location = habit.get("location", "")
+
             for dt in occurrences:
                 events.append({
                     "window_id": window_id,
@@ -5012,6 +5042,7 @@ def _detect_rule5_time_conflict_issues(profile: Dict) -> Dict[str, object]:
                     "timing": timing_label,
                     "start_min": start_min,
                     "end_min": end_min,
+                    "location": location,
                     "date": dt,
                 })
 
@@ -5032,8 +5063,34 @@ def _detect_rule5_time_conflict_issues(profile: Dict) -> Dict[str, object]:
         for i in range(len(bucket)):
             for j in range(i + 1, len(bucket)):
                 a, b = bucket[i], bucket[j]
-                # Check for temporal overlap
-                if a["start_min"] < b["end_min"] and b["start_min"] < a["end_min"]:
+
+                # Get locations
+                loc_a = str(a.get("location") or "").strip()
+                loc_b = str(b.get("location") or "").strip()
+
+                # Determine if there's a conflict based on location
+                has_conflict = False
+                conflict_type = ""
+
+                if loc_a and loc_b and loc_a == loc_b:
+                    # Same location: conflict if time overlaps
+                    if a["start_min"] < b["end_min"] and b["start_min"] < a["end_min"]:
+                        has_conflict = True
+                        conflict_type = "same_location_time_overlap"
+                elif loc_a and loc_b and loc_a != loc_b:
+                    # Different locations: conflict if less than 30 min gap
+                    # Gap is the time between end of earlier event and start of later event
+                    gap_min = b["start_min"] - a["end_min"]
+                    if gap_min < 30:
+                        has_conflict = True
+                        conflict_type = "different_location_insufficient_gap"
+                else:
+                    # One or both locations are empty, treat as same location
+                    if a["start_min"] < b["end_min"] and b["start_min"] < a["end_min"]:
+                        has_conflict = True
+                        conflict_type = "time_overlap_no_location"
+
+                if has_conflict:
                     # Canonical pair key to aggregate same habit pairs
                     habit_a = str(a.get("habit") or "")
                     habit_b = str(b.get("habit") or "")
@@ -5054,48 +5111,52 @@ def _detect_rule5_time_conflict_issues(profile: Dict) -> Dict[str, object]:
                         "habit_b": habit_b,
                         "habit_a_timing": left.get("timing"),
                         "habit_b_timing": right.get("timing"),
+                        "habit_a_location": left.get("location", ""),
+                        "habit_b_location": right.get("location", ""),
+                        "conflict_type": conflict_type,
                         "occurrences": 0,
-                        "sample_dates": [],
                         "overlap_examples": [],
                     })
                     entry["occurrences"] = entry.get("occurrences", 0) + 1
-                    if len(entry["sample_dates"]) < 3:
-                        entry["sample_dates"].append(dt.isoformat())
                     if len(entry["overlap_examples"]) < 3:
+                        gap_info = ""
+                        if conflict_type == "different_location_insufficient_gap":
+                            gap_min = b["start_min"] - a["end_min"]
+                            gap_info = f", gap: {gap_min} min"
                         entry["overlap_examples"].append({
                             "date": dt.isoformat(),
-                            "overlap": overlap_range,
+                            "overlap": overlap_range + gap_info,
                         })
 
     conflicts = list(aggregated.values())
 
-    # Build conflict graph by window
-    graph_by_window: Dict[str, Dict[str, object]] = {}
-    TOP_N = 8
+    # # Build conflict graph by window
+    # graph_by_window: Dict[str, Dict[str, object]] = {}
+    # TOP_N = 8
 
-    for entry in conflicts:
-        window_id = entry.get("window_id") or "unknown_window"
-        occ = int(entry.get("occurrences") or 1)
-        window_graph = graph_by_window.setdefault(
-            window_id, {"total_conflicts": 0, "node_degrees": {}}
-        )
-        window_graph["total_conflicts"] += occ
+    # for entry in conflicts:
+    #     window_id = entry.get("window_id") or "unknown_window"
+    #     occ = int(entry.get("occurrences") or 1)
+    #     window_graph = graph_by_window.setdefault(
+    #         window_id, {"total_conflicts": 0, "node_degrees": {}}
+    #     )
+    #     window_graph["total_conflicts"] += occ
 
-        # Count degree for each habit (number of conflict occurrences)
-        for habit_key in ("habit_a", "habit_b"):
-            habit_name = entry.get(habit_key) or ""
-            node_degrees: Dict[str, int] = window_graph["node_degrees"]  # type: ignore
-            node_degrees[habit_name] = node_degrees.get(habit_name, 0) + occ
+    #     # Count degree for each habit (number of conflict occurrences)
+    #     for habit_key in ("habit_a", "habit_b"):
+    #         habit_name = entry.get(habit_key) or ""
+    #         node_degrees: Dict[str, int] = window_graph["node_degrees"]  # type: ignore
+    #         node_degrees[habit_name] = node_degrees.get(habit_name, 0) + occ
 
-    # Convert node_degrees to sorted top list
-    for window_id, data in graph_by_window.items():
-        node_degrees = data.get("node_degrees", {}) or {}
-        top_nodes = sorted(
-            [{"habit": habit, "degree": degree} for habit, degree in node_degrees.items()],
-            key=lambda x: (-x["degree"], x["habit"])
-        )[:TOP_N]
-        data["top_nodes"] = top_nodes
-        data.pop("node_degrees", None)
+    # # Convert node_degrees to sorted top list
+    # for window_id, data in graph_by_window.items():
+    #     node_degrees = data.get("node_degrees", {}) or {}
+    #     top_nodes = sorted(
+    #         [{"habit": habit, "degree": degree} for habit, degree in node_degrees.items()],
+    #         key=lambda x: (-x["degree"], x["habit"])
+    #     )[:TOP_N]
+    #     data["top_nodes"] = top_nodes
+    #     data.pop("node_degrees", None)
 
     # Add unique IDs to conflicts
     for idx, conflict in enumerate(conflicts):
@@ -5106,18 +5167,30 @@ def _detect_rule5_time_conflict_issues(profile: Dict) -> Dict[str, object]:
             habit_b = conflict.get("habit_b")
             timing_a = conflict.get("habit_a_timing")
             timing_b = conflict.get("habit_b_timing")
+            loc_a = conflict.get("habit_a_location", "")
+            loc_b = conflict.get("habit_b_location", "")
+            conflict_type = conflict.get("conflict_type", "")
             occ_count = conflict.get("occurrences", 1)
             window_id = conflict.get("window_id")
 
+            # Build location description
+            loc_desc = ""
+            if conflict_type == "same_location_time_overlap":
+                loc_desc = f" (both at '{loc_a}')"
+            elif conflict_type == "different_location_insufficient_gap":
+                loc_desc = f" ('{habit_a}' at '{loc_a}', '{habit_b}' at '{loc_b}' - insufficient travel time)"
+            elif loc_a or loc_b:
+                loc_desc = f" ('{habit_a}' at '{loc_a}', '{habit_b}' at '{loc_b}')"
+
             conflict["message"] = (
                 f"[ID: {conflict['id']}] Time conflict in {window_id}: "
-                f"'{habit_a}' ({timing_a}) overlaps with '{habit_b}' ({timing_b}). "
+                f"'{habit_a}' ({timing_a}) overlaps with '{habit_b}' ({timing_b}){loc_desc}. "
                 f"Occurs {occ_count} time(s) in this window."
             )
 
     return {
         "conflicts": conflicts,
-        "graph_by_window": graph_by_window,
+        # "graph_by_window": graph_by_window,
     }
 
 
@@ -5198,6 +5271,7 @@ def _fix_rule1_violations(
         domain_name=domain.domain_name,
         domain_scope_definition=domain.domain_scope_definition,
         user_profile=user_profile,
+        schema_excerpt=DYNAMIC_PROFILE_TEMPLATE_EXCERPT,
         detected_issues=json.dumps(detected_issues, indent=2, ensure_ascii=False),
         dynamic_profile_json=json.dumps(dynamic_profile, indent=2, ensure_ascii=False),
     )
@@ -5236,19 +5310,16 @@ def _fix_rule5_violations(
     dynamic_profile: Dict,
     detected_conflicts: Dict[str, object],
 ) -> tuple[Dict | None, Dict]:
-    """Fix Rule 5 violations using LLM with conflict graph analysis."""
+    """Fix Rule 5 violations using LLM."""
     conflicts_list = detected_conflicts.get("conflicts") or []
     if not conflicts_list:
         return None, {}
-
-    conflict_graph = detected_conflicts.get("graph_by_window") or {}
 
     prompt = rule5_time_conflict_prompt.render(
         domain_name=domain.domain_name,
         domain_scope_definition=domain.domain_scope_definition,
         user_profile=user_profile,
         detected_issues=json.dumps(conflicts_list, indent=2, ensure_ascii=False),
-        conflict_graph=json.dumps(conflict_graph, indent=2, ensure_ascii=False),
         dynamic_profile_json=json.dumps(dynamic_profile, indent=2, ensure_ascii=False),
     )
 
@@ -5531,17 +5602,20 @@ def _normalize_collection_item(value: object) -> str:
 
 def _collect_cross_domain_attribute_conflicts(
     dynamic_profiles: Dict[str, Dict],
-    *,
-    key_mapping: Dict[str, Dict[str, str]] | None = None,
 ) -> List[Dict[str, object]]:
     """
-    Seed conflict detector: finds attributes sharing a canonical key across domains.
+    Collect all shared attributes across domains after key alignment.
 
-    - Singular: flag when the same canonical key has multiple distinct values in a window.
-    - Collections: flag whenever multiple domains share the same canonical key; include
-      overlap hints for duplicate items.
+    Simply lists all attributes that appear in multiple domains, showing their values
+    in each domain. Does NOT judge whether there are conflicts - that's for the LLM.
+
+    Returns: List of shared attributes, each containing:
+    - shared_key: the aligned attribute name
+    - attribute_type: "singular" or "collections"
+    - windows: list of windows where this attribute appears, with domain values
     """
-    # grouped_by_key[(attr_type, canonical_key)][window_id] = list[entry]
+    # Group by (attr_type, attr_name) across domains
+    # After key alignment, attribute names should already be normalized
     grouped: Dict[Tuple[str, str], Dict[str, List[Dict[str, object]]]] = {}
 
     def _record_entry(
@@ -5553,16 +5627,10 @@ def _collect_cross_domain_attribute_conflicts(
         value: object,
         domain: str,
     ) -> None:
-        canonical_name = _canonical_attribute_key(
-            (key_mapping or {}).get(domain, {}).get(attr_name, attr_name)
-        )
-        key = (("collections" if attr_type == "collections" else "singular"), canonical_name)
+        key = (("collections" if attr_type == "collections" else "singular"), attr_name)
         entry = {
             "domain": domain,
-            "attribute_name": attr_name,
-            "attribute_type": key[0],
             "value": deepcopy(value),
-            "normalized_value": _normalize_attribute_value(value),
             "time_range": time_range,
         }
         grouped.setdefault(key, {}).setdefault(window_id or "initial", []).append(entry)
@@ -5614,87 +5682,49 @@ def _collect_cross_domain_attribute_conflicts(
                     domain=domain_name,
                 )
 
-    conflicts: List[Dict[str, object]] = []
-    for (attr_type, canonical_key), windows_map in grouped.items():
+    # Collect all shared attributes (appearing in multiple domains)
+    shared_attributes: List[Dict[str, object]] = []
+    for (attr_type, attr_name), windows_map in grouped.items():
         windows_payload: List[Dict[str, object]] = []
-        conflict_windows: List[str] = []
-        overall_overlap: set[str] = set()
 
         for window_id, entries in windows_map.items():
+            # Only include windows where this attribute appears in multiple domains
             if len(entries) <= 1:
                 continue
+
             time_range = next(
                 (entry.get("time_range") for entry in entries if entry.get("time_range") is not None),
                 None,
             )
 
-            if attr_type == "collections":
-                item_counter: Counter[str] = Counter()
-                domain_payloads: List[Dict[str, object]] = []
-                for entry in entries:
-                    raw_value = entry.get("value")
-                    raw_items = raw_value if isinstance(raw_value, list) else []
-                    normalized_items = [_normalize_collection_item(item) for item in raw_items]
-                    for norm in normalized_items:
-                        item_counter[norm] += 1
-                    domain_payloads.append(
-                        {
-                            "domain": entry.get("domain"),
-                            "attribute_name": entry.get("attribute_name"),
-                            "items": raw_items,
-                            "normalized_items": normalized_items,
-                        }
-                    )
-                overlap_items = [item for item, count in item_counter.items() if count > 1]
-                if overlap_items:
-                    conflict_windows.append(window_id)
-                    overall_overlap.update(overlap_items)
-                windows_payload.append(
-                    {
-                        "window_id": window_id,
-                        "time_range": time_range,
-                        "overlap_items": overlap_items,
-                        "domains": domain_payloads,
-                    }
-                )
-                continue
+            # Simply list all domain values
+            domains_list = [
+                {
+                    "domain": entry["domain"],
+                    "value": entry["value"],
+                }
+                for entry in entries
+            ]
 
-            distinct_values = {
-                entry["normalized_value"] for entry in entries if entry.get("normalized_value") is not None
-            }
-            window_conflicts = len(distinct_values) > 1
-            if window_conflicts:
-                conflict_windows.append(window_id)
             windows_payload.append(
                 {
                     "window_id": window_id,
                     "time_range": time_range,
-                    "distinct_value_count": len(distinct_values),
-                    "domains": [
-                        {
-                            "domain": entry["domain"],
-                            "attribute_name": entry["attribute_name"],
-                            "value": entry["value"],
-                        }
-                        for entry in entries
-                    ],
+                    "domains": domains_list,
                 }
             )
 
-        if not conflict_windows:
-            continue
-        conflicts.append(
-            {
-                "kind": "attribute",
-                "attribute_type": attr_type,
-                "canonical_key": canonical_key,
-                "conflict_windows": conflict_windows,
-                "windows": windows_payload,
-                "overall_overlap_items": sorted(overall_overlap) if overall_overlap else [],
-            }
-        )
+        # Only include attributes that appear in multiple domains in at least one window
+        if windows_payload:
+            shared_attributes.append(
+                {
+                    "shared_key": attr_name,
+                    "attribute_type": attr_type,
+                    "windows": windows_payload,
+                }
+            )
 
-    return conflicts
+    return shared_attributes
 
 
 def _replace_or_add_initial_attribute(
@@ -6095,7 +6125,7 @@ def _apply_conflict_resolution_to_profiles(
         tokens: List[object], window_id: str | None, root: Dict | None
     ) -> List[object]:
         """
-        Some patch formats repeat the window_id inside the path (e.g., habits_state.initial.*).
+        Some patch formats repeat the window_id inside the path (e.g., habits_state.*).
         Strip that marker since we already route to the correct window root.
         """
         if not tokens or not isinstance(window_id, str):
@@ -6825,10 +6855,10 @@ def _resolve_window_states(dynamic_profile_data: Dict) -> List[Dict]:
     initial_state = dynamic_profile_data.get("initial_state") or {}
     current_attributes = _init_user_attributes_state(initial_state)
     current_habits = _init_generic_state(
-        (initial_state.get("habits_state") or {}).get("initial")
+        initial_state.get("habits_state")
     )
     current_preferences = _init_generic_state(
-        (initial_state.get("preferences_state") or {}).get("initial")
+        initial_state.get("preferences_state")
     )
 
     for window in dynamic_profile_data.get("time_windows", []):
@@ -7631,7 +7661,7 @@ class GenerationPipeline:
         )
 
         attribute_conflicts = _collect_cross_domain_attribute_conflicts(
-            dynamic_profiles, key_mapping=_key_alignment_mapping
+            dynamic_profiles
         )
         _write_json(
             self.output_dir / "auto_detected_attribute_conflicts.json",
@@ -7758,7 +7788,7 @@ class GenerationPipeline:
                 )
                 if focus_detail:
                     enriched["habit_detail"] = focus_detail
-                    for field in ("context", "description", "schedule", "timing", "priority"):
+                    for field in ("location", "schedule", "timing", "priority"):
                         if focus_detail.get(field) and not enriched.get(field):
                             enriched[field] = focus_detail[field]
                 window_range = window_range_lookup.get(
@@ -7811,7 +7841,7 @@ class GenerationPipeline:
                 )
                 if other_detail:
                     summary["against"]["habit_detail"] = other_detail
-                    for field in ("context", "description", "schedule", "timing", "priority"):
+                    for field in ("location", "schedule", "timing", "priority"):
                         if other_detail.get(field) and not summary["against"].get(field):
                             summary["against"][field] = other_detail[field]
                 if not summary.get("window_range"):
@@ -7871,25 +7901,30 @@ class GenerationPipeline:
         iteration_counter = 0
         window_resolution_order = _ordered_window_ids_from_profiles(resolved_profiles)
 
-        def _resolve_window_conflicts(target_window_label: str) -> None:
-            nonlocal iteration_counter, resolved_profiles
+        def _resolve_window_conflicts(
+            target_window_label: str,
+            current_profiles: Dict[str, Dict],
+            current_counter: int
+        ) -> tuple[Dict[str, Dict], int]:
+            """
+            Resolve conflicts for a specific window.
+            Returns: (updated_profiles, updated_counter)
+            """
             normalized_target = _normalize_window_id_label(target_window_label)
-            import pdb; pdb.set_trace()
+            updated_profiles = current_profiles
+            updated_counter = current_counter
 
             for _ in range(100):
-                import pdb; pdb.set_trace()
-                window_conflicts = detect_temporal_conflicts(resolved_profiles)
+                window_conflicts = detect_temporal_conflicts(updated_profiles)
                 window_conflict_entries = [
                     c for c in (window_conflicts.get("conflicts") or [])
                     if _normalize_window_id_label(c.get("window_id")) == normalized_target
                 ]
-                ## save window_conflicts
 
                 _write_json(
                     self.output_dir / f"window_conflicts_{target_window_label}.json",
                     window_conflicts,
                 )
-                import pdb; pdb.set_trace()
 
                 if not window_conflict_entries:
                     print(f"All conflicts resolved in {target_window_label}")
@@ -7921,33 +7956,33 @@ class GenerationPipeline:
                     "conflict_times": _collect_conflict_times_for_focus(focus_habit, focus_conflicts),
                 }
 
-                iteration_counter += 1
+                updated_counter += 1
                 resolution_result = generate_time_conflict_resolution(
                     self.llm_client,
                     ConflictResolutionRequest(
                         user_basic_profile=user_basic_profile,
-                        dynamic_profiles=resolved_profiles,  # Pass full dynamic profiles
+                        dynamic_profiles=updated_profiles,  # Pass full dynamic profiles
                         detected_temporal_conflicts=conflict_hints,
                         target_window_id=target_window_label,
                     ),
-                    iteration_index=iteration_counter,
+                    iteration_index=updated_counter,
                 )
 
                 payload = resolution_result.data or {}
-                per_iteration_payloads[f"iteration_{iteration_counter}_{target_window_label}"] = payload
-                per_iteration_usage[f"iteration_{iteration_counter}_{target_window_label}"] = resolution_result.usage or {}
+                per_iteration_payloads[f"iteration_{updated_counter}_{target_window_label}"] = payload
+                per_iteration_usage[f"iteration_{updated_counter}_{target_window_label}"] = resolution_result.usage or {}
 
                 _write_text(
-                    self.output_dir / f"conflict_resolution_temporal_{target_window_label}_iter{iteration_counter}_prompt.txt",
+                    self.output_dir / f"conflict_resolution_temporal_{target_window_label}_iter{updated_counter}_prompt.txt",
                     resolution_result.prompt,
                 )
                 _write_json(
-                    self.output_dir / f"cross_domain_conflict_resolution_temporal_{target_window_label}_iter{iteration_counter}.json",
+                    self.output_dir / f"cross_domain_conflict_resolution_temporal_{target_window_label}_iter{updated_counter}.json",
                     payload,
                 )
 
-                resolved_profiles = _apply_conflict_resolution_to_profiles(
-                    resolved_profiles,
+                updated_profiles = _apply_conflict_resolution_to_profiles(
+                    updated_profiles,
                     payload,
                 )
 
@@ -7956,15 +7991,19 @@ class GenerationPipeline:
                     all_conflicts_summary.extend(detected_by_llm)
 
                 _write_json(
-                    self.output_dir / f"dynamic_profiles_conflict_resolved_{target_window_label}_iter{iteration_counter}.json",
-                    resolved_profiles,
+                    self.output_dir / f"dynamic_profiles_conflict_resolved_{target_window_label}_iter{updated_counter}.json",
+                    updated_profiles,
                 )
+
+            return updated_profiles, updated_counter
 
         for window_label in window_resolution_order:
             if not window_label or window_label == "unknown":
                 continue
             print(f"\n=== Processing conflicts in {window_label} ===")
-            _resolve_window_conflicts(window_label)
+            resolved_profiles, iteration_counter = _resolve_window_conflicts(
+                window_label, resolved_profiles, iteration_counter
+            )
 
         # # Final comprehensive pass using full conflict resolver
         # final_resolution = generate_conflict_resolution(
@@ -7988,28 +8027,116 @@ class GenerationPipeline:
                 "temporal_iters": per_iteration_payloads,
             },
         )
-        # resolved_profiles = _apply_conflict_resolution_to_profiles(
-        #     resolved_profiles,
-        #     final_payload,
-        # )
-        # detected_final_by_llm = (
-        #     final_payload.get("conflicts_and_resolutions")
-        #     if isinstance(final_payload, dict)
-        #     else None
-        # )
-        # if isinstance(detected_final_by_llm, list):
-        #     all_conflicts_summary.extend(detected_final_by_llm)
-        # _write_json(
-        #     self.output_dir / "dynamic_profiles_conflict_resolved.json",
-        #     resolved_profiles,
-        # )
+
+        # ========== Final Rule Validation for Each Domain ==========
+        print("\n=== Final Rule Validation (Rules 1-5) for Each Domain ===")
+        final_rule_fixes: Dict[str, Dict] = {}
+        final_rule_usage: Dict[str, Dict] = {}
+
+        # Get user_profile text for rule fixes
+        user_profile_text = json.dumps(user_basic_profile or {}, indent=2, ensure_ascii=False)
+
+        for domain_name, profile in resolved_profiles.items():
+            print(f"\nValidating domain: {domain_name}")
+            domain_fixes: Dict[str, object] = {}
+            domain_usage: Dict = {}
+            current_profile = profile
+
+            # Create a minimal Domain object for rule fixing
+            from dataclasses import dataclass
+            @dataclass
+            class MinimalDomain:
+                domain_name: str
+                domain_scope_definition: str = ""
+
+            domain_obj = MinimalDomain(domain_name=domain_name)
+
+            # Rule 1: Required fields
+            rule1_issues = _detect_rule1_required_field_issues(current_profile)
+            if rule1_issues:
+                print(f"  - Rule 1: Found {len(rule1_issues)} required field issues")
+                fix_result, usage = _fix_rule1_violations(
+                    self.llm_client, domain_obj, user_profile_text, current_profile, rule1_issues
+                )
+                if fix_result:
+                    domain_fixes["rule1"] = fix_result
+                    current_profile = _apply_profile_revision(current_profile, fix_result)
+                    domain_usage.update(usage)
+
+            # Rule 2: Prior existence
+            rule2_issues = _detect_rule2_prior_existence_issues(current_profile)
+            if rule2_issues:
+                print(f"  - Rule 2: Found {len(rule2_issues)} prior existence issues")
+                fix_result, usage = _fix_rule2_violations(
+                    self.llm_client, domain_obj, user_profile_text, current_profile, rule2_issues
+                )
+                if fix_result:
+                    domain_fixes["rule2"] = fix_result
+                    current_profile = _apply_profile_revision(current_profile, fix_result)
+                    domain_usage.update(usage)
+
+            # Rule 3: Essential initialization
+            rule3_issues = _detect_rule3_first_add_issues(current_profile)
+            if rule3_issues:
+                print(f"  - Rule 3: Found {len(rule3_issues)} essential initialization issues")
+                fix_result, usage = _fix_rule3_violations(
+                    self.llm_client, domain_obj, user_profile_text, current_profile, rule3_issues
+                )
+                if fix_result:
+                    domain_fixes["rule3"] = fix_result
+                    current_profile = _apply_profile_revision(current_profile, fix_result)
+                    domain_usage.update(usage)
+
+            # Rule 4: Short-term followups
+            rule4_issues = _detect_rule4_short_term_issues(current_profile)
+            if rule4_issues:
+                print(f"  - Rule 4: Found {len(rule4_issues)} short-term followup issues")
+                fix_result, usage = _fix_rule4_violations(
+                    self.llm_client, domain_obj, user_profile_text, current_profile, rule4_issues
+                )
+                if fix_result:
+                    domain_fixes["rule4"] = fix_result
+                    current_profile = _apply_profile_revision(current_profile, fix_result)
+                    domain_usage.update(usage)
+
+            # Rule 5: Time conflicts
+            rule5_result = _detect_rule5_time_conflict_issues(current_profile)
+            rule5_conflicts = rule5_result.get("conflicts") if isinstance(rule5_result, dict) else []
+            if rule5_conflicts:
+                print(f"  - Rule 5: Found {len(rule5_conflicts)} time conflicts")
+                fix_result, usage, prompt = _fix_rule5_violations(
+                    self.llm_client, domain_obj, user_profile_text, current_profile, rule5_result
+                )
+                if fix_result:
+                    domain_fixes["rule5"] = fix_result
+                    current_profile = _apply_profile_revision(current_profile, fix_result)
+                    domain_usage.update(usage)
+
+            # Update resolved_profiles with the final cleaned profile
+            if domain_fixes:
+                resolved_profiles[domain_name] = current_profile
+                final_rule_fixes[domain_name] = domain_fixes
+                final_rule_usage[domain_name] = domain_usage
+                print(f"  ✓ Applied {len(domain_fixes)} rule fixes for {domain_name}")
+
+        # Save final rule validation results
+        if final_rule_fixes:
+            _write_json(
+                self.output_dir / "final_rule_validation_fixes.json",
+                final_rule_fixes,
+            )
+            _write_json(
+                self.output_dir / "dynamic_profiles_final_clean.json",
+                resolved_profiles,
+            )
+            print("\n✓ Final rule validation completed. All domains are now clean.")
 
         usage = {
             "conflict_resolution": {
                 "attribute": attribute_resolution_usage,
                 "temporal_iters": per_iteration_usage,
-                # "final": final_resolution.usage,
             },
+            "final_rule_validation": final_rule_usage,
         }
         if alignment_usage:
             usage.update(alignment_usage)
@@ -8107,7 +8234,6 @@ class GenerationPipeline:
         need_cross_domain_conflict_resolution = True
         # import pdb; pdb.set_trace()
         cached_resolved_profiles: Dict[str, Dict] | None = None
-        new_dynamic_profile_generated = False
         if conflict_resolved_path.exists():
             cached_resolved_profiles = json.loads(conflict_resolved_path.read_text())
             need_cross_domain_conflict_resolution = False
@@ -8148,7 +8274,7 @@ class GenerationPipeline:
                         life_domain_list=life_domain_list,  
                     )
                 ## record raw dynamic profile (domain level)
-                _write_json(self.output_dir / f"{slug}_dynamic_profile.json", dynamic_profile)
+                _write_json(self.output_dir / f"{slug}_raw_dynamic_profile.json", dynamic_profile)
                 # Always use the in-domain revised profile downstream.
                 import pdb; pdb.set_trace()
                 _reviewed_result, revised_dynamic_profile, review_usage = (
@@ -8160,7 +8286,8 @@ class GenerationPipeline:
                 )
                 usage.update(review_usage)
                 dynamic_profile = revised_dynamic_profile
-                new_dynamic_profile_generated = True
+                _write_json(self.output_dir / f"{slug}_reviewed_dynamic_profile.json", dynamic_profile)
+                # new_dynamic_profile_generated = True
 
             dynamic_profiles[domain.domain_name] = dynamic_profile
             aggregate_usage[domain.domain_name] = usage
@@ -8960,8 +9087,8 @@ class GenerationPipeline:
             initial_state = domain_profile.get("initial_state") or {}
             initial_sections = {
                 "user_attributes_state": (initial_state.get("user_attributes_state") or {}).get("initial"),
-                "habits_state": (initial_state.get("habits_state") or {}).get("initial"),
-                "preferences_state": (initial_state.get("preferences_state") or {}).get("initial"),
+                "habits_state": initial_state.get("habits_state"),
+                "preferences_state": initial_state.get("preferences_state"),
             }
             for state_type, section in initial_sections.items():
                 if not isinstance(section, dict):
@@ -9656,7 +9783,7 @@ def debug_dynamic_profile_generation() -> None:
     # model_name="gemini-2.5-flash-lite"
     client = GeminiJSONClient(api_key=api_key, model_name=model_name)
     base_dir = Path(__file__).resolve().parent
-    output_dir = base_dir / "generated_outputs_debug_v11" / _slugify(model_name)
+    output_dir = base_dir / "generated_outputs_debug_v12" / _slugify(model_name)
     domains_path = base_dir / "domains.json"
     # domains_path = base_dir / "domains_test.json"
     domains = load_domains_from_file(domains_path)
