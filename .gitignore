@@ -1,0 +1,15 @@
+# pixi environments
+.pixi/*
+!.pixi/config.toml
+
+# Python artifacts
+.a.py
+.env
+pixi.lock
+test.txt
+eval/data/*
+!eval/data/.gitkeep
+eval/logs/*
+!eval/data/.gitkeep
+.hf_cache
+__pycache__/
