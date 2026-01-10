@@ -1,0 +1,6 @@
+import generation
+import eval
+
+if __name__ == "__main__":
+    generation.run()
+    eval.run()

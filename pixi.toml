@@ -1,0 +1,39 @@
+[workspace]
+authors = ["foolycoconut <smz.noisy@gmail.com>"]
+channels = ["nvidia", "pytorch", "conda-forge"]
+platforms = ["win-64"]
+version = "0.1.0"
+
+[tasks]
+
+[dependencies]
+python = "3.11.*"
+numpy = ">=1.26,<3"  # 很多深度学习库还没完全适配 numpy 2.x，1.26 更稳
+scipy = "*"
+pydantic = ">=2"
+pyyaml = "*"
+tqdm = "*"
+# --- 核心深度学习组件 ---
+pytorch = ">=2.4.0,<2.6" 
+torchvision = "*"        # 让 pixi 自动匹配对应的版本，手动写容易错
+pytorch-cuda = "12.1.*"    # 强烈建议先用 12.1，这是目前最稳的“甜点位”
+# --- Hugging Face ---
+transformers = "*"
+datasets = "*"
+accelerate = "*"
+evaluate = ">=0.4.6,<0.5"
+openai = ">=2.15.0,<3"
+google-genai = ">=1.57.0,<2"
+absl-py = ">=2.3.1,<3"
+nltk = ">=3.9.2,<4"
+rouge-score = ">=0.1.2,<0.2"
+hf-transfer = ">=0.1.9,<0.2"
+
+[pypi-dependencies]
+bert-score = "*"
+
+[activation.env]
+HF_HOME = ".hf_cache"
+OPENAI_API_KEY = "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"
+GOOGLE_API_KEY = "AIzaSyCxzrEQuqsV3sOqAmM0fb9L5QrnU2rsgGk"
+
