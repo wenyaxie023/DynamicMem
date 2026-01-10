@@ -34,9 +34,15 @@ from mem_bench.behavior_and_conversation.elite_persona_sampler import (
     load_sampled_personas,
     sample_elite_personas,
 )
-from mem_bench.behavior_and_conversation.semantic_events_generator import (
-    SemanticEventsRequest,
-    generate_semantic_events,
+from mem_bench.behavior_and_conversation.events_chain_generator import (
+    EventsChainRequest,
+    generate_events_chain,
+)
+from mem_bench.behavior_and_conversation.app_log_generator import (
+    AppLogGenerator,
+)
+from mem_bench.behavior_and_conversation.app_data_sources import (
+    set_llm_client_for_data_generation,
 )
 
 DYNAMIC_PROFILE_TEMPLATE_EXCERPT = """
@@ -1293,7 +1299,7 @@ class TimelineConfig:
 
 
 @dataclass
-class SemanticEventsConfig:
+class EventsChainConfig:
     stable_state_reveal_probability: float = 0.35
     stable_state_reveal_seed: int | None = None
 
@@ -7214,7 +7220,7 @@ def _plan_stable_state_reveals(
     return plan
 
 
-def _filter_window_state_for_semantic_events(
+def _filter_window_state_for_events_chain(
     window_state: Dict,
     reveal_plan: Dict[str, Dict[str, Dict[str, object]]],
 ) -> Dict:
@@ -7597,13 +7603,13 @@ class GenerationPipeline:
         llm_client: GeminiJSONClient,
         output_dir: Path,
         timeline: TimelineConfig | None = None,
-        semantic_config: SemanticEventsConfig | None = None,
+        semantic_config: EventsChainConfig | None = None,
         atomic_config: AtomicEventsConfig | None = None,
         real_data_config: RealDataConfig | None = None,
     ) -> None:
         self.llm_client = llm_client
         self.timeline = timeline or TimelineConfig()
-        self.semantic_config = semantic_config or SemanticEventsConfig()
+        self.semantic_config = semantic_config or EventsChainConfig()
         self.atomic_config = atomic_config or AtomicEventsConfig()
         self.real_data_config = real_data_config or RealDataConfig()
         self.output_dir = Path(output_dir)
@@ -8421,7 +8427,7 @@ class GenerationPipeline:
             life_context_usage,
         )
 
-    def _generate_semantic_events_for_domains(
+    def _generate_events_chain_for_domains(
         self,
         domains: Sequence[Domain],
         *,
@@ -8458,7 +8464,7 @@ class GenerationPipeline:
                 )
 
         for domain in domains:
-            events_chain, usage = self.generate_semantic_events_for_domain(
+            events_chain, usage = self.generate_events_chain_for_domain(
                 domain=domain,
                 user_basic_profile=user_basic_profile,
                 dynamic_profiles=dynamic_profiles,
@@ -8513,6 +8519,122 @@ class GenerationPipeline:
             assembled[domain.domain_name] = real_windows
 
         return assembled, aggregate_usage
+
+    def _generate_app_logs_from_events_chains(
+        self,
+        events_chain_by_domain: Dict[str, List[Dict]],
+        *,
+        user_id: str = "user_001",
+        user_basic_profile: Dict = None,
+    ) -> Dict[str, List[Dict]]:
+        """
+        Generate app logs from events chains using the app system.
+
+        Args:
+            events_chain_by_domain: Dict mapping domain_name -> list of window event chains
+            user_id: User identifier for app state management
+            user_basic_profile: User profile for context
+
+        Returns:
+            Dict mapping domain_name -> list of window app logs
+        """
+        log_generator = AppLogGenerator(user_id)
+        processed_logs: Dict[str, List[Dict]] = {}
+        window_index: Dict[tuple[str, str], Dict] = {}
+        flattened_events: List[Dict[str, Any]] = []
+
+        for domain_name, windows in events_chain_by_domain.items():
+            for window_data in windows:
+                if not isinstance(window_data, dict):
+                    continue
+                domain_label = window_data.get("domain_name", domain_name)
+                window_id = window_data.get("window_id", "")
+                time_range = window_data.get("time_range", [])
+
+                window_key = (domain_label, window_id)
+                if window_key not in window_index:
+                    window_payload = {
+                        "window_id": window_id,
+                        "domain_name": domain_label,
+                        "time_range": time_range,
+                        "app_logs": [],
+                    }
+                    window_index[window_key] = window_payload
+                    processed_logs.setdefault(domain_label, []).append(window_payload)
+
+                for chain in window_data.get("event_chains", []):
+                    if not isinstance(chain, dict):
+                        continue
+                    chain_id = chain.get("chain_id", "")
+                    related_state_items = chain.get("related_state_items", [])
+                    for event in chain.get("events", []):
+                        if not isinstance(event, dict):
+                            continue
+                        flattened_events.append({
+                            "event": event,
+                            "domain_name": domain_label,
+                            "window_id": window_id,
+                            "time_range": time_range,
+                            "chain_id": chain_id,
+                            "related_state_items": related_state_items,
+                        })
+
+        def _event_sort_key(item: Dict[str, Any]) -> tuple[str, str, str, str]:
+            event = item.get("event", {})
+            timestamp = event.get("timestamp") or "9999-12-31 23:59:59"
+            return (
+                timestamp,
+                item.get("domain_name", ""),
+                item.get("window_id", ""),
+                event.get("event_id", ""),
+            )
+
+        flattened_events.sort(key=_event_sort_key)
+
+        for item in flattened_events:
+            event = item["event"]
+            required_fields = ("event_id", "timestamp", "app_name", "api_name", "description")
+            if any(field not in event for field in required_fields):
+                print(
+                    "Skipping event with missing fields: "
+                    f"{event.get('event_id', 'unknown')}"
+                )
+                continue
+
+            context = {
+                "user_id": user_id,
+                "domain": item["domain_name"],
+                "window_id": item["window_id"],
+                "user_profile": user_basic_profile or {},
+                "chain_id": item.get("chain_id", ""),
+                "related_state_items": item.get("related_state_items", []),
+            }
+
+            try:
+                log = log_generator._generate_app_log(event, context)
+            except Exception as exc:
+                print(
+                    f"Error generating app log for event {event.get('event_id')}: {exc}"
+                )
+                continue
+
+            log["domain"] = item["domain_name"]
+            log["window_id"] = item["window_id"]
+
+            window_key = (item["domain_name"], item["window_id"])
+            window_payload = window_index.get(window_key)
+            if window_payload is not None:
+                window_payload["app_logs"].append(log)
+
+        def _window_sort_key(entry: Dict[str, Any]) -> tuple[str, str]:
+            time_range = entry.get("time_range") or []
+            start_date = time_range[0] if time_range else "9999-12-31"
+            return (start_date, entry.get("window_id", ""))
+
+        for domain_name, windows in processed_logs.items():
+            windows.sort(key=_window_sort_key)
+
+        return processed_logs
 
     def _assemble_final_payload(
         self,
@@ -8598,7 +8720,7 @@ class GenerationPipeline:
             conflicts_summary,
         )
 
-    def prepare_context_for_semantic_events_generation(
+    def prepare_context_for_events_chain_generation(
         self,
         dynamic_profiles: Dict[str, Dict],
         *,
@@ -8647,7 +8769,7 @@ class GenerationPipeline:
             user_life_contexts,
             world_background_by_window,
             life_context_usage,
-        ) = self.prepare_context_for_semantic_events_generation(
+        ) = self.prepare_context_for_events_chain_generation(
             dynamic_profiles,
             world_background=world_background,
             user_basic_profile=user_basic_profile,
@@ -8660,7 +8782,7 @@ class GenerationPipeline:
             "resolution": conflict_resolution_payload,
         }
 
-        assembled_domains, aggregate_usage = self._generate_semantic_events_for_domains(
+        assembled_domains, aggregate_usage = self._generate_events_chain_for_domains(
             domains,
             dynamic_profiles=dynamic_profiles,
             user_basic_profile=user_basic_profile,
@@ -8674,6 +8796,20 @@ class GenerationPipeline:
             domain_name: payload.get("events_chain") or []
             for domain_name, payload in assembled_domains.items()
         }
+
+        # Generate app logs from events chains
+        app_logs_by_domain = self._generate_app_logs_from_events_chains(
+            events_chain_by_domain,
+            user_id=user_basic_profile.get("user_id", "user_001"),
+            user_basic_profile=user_basic_profile,
+        )
+
+        # Add app logs to assembled domains
+        for domain_name, app_logs_windows in app_logs_by_domain.items():
+            assembled_domains.setdefault(domain_name, {})
+            assembled_domains[domain_name]["app_logs"] = app_logs_windows
+
+        # Optional: Still generate real_data if needed (can be removed if only using app logs)
         real_data_by_domain, aggregate_usage = self._generate_real_data_for_domains(
             domains,
             dynamic_profiles=dynamic_profiles,
@@ -8983,7 +9119,7 @@ class GenerationPipeline:
 
         return reviewed_result, revised_profile, usage
 
-    def generate_semantic_events_for_domain(
+    def generate_events_chain_for_domain(
         self,
         *,
         domain: Domain,
@@ -9079,8 +9215,8 @@ class GenerationPipeline:
             return {
                 "updated_this_window": False,
                 "freshness": False,
-                "already_converted_to_semantic_events": False,
-                "should_convert_to_semantic_events": False,
+                "already_converted_to_events_chain": False,
+                "should_convert_to_events_chain": False,
                 "reason": None,
             }
 
@@ -9236,7 +9372,7 @@ class GenerationPipeline:
 
                         already_converted = bool(
                             existing_entry
-                            and existing_entry["metadata"].get("already_converted_to_semantic_events")
+                            and existing_entry["metadata"].get("already_converted_to_events_chain")
                         )
                         updated_this_window = existing_entry is None
                         freshness = updated_this_window
@@ -9253,8 +9389,8 @@ class GenerationPipeline:
                         metadata = {
                             "updated_this_window": updated_this_window,
                             "freshness": freshness,
-                            "already_converted_to_semantic_events": already_converted,
-                            "should_convert_to_semantic_events": should_convert,
+                            "already_converted_to_events_chain": already_converted,
+                            "should_convert_to_events_chain": should_convert,
                             "reason": reason if freshness else None,
                         }
 
@@ -9314,9 +9450,9 @@ class GenerationPipeline:
                 window_id, "No world background available for this window."
             )
             user_basic_profile_str = json.dumps(user_basic_profile, indent=2, ensure_ascii=False)
-            semantic_result = generate_semantic_events(
+            semantic_result = generate_events_chain(
                 self.llm_client,
-                SemanticEventsRequest(
+                EventsChainRequest(
                     domain_name=domain.domain_name,
                     user_basic_profile=user_basic_profile_str,
                     user_life_context=life_context_prompt_str,
@@ -9336,7 +9472,7 @@ class GenerationPipeline:
 
             semantic_path = self.output_dir / f"{slug}_events_chain_{window_id}.json"
             _write_json(semantic_path, semantic_result.data)
-            legacy_semantic_path = self.output_dir / f"{slug}_semantic_events_{window_id}.json"
+            legacy_semantic_path = self.output_dir / f"{slug}_events_chain_{window_id}.json"
             _write_json(legacy_semantic_path, semantic_result.data)
 
             # Mark converted items so we don't repeatedly force conversion in later windows.
@@ -9344,8 +9480,8 @@ class GenerationPipeline:
                 for name, key in entries:
                     meta_entry = state_tracker[state_type].get(name, {}).get(key)
                     if meta_entry:
-                        meta_entry["metadata"]["already_converted_to_semantic_events"] = True
-                        meta_entry["metadata"]["should_convert_to_semantic_events"] = False
+                        meta_entry["metadata"]["already_converted_to_events_chain"] = True
+                        meta_entry["metadata"]["should_convert_to_events_chain"] = False
 
         windows_by_id = {
             entry.get("window_id"): entry
@@ -9358,7 +9494,7 @@ class GenerationPipeline:
             "windows_by_id": windows_by_id,
         }
         _write_json(semantic_path, payload)
-        legacy_semantic_path = self.output_dir / f"{slug}_semantic_events.json"
+        legacy_semantic_path = self.output_dir / f"{slug}_events_chain.json"
         _write_json(legacy_semantic_path, payload)
 
         return events_chain_windows, usage
@@ -9407,7 +9543,7 @@ class GenerationPipeline:
 
             events_payload = (
                 events_chain_data.get("events_chain")
-                or events_chain_data.get("semantic_events")
+                or events_chain_data.get("events_chain")
                 or events_chain_data
             )
 
@@ -9418,7 +9554,7 @@ class GenerationPipeline:
                     window_id=window_id,
                     window_time_range=_format_window_range(window_state),
                     current_window_state=window_state,
-                    semantic_events=events_payload,
+                    events_chain=events_payload,
                     min_atomic_per_semantic=self.atomic_config.min_per_semantic,
                     max_atomic_per_semantic=self.atomic_config.max_per_semantic,
                 ),
@@ -9612,7 +9748,7 @@ class GenerationPipeline:
         """Load events chain (semantic events) from file if it exists."""
         slug = _slugify(domain.domain_name)
         events_chain_path = self.output_dir / f"{slug}_events_chain.json"
-        legacy_semantic_path = self.output_dir / f"{slug}_semantic_events.json"
+        legacy_semantic_path = self.output_dir / f"{slug}_events_chain.json"
         path_to_use = None
         if events_chain_path.exists():
             path_to_use = events_chain_path
@@ -9925,7 +10061,7 @@ def debug_review_revise_dynamic_profile_from_file() -> None:
     # print("Revised saved to:", revised_path)
     print("Usage:", usage)
 
-def debug_prepare_context_for_semantic_events_generation() -> None: 
+def debug_prepare_context_for_events_chain_generation() -> None: 
     base_dir = Path(__file__).resolve().parent
     model_name = "gemini-3-flash-preview"
     output_dir = base_dir / "generated_outputs_debug_v6" / _slugify(model_name)
@@ -9943,13 +10079,13 @@ def debug_prepare_context_for_semantic_events_generation() -> None:
         user_life_contexts,
         world_background_by_window,
         life_context_usage,
-    ) = pipeline.prepare_context_for_semantic_events_generation(dynamic_profiles, world_background=world_background, user_basic_profile=user_basic_profile)
+    ) = pipeline.prepare_context_for_events_chain_generation(dynamic_profiles, world_background=world_background, user_basic_profile=user_basic_profile)
     print(user_full_state_summaries)
     print(user_life_contexts)
     print(world_background_by_window)
     print(life_context_usage)
 
-def debug_generate_semantic_events() -> None:
+def debug_generate_events_chain() -> None:
     base_dir = Path(__file__).resolve().parent
     model_name = "gemini-3-flash-preview"
     output_dir = base_dir / "generated_outputs_debug_v6" / _slugify(model_name)
@@ -9985,14 +10121,17 @@ def debug_generate_semantic_events() -> None:
     # domain_name = "Leisure & Media Consumption"
     # # domain_scope_definition="Encompasses users' physical and mental well-being, including health conditions, lifestyle habits, and self-care practices such as exercise, diet, sleep, and healthcare-seeking behavior. It describes how users manage and optimize their health over time."
     # domain_scope_definition="Captures users' recreational activities and content preferences, including entertainment, hobbies, travel, and consumption of digital media such as videos, music, games, and books. It reflects how users spend discretionary time and pursue enjoyment."
-    domain_name = "Health & Self-care"
-    domain_scope_definition = "Encompasses users' physical and mental well-being, including health conditions, lifestyle habits, and self-care practices such as exercise, diet, sleep, and healthcare-seeking behavior. It describes how users manage and optimize their health over time."
+    # domain_name = "Health & Self-care"
+    # domain_scope_definition = "Encompasses users' physical and mental well-being, including health conditions, lifestyle habits, and self-care practices such as exercise, diet, sleep, and healthcare-seeking behavior. It describes how users manage and optimize their health over time."
 
-
+    # domain_name = "Family & Close Relationships"
+    # domain_scope_definition="Describes users' family structure and intimate relationships, such as partnerships, parenting roles, and household responsibilities. It captures close interpersonal bonds that shape daily routines, obligations, and life decisions."
+    domain_name = "Work & Education"    
+    domain_scope_definition="Covers users' professional roles, career development, and learning activities, including employment status, occupational goals, skill acquisition, and educational pursuits. It reflects how users engage in productive activities and long-term capability building through work- and study-related behaviors."
     domain = Domain(domain_name=domain_name, domain_scope_definition=domain_scope_definition)
  
-    # NOTE: generate_semantic_events_for_domain expects the full multi-domain dynamic_profiles dict.
-    events_chain_windows = pipeline.generate_semantic_events_for_domain(
+    # NOTE: generate_events_chain_for_domain expects the full multi-domain dynamic_profiles dict.
+    events_chain_windows = pipeline.generate_events_chain_for_domain(
         domain=domain,
         user_basic_profile=user_basic_profile,
         dynamic_profiles=dynamic_profiles,
@@ -10004,80 +10143,179 @@ def debug_generate_semantic_events() -> None:
     print(events_chain_windows)
 
 def debug_generate_real_data() -> None:
+    """Test the new pipeline with two domains: Work & Education and Family & Close Relationships.
+
+    Loads events chains from both domains, sorts by timestamp, and converts them to app logs.
+    """
     base_dir = Path(__file__).resolve().parent
     model_name = "gemini-3-flash-preview"
     output_dir = base_dir / "generated_outputs_debug_v6" / _slugify(model_name)
-    client = GeminiJSONClient(model_name=model_name)
-    pipeline = GenerationPipeline(client, output_dir=output_dir)
 
-    with open(output_dir / "user_basic_profile.json", "r") as f:
-        user_basic_profile = json.load(f)
-    with open(output_dir / "dynamic_profiles_conflict_resolved.json", "r") as f:
-        dynamic_profiles = json.load(f)
-    with open(output_dir / "life_context_by_window.json", "r") as f:
-        user_life_contexts = json.load(f)
-    with open(output_dir / "user_full_state_summaries.json", "r") as f:
-        user_full_state_summaries = json.load(f)
+    # Load the two events chain files
+    work_events_file = output_dir / "work_education_events_chain.json"
+    family_events_file = output_dir / "family_close_relationships_events_chain.json"
 
-    domain_name = "Health & Self-care"
-    domain_scope_definition = "Encompasses users' physical and mental well-being, including health conditions, lifestyle habits, and self-care practices such as exercise, diet, sleep, and healthcare-seeking behavior. It describes how users manage and optimize their health over time."
-    domain = Domain(domain_name=domain_name, domain_scope_definition=domain_scope_definition)
+    print(f"Loading events chains from:")
+    print(f"  - {work_events_file}")
+    print(f"  - {family_events_file}")
 
-    events_chain_windows = pipeline.load_events_chain_from_file(domain) or []
-    aggregate_usage: Dict[str, Dict] = {}
-    import pdb; pdb.set_trace()
-    if not events_chain_windows:
-        with open(base_dir / "context_world_background_2024.txt", "r") as f:
-            world_background = f.read()
+    with open(work_events_file, "r") as f:
+        work_data = json.load(f)
+    with open(family_events_file, "r") as f:
+        family_data = json.load(f)
 
-        # Build cross-domain initial summary for window1 context.
-        initial_summaries_parts: List[str] = []
-        for d_name, profile in dynamic_profiles.items():
-            init_summary = (profile.get("initial_state") or {}).get("summary") or ""
-            if init_summary:
-                initial_summaries_parts.append(f"{d_name}: {init_summary}")
-        initial_all_domains_summary = "\n\n".join(initial_summaries_parts)
-        if not initial_all_domains_summary:
-            first_window = None
-            for window_id in sorted(user_full_state_summaries.keys()):
-                entry = user_full_state_summaries.get(window_id)
-                if isinstance(entry, dict):
-                    first_window = entry
-                    break
-            if first_window:
-                initial_all_domains_summary = (
-                    first_window.get("window_profile_summary", "") or ""
-                )
+    def _collect_events(domain_data: Dict[str, Any], fallback_domain: str) -> List[Dict[str, Any]]:
+        events: List[Dict[str, Any]] = []
+        windows_by_id = domain_data.get("windows_by_id")
+        if isinstance(windows_by_id, dict):
+            windows = [windows_by_id[k] for k in sorted(windows_by_id.keys())]
+        elif isinstance(windows_by_id, list):
+            windows = windows_by_id
+        else:
+            windows = domain_data.get("windows", [])
 
-        events_chain_windows, usage = pipeline.generate_semantic_events_for_domain(
-            domain=domain,
-            user_basic_profile=user_basic_profile,
-            dynamic_profiles=dynamic_profiles,
-            user_life_contexts=user_life_contexts,
-            user_full_state_summaries=user_full_state_summaries,
-            world_background=world_background,
-            usage={},
-            initial_all_domains_summary=initial_all_domains_summary,
+        for window_data in windows:
+            if not isinstance(window_data, dict):
+                continue
+            domain_name = (
+                window_data.get("domain_name")
+                or domain_data.get("domain")
+                or fallback_domain
+            )
+            window_id = window_data.get("window_id", "")
+            time_range = window_data.get("time_range", [])
+            for chain in window_data.get("event_chains", []):
+                if not isinstance(chain, dict):
+                    continue
+                chain_id = chain.get("chain_id", "")
+                related_state_items = chain.get("related_state_items", [])
+                for event in chain.get("events", []):
+                    if not isinstance(event, dict):
+                        continue
+                    payload = dict(event)
+                    payload["domain_name"] = domain_name
+                    payload["window_id"] = window_id
+                    payload["time_range"] = time_range
+                    payload["chain_id"] = chain_id
+                    payload["related_state_items"] = related_state_items
+                    events.append(payload)
+        return events
+
+    all_events: List[Dict[str, Any]] = []
+    all_events.extend(_collect_events(work_data, "Work & Education"))
+    all_events.extend(_collect_events(family_data, "Family & Close Relationships"))
+
+    if not all_events:
+        print("No events found. Aborting app log generation.")
+        return
+
+    def _event_sort_key(event: Dict[str, Any]) -> tuple[str, str, str, str]:
+        timestamp = event.get("timestamp") or "9999-12-31 23:59:59"
+        return (
+            timestamp,
+            event.get("domain_name", ""),
+            event.get("window_id", ""),
+            event.get("event_id", ""),
         )
-        aggregate_usage[domain.domain_name] = usage
 
-    if not events_chain_windows:
-        raise FileNotFoundError("No semantic events found; generate them before real data.")
+    all_events.sort(key=_event_sort_key)
 
-    usage_for_real = aggregate_usage.get(domain.domain_name)
-    real_data_windows, usage_for_real = pipeline.generate_real_data_for_domain(
-        domain=domain,
-        dynamic_profiles=dynamic_profiles,
-        events_chain_windows=events_chain_windows,
-        user_basic_profile=user_basic_profile,
-        user_life_contexts=user_life_contexts,
-        user_full_state_summaries=user_full_state_summaries,
-        usage=usage_for_real,
-    )
-    aggregate_usage[domain.domain_name] = usage_for_real
+    domain_event_counts: Dict[str, int] = {}
+    for event in all_events:
+        domain_name = event.get("domain_name", "Unknown")
+        domain_event_counts[domain_name] = domain_event_counts.get(domain_name, 0) + 1
 
-    print(json.dumps(real_data_windows, indent=2, ensure_ascii=False))
-    print(json.dumps(aggregate_usage, indent=2, ensure_ascii=False))
+    total_events = len(all_events)
+    print(f"\nExtracted {total_events} events total:")
+    for domain_name, count in sorted(domain_event_counts.items()):
+        print(f"  - {domain_name}: {count}")
+
+    # Initialize app log generator
+
+    # Set up LLM client for data generation
+    client = GeminiJSONClient(model_name=model_name)
+    set_llm_client_for_data_generation(client)
+
+    # user_id = user_profile.get("user_id", "user_001")
+    user_id = "user_001"
+    app_log_gen = AppLogGenerator(user_id=user_id)
+
+    # Load user profile if available
+    user_profile = {}
+    profile_file = output_dir / "user_basic_profile.json"
+    if profile_file.exists():
+        with open(profile_file, "r") as f:
+            user_profile = json.load(f)
+
+    # Convert events to app logs in chronological order
+    print("\nGenerating app logs from events...")
+    app_logs = []
+
+    required_fields = ("event_id", "timestamp", "app_name", "api_name", "description")
+    import pdb; pdb.set_trace()
+    for event in all_events:
+        import pdb; pdb.set_trace()    
+        if any(field not in event for field in required_fields):
+            print(
+                f"Skipping event with missing fields: {event.get('event_id', 'unknown')}"
+            )
+            continue
+
+        context = {
+            "user_id": user_id,
+            "domain": event.get("domain_name", ""),
+            "window_id": event.get("window_id", ""),
+            "user_profile": user_profile,
+            "chain_id": event.get("chain_id", ""),
+            "related_state_items": event.get("related_state_items", []),
+        }
+        try:
+            log = app_log_gen._generate_app_log(event, context)
+        except Exception as exc:
+            print(
+                f"Warning: Failed to process event {event.get('event_id')}: {exc}"
+            )
+            continue
+
+        log["domain"] = event.get("domain_name", "")
+        log["window_id"] = event.get("window_id", "")
+        app_logs.append(log)
+
+    app_logs.sort(key=lambda log: log.get("timestamp") or "9999-12-31 23:59:59")
+
+    if app_logs:
+        print(f"\nGenerated {len(app_logs)} app logs")
+        print(f"  First log: {app_logs[0]['timestamp']} - {app_logs[0]['app_name']}.{app_logs[0]['api_name']}")
+        print(f"  Last log: {app_logs[-1]['timestamp']} - {app_logs[-1]['app_name']}.{app_logs[-1]['api_name']}")
+    else:
+        print("\nGenerated 0 app logs")
+
+    # Save results
+    output_file = output_dir / "debug_app_logs_merged.json"
+    output_data = {
+        "user_id": user_id,
+        "total_events": total_events,
+        "total_app_logs": len(app_logs),
+        "domains": sorted(domain_event_counts.keys()),
+        "app_logs": app_logs
+    }
+
+    with open(output_file, "w") as f:
+        json.dump(output_data, f, indent=2, ensure_ascii=False)
+
+    print(f"\nResults saved to: {output_file}")
+
+    # Print summary statistics
+    print("\nApp Log Statistics:")
+    app_counts = {}
+    for log in app_logs:
+        app_name = log.get("app_name", "Unknown")
+        app_counts[app_name] = app_counts.get(app_name, 0) + 1
+
+    for app_name, count in sorted(app_counts.items(), key=lambda x: -x[1]):
+        print(f"  {app_name}: {count} logs")
+
+    print("\nDone!")
 
 def debug_cross_domain_conflict_resolution_temporal() -> None:
     ## use /export/scratch_large/wenya/mem_bench/behavior_and_conversation/generated_outputs_debug_v11/gemini_3_flash_preview/cross_domain_conflict_resolution_temporal_claude.json
@@ -10097,7 +10335,7 @@ def debug_cross_domain_conflict_resolution_temporal() -> None:
 if __name__ == "__main__":
     # debug_cross_domain_conflict_resolution_temporal()
     # example_usage()
-    debug_dynamic_profile_generation()
+    # debug_dynamic_profile_generation()
     # debug_resolve_conflicts_from_file()
     # debug_resolve_conflicts_from_file()
     # debug_review_revise_dynamic_profile_from_file()
@@ -10115,8 +10353,9 @@ if __name__ == "__main__":
     # ===== batch generate dynamic profiles from elite personas =====
 
     # ===== prepare context for semantic events generation =====
-    # debug_prepare_context_for_semantic_events_generation()
-    # debug_generate_semantic_events()
+    # debug_prepare_context_for_events_chain_generation()
+    # debug_generate_events_chain()
+    debug_generate_real_data()
     # debug_generate_real_data()
     # ===== prepare context for semantic events generation =====
 
