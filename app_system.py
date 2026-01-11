@@ -32,6 +32,161 @@ class AppLogEntry:
     metadata: Dict[str, Any] = field(default_factory=dict)
 
 
+APP_API_SCHEMAS: Dict[str, Dict[str, Dict[str, Any]]] = {
+    "Amazon": {
+        "Login": {
+            "input": {"user_id": "string"},
+            "output": {"success": "boolean", "session_id": "string", "user_name": "string"}
+        },
+        "SearchProducts": {
+            "input": {"query": "string", "session_id": "string"},
+            "output": {
+                "products": [
+                    {"product_id": "string", "name": "string", "price": "number", "rating": "number"}
+                ],
+                "total_results": "integer"
+            }
+        },
+        "ShowProduct": {
+            "input": {"product_id": "string", "session_id": "string"},
+            "output": {
+                "product_id": "string",
+                "name": "string",
+                "price": "number",
+                "rating": "number",
+                "reviews": "integer",
+                "description": "string"
+            }
+        },
+        "Checkout": {
+            "input": {"product_id": "string", "quantity": "integer", "session_id": "string"},
+            "output": {
+                "order_id": "string",
+                "product": "object",
+                "timestamp": "YYYY-MM-DD HH:MM:SS",
+                "status": "string",
+                "delivery_date": "YYYY-MM-DD"
+            }
+        },
+        "ShowOrders": {
+            "input": {"session_id": "string"},
+            "output": {"orders": ["object"], "total_orders": "integer"}
+        }
+    },
+    "Google": {
+        "Search": {
+            "input": {"query": "string", "session_id": "string"},
+            "output": {
+                "results": [{"title": "string", "url": "string", "snippet": "string"}],
+                "total_results": "integer"
+            }
+        }
+    },
+    "SimpleNote": {
+        "Login": {
+            "input": {"user_id": "string"},
+            "output": {"success": "boolean", "session_id": "string"}
+        },
+        "ShowNotes": {
+            "input": {"session_id": "string"},
+            "output": {
+                "notes": [{"note_id": "string", "title": "string", "preview": "string", "created_at": "string"}],
+                "total_notes": "integer"
+            }
+        },
+        "ShowNote": {
+            "input": {"note_id": "string", "session_id": "string"},
+            "output": {"note_id": "string", "title": "string", "content": "string", "created_at": "string"}
+        },
+        "CreateNote": {
+            "input": {"title": "string", "content": "string", "session_id": "string"},
+            "output": {"note_id": "string", "title": "string", "content": "string", "created_at": "string"}
+        }
+    },
+    "Calendar": {
+        "CreateEvent": {
+            "input": {
+                "title": "string",
+                "start_time": "YYYY-MM-DD HH:MM:SS",
+                "duration_minutes": "integer",
+                "session_id": "string"
+            },
+            "output": {
+                "event_id": "string",
+                "title": "string",
+                "start_time": "YYYY-MM-DD HH:MM:SS",
+                "duration_minutes": "integer",
+                "status": "string",
+                "created_at": "YYYY-MM-DD HH:MM:SS"
+            }
+        },
+        "UpdateEvent": {
+            "input": {"event_id": "string", "session_id": "string"},
+            "output": {"event_id": "string", "title": "string", "updated_at": "YYYY-MM-DD HH:MM:SS"}
+        },
+        "DeleteEvent": {
+            "input": {"event_id": "string", "session_id": "string"},
+            "output": {"success": "boolean", "deleted_event_id": "string"}
+        },
+        "ShowEvents": {
+            "input": {"session_id": "string"},
+            "output": {"events": ["object"], "total_count": "integer"}
+        },
+        "ShowEvent": {
+            "input": {"event_id": "string", "session_id": "string"},
+            "output": {
+                "event_id": "string",
+                "title": "string",
+                "start_time": "YYYY-MM-DD HH:MM:SS",
+                "duration_minutes": "integer",
+                "status": "string"
+            }
+        },
+        "RespondToInvite": {
+            "input": {"invite_id": "string", "response": "accepted|declined", "session_id": "string"},
+            "output": {"success": "boolean", "status": "string"}
+        }
+    },
+    "Message": {
+        "SendMessage": {
+            "input": {"to": "string", "text": "string", "session_id": "string"},
+            "output": {
+                "message_id": "string",
+                "from": "string",
+                "to": "string",
+                "text": "string",
+                "timestamp": "YYYY-MM-DD HH:MM:SS",
+                "status": "string"
+            }
+        },
+        "SearchMessages": {
+            "input": {"query": "string", "session_id": "string"},
+            "output": {"messages": ["object"], "total_count": "integer"}
+        },
+        "GetMessages": {
+            "input": {"contact_id": "string", "session_id": "string"},
+            "output": {"contact_id": "string", "messages": ["object"], "total_count": "integer"}
+        },
+        "CreateGroup": {
+            "input": {"name": "string", "members": ["string"], "session_id": "string"},
+            "output": {
+                "group_id": "string",s
+                "name": "string",
+                "members": ["string"],
+                "created_at": "YYYY-MM-DD HH:MM:SS",
+                "created_by": "string"
+            }
+        }
+    },
+    "LLM": {
+        "Chat": {
+            "input": {"message": "string"},
+            "output": {"reply": "string", "conversation_id": "string"}
+        }
+    }
+}
+
+
 class BaseApp(ABC):
     """
     Base class for all apps.
@@ -281,6 +436,76 @@ class AmazonApp(BaseApp):
         dt = datetime.strptime(order_timestamp, "%Y-%m-%d %H:%M:%S")
         delivery_dt = dt + timedelta(days=random.randint(2, 5))
         return delivery_dt.strftime("%Y-%m-%d")
+
+
+class GoogleApp(BaseApp):
+    """Google search app."""
+
+    def __init__(self, user_id: str):
+        super().__init__("Google", user_id)
+
+    def _initialize_state(self) -> None:
+        """Initialize Google state."""
+        self.state = {
+            "session_id": f"google_session_{uuid.uuid4().hex[:16]}",
+            "search_history": []
+        }
+
+    def call_api(
+        self,
+        api_name: str,
+        timestamp: str,
+        description: str,
+        context: Dict[str, Any]
+    ) -> AppLogEntry:
+        """Call Google API."""
+        self.ensure_initialized()
+
+        if api_name == "Search":
+            return self._search(timestamp, description, context)
+        else:
+            raise ValueError(f"Unknown Google API: {api_name}")
+
+    def _search(self, timestamp: str, description: str, context: Dict[str, Any]) -> AppLogEntry:
+        """Handle search."""
+        query = self._extract_search_query(description)
+        results = self._generate_search_results(query)
+
+        self.state["search_history"].append(
+            {"timestamp": timestamp, "query": query, "results_count": len(results)}
+        )
+
+        return AppLogEntry(
+            timestamp=timestamp,
+            app_name=self.app_name,
+            api_name="Search",
+            request={"query": query, "session_id": self.state["session_id"]},
+            response={"results": results, "total_results": len(results)}
+        )
+
+    def _extract_search_query(self, description: str) -> str:
+        """Extract search query from description."""
+        desc_lower = description.lower()
+        if "search" in desc_lower or "research" in desc_lower:
+            import re
+            quoted = re.findall(r"'([^']*)'|\"([^\"]*)\"", description)
+            if quoted:
+                return quoted[0][0] or quoted[0][1]
+        words = description.split()
+        return " ".join(words[:6])
+
+    def _generate_search_results(self, query: str) -> List[Dict[str, Any]]:
+        """Generate basic search results."""
+        results = []
+        for idx in range(random.randint(3, 6)):
+            results.append(
+                {
+                    "title": f"{query} result {idx + 1}",
+                    "url": f"https://example.com/{query.replace(' ', '_').lower()}/{idx + 1}",
+                    "snippet": f"Summary about {query} (result {idx + 1})."
+                }
+            )
+        return results
 
 
 class SpotifyApp(BaseApp):
@@ -1260,6 +1485,8 @@ class AppRegistry:
             # Create new app instance
             if app_name == "Amazon":
                 self.apps[key] = AmazonApp(user_id)
+            elif app_name == "Google":
+                self.apps[key] = GoogleApp(user_id)
             elif app_name == "Spotify":
                 self.apps[key] = SpotifyApp(user_id)
             elif app_name == "SimpleNote":

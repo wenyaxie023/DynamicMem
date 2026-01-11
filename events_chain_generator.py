@@ -372,7 +372,7 @@ events_chain_template = Template("""
 You are an expert at generating event chains that demonstrate user behaviors based on their dynamic profile state.
 
 ### Your Task:
-Given a user's dynamic profile for a specific domain and time window, generate a sequence of realistic events that would naturally occur based on their attributes, habits, and preferences. Each event must specify which app/API it uses and what data it would generate.
+Given a user's dynamic profile for a specific domain and time window, generate a sequence of realistic events that would naturally occur based on their attributes, habits, and preferences. Each event must specify which app/API it uses and the user intent.
 
 ---
 
@@ -414,110 +414,52 @@ Given a user's dynamic profile for a specific domain and time window, generate a
 
 ## Available Apps and APIs
 
-You must specify which app and API each event uses. Available apps (each API includes input/output schema):
+You must specify which app and API each event uses. Available apps and APIs:
 
 ### Amazon App
-- **Login**
-  - input_schema: { "username": "string", "password": "string" }
-  - output_schema: { "session_token": "string", "user_id": "string", "expires_at": "YYYY-MM-DDTHH:MM:SSZ" }
-- **SearchProducts**
-  - input_schema: { "query": "string", "filters": { "price_min": "number|null", "price_max": "number|null", "category": "string|null" }, "sort": "relevance|price_asc|price_desc|null", "page": "integer", "page_size": "integer" }
-  - output_schema: { "results": [ { "product_id": "string", "title": "string", "price": "number", "rating": "number|null" } ], "next_page": "integer|null" }
-- **ShowProduct**
-  - input_schema: { "product_id": "string" }
-  - output_schema: { "product_id": "string", "title": "string", "price": "number", "rating": "number|null", "in_stock": "boolean", "details": { "brand": "string|null", "specs": "object" } }
-- **Checkout**
-  - input_schema: { "items": [ { "product_id": "string", "quantity": "integer" } ], "shipping_address_id": "string", "payment_method_id": "string" }
-  - output_schema: { "order_id": "string", "total": "number", "currency": "string", "created_at": "YYYY-MM-DDTHH:MM:SSZ" }
-- **ShowOrders**
-  - input_schema: { "status": "open|shipped|delivered|cancelled|null", "since": "YYYY-MM-DD|null", "limit": "integer" }
-  - output_schema: { "orders": [ { "order_id": "string", "status": "string", "total": "number", "created_at": "YYYY-MM-DDTHH:MM:SSZ" } ] }
+- **Login**: authenticate and start a session
+- **SearchProducts**: search catalog with filters and sort
+- **ShowProduct**: view details for a specific product
+- **Checkout**: place an order for selected items
+- **ShowOrders**: list recent orders and statuses
 
 ### Spotify App
-- **Login**
-  - input_schema: { "username": "string", "password": "string" }
-  - output_schema: { "session_token": "string", "user_id": "string", "expires_at": "YYYY-MM-DDTHH:MM:SSZ" }
-- **SearchSongs**
-  - input_schema: { "query": "string", "limit": "integer" }
-  - output_schema: { "tracks": [ { "track_id": "string", "title": "string", "artist": "string" } ] }
-- **PlaySong**
-  - input_schema: { "track_id": "string", "device_id": "string|null", "position_ms": "integer|null" }
-  - output_schema: { "playback_id": "string", "started_at": "YYYY-MM-DDTHH:MM:SSZ" }
-- **ShowPlaylists**
-  - input_schema: { "limit": "integer" }
-  - output_schema: { "playlists": [ { "playlist_id": "string", "name": "string", "track_count": "integer" } ] }
-- **ShowRecentlyPlayed**
-  - input_schema: { "limit": "integer", "since": "YYYY-MM-DDTHH:MM:SSZ|null" }
-  - output_schema: { "items": [ { "track_id": "string", "played_at": "YYYY-MM-DDTHH:MM:SSZ" } ] }
+- **Login**: authenticate and start a session
+- **SearchSongs**: search tracks by query
+- **PlaySong**: start playback of a track
+- **ShowPlaylists**: list user playlists
+- **ShowRecentlyPlayed**: list recent listens
 
 ### SimpleNote App
-- **Login**
-  - input_schema: { "username": "string", "password": "string" }
-  - output_schema: { "session_token": "string", "user_id": "string", "expires_at": "YYYY-MM-DDTHH:MM:SSZ" }
-- **ShowNotes**
-  - input_schema: { "limit": "integer", "tag": "string|null" }
-  - output_schema: { "notes": [ { "note_id": "string", "title": "string", "updated_at": "YYYY-MM-DDTHH:MM:SSZ" } ] }
-- **ShowNote**
-  - input_schema: { "note_id": "string" }
-  - output_schema: { "note_id": "string", "title": "string", "content": "string", "tags": [ "string" ], "updated_at": "YYYY-MM-DDTHH:MM:SSZ" }
-- **CreateNote**
-  - input_schema: { "title": "string", "content": "string", "tags": [ "string" ] }
-  - output_schema: { "note_id": "string", "created_at": "YYYY-MM-DDTHH:MM:SSZ" }
+- **Login**: authenticate and start a session
+- **ShowNotes**: list notes, optionally by tag
+- **ShowNote**: open a specific note
+- **CreateNote**: create a new note
 
 ### LLM App
-- **Chat**
-  - input_schema: { "messages": [ { "role": "user", "content": "string" } ]}
-  - output_schema: { "reply": "string", "usage": { "prompt_tokens": "integer", "completion_tokens": "integer" } }
+- **Chat**: ask a question or request advice
 
 ### Google APP
-- **Search**
-  - input_schema: { "query": "string", "num_results": "integer" }
-  - output_schema: { "results": [ { "title": "string", "url": "string", "snippet": "string" } ] }
+- **Search**: web search for information
 
 ### Fitness APP
-- **Login**
-  - input_schema: { "username": "string", "password": "string" }
-  - output_schema: { "session_token": "string", "user_id": "string", "expires_at": "YYYY-MM-DDTHH:MM:SSZ" }
-- **LogWorkout**
-  - input_schema: { "workout_type": "string", "duration_min": "number", "intensity": "low|medium|high|null", "calories_est": "number|null" }
-  - output_schema: { "workout_id": "string", "logged_at": "YYYY-MM-DDTHH:MM:SSZ" }
-- **ShowDailyStats**
-  - input_schema: { "date": "YYYY-MM-DD" }
-  - output_schema: { "date": "YYYY-MM-DD", "steps": "integer|null", "active_minutes": "integer|null", "calories_burned": "number|null" }
+- **Login**: authenticate and start a session
+- **LogWorkout**: record a workout
+- **ShowDailyStats**: fetch daily fitness summary
 
 ### Calendar APP
-- **CreateEvent**
-  - input_schema: { "title": "string", "start_time": "YYYY-MM-DD HH:MM:SS", "end_time": "YYYY-MM-DD HH:MM:SS", "timezone": "string", "location": "string|null", "description": "string|null", "attendees": [ "string" ] }
-  - output_schema: { "event_name": "string", "created_at": "YYYY-MM-DDTHH:MM:SSZ" }
-- **UpdateEvent**
-  - input_schema: { "event_name": "string", "patch": "object" }
-  - output_schema: { "event_name": "string", "updated_at": "YYYY-MM-DDTHH:MM:SSZ", "event": "object" }
-- **DeleteEvent**
-  - input_schema: { "event_name": "string" }
-  - output_schema: { "deleted": "boolean", "deleted_at": "YYYY-MM-DDTHH:MM:SSZ" }
-- **ShowEvents**
-  - input_schema: { "time_min": "YYYY-MM-DD HH:MM:SS|null", "time_max": "YYYY-MM-DD HH:MM:SS|null", "limit": "integer" }
-  - output_schema: { "events": [ { "event_name": "string", "title": "string", "start_time": "YYYY-MM-DD HH:MM:SS", "end_time": "YYYY-MM-DD HH:MM:SS", "location": "string|null" } ] }
-- **ShowEvent**
-  - input_schema: { "event_name": "string" }
-  - output_schema: { "event_name": "string", "title": "string", "start_time": "YYYY-MM-DD HH:MM:SS", "end_time": "YYYY-MM-DD HH:MM:SS", "timezone": "string", "location": "string|null", "description": "string|null", "attendees": [ "string" ] }
-- **RespondToInvite**
-  - input_schema: { "event_name": "string", "response": "accepted|declined|tentative" }
-  - output_schema: { "event_name": "string", "response": "string", "responded_at": "YYYY-MM-DDTHH:MM:SSZ" }
+- **CreateEvent**: create a calendar event
+- **UpdateEvent**: modify an existing event
+- **DeleteEvent**: remove an event
+- **ShowEvents**: list events in a time window
+- **ShowEvent**: show details for a specific event
+- **RespondToInvite**: respond to an event invitation
 
 ### Message APP
-- **SendMessage**
-  - input_schema: { "to": "string", "text": "string" }
-  - output_schema: { "message_id": "string", "sent_at": "YYYY-MM-DDTHH:MM:SSZ" }
-- **SearchMessages**
-  - input_schema: { "query": "string", "limit": "integer" }
-  - output_schema: { "matches": [ { "message_id": "string", "to": "string", "text_snippet": "string", "sent_at": "YYYY-MM-DDTHH:MM:SSZ" } ] }
-- **GetMessages**
-  - input_schema: { "thread_id": "string", "limit": "integer", "before": "YYYY-MM-DDTHH:MM:SSZ|null" }
-  - output_schema: { "messages": [ { "message_id": "string", "from": "string", "to": "string", "text": "string", "sent_at": "YYYY-MM-DDTHH:MM:SSZ" } ] }
-- **CreateGroup**
-  - input_schema: { "name": "string", "members": [ "string" ] }
-  - output_schema: { "group_id": "string", "created_at": "YYYY-MM-DDTHH:MM:SSZ" }
+- **SendMessage**: send a message to a user
+- **SearchMessages**: search message history
+- **GetMessages**: fetch messages in a thread
+- **CreateGroup**: create a group chat
 
 ---
 
@@ -526,10 +468,8 @@ You must specify which app and API each event uses. Available apps (each API inc
 Each event in your event chain must specify:
 1. **app_name**: Which app is used (Amazon, Spotify, SimpleNote, LLM, Google, Fitness, Calendar, Message)
 2. **api_name**: Which specific API is called
-3. **purpose**: Why this event occurs (user intent tied to attributes/habits/preferences)
-4. **input**: The API input payload for this event
-5. **output_constraint**: Dependency constraints on prior event outputs (use [] if none)
-6. **time_specification**: Explicit schedule_dates with time or start_time/end_time
+3. **user_intent**: Why this event occurs (user intent tied to attributes/habits/preferences)
+4. **time_specification**: Explicit schedule_dates with time or start_time/end_time
 
 ---
 
@@ -563,24 +503,6 @@ Required/Recommended fields:
 - end_time: "HH:MM:SS"
 - note (optional): explain what repeats and what each occurrence logs
 
-### Input placeholders for repeated schedule_dates events
-If an API input varies per occurrence (e.g., date changes), you may use string placeholders like "<date>" or "<day_index>".
-Example for Fitness.ShowDailyStats input: { "date": "<date>" }
-
-### Output constraints for dependencies
-If an event's input depends on a previous event's output, you MUST:
-- Fill output_constraint with an object describing the dependency.
-- Use a placeholder in input like "FROM_EVENT(<event_id>.<output_path>)".
-- Use null when there is no dependency.
-
-Output constraint object schema:
-{
-  "from_event_id": "event_id_of_dependency",
-  "output_path": "path.to.output.field",
-  "input_field": "path.to.input.field",
-  "rule": "short constraint statement"
-}
-
 ---
 
 ## Event Generation Guidelines
@@ -607,7 +529,6 @@ For each element in the user's state (attributes, habits, preferences), generate
 - Show preference through actual behaviors (what they choose, not just what they say)
 
 ### 2. Dependency Constraints
-- If an event's input must come from a previous event output, use output_constraint and a FROM_EVENT(...) placeholder in the input.
 - Keep dependencies realistic (search → show → purchase, search → play, login → actions).
 
 ---
@@ -642,16 +563,7 @@ Return ONLY a valid JSON object with this structure:
           },
           "app_name": "Amazon | Spotify | SimpleNote | LLM | Google | Fitness | Calendar | Message",
           "api_name": "Login | SearchProducts | Chat | SearchSongs | ShowNotes | ShowNote | CreateNote | Search | etc.",
-          "purpose": "Why this event occurs (attribute acquisition, habit execution, preference demonstration, etc.)",
-          "input": { "key": "value" },
-          "output_constraint": [
-            {
-              "from_event_id": "event_id_of_dependency",
-              "output_path": "path.to.output.field",
-              "input_field": "path.to.input.field",
-              "rule": "short constraint statement"
-            }
-          ]
+          "user_intent": "Why this event occurs (attribute acquisition, habit execution, preference demonstration, etc.)"
         }
       ]
     }
@@ -718,13 +630,7 @@ Generate 1-2 events showing the preference shift/refinement process and generate
       },
       "app_name": "LLM",
       "api_name": "Chat",
-      "purpose": "Habit acquisition: research and planning before starting the habit.",
-      "input": {
-        "messages": [
-          { "role": "user", "content": "I want to build a morning workout habit. What is a realistic 15-minute plan for beginners?" }
-        ],
-      },
-      "output_constraint": null
+      "user_intent": "research and planning before starting the habit."
     },
     {
       "event_id": "w1_health_001_e002",
@@ -734,17 +640,7 @@ Generate 1-2 events showing the preference shift/refinement process and generate
       },
       "app_name": "Calendar",
       "api_name": "CreateEvent",
-      "purpose": "Habit acquisition: setup and commitment via calendar reminder.",
-      "input": {
-        "title": "Morning workout (15 min)",
-        "start_time": "2024-01-04 07:00:00",
-        "end_time": "2024-01-04 07:15:00",
-        "timezone": "America/Chicago",
-        "location": null,
-        "description": "Start small: 15 minutes. Focus on consistency.",
-        "attendees": []
-      },
-      "output_constraint": null
+      "user_intent": "Habit acquisition: setup and commitment via calendar reminder."
     },
     {
       "event_id": "w1_health_001_e003",
@@ -764,14 +660,7 @@ Generate 1-2 events showing the preference shift/refinement process and generate
       },
       "app_name": "Fitness",
       "api_name": "LogWorkout",
-      "purpose": "Habit execution: recurring daily behavior and consistent API logging.",
-      "input": {
-        "workout_type": "morning bodyweight circuit",
-        "duration_min": 15,
-        "intensity": "low",
-        "calories_est": null
-      },
-      "output_constraint": null
+      "user_intent": "Habit execution: recurring daily behavior and consistent API logging."
     }
   ]
 }
@@ -795,13 +684,7 @@ Generate 1-2 events showing the preference shift/refinement process and generate
       },
       "app_name": "LLM",
       "api_name": "Chat",
-      "purpose": "Attribute acquisition: research and decision support.",
-      "input": {
-        "messages": [
-          { "role": "user", "content": "I work in a noisy cafe. What should I look for in noise-canceling headphones under $200?" }
-        ],
-      },
-      "output_constraint": null
+      "user_intent": "Attribute acquisition: research and decision support."
     },
     {
       "event_id": "w1_shopping_002_e002",
@@ -811,15 +694,7 @@ Generate 1-2 events showing the preference shift/refinement process and generate
       },
       "app_name": "Amazon",
       "api_name": "SearchProducts",
-      "purpose": "Attribute acquisition: product discovery with constraints.",
-      "input": {
-        "query": "noise canceling headphones",
-        "filters": { "price_min": null, "price_max": 200, "category": "electronics" },
-        "sort": "relevance",
-        "page": 1,
-        "page_size": 10
-      },
-      "output_constraint": null
+      "user_intent": "Attribute acquisition: product discovery with constraints."
     },
     {
       "event_id": "w1_shopping_002_e003",
@@ -829,16 +704,7 @@ Generate 1-2 events showing the preference shift/refinement process and generate
       },
       "app_name": "Amazon",
       "api_name": "ShowProduct",
-      "purpose": "Attribute acquisition: evaluation before purchase.",
-      "input": { "product_id": "FROM_EVENT(w1_shopping_002_e002.results[0].product_id)" },
-      "output_constraint": [
-        {
-          "from_event_id": "w1_shopping_002_e002",
-          "output_path": "results[0].product_id",
-          "input_field": "product_id",
-          "rule": "must use a product_id returned by SearchProducts"
-        }
-      ]
+      "user_intent": "Attribute acquisition: evaluation before purchase."
     },
     {
       "event_id": "w1_shopping_002_e004",
@@ -848,20 +714,7 @@ Generate 1-2 events showing the preference shift/refinement process and generate
       },
       "app_name": "Amazon",
       "api_name": "Checkout",
-      "purpose": "Attribute acquisition: completing ownership change via transaction.",
-      "input": {
-        "items": [ { "product_id": "FROM_EVENT(w1_shopping_002_e003.product_id)", "quantity": 1 } ],
-        "shipping_address_id": "addr_001",
-        "payment_method_id": "pm_001"
-      },
-      "output_constraint": [
-        {
-          "from_event_id": "w1_shopping_002_e003",
-          "output_path": "product_id",
-          "input_field": "items[0].product_id",
-          "rule": "must use the product_id shown in ShowProduct"
-        }
-      ]
+      "user_intent": "Attribute acquisition: completing ownership change via transaction."
     }
   ]
 }
@@ -885,12 +738,7 @@ Generate 1-2 events showing the preference shift/refinement process and generate
       },
       "app_name": "Spotify",
       "api_name": "SearchSongs",
-      "purpose": "Preference demonstration: selecting content consistent with preference.",
-      "input": {
-        "query": "lofi beats focus",
-        "limit": 10
-      },
-      "output_constraint": null
+      "user_intent": "Preference demonstration: selecting content consistent with preference."
     },
     {
       "event_id": "w1_focusmusic_003_e002",
@@ -908,20 +756,7 @@ Generate 1-2 events showing the preference shift/refinement process and generate
       },
       "app_name": "Spotify",
       "api_name": "PlaySong",
-      "purpose": "Preference demonstration: repeated selection and playback behavior.",
-      "input": {
-        "track_id": "FROM_EVENT(w1_focusmusic_003_e001.tracks[0].track_id)",
-        "device_id": null,
-        "position_ms": 0
-      },
-      "output_constraint": [
-        {
-          "from_event_id": "w1_focusmusic_003_e001",
-          "output_path": "tracks[0].track_id",
-          "input_field": "track_id",
-          "rule": "must be a track_id returned by SearchSongs"
-        }
-      ]
+      "user_intent": "Preference demonstration: repeated selection and playback behavior."
     }
   ]
 }
@@ -933,7 +768,7 @@ Generate 1-2 events showing the preference shift/refinement process and generate
 1) Return ONLY valid JSON (no markdown, no comments, no extra text)
 2) Cover all state items in the current window
 3) Specify app_name and api_name for every event
-4) Do NOT include an event-level "description" field; use purpose instead
+4) Do NOT include an event-level "description" field; use user_intent instead
 5) Use time_specification with schedule_dates for every event (no time_range/cadence)
 6) All schedule_dates must be within the window time_range
 7) Create narrative coherence (logical story per chain)
