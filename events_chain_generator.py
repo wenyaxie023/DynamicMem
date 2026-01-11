@@ -368,10 +368,11 @@ from mem_bench.behavior_and_conversation.llm_client import (
 # ]
 # """)
 
-events_chain_template = Template("""You are an expert at generating event chains that demonstrate user behaviors based on their dynamic profile state.
+events_chain_template = Template("""
+You are an expert at generating event chains that demonstrate user behaviors based on their dynamic profile state.
 
 ### Your Task:
-Given a user's dynamic profile for a specific domain and time window, generate a sequence of realistic events that would naturally occur based on their attributes, habits, and preferences. Each event should specify which app/API it uses and what data it would generate.
+Given a user's dynamic profile for a specific domain and time window, generate a sequence of realistic events that would naturally occur based on their attributes, habits, and preferences. Each event must specify which app/API it uses and what data it would generate.
 
 ---
 
@@ -386,7 +387,7 @@ Given a user's dynamic profile for a specific domain and time window, generate a
 ### User Basic Profile
 {{ user_basic_profile }}
 
-### Previous Window Summary (All Domains)
+### Previous Window Summary (User's state summary for all user's lives)
 {{ user_previous_window_summary }}
 
 ### Previous Window Summary (This Domain)
@@ -401,53 +402,122 @@ Given a user's dynamic profile for a specific domain and time window, generate a
 
 {{ domain_window_state }}
 
+### How to read domain_window_state (STRUCTURED INPUT)
+- It is a dict with keys: window_id, time_range, and state_table.
+- state_table has three lists: user_attributes_state, habits_state, preferences_state.
+- Each state item includes: name, current_value, op, and optional change_reason/previous_value.
+- For habits_state, current_value may include schedule/timing/context/schedule_dates; use these to set time_specification.
+- For preferences_state, convert current_value.signals into observable behaviors.
+- If change_reason exists (especially for op add/modify/acquire/adjust/refine/shift/drop), include events that make the reason observable.
+
 ---
 
 ## Available Apps and APIs
 
-You must specify which app and API each event uses. Available apps:
+You must specify which app and API each event uses. Available apps (each API includes input/output schema):
 
 ### Amazon App
-- **Login**: Authenticate user session
-- **SearchProducts**: Search catalog by keyword
-- **ShowProduct**: Get detailed product information
-- **Checkout**: Complete purchase transaction
-- **ShowOrders**: List user's order history
+- **Login**
+  - input_schema: { "username": "string", "password": "string" }
+  - output_schema: { "session_token": "string", "user_id": "string", "expires_at": "YYYY-MM-DDTHH:MM:SSZ" }
+- **SearchProducts**
+  - input_schema: { "query": "string", "filters": { "price_min": "number|null", "price_max": "number|null", "category": "string|null" }, "sort": "relevance|price_asc|price_desc|null", "page": "integer", "page_size": "integer" }
+  - output_schema: { "results": [ { "product_id": "string", "title": "string", "price": "number", "rating": "number|null" } ], "next_page": "integer|null" }
+- **ShowProduct**
+  - input_schema: { "product_id": "string" }
+  - output_schema: { "product_id": "string", "title": "string", "price": "number", "rating": "number|null", "in_stock": "boolean", "details": { "brand": "string|null", "specs": "object" } }
+- **Checkout**
+  - input_schema: { "items": [ { "product_id": "string", "quantity": "integer" } ], "shipping_address_id": "string", "payment_method_id": "string" }
+  - output_schema: { "order_id": "string", "total": "number", "currency": "string", "created_at": "YYYY-MM-DDTHH:MM:SSZ" }
+- **ShowOrders**
+  - input_schema: { "status": "open|shipped|delivered|cancelled|null", "since": "YYYY-MM-DD|null", "limit": "integer" }
+  - output_schema: { "orders": [ { "order_id": "string", "status": "string", "total": "number", "created_at": "YYYY-MM-DDTHH:MM:SSZ" } ] }
 
 ### Spotify App
-- **Login**: Authenticate user session
-- **SearchSongs**: Search songs by title/artist
-- **PlaySong**: Play a specific song
-- **ShowPlaylists**: Get user's playlists
-- **ShowRecentlyPlayed**: Get recently played songs with timestamps
+- **Login**
+  - input_schema: { "username": "string", "password": "string" }
+  - output_schema: { "session_token": "string", "user_id": "string", "expires_at": "YYYY-MM-DDTHH:MM:SSZ" }
+- **SearchSongs**
+  - input_schema: { "query": "string", "limit": "integer" }
+  - output_schema: { "tracks": [ { "track_id": "string", "title": "string", "artist": "string" } ] }
+- **PlaySong**
+  - input_schema: { "track_id": "string", "device_id": "string|null", "position_ms": "integer|null" }
+  - output_schema: { "playback_id": "string", "started_at": "YYYY-MM-DDTHH:MM:SSZ" }
+- **ShowPlaylists**
+  - input_schema: { "limit": "integer" }
+  - output_schema: { "playlists": [ { "playlist_id": "string", "name": "string", "track_count": "integer" } ] }
+- **ShowRecentlyPlayed**
+  - input_schema: { "limit": "integer", "since": "YYYY-MM-DDTHH:MM:SSZ|null" }
+  - output_schema: { "items": [ { "track_id": "string", "played_at": "YYYY-MM-DDTHH:MM:SSZ" } ] }
 
 ### SimpleNote App
-- **Login**: Authenticate user session
-- **ShowNotes**: List all notes
-- **ShowNote**: Get full note content
-- **CreateNote**: Create new note
+- **Login**
+  - input_schema: { "username": "string", "password": "string" }
+  - output_schema: { "session_token": "string", "user_id": "string", "expires_at": "YYYY-MM-DDTHH:MM:SSZ" }
+- **ShowNotes**
+  - input_schema: { "limit": "integer", "tag": "string|null" }
+  - output_schema: { "notes": [ { "note_id": "string", "title": "string", "updated_at": "YYYY-MM-DDTHH:MM:SSZ" } ] }
+- **ShowNote**
+  - input_schema: { "note_id": "string" }
+  - output_schema: { "note_id": "string", "title": "string", "content": "string", "tags": [ "string" ], "updated_at": "YYYY-MM-DDTHH:MM:SSZ" }
+- **CreateNote**
+  - input_schema: { "title": "string", "content": "string", "tags": [ "string" ] }
+  - output_schema: { "note_id": "string", "created_at": "YYYY-MM-DDTHH:MM:SSZ" }
 
 ### LLM App
-- **Chat**: Converse with language model
+- **Chat**
+  - input_schema: { "messages": [ { "role": "user", "content": "string" } ]}
+  - output_schema: { "reply": "string", "usage": { "prompt_tokens": "integer", "completion_tokens": "integer" } }
 
 ### Google APP
-- **Search**: Search the web
+- **Search**
+  - input_schema: { "query": "string", "num_results": "integer" }
+  - output_schema: { "results": [ { "title": "string", "url": "string", "snippet": "string" } ] }
 
 ### Fitness APP
+- **Login**
+  - input_schema: { "username": "string", "password": "string" }
+  - output_schema: { "session_token": "string", "user_id": "string", "expires_at": "YYYY-MM-DDTHH:MM:SSZ" }
+- **LogWorkout**
+  - input_schema: { "workout_type": "string", "duration_min": "number", "intensity": "low|medium|high|null", "calories_est": "number|null" }
+  - output_schema: { "workout_id": "string", "logged_at": "YYYY-MM-DDTHH:MM:SSZ" }
+- **ShowDailyStats**
+  - input_schema: { "date": "YYYY-MM-DD" }
+  - output_schema: { "date": "YYYY-MM-DD", "steps": "integer|null", "active_minutes": "integer|null", "calories_burned": "number|null" }
 
 ### Calendar APP
-- **CreateEvent**: Create a new event
-- **UpdateEvent**: Update an existing event
-- **DeleteEvent**: Delete an existing event
-- **ShowEvents**: List all events
-- **ShowEvent**: Get full event content
-- **RespondToInvite**: Respond to an invite
+- **CreateEvent**
+  - input_schema: { "title": "string", "start_time": "YYYY-MM-DD HH:MM:SS", "end_time": "YYYY-MM-DD HH:MM:SS", "timezone": "string", "location": "string|null", "description": "string|null", "attendees": [ "string" ] }
+  - output_schema: { "event_name": "string", "created_at": "YYYY-MM-DDTHH:MM:SSZ" }
+- **UpdateEvent**
+  - input_schema: { "event_name": "string", "patch": "object" }
+  - output_schema: { "event_name": "string", "updated_at": "YYYY-MM-DDTHH:MM:SSZ", "event": "object" }
+- **DeleteEvent**
+  - input_schema: { "event_name": "string" }
+  - output_schema: { "deleted": "boolean", "deleted_at": "YYYY-MM-DDTHH:MM:SSZ" }
+- **ShowEvents**
+  - input_schema: { "time_min": "YYYY-MM-DD HH:MM:SS|null", "time_max": "YYYY-MM-DD HH:MM:SS|null", "limit": "integer" }
+  - output_schema: { "events": [ { "event_name": "string", "title": "string", "start_time": "YYYY-MM-DD HH:MM:SS", "end_time": "YYYY-MM-DD HH:MM:SS", "location": "string|null" } ] }
+- **ShowEvent**
+  - input_schema: { "event_name": "string" }
+  - output_schema: { "event_name": "string", "title": "string", "start_time": "YYYY-MM-DD HH:MM:SS", "end_time": "YYYY-MM-DD HH:MM:SS", "timezone": "string", "location": "string|null", "description": "string|null", "attendees": [ "string" ] }
+- **RespondToInvite**
+  - input_schema: { "event_name": "string", "response": "accepted|declined|tentative" }
+  - output_schema: { "event_name": "string", "response": "string", "responded_at": "YYYY-MM-DDTHH:MM:SSZ" }
 
 ### Message APP
-- **SendMessage**: Send a message
-- **SearchMessages**: Search messages
-- **GetMessages**: Get messages
-- **CreateGroup**: Create a new group
+- **SendMessage**
+  - input_schema: { "to": "string", "text": "string" }
+  - output_schema: { "message_id": "string", "sent_at": "YYYY-MM-DDTHH:MM:SSZ" }
+- **SearchMessages**
+  - input_schema: { "query": "string", "limit": "integer" }
+  - output_schema: { "matches": [ { "message_id": "string", "to": "string", "text_snippet": "string", "sent_at": "YYYY-MM-DDTHH:MM:SSZ" } ] }
+- **GetMessages**
+  - input_schema: { "thread_id": "string", "limit": "integer", "before": "YYYY-MM-DDTHH:MM:SSZ|null" }
+  - output_schema: { "messages": [ { "message_id": "string", "from": "string", "to": "string", "text": "string", "sent_at": "YYYY-MM-DDTHH:MM:SSZ" } ] }
+- **CreateGroup**
+  - input_schema: { "name": "string", "members": [ "string" ] }
+  - output_schema: { "group_id": "string", "created_at": "YYYY-MM-DDTHH:MM:SSZ" }
 
 ---
 
@@ -456,8 +526,60 @@ You must specify which app and API each event uses. Available apps:
 Each event in your event chain must specify:
 1. **app_name**: Which app is used (Amazon, Spotify, SimpleNote, LLM, Google, Fitness, Calendar, Message)
 2. **api_name**: Which specific API is called
-3. **description**: What the user is doing
-4. **purpose**: Why this event occurs (related to attributes/habits/preferences)
+3. **purpose**: Why this event occurs (user intent tied to attributes/habits/preferences)
+4. **input**: The API input payload for this event
+5. **output_constraint**: Dependency constraints on prior event outputs (use [] if none)
+6. **time_specification**: Explicit schedule_dates with time or start_time/end_time
+
+---
+
+## Time Specification (IMPORTANT)
+
+Time is represented ONLY by explicit schedule dates (no time ranges or cadence).
+
+### A) Single occurrence
+Use when the event happens once:
+- Required fields:
+  - schedule_dates: ["YYYY-MM-DD"] (single date)
+  - time: "HH:MM:SS"
+- Do NOT include start_time/end_time.
+
+### B) Repeated occurrences (habits)
+Use when one JSON event represents many similar occurrences across a window.
+- schedule_dates must list every concrete date (no cadence/days_of_week)
+- schedule_dates must fall within the top-level window time_range
+- Use habit schedule/timing from domain_window_state when available
+
+How to align with habits_state.current_value:
+- If schedule_dates exists, set:
+  - schedule_dates = the full list
+  - start_time = timing.start_time
+  - end_time = timing.end_time
+- If schedule_dates is missing, expand schedule.frequency_type + days_of_week into explicit dates within the window.
+
+Required/Recommended fields:
+- schedule_dates: ["YYYY-MM-DD", "YYYY-MM-DD", ...]
+- start_time: "HH:MM:SS"
+- end_time: "HH:MM:SS"
+- note (optional): explain what repeats and what each occurrence logs
+
+### Input placeholders for repeated schedule_dates events
+If an API input varies per occurrence (e.g., date changes), you may use string placeholders like "<date>" or "<day_index>".
+Example for Fitness.ShowDailyStats input: { "date": "<date>" }
+
+### Output constraints for dependencies
+If an event's input depends on a previous event's output, you MUST:
+- Fill output_constraint with an object describing the dependency.
+- Use a placeholder in input like "FROM_EVENT(<event_id>.<output_path>)".
+- Use null when there is no dependency.
+
+Output constraint object schema:
+{
+  "from_event_id": "event_id_of_dependency",
+  "output_path": "path.to.output.field",
+  "input_field": "path.to.input.field",
+  "rule": "short constraint statement"
+}
 
 ---
 
@@ -468,33 +590,25 @@ Each event in your event chain must specify:
 For each element in the user's state (attributes, habits, preferences), generate realistic events:
 
 **For User Attributes:**
-- If an attribute was added/modified: Generate events showing the acquisition or change process
-- If an attribute is stable: Generate events showing ongoing usage/interaction
+- If an attribute was added/modified: generate events showing the acquisition or change process
+- If an attribute is stable: generate events showing ongoing usage/interaction
 
 **For Habits:**
-- Generate recurring events matching the habit's schedule and frequency
-- Each habit occurrence should use appropriate apps/APIs
-- Events should reflect the habit's timing, location, and purpose
+- If habit operation is acquire/adjust: MUST include:
+  1) 1–2 events showing how the user obtains/sets up the habit (research/decision/setup)
+  2) If change_reason is provided, include at least one event that makes that reason observable
+  3) Then show ongoing daily/weekly usage as either:
+     - multiple single-date events, OR
+     - ONE event that lists all schedule_dates across the window (preferred for daily habits)
+- If habit operation is stable: generate recurring executions matching frequency, using either multiple single-date events or one event with schedule_dates.
 
 **For Preferences:**
 - Generate events that demonstrate the user's choices and decisions
 - Show preference through actual behaviors (what they choose, not just what they say)
-- Include both dialogue (explaining reasoning) and app logs (showing actions)
 
-### 2. Time and Frequency
-
-- **specific_time**: Use "YYYY-MM-DD HH:MM:SS" for one-time events
-- **recurring**: For habits, generate multiple event instances across the time window
-  - Daily habits: Generate events for each day
-  - Weekly habits: Generate events for specified days of week
-  - Monthly habits: Generate events for specified dates
-
-### 3. Multi-Source Events
-
-Most events should combine app usage with dialogue:
-- User asks LLM for information/advice, then takes action in an app
-- User performs actions in apps, then discusses results/experiences with LLM
-- This creates realistic, interconnected behavior patterns
+### 2. Dependency Constraints
+- If an event's input must come from a previous event output, use output_constraint and a FROM_EVENT(...) placeholder in the input.
+- Keep dependencies realistic (search → show → purchase, search → play, login → actions).
 
 ---
 
@@ -502,7 +616,6 @@ Most events should combine app usage with dialogue:
 
 Return ONLY a valid JSON object with this structure:
 
-```json
 {
   "window_id": "copy from domain_window_state",
   "domain_name": "{{ domain_name }}",
@@ -520,130 +633,313 @@ Return ONLY a valid JSON object with this structure:
       "events": [
         {
           "event_id": "unique_identifier",
-          "timestamp": "YYYY-MM-DD HH:MM:SS",
+          "time_specification": {
+            "schedule_dates": ["YYYY-MM-DD", "YYYY-MM-DD"],
+            "time": "HH:MM:SS",
+            "start_time": "HH:MM:SS",
+            "end_time": "HH:MM:SS",
+            "note": "string"
+          },
           "app_name": "Amazon | Spotify | SimpleNote | LLM | Google | Fitness | Calendar | Message",
-          "api_name": "Login | SearchProducts | Chat | SearchSongs | ShowNotes | ShowNote | CreateNote | Chat | Search | etc. |",
-          "description": "Detailed description of what happens in this event",
-          "purpose": "Why this event occurs (attribute acquisition, habit execution, preference demonstration, etc.)"
+          "api_name": "Login | SearchProducts | Chat | SearchSongs | ShowNotes | ShowNote | CreateNote | Search | etc.",
+          "purpose": "Why this event occurs (attribute acquisition, habit execution, preference demonstration, etc.)",
+          "input": { "key": "value" },
+          "output_constraint": [
+            {
+              "from_event_id": "event_id_of_dependency",
+              "output_path": "path.to.output.field",
+              "input_field": "path.to.input.field",
+              "rule": "short constraint statement"
+            }
+          ]
         }
       ]
     }
   ]
 }
-```
 
-### Field Explanations:
-
-**chain_id**: Unique identifier for this event chain (e.g., "w1_health_001")
-
-**related_state_items**: Which user state items (attributes/habits/preferences) does this chain relate to
-
-**events**: Sequence of events in temporal order
-  - **app_name**: Required for app_log events, null for dialogue
-  - **api_name**: Required for app_log events, null for dialogue
-  - **description**: Clear description of the event
-  - **purpose**: Explain the connection to user state
+### time_specification rules
+- Use schedule_dates only.
+- For single events: schedule_dates length = 1 and include time.
+- For repeated events: schedule_dates list all dates and include start_time/end_time.
+- All schedule_dates must fall within the top-level time_range window.
 
 ---
 
 ## Generation Instructions
 
 ### 1. Coverage
-
-- **Cover ALL state items**: Every attribute, habit, and preference in the current window must be represented in at least one event chain
-- **One item per chain by default**: Only group 2-3 items if they have direct causal relationship (e.g., buying device → amplifying preference for that device type)
+- Cover ALL state items: every attribute, habit, and preference in the current window must be represented in at least one chain
+- One item per chain by default: only group 2-3 items if they have direct causal relationship
 
 ### 2. Event Generation Strategy
-
 **For Attributes (add/modify):**
 Generate 2-4 events showing: research/discovery → decision → acquisition → usage
 
 **For Habits (acquire/adjust):**
-Generate 1-2 events for acquisition, then use recurring events for executions
-- For daily habits: Generate 5-10 execution events throughout the window
-- For weekly habits: Generate 3-6 execution events
-- For monthly habits: Generate 1-2 execution events
+Generate 1-2 events for acquisition/setup, then:
+- daily/weekly executions via one event with schedule_dates listing all occurrences
 
 **For Habits (stable):**
-Generate recurring execution events matching their frequency
+Recurring execution events matching frequency (multiple single events OR one event with schedule_dates)
 
-**For Preferences (shift/refine/stable):**
-Generate 2-3 events demonstrating the preference through choices
-- Include dialogue explaining reasoning
-- Include app logs showing preference-consistent behavior
+**For Preferences (stable):**
+Generate 2-3 events demonstrating the preference through behavior
+
+**For Preferences (shift/refine):**
+Generate 1-2 events showing the preference shift/refinement process and generate 2-3 events demonstrating the preference through behavior
 
 ### 3. Realistic Timing
-
 - Spread events across the time window
-- Don't cluster all events on the same day
-- Respect habit schedules (morning habits at ~7AM, evening habits at ~8PM, etc.)
-- Use realistic timestamps (work hours for productivity apps, evenings for entertainment)
+- Avoid clustering everything on one day (except truly urgent actions)
+- Respect habit schedules (morning ~07:00, evening ~20:00, etc.)
+- Use realistic timestamps
 
 ---
 
-## Example Event Chain
+## Examples (VALID JSON SNIPPETS)
 
-```json
+### Example 1: Habit acquire → then daily executions via schedule_dates
 {
-  "chain_id": "w1_music_001",
+  "chain_id": "w1_health_001",
   "related_state_items": [
     {
       "state_category": "habits_state",
-      "state_name": "morning_music_listening",
+      "state_name": "morning_workout",
       "operation": "acquire"
     }
   ],
   "events": [
     {
-      "event_id": "w1_music_001_e001",
-      "timestamp": "2024-01-05 20:30:15",
-      "app_name": LLM,
-      "api_name": Chat,
-      "description": "User asks LLM about benefits of morning music for productivity and mood. LLM explains research on music's cognitive effects.",
-      "purpose": "Exploring the idea of starting a morning music habit"
+      "event_id": "w1_health_001_e001",
+      "time_specification": {
+        "schedule_dates": ["2024-01-02"],
+        "time": "21:10:00"
+      },
+      "app_name": "LLM",
+      "api_name": "Chat",
+      "purpose": "Habit acquisition: research and planning before starting the habit.",
+      "input": {
+        "messages": [
+          { "role": "user", "content": "I want to build a morning workout habit. What is a realistic 15-minute plan for beginners?" }
+        ],
+      },
+      "output_constraint": null
     },
     {
-      "event_id": "w1_music_001_e002",
-      "timestamp": "2024-01-06 07:15:22",
-      "app_name": "Spotify",
-      "api_name": "SearchSongs",
-      "description": "User searches for 'energetic morning playlist' and 'focus music' on Spotify",
-      "purpose": "Finding music for new morning habit"
+      "event_id": "w1_health_001_e002",
+      "time_specification": {
+        "schedule_dates": ["2024-01-03"],
+        "time": "20:45:00"
+      },
+      "app_name": "Calendar",
+      "api_name": "CreateEvent",
+      "purpose": "Habit acquisition: setup and commitment via calendar reminder.",
+      "input": {
+        "title": "Morning workout (15 min)",
+        "start_time": "2024-01-04 07:00:00",
+        "end_time": "2024-01-04 07:15:00",
+        "timezone": "America/Chicago",
+        "location": null,
+        "description": "Start small: 15 minutes. Focus on consistency.",
+        "attendees": []
+      },
+      "output_constraint": null
     },
     {
-      "event_id": "w1_music_001_e003",
-      "timestamp": "2024-01-07 07:10:33",
-      "event_type": "app_log",
-      "app_name": "Spotify",
-      "api_name": "PlaySong",
-      "description": "User plays 'Morning Energy' playlist for 25 minutes while getting ready",
-      "purpose": "First execution of morning music habit"
-    },
-    {
-      "event_id": "w1_music_001_e004",
-      "timestamp": "2024-01-08 07:12:41",
-      "event_type": "app_log",
-      "app_name": "Spotify",
-      "api_name": "PlaySong",
-      "description": "User plays 'Morning Energy' playlist",
-      "purpose": "Continuing morning music habit"
+      "event_id": "w1_health_001_e003",
+      "time_specification": {
+        "schedule_dates": [
+          "2024-01-04",
+          "2024-01-05",
+          "2024-01-06",
+          "2024-01-07",
+          "2024-01-08",
+          "2024-01-09",
+          "2024-01-10"
+        ],
+        "start_time": "07:00:00",
+        "end_time": "07:20:00",
+        "note": "Each morning the user completes a short workout and logs it in Fitness.LogWorkout."
+      },
+      "app_name": "Fitness",
+      "api_name": "LogWorkout",
+      "purpose": "Habit execution: recurring daily behavior and consistent API logging.",
+      "input": {
+        "workout_type": "morning bodyweight circuit",
+        "duration_min": 15,
+        "intensity": "low",
+        "calories_est": null
+      },
+      "output_constraint": null
     }
   ]
 }
-```
+
+### Example 2: Attribute add (new device) → purchase flow with single-date events
+{
+  "chain_id": "w1_shopping_002",
+  "related_state_items": [
+    {
+      "state_category": "user_attributes_state",
+      "state_name": "owns_noise_canceling_headphones",
+      "operation": "add"
+    }
+  ],
+  "events": [
+    {
+      "event_id": "w1_shopping_002_e001",
+      "time_specification": {
+        "schedule_dates": ["2024-02-05"],
+        "time": "12:30:10"
+      },
+      "app_name": "LLM",
+      "api_name": "Chat",
+      "purpose": "Attribute acquisition: research and decision support.",
+      "input": {
+        "messages": [
+          { "role": "user", "content": "I work in a noisy cafe. What should I look for in noise-canceling headphones under $200?" }
+        ],
+      },
+      "output_constraint": null
+    },
+    {
+      "event_id": "w1_shopping_002_e002",
+      "time_specification": {
+        "schedule_dates": ["2024-02-05"],
+        "time": "12:45:40"
+      },
+      "app_name": "Amazon",
+      "api_name": "SearchProducts",
+      "purpose": "Attribute acquisition: product discovery with constraints.",
+      "input": {
+        "query": "noise canceling headphones",
+        "filters": { "price_min": null, "price_max": 200, "category": "electronics" },
+        "sort": "relevance",
+        "page": 1,
+        "page_size": 10
+      },
+      "output_constraint": null
+    },
+    {
+      "event_id": "w1_shopping_002_e003",
+      "time_specification": {
+        "schedule_dates": ["2024-02-05"],
+        "time": "12:48:05"
+      },
+      "app_name": "Amazon",
+      "api_name": "ShowProduct",
+      "purpose": "Attribute acquisition: evaluation before purchase.",
+      "input": { "product_id": "FROM_EVENT(w1_shopping_002_e002.results[0].product_id)" },
+      "output_constraint": [
+        {
+          "from_event_id": "w1_shopping_002_e002",
+          "output_path": "results[0].product_id",
+          "input_field": "product_id",
+          "rule": "must use a product_id returned by SearchProducts"
+        }
+      ]
+    },
+    {
+      "event_id": "w1_shopping_002_e004",
+      "time_specification": {
+        "schedule_dates": ["2024-02-05"],
+        "time": "12:55:22"
+      },
+      "app_name": "Amazon",
+      "api_name": "Checkout",
+      "purpose": "Attribute acquisition: completing ownership change via transaction.",
+      "input": {
+        "items": [ { "product_id": "FROM_EVENT(w1_shopping_002_e003.product_id)", "quantity": 1 } ],
+        "shipping_address_id": "addr_001",
+        "payment_method_id": "pm_001"
+      },
+      "output_constraint": [
+        {
+          "from_event_id": "w1_shopping_002_e003",
+          "output_path": "product_id",
+          "input_field": "items[0].product_id",
+          "rule": "must use the product_id shown in ShowProduct"
+        }
+      ]
+    }
+  ]
+}
+
+### Example 3: Preference stable → repeated behavior captured as schedule_dates
+{
+  "chain_id": "w1_focusmusic_003",
+  "related_state_items": [
+    {
+      "state_category": "preferences_state",
+      "state_name": "prefers_lofi_for_deep_work",
+      "operation": "stable"
+    }
+  ],
+  "events": [
+    {
+      "event_id": "w1_focusmusic_003_e001",
+      "time_specification": {
+        "schedule_dates": ["2024-03-11"],
+        "time": "09:05:00"
+      },
+      "app_name": "Spotify",
+      "api_name": "SearchSongs",
+      "purpose": "Preference demonstration: selecting content consistent with preference.",
+      "input": {
+        "query": "lofi beats focus",
+        "limit": 10
+      },
+      "output_constraint": null
+    },
+    {
+      "event_id": "w1_focusmusic_003_e002",
+      "time_specification": {
+        "schedule_dates": [
+          "2024-03-11",
+          "2024-03-12",
+          "2024-03-13",
+          "2024-03-14",
+          "2024-03-15"
+        ],
+        "start_time": "09:10:00",
+        "end_time": "11:00:00",
+        "note": "During weekday work sessions, the user plays lofi tracks while working."
+      },
+      "app_name": "Spotify",
+      "api_name": "PlaySong",
+      "purpose": "Preference demonstration: repeated selection and playback behavior.",
+      "input": {
+        "track_id": "FROM_EVENT(w1_focusmusic_003_e001.tracks[0].track_id)",
+        "device_id": null,
+        "position_ms": 0
+      },
+      "output_constraint": [
+        {
+          "from_event_id": "w1_focusmusic_003_e001",
+          "output_path": "tracks[0].track_id",
+          "input_field": "track_id",
+          "rule": "must be a track_id returned by SearchSongs"
+        }
+      ]
+    }
+  ]
+}
 
 ---
 
 ## Critical Rules
 
-1. **Return ONLY valid JSON** - No markdown, no comments, no extra text
-2. **Cover all state items** - Every attribute, habit, preference must appear in at least one chain
-3. **Specify app and API** - For every app_log event, provide app_name and api_name
-4. **Use realistic timestamps** - All timestamps must fall within the window's time_range
-5. **Create narrative coherence** - Events in a chain should tell a logical story
-6. **Demonstrate, don't just describe** - Show preferences through choices, not statements
-
+1) Return ONLY valid JSON (no markdown, no comments, no extra text)
+2) Cover all state items in the current window
+3) Specify app_name and api_name for every event
+4) Do NOT include an event-level "description" field; use purpose instead
+5) Use time_specification with schedule_dates for every event (no time_range/cadence)
+6) All schedule_dates must be within the window time_range
+7) Create narrative coherence (logical story per chain)
+8) Demonstrate preferences through behavior, not just statements
 """)
+
 @dataclass
 class EventsChainRequest:
     user_basic_profile: str

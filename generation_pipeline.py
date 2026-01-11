@@ -1299,12 +1299,6 @@ class TimelineConfig:
 
 
 @dataclass
-class EventsChainConfig:
-    stable_state_reveal_probability: float = 0.35
-    stable_state_reveal_seed: int | None = None
-
-
-@dataclass
 class AtomicEventsConfig:
     min_per_semantic: int = 1
     max_per_semantic: int = 3
@@ -3847,6 +3841,23 @@ def _dates_from_schedule(schedule: Dict[str, Any], start_date: date, end_date: d
                 matches.append(candidate)
         return matches
     return []
+
+
+def _expand_habit_schedule_dates(habit: object, time_range: object) -> object:
+    if not isinstance(habit, dict):
+        return habit
+    start_date, end_date = _parse_window_date_range(time_range)
+    if not start_date or not end_date:
+        return habit
+    schedule = habit.get("schedule") or {}
+    if not isinstance(schedule, dict) or not schedule.get("frequency_type"):
+        return habit
+    occurrences = _dates_from_schedule(schedule, start_date, end_date)
+    if not occurrences:
+        return habit
+    expanded = deepcopy(habit)
+    expanded["schedule_dates"] = [dt.isoformat() for dt in occurrences]
+    return expanded
 
 
 def _time_to_minutes(value: str) -> Optional[int]:
@@ -6641,12 +6652,15 @@ def _apply_user_attribute_operations(
                 else ([] if prev_value is None else [prev_value])
             )
             if op_type == "remove":
-                removals = set()
-                if isinstance(delta_payload, list):
-                    removals = set(delta_payload)
-                elif delta_payload is not None:
-                    removals = {delta_payload}
-                new_list = [item for item in prev_list if item not in removals]
+                if delta_payload is None:
+                    new_list = []
+                else:
+                    removals = set()
+                    if isinstance(delta_payload, list):
+                        removals = set(delta_payload)
+                    elif delta_payload is not None:
+                        removals = {delta_payload}
+                    new_list = [item for item in prev_list if item not in removals]
             elif op_type == "add":
                 additions = (
                     delta_payload
@@ -6766,6 +6780,7 @@ def _apply_habit_operations(
 
         if op_type == "drop":
             new_value = None
+            updated.pop(name, None)
         elif op_type == "adjust":
             base = deepcopy(prev_value) if isinstance(prev_value, dict) else {}
             if isinstance(delta_payload, dict):
@@ -6777,7 +6792,8 @@ def _apply_habit_operations(
             # acquire or fallback
             new_value = delta_payload if delta_payload is not None else prev_value
 
-        updated[name] = {"current_value": new_value}
+        if op_type != "drop":
+            updated[name] = {"current_value": new_value}
         changes[name] = {
             "previous_value": prev_value,
             "change_reason": reason,
@@ -6814,10 +6830,12 @@ def _apply_preference_operations(
 
         if op_type in {"drop", "remove"}:
             new_value = None
+            updated.pop(name, None)
         else:
             new_value = delta_payload if delta_payload is not None else prev_value
 
-        updated[name] = {"current_value": new_value}
+        if op_type not in {"drop", "remove"}:
+            updated[name] = {"current_value": new_value}
         changes[name] = {
             "previous_value": prev_value,
             "change_reason": reason,
@@ -6860,6 +6878,20 @@ def _state_dict_to_list(
             item["change_reason"] = change_info.get("change_reason")
             item["op"] = change_info.get("op")
         
+        result.append(item)
+
+    missing_keys = [key for key in changes.keys() if key not in state]
+    for key in sorted(missing_keys):
+        change_info = changes.get(key, {})
+        item = {
+            "name": key,
+            "current_value": None,
+            "op": change_info.get("op"),
+        }
+        if "previous_value" in change_info:
+            item["previous_value"] = change_info.get("previous_value")
+        if change_info.get("change_reason"):
+            item["change_reason"] = change_info.get("change_reason")
         result.append(item)
     
     return result
@@ -6930,173 +6962,173 @@ def _resolve_window_states(dynamic_profile_data: Dict) -> List[Dict]:
     return resolved
 
 
-def _reorganize_by_key(resolved_windows: List[Dict]) -> Dict:
-    """
-    Reorganize window-based data into key-based timelines.
-    Each key maintains a timeline of its values across all windows.
-    Merges consecutive windows with no changes (no op field) into a single time range.
+# def _reorganize_by_key(resolved_windows: List[Dict]) -> Dict:
+#     """
+#     Reorganize window-based data into key-based timelines.
+#     Each key maintains a timeline of its values across all windows.
+#     Merges consecutive windows with no changes (no op field) into a single time range.
     
-    Args:
-        resolved_windows: List of window states from _resolve_window_states
+#     Args:
+#         resolved_windows: List of window states from _resolve_window_states
         
-    Returns:
-        Dict with structure:
-        {
-            "user_attributes_state": {
-                "key_name": {
-                    "timeline": [
-                        {
-                            "time_range": ["2024-01-01", "2024-12-31"],  # merged if no changes
-                            "current_value": ...,
-                            # If there's a change:
-                            "op": "modify",  # or "add", "drop", etc.
-                            "previous_value": ...,
-                            "change_reason": ...,
-                        },
-                        ...
-                    ]
-                },
-                ...
-            },
-            "habits_state": {...},
-            "preferences_state": {...}
-        }
-    """
-    reorganized: Dict[str, Dict[str, Dict]] = {
-        "user_attributes_state": {},
-        "habits_state": {},
-        "preferences_state": {},
-    }
+#     Returns:
+#         Dict with structure:
+#         {
+#             "user_attributes_state": {
+#                 "key_name": {
+#                     "timeline": [
+#                         {
+#                             "time_range": ["2024-01-01", "2024-12-31"],  # merged if no changes
+#                             "current_value": ...,
+#                             # If there's a change:
+#                             "op": "modify",  # or "add", "drop", etc.
+#                             "previous_value": ...,
+#                             "change_reason": ...,
+#                         },
+#                         ...
+#                     ]
+#                 },
+#                 ...
+#             },
+#             "habits_state": {...},
+#             "preferences_state": {...}
+#         }
+#     """
+#     reorganized: Dict[str, Dict[str, Dict]] = {
+#         "user_attributes_state": {},
+#         "habits_state": {},
+#         "preferences_state": {},
+#     }
     
-    # First pass: collect all timeline entries
-    for window in resolved_windows:
-        window_id = window.get("window_id")
-        time_range = window.get("time_range")
-        if not window_id:
-            continue
+#     # First pass: collect all timeline entries
+#     for window in resolved_windows:
+#         window_id = window.get("window_id")
+#         time_range = window.get("time_range")
+#         if not window_id:
+#             continue
         
-        # Process each state type
-        for state_type in ["user_attributes_state", "habits_state", "preferences_state"]:
-            state_list = window.get(state_type, [])
-            for item in state_list:
-                key_name = item.get("name")
-                attr_type = item.get("attribute_type")
-                if not key_name:
-                    continue
+#         # Process each state type
+#         for state_type in ["user_attributes_state", "habits_state", "preferences_state"]:
+#             state_list = window.get(state_type, [])
+#             for item in state_list:
+#                 key_name = item.get("name")
+#                 attr_type = item.get("attribute_type")
+#                 if not key_name:
+#                     continue
 
-                composite_key = (
-                    f"{attr_type}.{key_name}"
-                    if state_type == "user_attributes_state" and attr_type
-                    else key_name
-                )
+#                 composite_key = (
+#                     f"{attr_type}.{key_name}"
+#                     if state_type == "user_attributes_state" and attr_type
+#                     else key_name
+#                 )
 
-                # Initialize timeline for this key if not exists
-                if composite_key not in reorganized[state_type]:
-                    reorganized[state_type][composite_key] = {"timeline": []}
-                    if state_type == "user_attributes_state" and attr_type:
-                        reorganized[state_type][composite_key]["attribute_type"] = attr_type
+#                 # Initialize timeline for this key if not exists
+#                 if composite_key not in reorganized[state_type]:
+#                     reorganized[state_type][composite_key] = {"timeline": []}
+#                     if state_type == "user_attributes_state" and attr_type:
+#                         reorganized[state_type][composite_key]["attribute_type"] = attr_type
                 
-                # Create timeline entry (with window_id for now, will be removed after merging)
-                timeline_entry: Dict[str, object] = {
-                    "window_id": window_id,
-                    "time_range": time_range,
-                    "current_value": item.get("current_value"),
-                }
-                if state_type == "user_attributes_state" and attr_type:
-                    timeline_entry["attribute_type"] = attr_type
+#                 # Create timeline entry (with window_id for now, will be removed after merging)
+#                 timeline_entry: Dict[str, object] = {
+#                     "window_id": window_id,
+#                     "time_range": time_range,
+#                     "current_value": item.get("current_value"),
+#                 }
+#                 if state_type == "user_attributes_state" and attr_type:
+#                     timeline_entry["attribute_type"] = attr_type
                 
-                # Add change information if present
-                if "op" in item:
-                    timeline_entry["op"] = item.get("op")
-                    if "previous_value" in item:
-                        timeline_entry["previous_value"] = item.get("previous_value")
-                    if "change_reason" in item:
-                        timeline_entry["change_reason"] = item.get("change_reason")
+#                 # Add change information if present
+#                 if "op" in item:
+#                     timeline_entry["op"] = item.get("op")
+#                     if "previous_value" in item:
+#                         timeline_entry["previous_value"] = item.get("previous_value")
+#                     if "change_reason" in item:
+#                         timeline_entry["change_reason"] = item.get("change_reason")
                 
-                reorganized[state_type][composite_key]["timeline"].append(timeline_entry)
+#                 reorganized[state_type][composite_key]["timeline"].append(timeline_entry)
     
-    # Second pass: merge consecutive entries with no changes
-    for state_type in ["user_attributes_state", "habits_state", "preferences_state"]:
-        for key_name, key_data in reorganized[state_type].items():
-            timeline = key_data["timeline"]
-            if not timeline:
-                continue
+#     # Second pass: merge consecutive entries with no changes
+#     for state_type in ["user_attributes_state", "habits_state", "preferences_state"]:
+#         for key_name, key_data in reorganized[state_type].items():
+#             timeline = key_data["timeline"]
+#             if not timeline:
+#                 continue
             
-            merged_timeline: List[Dict[str, object]] = []
-            i = 0
+#             merged_timeline: List[Dict[str, object]] = []
+#             i = 0
             
-            while i < len(timeline):
-                current_entry = timeline[i]
+#             while i < len(timeline):
+#                 current_entry = timeline[i]
                 
-                # If this entry has an op (change), add it as-is (without window_id)
-                if "op" in current_entry:
-                    merged_entry: Dict[str, object] = {
-                        "time_range": list(current_entry["time_range"]),  # copy
-                        "current_value": current_entry["current_value"],
-                        "op": current_entry["op"],
-                    }
-                    if "attribute_type" in current_entry:
-                        merged_entry["attribute_type"] = current_entry["attribute_type"]
-                    if "previous_value" in current_entry:
-                        merged_entry["previous_value"] = current_entry["previous_value"]
-                    if "change_reason" in current_entry:
-                        merged_entry["change_reason"] = current_entry["change_reason"]
-                    merged_timeline.append(merged_entry)
-                    i += 1
-                    continue
+#                 # If this entry has an op (change), add it as-is (without window_id)
+#                 if "op" in current_entry:
+#                     merged_entry: Dict[str, object] = {
+#                         "time_range": list(current_entry["time_range"]),  # copy
+#                         "current_value": current_entry["current_value"],
+#                         "op": current_entry["op"],
+#                     }
+#                     if "attribute_type" in current_entry:
+#                         merged_entry["attribute_type"] = current_entry["attribute_type"]
+#                     if "previous_value" in current_entry:
+#                         merged_entry["previous_value"] = current_entry["previous_value"]
+#                     if "change_reason" in current_entry:
+#                         merged_entry["change_reason"] = current_entry["change_reason"]
+#                     merged_timeline.append(merged_entry)
+#                     i += 1
+#                     continue
                 
-                # Otherwise, try to merge consecutive entries with same value and no op
-                merged_entry = {
-                    "time_range": list(current_entry["time_range"]),  # copy
-                    "current_value": current_entry["current_value"],
-                }
-                if "attribute_type" in current_entry:
-                    merged_entry["attribute_type"] = current_entry["attribute_type"]
-                j = i + 1
+#                 # Otherwise, try to merge consecutive entries with same value and no op
+#                 merged_entry = {
+#                     "time_range": list(current_entry["time_range"]),  # copy
+#                     "current_value": current_entry["current_value"],
+#                 }
+#                 if "attribute_type" in current_entry:
+#                     merged_entry["attribute_type"] = current_entry["attribute_type"]
+#                 j = i + 1
                 
-                # Merge consecutive entries with no op and same current_value
-                while j < len(timeline):
-                    next_entry = timeline[j]
-                    # Stop if next entry has an op (change)
-                    if "op" in next_entry:
-                        break
+#                 # Merge consecutive entries with no op and same current_value
+#                 while j < len(timeline):
+#                     next_entry = timeline[j]
+#                     # Stop if next entry has an op (change)
+#                     if "op" in next_entry:
+#                         break
                     
-                    # Check if current_value is the same (deep comparison for lists/dicts)
-                    current_val = current_entry["current_value"]
-                    next_val = next_entry["current_value"]
+#                     # Check if current_value is the same (deep comparison for lists/dicts)
+#                     current_val = current_entry["current_value"]
+#                     next_val = next_entry["current_value"]
                     
-                    # Simple comparison - for complex objects, we'd need deep comparison
-                    # But for our use case, this should work
-                    if current_val != next_val:
-                        break
+#                     # Simple comparison - for complex objects, we'd need deep comparison
+#                     # But for our use case, this should work
+#                     if current_val != next_val:
+#                         break
                     
-                    # Check if time ranges are consecutive
-                    current_end = merged_entry["time_range"][1]
-                    next_start = next_entry["time_range"][0]
+#                     # Check if time ranges are consecutive
+#                     current_end = merged_entry["time_range"][1]
+#                     next_start = next_entry["time_range"][0]
                     
-                    # Parse dates to check if consecutive
-                    try:
-                        current_end_date = datetime.strptime(current_end, "%Y-%m-%d")
-                        next_start_date = datetime.strptime(next_start, "%Y-%m-%d")
-                        # Check if next window starts the day after current ends
-                        if next_start_date != current_end_date + timedelta(days=1):
-                            break
-                    except (ValueError, TypeError):
-                        # If date parsing fails, just check if they're adjacent strings
-                        # This is a fallback
-                        pass
+#                     # Parse dates to check if consecutive
+#                     try:
+#                         current_end_date = datetime.strptime(current_end, "%Y-%m-%d")
+#                         next_start_date = datetime.strptime(next_start, "%Y-%m-%d")
+#                         # Check if next window starts the day after current ends
+#                         if next_start_date != current_end_date + timedelta(days=1):
+#                             break
+#                     except (ValueError, TypeError):
+#                         # If date parsing fails, just check if they're adjacent strings
+#                         # This is a fallback
+#                         pass
                     
-                    # Merge: extend time_range to include next entry
-                    merged_entry["time_range"][1] = next_entry["time_range"][1]
-                    j += 1
+#                     # Merge: extend time_range to include next entry
+#                     merged_entry["time_range"][1] = next_entry["time_range"][1]
+#                     j += 1
                 
-                merged_timeline.append(merged_entry)
-                i = j
+#                 merged_timeline.append(merged_entry)
+#                 i = j
             
-            # Update the timeline with merged version
-            reorganized[state_type][key_name]["timeline"] = merged_timeline
+#             # Update the timeline with merged version
+#             reorganized[state_type][key_name]["timeline"] = merged_timeline
     
-    return reorganized
+#     return reorganized
 
 
 def _identify_stable_states(resolved_windows: List[Dict]) -> Dict[str, Dict[str, Dict]]:
@@ -7172,52 +7204,6 @@ def _identify_stable_states(resolved_windows: List[Dict]) -> Dict[str, Dict[str,
                     )
 
     return stable_states
-
-
-def _plan_stable_state_reveals(
-    resolved_windows: List[Dict],
-    *,
-    probability: float,
-    seed: int | None = None,
-) -> Dict[str, Dict[str, Dict[str, object]]]:
-    """
-    Decide in which windows a stable state should be revealed to semantic-event generation.
-    Ensures every stable state is revealed in at least one window.
-    """
-    probability = max(0.0, min(1.0, probability))
-    rng = random.Random(seed)
-    stable_states = _identify_stable_states(resolved_windows)
-    window_order = [
-        window.get("window_id") for window in resolved_windows if window.get("window_id")
-    ]
-    plan: Dict[str, Dict[str, Dict[str, object]]] = {
-        "user_attributes_state": {},
-        "habits_state": {},
-        "preferences_state": {},
-        "_metadata": {
-            "probability": probability,
-            "seed": seed,
-        },
-    }
-
-    for state_type, states in stable_states.items():
-        for name, info in states.items():
-            eligible_windows = [
-                window_id for window_id in window_order if window_id in info["window_ids"]
-            ]
-            reveal_in = [
-                window_id
-                for window_id in eligible_windows
-                if rng.random() < probability
-            ]
-            if not reveal_in and eligible_windows:
-                reveal_in = [eligible_windows[0]]
-            plan[state_type][name] = {
-                "value": info["value"],
-                "reveal_in_windows": reveal_in,
-            }
-
-    return plan
 
 
 def _filter_window_state_for_events_chain(
@@ -7603,13 +7589,11 @@ class GenerationPipeline:
         llm_client: GeminiJSONClient,
         output_dir: Path,
         timeline: TimelineConfig | None = None,
-        semantic_config: EventsChainConfig | None = None,
         atomic_config: AtomicEventsConfig | None = None,
         real_data_config: RealDataConfig | None = None,
     ) -> None:
         self.llm_client = llm_client
         self.timeline = timeline or TimelineConfig()
-        self.semantic_config = semantic_config or EventsChainConfig()
         self.atomic_config = atomic_config or AtomicEventsConfig()
         self.real_data_config = real_data_config or RealDataConfig()
         self.output_dir = Path(output_dir)
@@ -9144,6 +9128,7 @@ class GenerationPipeline:
         Returns:
             Tuple of (events_chain_windows_list, updated_usage_dict)
         """
+        # --------- Usage + input validation ---------
         if usage is None:
             usage = {"events_chain": {}}
         elif "events_chain" not in usage:
@@ -9153,26 +9138,28 @@ class GenerationPipeline:
         if not isinstance(domain_profile, dict):
             raise ValueError(f"Dynamic profile for domain {domain.domain_name} is missing.")
 
+        # --------- Normalize optional inputs ---------
         user_life_contexts = user_life_contexts or {}
         user_full_state_summaries = user_full_state_summaries or {}
         life_context_baseline = {}
         life_context_by_window: Dict[str, Dict] = {}
 
-        ## user_life_contexts is a dict with two keys: "baseline" and "by_window"
+        # user_life_contexts carries "baseline" and "by_window".
         if isinstance(user_life_contexts, dict):
             life_context_baseline = user_life_contexts.get("baseline") or {}
             life_context_by_window = user_life_contexts.get("by_window") or {}
 
-        # import pdb; pdb.set_trace()     
-
+        # --------- Resolve window states + context maps ---------
         slug = _slugify(domain.domain_name)
         events_chain_windows: List[Dict] = []
 
-        ## resolved_windows is a list of dicts, each dict is a window state
+        ## 4 time windows
         resolved_windows = _resolve_window_states(domain_profile)
+        # import pdb; pdb.set_trace()
         resolved_windows_path = self.output_dir / f"{slug}_resolved_windows.json"
         _write_json(resolved_windows_path, resolved_windows)
 
+        # Build per-window background + summary maps.
         window_ids = [w.get("window_id") for w in resolved_windows if w.get("window_id")]
         world_background_map = _map_world_background_to_windows(
             world_background, window_ids
@@ -9190,20 +9177,21 @@ class GenerationPipeline:
             )
             summary_by_window_domain[window_id] = domain_summary_val
 
-        ## for window 1
+        # Initial summaries for w1 fallbacks.
         domain_initial_summary = (
             (domain_profile.get("initial_state") or {}).get("summary") or ""
         )
-        # import pdb; pdb.set_trace()
         initial_window_summary = initial_all_domains_summary or ""
         
 
         resolved_window_map = {
             w.get("window_id"): w for w in resolved_windows if w.get("window_id")
         }
-        rng = random.Random(self.semantic_config.stable_state_reveal_seed)
+        # --------- Stable-state sampling configuration ---------
+        rng = random.Random()
+        stable_state_convert_probability = 0.5
         stale_sample_probability = max(
-            0.0, min(1.0, self.semantic_config.stable_state_reveal_probability)
+            0.0, min(1.0, stable_state_convert_probability)
         )
         conversion_flags: Dict[str, Dict[str, bool]] = {
             "user_attributes_state": {},
@@ -9211,6 +9199,7 @@ class GenerationPipeline:
             "preferences_state": {},
         }
 
+        # ---------- Helpers (kept together for readability) ----------
         def _default_metadata() -> Dict[str, object]:
             return {
                 "updated_this_window": False,
@@ -9227,14 +9216,30 @@ class GenerationPipeline:
                 return str(value)
 
         def _init_state_tracker() -> Dict[str, Dict[str, Dict[str, Dict[str, object]]]]:
+            # Track what has already been surfaced in events_chain across windows.
             tracker: Dict[str, Dict[str, Dict[str, Dict[str, object]]]] = {
                 "user_attributes_state": {},
                 "habits_state": {},
                 "preferences_state": {},
             }
             initial_state = domain_profile.get("initial_state") or {}
+            user_attrs_section: Dict[str, object] = {}
+            user_attrs_state = initial_state.get("user_attributes_state") or {}
+            if isinstance(user_attrs_state, dict):
+                singular = user_attrs_state.get("singular")
+                collections = user_attrs_state.get("collections")
+                if isinstance(singular, dict):
+                    user_attrs_section.update(singular)
+                if isinstance(collections, dict):
+                    user_attrs_section.update(collections)
+                if not user_attrs_section:
+                    legacy_entries = _extract_initial_state_entries(
+                        user_attrs_state.get("initial")
+                    )
+                    for name, entry in legacy_entries.items():
+                        user_attrs_section[name] = entry.get("current_value")
             initial_sections = {
-                "user_attributes_state": (initial_state.get("user_attributes_state") or {}).get("initial"),
+                "user_attributes_state": user_attrs_section,
                 "habits_state": initial_state.get("habits_state"),
                 "preferences_state": initial_state.get("preferences_state"),
             }
@@ -9254,7 +9259,7 @@ class GenerationPipeline:
         state_tracker = _init_state_tracker()
 
         def _materialize_state_table_from_tracker() -> Dict[str, List[Dict[str, object]]]:
-            """Convert current tracker snapshot into a state_table list structure."""
+            """Convert tracker snapshot into a state_table list structure."""
             table: Dict[str, List[Dict[str, object]]] = {
                 "user_attributes_state": [],
                 "habits_state": [],
@@ -9273,25 +9278,13 @@ class GenerationPipeline:
                         )
             return table
 
-        # Emit an initial baseline state_table snapshot before processing windows.
-        initial_state_table_payload = {
-            "window_id": "initial",
-            "time_range": (domain_profile.get("initial_state") or {}).get("time_range"),
-            "state_table": _materialize_state_table_from_tracker(),
-        }
-        _write_json(
-            self.output_dir / f"{slug}_domain_window_state_payload_initial.json",
-            initial_state_table_payload,
-        )
-
-        for idx, window_state in enumerate(resolved_windows):
-            window_id = window_state.get("window_id")
-            if not window_id:
-                continue
-
-            window_full_state = user_full_state_summaries.get(window_id, {})
-            if not isinstance(window_full_state, dict):
-                window_full_state = {}
+        def _build_window_prompt_context(
+            *,
+            idx: int,
+            window_id: str,
+            window_state: Dict,
+        ) -> tuple[str, str, str, str]:
+            # Build per-window prompt context: previous summaries + life context + description.
             if idx == 0:
                 previous_all_summary_raw = initial_window_summary
                 previous_domain_summary_raw = domain_initial_summary
@@ -9299,6 +9292,7 @@ class GenerationPipeline:
                 prev_window_id = resolved_windows[idx - 1].get("window_id")
                 previous_all_summary_raw = summary_all_by_window.get(prev_window_id, "")
                 previous_domain_summary_raw = summary_by_window_domain.get(prev_window_id, "")
+
             user_previous_window_summary = (
                 "<previous window summary (all domains)>\n"
                 f"{previous_all_summary_raw or 'No previous window summary available for this window.'}\n"
@@ -9309,30 +9303,38 @@ class GenerationPipeline:
                 f"{previous_domain_summary_raw or 'No previous window summary available for this window.'}\n"
                 f"</previous window summary in {domain.domain_name}>"
             )
-            life_context_for_window: Dict = {}
+
             life_context_entry = life_context_by_window.get(window_id, {}) or {}
             base_context = life_context_entry.get("life_context") or life_context_baseline
             delta_payload = life_context_entry.get("life_context_delta") or {}
             life_context_for_window = _apply_life_context_delta(
                 base_context, delta_payload
             )
-
             if not life_context_for_window and isinstance(life_context_baseline, dict):
                 life_context_for_window = life_context_baseline
             life_context_prompt_str = _format_life_context_for_prompt(
                 window_id, life_context_for_window, time_range=window_state.get("time_range")
             )
-            domain_window_description = (
-                window_state.get("window_description")
-            )
+
+            domain_window_description = window_state.get("window_description")
             user_this_window_description = (
                 f"<this window description in {domain.domain_name}>\n"
                 f"{domain_window_description or 'No description available for this domain in this window.'}\n"
                 f"</this window description in {domain.domain_name}>"
             )
 
-            resolved_window_state = resolved_window_map.get(window_id, {})
+            return (
+                user_previous_window_summary,
+                user_domain_previous_window_summary,
+                life_context_prompt_str,
+                user_this_window_description,
+            )
 
+        def _select_conversion_targets_for_window(
+            *,
+            window_state: Dict,
+        ) -> tuple[Dict[str, List[Dict[str, object]]], Dict[str, List[tuple[str, str]]]]:
+            # Select changes + sampled stable items for this window and update tracker state.
             conversion_targets: Dict[str, List[Dict[str, object]]] = {
                 "user_attributes_state": [],
                 "habits_state": [],
@@ -9343,7 +9345,7 @@ class GenerationPipeline:
                 "habits_state": [],
                 "preferences_state": [],
             }
-
+            # import pdb; pdb.set_trace()
             for state_type in ["user_attributes_state", "habits_state", "preferences_state"]:
                 window_items = window_state.get(state_type) or []
                 seen_keys: Dict[str, set[str]] = {}
@@ -9359,6 +9361,33 @@ class GenerationPipeline:
                     current_value = item.get("current_value")
                     item_op_lower = (item_op or "").lower()
 
+                    # import pdb; pdb.set_trace()
+
+                    # Collection-level change entry for list updates (e.g., remove/replace/set).
+                    if (
+                        state_type == "user_attributes_state"
+                        and isinstance(current_value, list)
+                        and item_op_lower in {"remove", "modify", "replace", "set", "drop"}
+                    ):
+                        metadata = {
+                            "updated_this_window": True,
+                            "freshness": True,
+                            "already_converted_to_events_chain": False,
+                            "should_convert_to_events_chain": True,
+                            "reason": change_reason,
+                        }
+                        change_entry: Dict[str, object] = {
+                            "name": name,
+                            "current_value": current_value,
+                            "op": item_op,
+                            "metadata": metadata,
+                        }
+                        if change_reason:
+                            change_entry["change_reason"] = change_reason
+                        if previous_value is not None:
+                            change_entry["previous_value"] = previous_value
+                        conversion_targets[state_type].append(change_entry)
+
                     values = (
                         current_value
                         if state_type == "user_attributes_state" and isinstance(current_value, list)
@@ -9366,6 +9395,11 @@ class GenerationPipeline:
                     )
 
                     for val in values:
+                        val_for_prompt = val
+                        if state_type == "habits_state":
+                            val_for_prompt = _expand_habit_schedule_dates(
+                                val, window_state.get("time_range")
+                            )
                         key = _make_item_key(val)
                         tracker_entries = state_tracker[state_type].setdefault(name, {})
                         existing_entry = tracker_entries.get(key)
@@ -9378,6 +9412,7 @@ class GenerationPipeline:
                         freshness = updated_this_window
                         reason = change_reason if updated_this_window else None
 
+                        # Convert always for habits; otherwise for changes or sampled stable.
                         should_convert = False
                         if state_type == "habits_state":
                             should_convert = True  # Habits are always converted each window (no sampling).
@@ -9400,7 +9435,7 @@ class GenerationPipeline:
                         if should_convert:
                             entry: Dict[str, object] = {
                                 "name": name,
-                                "current_value": val,
+                                "current_value": val_for_prompt,
                                 "op": item_op if freshness and item_op else "stable",
                                 "metadata": metadata,
                             }
@@ -9410,7 +9445,12 @@ class GenerationPipeline:
                                 if item_op_lower in {"add", "acquire"}:
                                     entry["previous_value"] = None
                                 elif previous_value is not None:
-                                    entry["previous_value"] = previous_value
+                                    prev_value = previous_value
+                                    if state_type == "habits_state":
+                                        prev_value = _expand_habit_schedule_dates(
+                                            previous_value, window_state.get("time_range")
+                                        )
+                                    entry["previous_value"] = prev_value
 
                             conversion_targets[state_type].append(entry)
                             selected_tracker_keys[state_type].append((name, key))
@@ -9424,6 +9464,46 @@ class GenerationPipeline:
                     if not entries:
                         state_tracker[state_type].pop(name, None)
 
+            return conversion_targets, selected_tracker_keys
+
+        # Emit initial baseline snapshot (debug/inspection).
+        initial_state_table_payload = {
+            "window_id": "initial",
+            "time_range": (domain_profile.get("initial_state") or {}).get("time_range"),
+            "state_table": _materialize_state_table_from_tracker(),
+        }
+        _write_json(
+            self.output_dir / f"{slug}_domain_window_state_payload_initial.json",
+            initial_state_table_payload,
+        )
+
+        # ---------- Per-window assembly ----------
+        for idx, window_state in enumerate(resolved_windows):
+            window_id = window_state.get("window_id")
+            # import pdb; pdb.set_trace()
+            if not window_id:
+                continue
+
+            # Pull window summaries + per-window life context for the prompt.
+            window_full_state = user_full_state_summaries.get(window_id, {})
+            if not isinstance(window_full_state, dict):
+                window_full_state = {}
+            (
+                user_previous_window_summary,
+                user_domain_previous_window_summary,
+                life_context_prompt_str,
+                user_this_window_description,
+            ) = _build_window_prompt_context(
+                idx=idx, window_id=window_id, window_state=window_state
+            )
+
+            resolved_window_state = resolved_window_map.get(window_id, {})
+
+            # Build the per-window payload by selecting changes + sampled stable items.
+            conversion_targets, selected_tracker_keys = _select_conversion_targets_for_window(
+                window_state=window_state
+            )
+
             domain_window_state_payload = {
                 "window_id": window_id,
                 "time_range": window_state.get("time_range"),
@@ -9435,7 +9515,23 @@ class GenerationPipeline:
                 entries = domain_window_state_payload_for_prompt["state_table"].get(state_type) or []
                 for entry in entries:
                     entry.pop("metadata", None)
+                    if state_type == "preferences_state":
+                        # Hide preference signals from previous_value in prompt payload.
+                        prev_value = entry.get("previous_value")
+                        if isinstance(prev_value, dict):
+                            prev_value = deepcopy(prev_value)
+                            prev_value.pop("signals", None)
+                            entry["previous_value"] = prev_value
+                        elif isinstance(prev_value, list):
+                            scrubbed_prev: List[object] = []
+                            for item in prev_value:
+                                if isinstance(item, dict):
+                                    item = deepcopy(item)
+                                    item.pop("signals", None)
+                                scrubbed_prev.append(item)
+                            entry["previous_value"] = scrubbed_prev
 
+            # Prompt input assembly + debug outputs.
             domain_window_state = (
                 f"<user detailed state in {domain.domain_name}>\n"
                 f"{json.dumps(domain_window_state_payload_for_prompt, indent=2, ensure_ascii=False)}\n"
@@ -9450,7 +9546,9 @@ class GenerationPipeline:
                 window_id, "No world background available for this window."
             )
             user_basic_profile_str = json.dumps(user_basic_profile, indent=2, ensure_ascii=False)
-            semantic_result = generate_events_chain(
+            import pdb; pdb.set_trace()
+            
+            events_chains_result = generate_events_chain(
                 self.llm_client,
                 EventsChainRequest(
                     domain_name=domain.domain_name,
@@ -9460,20 +9558,20 @@ class GenerationPipeline:
                     user_domain_previous_window_summary=user_domain_previous_window_summary,
                     user_this_window_description=user_this_window_description,
                     world_background=window_world_background,
-                    domain_window_state=domain_window_state,
+                    domain_window_state=domain_window_state_payload_for_prompt,
                 ),
             )
-            events_chain_windows.append(semantic_result.data)
-            usage["events_chain"][window_id] = semantic_result.usage
+            events_chain_windows.append(events_chains_result.data)
+            usage["events_chain"][window_id] = events_chains_result.usage
 
             ## save prompt
             prompt_path = self.output_dir / f"{slug}_events_chain_{window_id}_prompt.txt"
-            _write_text(prompt_path, semantic_result.prompt)
+            _write_text(prompt_path, events_chains_result.prompt)
 
             semantic_path = self.output_dir / f"{slug}_events_chain_{window_id}.json"
-            _write_json(semantic_path, semantic_result.data)
+            _write_json(semantic_path, events_chains_result.data)
             legacy_semantic_path = self.output_dir / f"{slug}_events_chain_{window_id}.json"
-            _write_json(legacy_semantic_path, semantic_result.data)
+            _write_json(legacy_semantic_path, events_chains_result.data)
 
             # Mark converted items so we don't repeatedly force conversion in later windows.
             for state_type, entries in selected_tracker_keys.items():
@@ -9499,14 +9597,14 @@ class GenerationPipeline:
 
         return events_chain_windows, usage
 
-    def generate_atomic_events_for_domain(
-        self,
-        domain: Domain,
-        *,
-        dynamic_profile_data: Dict,
-        events_chain_windows: List[Dict],
-        usage: Dict | None = None,
-    ) -> tuple[List[Dict], Dict]:
+    # def generate_atomic_events_for_domain(
+    #     self,
+    #     domain: Domain,
+    #     *,
+    #     dynamic_profile_data: Dict,
+    #     events_chain_windows: List[Dict],
+    #     usage: Dict | None = None,
+    # ) -> tuple[List[Dict], Dict]:
         """
         Generate atomic events for a domain based on existing latent state and events chain.
         
@@ -9531,7 +9629,7 @@ class GenerationPipeline:
         window_states = {
             w.get("window_id"): w for w in _resolve_window_states(dynamic_profile_data)
         }
-        import pdb; pdb.set_trace()
+        # import pdb; pdb.set_trace()
         for events_chain_data in events_chain_windows:
             window_id = events_chain_data.get("window_id")
             if not window_id:
@@ -9628,7 +9726,7 @@ class GenerationPipeline:
             user_basic_profile, indent=2, ensure_ascii=False
         )
 
-        import pdb; pdb.set_trace() 
+        # import pdb; pdb.set_trace() 
         for events_chain_data in events_chain_windows:
             window_id = events_chain_data.get("window_id")
             if not window_id:
@@ -10088,19 +10186,18 @@ def debug_prepare_context_for_events_chain_generation() -> None:
 def debug_generate_events_chain() -> None:
     base_dir = Path(__file__).resolve().parent
     model_name = "gemini-3-flash-preview"
-    output_dir = base_dir / "generated_outputs_debug_v6" / _slugify(model_name)
+    output_dir = base_dir / "generated_outputs_debug_v14" / _slugify(model_name)
     client = GeminiJSONClient(model_name=model_name)
     pipeline = GenerationPipeline(client, output_dir=output_dir)
     with open(output_dir / "user_basic_profile.json", "r") as f:
         user_basic_profile = json.load(f)
     with open(base_dir / "context_world_background_2024.txt", "r") as f:
         world_background = f.read()
-    with open(output_dir / "dynamic_profiles_conflict_resolved.json", "r") as f:
+    with open(output_dir / "dynamic_profiles_conflict_resolved_initial_iter33.json", "r") as f:
         dynamic_profiles = json.load(f)
     with open(output_dir / "life_context_by_window.json", "r") as f:
         user_life_contexts = json.load(f)
-    with open(output_dir / "user_full_state_summaries.json", "r") as f:
-        user_full_state_summaries = json.load(f)
+    user_full_state_summaries = _build_user_full_state_summaries(dynamic_profiles)
 
     # Build cross-domain initial summary for w1 previous-window context.
     initial_summaries_parts: List[str] = []
@@ -10354,8 +10451,8 @@ if __name__ == "__main__":
 
     # ===== prepare context for semantic events generation =====
     # debug_prepare_context_for_events_chain_generation()
-    # debug_generate_events_chain()
-    debug_generate_real_data()
+    debug_generate_events_chain()
+    # debug_generate_real_data()
     # debug_generate_real_data()
     # ===== prepare context for semantic events generation =====
 
