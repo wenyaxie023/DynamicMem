@@ -68,7 +68,6 @@ APP_API_SCHEMAS: Dict[str, Dict[str, Dict[str, Any]]] = {
                 "session_id": "string"
             },
             "output": {
-                "product_id": "string",
                 "name": "string",
                 "price": "number",
                 "rating": "number",
@@ -94,11 +93,12 @@ APP_API_SCHEMAS: Dict[str, Dict[str, Dict[str, Any]]] = {
                 "session_id": "string"
             },
             "output": {
-                "order_id": "string",
-                "product": "object",
+                "order_number": "string",
+                "product_name": "string",
+                "quantity": "integer",
+                "total_price": "number",
                 "timestamp": "YYYY-MM-DD HH:MM:SS",
-                "status": "string",
-                "delivery_date": "YYYY-MM-DD"
+                "estimated_delivery": "YYYY-MM-DD"
             }
         },
         "ShowOrders": {
@@ -353,12 +353,9 @@ APP_API_SCHEMAS: Dict[str, Dict[str, Dict[str, Any]]] = {
                 "session_id": "string"
             },
             "output": {
-                "event_id": "string",
-                "title": "string",
-                "start_time": "YYYY-MM-DD HH:MM:SS",
-                "duration_minutes": "integer",
+                "song": "object",
                 "status": "string",
-                "created_at": "YYYY-MM-DD HH:MM:SS"
+                "duration_seconds": "integer"
             }
         },
         "UpdateEvent": {
@@ -397,9 +394,7 @@ APP_API_SCHEMAS: Dict[str, Dict[str, Dict[str, Any]]] = {
                 "session_id": "string"
             },
             "output": {
-                "event_id": "string",
-                "title": "string",
-                "start_time": "YYYY-MM-DD HH:MM:SS",
+                "activity_type": "string",
                 "duration_minutes": "integer",
                 "status": "string"
             }
@@ -984,10 +979,8 @@ class AmazonApp(BaseApp):
     def _initialize_state(self) -> None:
         """Initialize Amazon state."""
         self.state = {
-            "session_id": f"amz_session_{uuid.uuid4().hex[:16]}",
             "order_history": [],
             "search_history": [],
-            "cart": [],
             "viewed_products": []
         }
 
@@ -1001,39 +994,20 @@ class AmazonApp(BaseApp):
         """Call Amazon API."""
         self.ensure_initialized()
 
-        if api_name == "Login":
-            return self._login(timestamp, description, context)
-        elif api_name == "SearchProducts":
+        if api_name == "SearchProducts":
             return self._search_products(timestamp, description, context)
-        elif api_name == "ShowProduct":
-            return self._show_product(timestamp, description, context)
-        elif api_name == "Checkout":
-            return self._checkout(timestamp, description, context)
-        elif api_name == "ShowOrders":
-            return self._show_orders(timestamp, description, context)
+        elif api_name == "ViewProduct":
+            return self._view_product(timestamp, description, context)
+        elif api_name == "PurchaseProduct":
+            return self._purchase_product(timestamp, description, context)
+        elif api_name == "ViewOrders":
+            return self._view_orders(timestamp, description, context)
         else:
             raise ValueError(f"Unknown Amazon API: {api_name}")
 
-    def _login(self, timestamp: str, description: str, context: Dict[str, Any]) -> AppLogEntry:
-        """Handle login."""
-        return AppLogEntry(
-            timestamp=timestamp,
-            app_name=self.app_name,
-            api_name="Login",
-            request={"user_id": self.user_id},
-            response={
-                "success": True,
-                "session_id": self.state["session_id"],
-                "user_name": context.get("user_name", f"User_{self.user_id[:8]}")
-            }
-        )
-
     def _search_products(self, timestamp: str, description: str, context: Dict[str, Any]) -> AppLogEntry:
         """Handle product search."""
-        # Extract search query from description
         query = self._extract_search_query(description)
-
-        # Generate realistic search results
         products = self._generate_search_results(query, context)
 
         # Update search history
@@ -1047,46 +1021,47 @@ class AmazonApp(BaseApp):
             timestamp=timestamp,
             app_name=self.app_name,
             api_name="SearchProducts",
-            request={"query": query, "session_id": self.state["session_id"]},
+            request={"query": query},
             response={
                 "products": products,
                 "total_results": len(products)
             }
         )
 
-    def _show_product(self, timestamp: str, description: str, context: Dict[str, Any]) -> AppLogEntry:
-        """Show product details."""
-        product = self._extract_or_generate_product(description, context)
+    def _view_product(self, timestamp: str, description: str, context: Dict[str, Any]) -> AppLogEntry:
+        """View product details."""
+        product_name = self._extract_product_name(description)
+        product = self._get_or_create_product(product_name, context)
 
         # Add to viewed products
         self.state["viewed_products"].append({
             "timestamp": timestamp,
-            "product_id": product["product_id"],
             "product_name": product["name"]
         })
 
         return AppLogEntry(
             timestamp=timestamp,
             app_name=self.app_name,
-            api_name="ShowProduct",
-            request={
-                "product_id": product["product_id"],
-                "session_id": self.state["session_id"]
-            },
+            api_name="ViewProduct",
+            request={"product_name": product_name},
             response=product
         )
 
-    def _checkout(self, timestamp: str, description: str, context: Dict[str, Any]) -> AppLogEntry:
-        """Handle checkout."""
-        product = self._extract_or_generate_product(description, context)
+    def _purchase_product(self, timestamp: str, description: str, context: Dict[str, Any]) -> AppLogEntry:
+        """Handle product purchase."""
+        product_name = self._extract_product_name(description)
+        quantity = self._extract_quantity(description)
+        product = self._get_or_create_product(product_name, context)
 
-        order_id = f"AMZ{random.randint(100000000, 999999999)}"
+        order_number = f"AMZ{random.randint(100000000, 999999999)}"
+        total_price = product["price"] * quantity
         order = {
-            "order_id": order_id,
-            "product": product,
+            "order_number": order_number,
+            "product_name": product["name"],
+            "quantity": quantity,
+            "total_price": round(total_price, 2),
             "timestamp": timestamp,
-            "status": "confirmed",
-            "delivery_date": self._calculate_delivery_date(timestamp)
+            "estimated_delivery": self._calculate_delivery_date(timestamp)
         }
 
         # Add to order history
@@ -1095,82 +1070,86 @@ class AmazonApp(BaseApp):
         return AppLogEntry(
             timestamp=timestamp,
             app_name=self.app_name,
-            api_name="Checkout",
-            request={
-                "product_id": product["product_id"],
-                "quantity": 1,
-                "session_id": self.state["session_id"]
-            },
+            api_name="PurchaseProduct",
+            request={"product_name": product_name, "quantity": quantity},
             response=order
         )
 
-    def _show_orders(self, timestamp: str, description: str, context: Dict[str, Any]) -> AppLogEntry:
-        """Show order history."""
+    def _view_orders(self, timestamp: str, description: str, context: Dict[str, Any]) -> AppLogEntry:
+        """View order history."""
         return AppLogEntry(
             timestamp=timestamp,
             app_name=self.app_name,
-            api_name="ShowOrders",
-            request={"session_id": self.state["session_id"]},
+            api_name="ViewOrders",
+            request={},
             response={
-                "orders": self.state["order_history"][-10:],  # Last 10 orders
+                "orders": self.state["order_history"][-10:],
                 "total_orders": len(self.state["order_history"])
             }
         )
 
     def _extract_search_query(self, description: str) -> str:
         """Extract search query from description."""
-        # Simple extraction - can be improved
-        desc_lower = description.lower()
-        if "search" in desc_lower:
-            # Try to find quoted text
-            import re
-            quoted = re.findall(r"'([^']*)'|\"([^\"]*)\"", description)
-            if quoted:
-                return quoted[0][0] or quoted[0][1]
-
-        # Fallback: use key words from description
+        import re
+        quoted = re.findall(r"'([^']*)'|\"([^\"]*)\"", description)
+        if quoted:
+            return quoted[0][0] or quoted[0][1]
         words = description.split()
         return " ".join(words[:5])
 
+    def _extract_product_name(self, description: str) -> str:
+        """Extract product name from description."""
+        import re
+        quoted = re.findall(r"'([^']*)'|\"([^\"]*)\"", description)
+        if quoted:
+            return quoted[0][0] or quoted[0][1]
+        words = description.split()
+        return " ".join(words[:5])
+
+    def _extract_quantity(self, description: str) -> int:
+        """Extract quantity from description."""
+        import re
+        numbers = re.findall(r'\d+', description)
+        return int(numbers[0]) if numbers else 1
+
     def _generate_search_results(self, query: str, context: Dict[str, Any]) -> List[Dict]:
         """Generate realistic search results."""
-        # Generate 3-8 products
         num_products = random.randint(3, 8)
         products = []
 
         for i in range(num_products):
-            product_id = f"B{random.randint(10000000, 99999999)}"
             products.append({
-                "product_id": product_id,
                 "name": f"{query.title()} - Model {chr(65+i)}",
                 "price": round(random.uniform(19.99, 299.99), 2),
                 "rating": round(random.uniform(3.5, 5.0), 1),
-                "reviews": random.randint(10, 5000)
+                "description": f"High-quality {query} product"
             })
 
         return products
 
-    def _extract_or_generate_product(self, description: str, context: Dict[str, Any]) -> Dict:
-        """Extract product from description or generate one."""
-        # Check if we have recently viewed products
-        if self.state["viewed_products"]:
-            # Reuse a recent product
-            recent = self.state["viewed_products"][-1]
-            product_id = recent["product_id"]
-            product_name = recent["product_name"]
-        else:
-            # Generate new product
-            product_id = f"B{random.randint(10000000, 99999999)}"
-            product_name = description.split()[:5]
-            product_name = " ".join(product_name)
+    def _get_or_create_product(self, product_name: str, context: Dict[str, Any]) -> Dict:
+        """Get or create product by name."""
+        # Check if we have recently viewed this product
+        for viewed in reversed(self.state["viewed_products"]):
+            if viewed["product_name"].lower() == product_name.lower():
+                # Return existing product with same attributes
+                return {
+                    "name": viewed["product_name"],
+                    "price": round(random.uniform(19.99, 299.99), 2),
+                    "rating": round(random.uniform(3.5, 5.0), 1),
+                    "reviews": random.randint(10, 5000),
+                    "description": f"High-quality {viewed['product_name']}",
+                    "in_stock": True
+                }
 
+        # Create new product
         return {
-            "product_id": product_id,
             "name": product_name,
             "price": round(random.uniform(19.99, 299.99), 2),
             "rating": round(random.uniform(3.5, 5.0), 1),
             "reviews": random.randint(10, 5000),
-            "description": f"High-quality {product_name}"
+            "description": f"High-quality {product_name}",
+            "in_stock": True
         }
 
     def _calculate_delivery_date(self, order_timestamp: str) -> str:
@@ -1190,7 +1169,6 @@ class GoogleApp(BaseApp):
     def _initialize_state(self) -> None:
         """Initialize Google state."""
         self.state = {
-            "session_id": f"google_session_{uuid.uuid4().hex[:16]}",
             "search_history": []
         }
 
@@ -1222,32 +1200,29 @@ class GoogleApp(BaseApp):
             timestamp=timestamp,
             app_name=self.app_name,
             api_name="Search",
-            request={"query": query, "session_id": self.state["session_id"]},
+            request={"query": query},
             response={"results": results, "total_results": len(results)}
         )
 
     def _extract_search_query(self, description: str) -> str:
         """Extract search query from description."""
-        desc_lower = description.lower()
-        if "search" in desc_lower or "research" in desc_lower:
-            import re
-            quoted = re.findall(r"'([^']*)'|\"([^\"]*)\"", description)
-            if quoted:
-                return quoted[0][0] or quoted[0][1]
+        import re
+        quoted = re.findall(r"'([^']*)'|\"([^\"]*)\"", description)
+        if quoted:
+            return quoted[0][0] or quoted[0][1]
         words = description.split()
         return " ".join(words[:6])
 
     def _generate_search_results(self, query: str) -> List[Dict[str, Any]]:
-        """Generate basic search results."""
+        """Generate basic search results without URLs to avoid hallucination."""
         results = []
+        sources = ["Wikipedia", "News article", "Academic paper", "Blog post", "Forum discussion", "Official site"]
         for idx in range(random.randint(3, 6)):
-            results.append(
-                {
-                    "title": f"{query} result {idx + 1}",
-                    "url": f"https://example.com/{query.replace(' ', '_').lower()}/{idx + 1}",
-                    "snippet": f"Summary about {query} (result {idx + 1})."
-                }
-            )
+            results.append({
+                "title": f"{query.title()} - Result {idx + 1}",
+                "snippet": f"Relevant information about {query}. This result provides useful context and details.",
+                "source": random.choice(sources)
+            })
         return results
 
 
@@ -1260,7 +1235,6 @@ class SpotifyApp(BaseApp):
     def _initialize_state(self) -> None:
         """Initialize Spotify state."""
         self.state = {
-            "session_id": f"spotify_session_{uuid.uuid4().hex[:16]}",
             "playlists": self._create_initial_playlists(),
             "recently_played": [],
             "favorite_genres": ["Pop", "Rock", "Electronic"]
@@ -1270,12 +1244,10 @@ class SpotifyApp(BaseApp):
         """Create some initial playlists."""
         return [
             {
-                "playlist_id": f"pl_{uuid.uuid4().hex[:16]}",
                 "name": "My Favorites",
                 "song_count": random.randint(20, 100)
             },
             {
-                "playlist_id": f"pl_{uuid.uuid4().hex[:16]}",
                 "name": "Workout Mix",
                 "song_count": random.randint(15, 50)
             }
@@ -1291,32 +1263,16 @@ class SpotifyApp(BaseApp):
         """Call Spotify API."""
         self.ensure_initialized()
 
-        if api_name == "Login":
-            return self._login(timestamp, description, context)
-        elif api_name == "SearchSongs":
+        if api_name == "SearchSongs":
             return self._search_songs(timestamp, description, context)
         elif api_name == "PlaySong":
             return self._play_song(timestamp, description, context)
-        elif api_name == "ShowPlaylists":
-            return self._show_playlists(timestamp, description, context)
-        elif api_name == "ShowRecentlyPlayed":
-            return self._show_recently_played(timestamp, description, context)
+        elif api_name == "ViewPlaylists":
+            return self._view_playlists(timestamp, description, context)
+        elif api_name == "ViewRecentlyPlayed":
+            return self._view_recently_played(timestamp, description, context)
         else:
             raise ValueError(f"Unknown Spotify API: {api_name}")
-
-    def _login(self, timestamp: str, description: str, context: Dict[str, Any]) -> AppLogEntry:
-        """Handle login."""
-        return AppLogEntry(
-            timestamp=timestamp,
-            app_name=self.app_name,
-            api_name="Login",
-            request={"user_id": self.user_id},
-            response={
-                "success": True,
-                "session_id": self.state["session_id"],
-                "premium": True
-            }
-        )
 
     def _search_songs(self, timestamp: str, description: str, context: Dict[str, Any]) -> AppLogEntry:
         """Search for songs."""
@@ -1327,13 +1283,14 @@ class SpotifyApp(BaseApp):
             timestamp=timestamp,
             app_name=self.app_name,
             api_name="SearchSongs",
-            request={"query": query, "session_id": self.state["session_id"]},
+            request={"query": query},
             response={"songs": songs, "total_results": len(songs)}
         )
 
     def _play_song(self, timestamp: str, description: str, context: Dict[str, Any]) -> AppLogEntry:
         """Play a song."""
-        song = self._extract_or_generate_song(description, context)
+        song_title, artist = self._extract_song_info(description)
+        song = self._get_or_create_song(song_title, artist, context)
 
         # Add to recently played
         self.state["recently_played"].insert(0, {
@@ -1348,10 +1305,7 @@ class SpotifyApp(BaseApp):
             timestamp=timestamp,
             app_name=self.app_name,
             api_name="PlaySong",
-            request={
-                "song_id": song["song_id"],
-                "session_id": self.state["session_id"]
-            },
+            request={"song_title": song_title, "artist": artist},
             response={
                 "song": song,
                 "status": "playing",
@@ -1359,23 +1313,23 @@ class SpotifyApp(BaseApp):
             }
         )
 
-    def _show_playlists(self, timestamp: str, description: str, context: Dict[str, Any]) -> AppLogEntry:
-        """Show user playlists."""
+    def _view_playlists(self, timestamp: str, description: str, context: Dict[str, Any]) -> AppLogEntry:
+        """View user playlists."""
         return AppLogEntry(
             timestamp=timestamp,
             app_name=self.app_name,
-            api_name="ShowPlaylists",
-            request={"session_id": self.state["session_id"]},
+            api_name="ViewPlaylists",
+            request={},
             response={"playlists": self.state["playlists"]}
         )
 
-    def _show_recently_played(self, timestamp: str, description: str, context: Dict[str, Any]) -> AppLogEntry:
-        """Show recently played songs."""
+    def _view_recently_played(self, timestamp: str, description: str, context: Dict[str, Any]) -> AppLogEntry:
+        """View recently played songs."""
         return AppLogEntry(
             timestamp=timestamp,
             app_name=self.app_name,
-            api_name="ShowRecentlyPlayed",
-            request={"session_id": self.state["session_id"]},
+            api_name="ViewRecentlyPlayed",
+            request={},
             response={
                 "songs": [item["song"] for item in self.state["recently_played"][:20]]
             }
@@ -1389,20 +1343,42 @@ class SpotifyApp(BaseApp):
             return quoted[0][0] or quoted[0][1]
         return "popular music"
 
+    def _extract_song_info(self, description: str) -> tuple[str, str]:
+        """Extract song title and artist from description."""
+        import re
+        # Try to extract from quotes
+        quoted = re.findall(r"'([^']*)'|\"([^\"]*)\"", description)
+        if quoted:
+            song_info = quoted[0][0] or quoted[0][1]
+            # Try to split by 'by' or '-'
+            if " by " in song_info.lower():
+                parts = song_info.split(" by ", 1)
+                return parts[0].strip(), parts[1].strip() if len(parts) > 1 else "Unknown Artist"
+            elif " - " in song_info:
+                parts = song_info.split(" - ", 1)
+                return parts[0].strip(), parts[1].strip() if len(parts) > 1 else "Unknown Artist"
+            return song_info, "Unknown Artist"
+
+        # Fallback: use description
+        words = description.split()
+        return " ".join(words[:3]), "Unknown Artist"
+
     def _generate_song_results(self, query: str) -> List[Dict]:
         """Generate song search results using static database."""
-        # Use Spotify static database
         songs = SpotifyDatabase.search_songs(query, limit=8)
         return songs
 
-    def _extract_or_generate_song(self, description: str, context: Dict[str, Any]) -> Dict:
-        """Extract or generate a song using static database."""
-        # Check recently played
-        if self.state["recently_played"] and random.random() < 0.3:
-            return self.state["recently_played"][0]["song"]
+    def _get_or_create_song(self, song_title: str, artist: str, context: Dict[str, Any]) -> Dict:
+        """Get or create a song using static database."""
+        # Check recently played for exact match
+        for item in self.state["recently_played"]:
+            song = item["song"]
+            if (song.get("title", "").lower() == song_title.lower() and
+                song.get("artist", "").lower() == artist.lower()):
+                return song
 
-        # Extract genre/mood from description if possible
-        desc_lower = description.lower()
+        # Try to find in database
+        desc_lower = song_title.lower() + " " + artist.lower()
         if "workout" in desc_lower or "energy" in desc_lower:
             songs = SpotifyDatabase.get_songs_by_genre("Hip Hop", limit=1)
             return songs[0] if songs else SpotifyDatabase.get_random_song()
@@ -1413,7 +1389,6 @@ class SpotifyApp(BaseApp):
             songs = SpotifyDatabase.get_songs_by_genre("Indie Rock", limit=1)
             return songs[0] if songs else SpotifyDatabase.get_random_song()
         else:
-            # Return random song from database
             return SpotifyDatabase.get_random_song()
 
 
@@ -1426,7 +1401,6 @@ class SimpleNoteApp(BaseApp):
     def _initialize_state(self) -> None:
         """Initialize note state."""
         self.state = {
-            "session_id": f"note_session_{uuid.uuid4().hex[:16]}",
             "notes": []
         }
 
@@ -1440,43 +1414,27 @@ class SimpleNoteApp(BaseApp):
         """Call SimpleNote API."""
         self.ensure_initialized()
 
-        if api_name == "Login":
-            return self._login(timestamp, description, context)
-        elif api_name == "ShowNotes":
-            return self._show_notes(timestamp, description, context)
-        elif api_name == "ShowNote":
-            return self._show_note(timestamp, description, context)
+        if api_name == "ViewNotes":
+            return self._view_notes(timestamp, description, context)
+        elif api_name == "ReadNote":
+            return self._read_note(timestamp, description, context)
         elif api_name == "CreateNote":
             return self._create_note(timestamp, description, context)
         else:
             raise ValueError(f"Unknown SimpleNote API: {api_name}")
 
-    def _login(self, timestamp: str, description: str, context: Dict[str, Any]) -> AppLogEntry:
-        """Handle login."""
+    def _view_notes(self, timestamp: str, description: str, context: Dict[str, Any]) -> AppLogEntry:
+        """View all notes."""
         return AppLogEntry(
             timestamp=timestamp,
             app_name=self.app_name,
-            api_name="Login",
-            request={"user_id": self.user_id},
-            response={
-                "success": True,
-                "session_id": self.state["session_id"]
-            }
-        )
-
-    def _show_notes(self, timestamp: str, description: str, context: Dict[str, Any]) -> AppLogEntry:
-        """Show all notes."""
-        return AppLogEntry(
-            timestamp=timestamp,
-            app_name=self.app_name,
-            api_name="ShowNotes",
-            request={"session_id": self.state["session_id"]},
+            api_name="ViewNotes",
+            request={},
             response={
                 "notes": [
                     {
-                        "note_id": note["note_id"],
                         "title": note["title"],
-                        "preview": note["content"][:50] + "...",
+                        "preview": note["content"][:50] + ("..." if len(note["content"]) > 50 else ""),
                         "created_at": note["created_at"]
                     }
                     for note in self.state["notes"]
@@ -1485,37 +1443,41 @@ class SimpleNoteApp(BaseApp):
             }
         )
 
-    def _show_note(self, timestamp: str, description: str, context: Dict[str, Any]) -> AppLogEntry:
-        """Show a specific note."""
-        # Get the most recent note or generate placeholder
-        if self.state["notes"]:
-            note = self.state["notes"][-1]
-        else:
-            note = {
-                "note_id": f"note_{uuid.uuid4().hex[:16]}",
-                "title": "Placeholder Note",
-                "content": "This is a placeholder note.",
-                "created_at": timestamp
-            }
+    def _read_note(self, timestamp: str, description: str, context: Dict[str, Any]) -> AppLogEntry:
+        """Read a specific note by title."""
+        note_title = self._extract_note_title(description)
+
+        # Find note by title
+        note = None
+        for n in self.state["notes"]:
+            if n["title"].lower() == note_title.lower():
+                note = n
+                break
+
+        # If not found, use most recent or create placeholder
+        if not note:
+            if self.state["notes"]:
+                note = self.state["notes"][-1]
+            else:
+                note = {
+                    "title": note_title,
+                    "content": "This is a placeholder note.",
+                    "created_at": timestamp
+                }
 
         return AppLogEntry(
             timestamp=timestamp,
             app_name=self.app_name,
-            api_name="ShowNote",
-            request={
-                "note_id": note["note_id"],
-                "session_id": self.state["session_id"]
-            },
+            api_name="ReadNote",
+            request={"note_title": note_title},
             response=note
         )
 
     def _create_note(self, timestamp: str, description: str, context: Dict[str, Any]) -> AppLogEntry:
         """Create a new note."""
-        # Extract title and content from description
         title, content = self._extract_note_content(description)
 
         note = {
-            "note_id": f"note_{uuid.uuid4().hex[:16]}",
             "title": title,
             "content": content,
             "created_at": timestamp
@@ -1527,184 +1489,25 @@ class SimpleNoteApp(BaseApp):
             timestamp=timestamp,
             app_name=self.app_name,
             api_name="CreateNote",
-            request={
-                "title": title,
-                "content": content,
-                "session_id": self.state["session_id"]
-            },
+            request={"title": title, "content": content},
             response=note
         )
 
+    def _extract_note_title(self, description: str) -> str:
+        """Extract note title from description."""
+        import re
+        quoted = re.findall(r"'([^']*)'|\"([^\"]*)\"", description)
+        if quoted:
+            return quoted[0][0] or quoted[0][1]
+        words = description.split()
+        return " ".join(words[:5])
+
     def _extract_note_content(self, description: str) -> tuple[str, str]:
         """Extract note title and content from description."""
-        # Simple extraction
         words = description.split()
         title = " ".join(words[:5])
         content = description
         return title, content
-
-
-class CalendarApp(BaseApp):
-    """Calendar app for event management."""
-
-    def __init__(self, user_id: str):
-        super().__init__("Calendar", user_id)
-
-    def _initialize_state(self) -> None:
-        """Initialize calendar state."""
-        self.state = {
-            "session_id": f"cal_session_{uuid.uuid4().hex[:16]}",
-            "events": [],
-            "next_event_id": 1
-        }
-
-    def call_api(
-        self,
-        api_name: str,
-        timestamp: str,
-        description: str,
-        context: Dict[str, Any]
-    ) -> AppLogEntry:
-        """Call Calendar API."""
-        self.ensure_initialized()
-
-        if api_name == "CreateEvent":
-            return self._create_event(timestamp, description, context)
-        elif api_name == "UpdateEvent":
-            return self._update_event(timestamp, description, context)
-        elif api_name == "DeleteEvent":
-            return self._delete_event(timestamp, description, context)
-        elif api_name == "ShowEvents":
-            return self._show_events(timestamp, description, context)
-        elif api_name == "ShowEvent":
-            return self._show_event(timestamp, description, context)
-        elif api_name == "RespondToInvite":
-            return self._respond_to_invite(timestamp, description, context)
-        else:
-            raise ValueError(f"Unknown Calendar API: {api_name}")
-
-    def _create_event(self, timestamp: str, description: str, context: Dict[str, Any]) -> AppLogEntry:
-        """Create a new calendar event."""
-        event_id = f"evt_{self.state['next_event_id']}"
-        self.state['next_event_id'] += 1
-
-        # Extract event details from description
-        event_title, event_time, event_duration = self._extract_event_details(description, timestamp)
-
-        new_event = {
-            "event_id": event_id,
-            "title": event_title,
-            "start_time": event_time,
-            "duration_minutes": event_duration,
-            "status": "confirmed",
-            "created_at": timestamp
-        }
-
-        self.state["events"].append(new_event)
-
-        return AppLogEntry(
-            timestamp=timestamp,
-            app_name=self.app_name,
-            api_name="CreateEvent",
-            request={
-                "title": event_title,
-                "start_time": event_time,
-                "duration_minutes": event_duration,
-                "session_id": self.state["session_id"]
-            },
-            response=new_event
-        )
-
-    def _update_event(self, timestamp: str, description: str, context: Dict[str, Any]) -> AppLogEntry:
-        """Update an existing event."""
-        if self.state["events"]:
-            event = self.state["events"][-1]  # Update most recent event
-            event["updated_at"] = timestamp
-        else:
-            event = {"event_id": "evt_0", "title": "Placeholder", "updated_at": timestamp}
-
-        return AppLogEntry(
-            timestamp=timestamp,
-            app_name=self.app_name,
-            api_name="UpdateEvent",
-            request={"event_id": event["event_id"], "session_id": self.state["session_id"]},
-            response=event
-        )
-
-    def _delete_event(self, timestamp: str, description: str, context: Dict[str, Any]) -> AppLogEntry:
-        """Delete an event."""
-        deleted_id = None
-        if self.state["events"]:
-            event = self.state["events"].pop()
-            deleted_id = event["event_id"]
-
-        return AppLogEntry(
-            timestamp=timestamp,
-            app_name=self.app_name,
-            api_name="DeleteEvent",
-            request={"event_id": deleted_id or "evt_0", "session_id": self.state["session_id"]},
-            response={"success": True, "deleted_event_id": deleted_id}
-        )
-
-    def _show_events(self, timestamp: str, description: str, context: Dict[str, Any]) -> AppLogEntry:
-        """Show all events."""
-        return AppLogEntry(
-            timestamp=timestamp,
-            app_name=self.app_name,
-            api_name="ShowEvents",
-            request={"session_id": self.state["session_id"]},
-            response={
-                "events": self.state["events"],
-                "total_count": len(self.state["events"])
-            }
-        )
-
-    def _show_event(self, timestamp: str, description: str, context: Dict[str, Any]) -> AppLogEntry:
-        """Show a specific event."""
-        event = self.state["events"][-1] if self.state["events"] else {
-            "event_id": "evt_0",
-            "title": "Placeholder Event"
-        }
-
-        return AppLogEntry(
-            timestamp=timestamp,
-            app_name=self.app_name,
-            api_name="ShowEvent",
-            request={"event_id": event["event_id"], "session_id": self.state["session_id"]},
-            response=event
-        )
-
-    def _respond_to_invite(self, timestamp: str, description: str, context: Dict[str, Any]) -> AppLogEntry:
-        """Respond to an event invite."""
-        response_status = "accepted" if "accept" in description.lower() else "declined"
-
-        return AppLogEntry(
-            timestamp=timestamp,
-            app_name=self.app_name,
-            api_name="RespondToInvite",
-            request={
-                "invite_id": f"inv_{random.randint(1000, 9999)}",
-                "response": response_status,
-                "session_id": self.state["session_id"]
-            },
-            response={"success": True, "status": response_status}
-        )
-
-    def _extract_event_details(self, description: str, default_time: str) -> tuple[str, str, int]:
-        """Extract event title, time, and duration from description."""
-        # Simple extraction
-        words = description.split()
-        title = " ".join(words[:5]) if len(words) >= 5 else description
-
-        # Use default time, add 1 day for future event
-        from datetime import datetime, timedelta
-        dt = datetime.strptime(default_time, "%Y-%m-%d %H:%M:%S")
-        event_dt = dt + timedelta(days=1)
-        event_time = event_dt.strftime("%Y-%m-%d %H:%M:%S")
-
-        duration = random.choice([30, 60, 90, 120])  # minutes
-
-        return title, event_time, duration
 
 
 class MessageApp(BaseApp):
@@ -1716,10 +1519,8 @@ class MessageApp(BaseApp):
     def _initialize_state(self) -> None:
         """Initialize messaging state."""
         self.state = {
-            "session_id": f"msg_session_{uuid.uuid4().hex[:16]}",
-            "conversations": {},  # contact_id -> list of messages
-            "groups": {},
-            "contacts": ["friend_1", "friend_2", "family_1", "colleague_1"]
+            "conversations": {},  # contact_name -> list of messages
+            "contacts": ["Alice", "Bob", "Carol", "Dave", "Emma"]
         }
 
     def call_api(
@@ -1734,22 +1535,18 @@ class MessageApp(BaseApp):
 
         if api_name == "SendMessage":
             return self._send_message(timestamp, description, context)
+        elif api_name == "ViewConversation":
+            return self._view_conversation(timestamp, description, context)
         elif api_name == "SearchMessages":
             return self._search_messages(timestamp, description, context)
-        elif api_name == "GetMessages":
-            return self._get_messages(timestamp, description, context)
-        elif api_name == "CreateGroup":
-            return self._create_group(timestamp, description, context)
         else:
             raise ValueError(f"Unknown Message API: {api_name}")
 
     def _send_message(self, timestamp: str, description: str, context: Dict[str, Any]) -> AppLogEntry:
         """Send a message."""
-        # Extract recipient and message from description
         recipient, message_text = self._extract_message_details(description)
 
         message = {
-            "message_id": f"msg_{uuid.uuid4().hex[:12]}",
             "from": self.user_id,
             "to": recipient,
             "text": message_text,
@@ -1766,12 +1563,25 @@ class MessageApp(BaseApp):
             timestamp=timestamp,
             app_name=self.app_name,
             api_name="SendMessage",
-            request={
-                "to": recipient,
-                "text": message_text,
-                "session_id": self.state["session_id"]
-            },
+            request={"to": recipient, "text": message_text},
             response=message
+        )
+
+    def _view_conversation(self, timestamp: str, description: str, context: Dict[str, Any]) -> AppLogEntry:
+        """View conversation with a contact."""
+        contact_name = self._extract_contact_name(description)
+        messages = self.state["conversations"].get(contact_name, [])
+
+        return AppLogEntry(
+            timestamp=timestamp,
+            app_name=self.app_name,
+            api_name="ViewConversation",
+            request={"contact_name": contact_name},
+            response={
+                "contact_name": contact_name,
+                "messages": messages[-20:],  # Last 20 messages
+                "total_count": len(messages)
+            }
         )
 
     def _search_messages(self, timestamp: str, description: str, context: Dict[str, Any]) -> AppLogEntry:
@@ -1789,66 +1599,36 @@ class MessageApp(BaseApp):
             timestamp=timestamp,
             app_name=self.app_name,
             api_name="SearchMessages",
-            request={"query": query, "session_id": self.state["session_id"]},
+            request={"query": query},
             response={
                 "messages": results[:10],  # Return up to 10 results
                 "total_count": len(results)
             }
         )
 
-    def _get_messages(self, timestamp: str, description: str, context: Dict[str, Any]) -> AppLogEntry:
-        """Get messages from a conversation."""
-        # Get random contact or use first contact
-        contact = random.choice(self.state["contacts"]) if self.state["contacts"] else "friend_1"
-        messages = self.state["conversations"].get(contact, [])
-
-        return AppLogEntry(
-            timestamp=timestamp,
-            app_name=self.app_name,
-            api_name="GetMessages",
-            request={"contact_id": contact, "session_id": self.state["session_id"]},
-            response={
-                "contact_id": contact,
-                "messages": messages[-20:],  # Last 20 messages
-                "total_count": len(messages)
-            }
-        )
-
-    def _create_group(self, timestamp: str, description: str, context: Dict[str, Any]) -> AppLogEntry:
-        """Create a group chat."""
-        group_id = f"grp_{uuid.uuid4().hex[:12]}"
-        group_name = self._extract_group_name(description)
-
-        members = random.sample(self.state["contacts"], min(3, len(self.state["contacts"])))
-        members.append(self.user_id)
-
-        group = {
-            "group_id": group_id,
-            "name": group_name,
-            "members": members,
-            "created_at": timestamp,
-            "created_by": self.user_id
-        }
-
-        self.state["groups"][group_id] = group
-
-        return AppLogEntry(
-            timestamp=timestamp,
-            app_name=self.app_name,
-            api_name="CreateGroup",
-            request={
-                "name": group_name,
-                "members": members,
-                "session_id": self.state["session_id"]
-            },
-            response=group
-        )
+    def _extract_contact_name(self, description: str) -> str:
+        """Extract contact name from description."""
+        import re
+        quoted = re.findall(r"'([^']*)'|\"([^\"]*)\"", description)
+        if quoted:
+            return quoted[0][0] or quoted[0][1]
+        # Fallback to random contact
+        return random.choice(self.state["contacts"]) if self.state["contacts"] else "Friend"
 
     def _extract_message_details(self, description: str) -> tuple[str, str]:
         """Extract recipient and message from description."""
-        # Simple extraction
-        recipient = random.choice(self.state["contacts"]) if self.state["contacts"] else "friend_1"
-        message_text = description[:100]  # Use description as message
+        import re
+        # Try to find quoted message
+        quoted = re.findall(r"'([^']*)'|\"([^\"]*)\"", description)
+        message_text = quoted[0][0] or quoted[0][1] if quoted else description[:100]
+
+        # Extract recipient - look for "to X" pattern
+        recipient_match = re.search(r'\bto\s+([A-Z][a-z]+)', description)
+        if recipient_match:
+            recipient = recipient_match.group(1)
+        else:
+            recipient = random.choice(self.state["contacts"]) if self.state["contacts"] else "Friend"
+
         return recipient, message_text
 
     def _extract_search_query(self, description: str) -> str:
@@ -1858,11 +1638,6 @@ class MessageApp(BaseApp):
         if quoted:
             return quoted[0][0] or quoted[0][1]
         return "search query"
-
-    def _extract_group_name(self, description: str) -> str:
-        """Extract group name from description."""
-        words = description.split()
-        return " ".join(words[:3]) if len(words) >= 3 else "New Group"
 
 
 class FitnessApp(BaseApp):
@@ -1874,7 +1649,6 @@ class FitnessApp(BaseApp):
     def _initialize_state(self) -> None:
         """Initialize fitness state."""
         self.state = {
-            "session_id": f"fit_session_{uuid.uuid4().hex[:16]}",
             "workouts": [],
             "daily_stats": {},  # date -> stats
             "goals": {
@@ -1897,14 +1671,10 @@ class FitnessApp(BaseApp):
 
         if api_name == "LogWorkout":
             return self._log_workout(timestamp, description, context)
-        elif api_name == "GetDailyStats":
-            return self._get_daily_stats(timestamp, description, context)
-        elif api_name == "GetWeeklyStats":
-            return self._get_weekly_stats(timestamp, description, context)
-        elif api_name == "GetWorkoutHistory":
-            return self._get_workout_history(timestamp, description, context)
-        elif api_name == "UpdateGoals":
-            return self._update_goals(timestamp, description, context)
+        elif api_name == "ViewTodayStats":
+            return self._view_today_stats(timestamp, description, context)
+        elif api_name == "ViewWeeklyStats":
+            return self._view_weekly_stats(timestamp, description, context)
         elif api_name == "SyncDevice":
             return self._sync_device(timestamp, description, context)
         else:
@@ -1916,23 +1686,21 @@ class FitnessApp(BaseApp):
         if self.state["user_baseline"] is None:
             self._initialize_user_baseline(context)
 
-        workout_type, duration, intensity = self._extract_workout_details(description)
+        activity_type, duration, intensity = self._extract_workout_details(description)
 
         workout = {
-            "workout_id": f"wkt_{uuid.uuid4().hex[:12]}",
-            "type": workout_type,
+            "activity_type": activity_type,
             "duration_minutes": duration,
             "intensity": intensity,
-            "calories_burned": self._calculate_calories(workout_type, duration, intensity),
+            "calories_burned": self._calculate_calories(activity_type, duration, intensity),
             "heart_rate_avg": self._generate_heart_rate(intensity),
-            "timestamp": timestamp,
-            "date": timestamp.split()[0]
+            "timestamp": timestamp
         }
 
         self.state["workouts"].append(workout)
 
         # Update daily stats
-        date = workout["date"]
+        date = timestamp.split()[0]
         if date not in self.state["daily_stats"]:
             self.state["daily_stats"][date] = {
                 "date": date,
@@ -1944,23 +1712,22 @@ class FitnessApp(BaseApp):
 
         self.state["daily_stats"][date]["active_minutes"] += duration
         self.state["daily_stats"][date]["calories"] += workout["calories_burned"]
-        self.state["daily_stats"][date]["workouts"].append(workout["workout_id"])
+        self.state["daily_stats"][date]["workouts"].append(workout)
 
         return AppLogEntry(
             timestamp=timestamp,
             app_name=self.app_name,
             api_name="LogWorkout",
             request={
-                "type": workout_type,
+                "activity_type": activity_type,
                 "duration_minutes": duration,
-                "intensity": intensity,
-                "session_id": self.state["session_id"]
+                "intensity": intensity
             },
             response=workout
         )
 
-    def _get_daily_stats(self, timestamp: str, description: str, context: Dict[str, Any]) -> AppLogEntry:
-        """Get daily fitness stats."""
+    def _view_today_stats(self, timestamp: str, description: str, context: Dict[str, Any]) -> AppLogEntry:
+        """View today's fitness stats."""
         date = timestamp.split()[0]
 
         if date not in self.state["daily_stats"]:
@@ -1978,13 +1745,13 @@ class FitnessApp(BaseApp):
         return AppLogEntry(
             timestamp=timestamp,
             app_name=self.app_name,
-            api_name="GetDailyStats",
-            request={"date": date, "session_id": self.state["session_id"]},
+            api_name="ViewTodayStats",
+            request={},
             response=stats
         )
 
-    def _get_weekly_stats(self, timestamp: str, description: str, context: Dict[str, Any]) -> AppLogEntry:
-        """Get weekly fitness stats."""
+    def _view_weekly_stats(self, timestamp: str, description: str, context: Dict[str, Any]) -> AppLogEntry:
+        """View weekly fitness stats."""
         # Aggregate last 7 days
         total_workouts = len(self.state["workouts"][-7:])
         total_active_minutes = sum(w["duration_minutes"] for w in self.state["workouts"][-7:])
@@ -1993,45 +1760,15 @@ class FitnessApp(BaseApp):
             "period": "last_7_days",
             "total_workouts": total_workouts,
             "total_active_minutes": total_active_minutes,
-            "avg_daily_steps": random.randint(6000, 10000),
-            "goal_completion": {
-                "workouts": f"{total_workouts}/{self.state['goals']['weekly_workouts']}",
-                "active_minutes": f"{total_active_minutes}/{self.state['goals']['weekly_active_minutes']}"
-            }
+            "avg_daily_steps": random.randint(6000, 10000)
         }
 
         return AppLogEntry(
             timestamp=timestamp,
             app_name=self.app_name,
-            api_name="GetWeeklyStats",
-            request={"session_id": self.state["session_id"]},
+            api_name="ViewWeeklyStats",
+            request={},
             response=weekly_stats
-        )
-
-    def _get_workout_history(self, timestamp: str, description: str, context: Dict[str, Any]) -> AppLogEntry:
-        """Get workout history."""
-        return AppLogEntry(
-            timestamp=timestamp,
-            app_name=self.app_name,
-            api_name="GetWorkoutHistory",
-            request={"session_id": self.state["session_id"]},
-            response={
-                "workouts": self.state["workouts"][-20:],  # Last 20 workouts
-                "total_count": len(self.state["workouts"])
-            }
-        )
-
-    def _update_goals(self, timestamp: str, description: str, context: Dict[str, Any]) -> AppLogEntry:
-        """Update fitness goals."""
-        # Extract new goals from description
-        new_goals = self.state["goals"].copy()
-
-        return AppLogEntry(
-            timestamp=timestamp,
-            app_name=self.app_name,
-            api_name="UpdateGoals",
-            request={"goals": new_goals, "session_id": self.state["session_id"]},
-            response={"success": True, "goals": new_goals}
         )
 
     def _sync_device(self, timestamp: str, description: str, context: Dict[str, Any]) -> AppLogEntry:
@@ -2048,7 +1785,7 @@ class FitnessApp(BaseApp):
             timestamp=timestamp,
             app_name=self.app_name,
             api_name="SyncDevice",
-            request={"device_id": "device_001", "session_id": self.state["session_id"]},
+            request={},
             response=synced_data
         )
 
@@ -2138,7 +1875,6 @@ class LLMApp(BaseApp):
     def _initialize_state(self) -> None:
         """Initialize LLM state."""
         self.state = {
-            "session_id": f"llm_session_{uuid.uuid4().hex[:16]}",
             "conversation_history": []
         }
 
@@ -2158,12 +1894,18 @@ class LLMApp(BaseApp):
             raise ValueError(f"Unknown LLM API: {api_name}")
 
     def _chat(self, timestamp: str, description: str, context: Dict[str, Any]) -> AppLogEntry:
-        """Handle chat."""
+        """Handle chat - returns full conversation turn."""
         # Extract user message from description
         user_message = self._extract_user_message(description)
 
-        # Generate a plausible AI response based on description
+        # Generate AI response based on description
         ai_response = self._generate_ai_response(user_message, description, context)
+
+        # Create conversation turn
+        conversation_turn = [
+            {"role": "user", "content": user_message},
+            {"role": "assistant", "content": ai_response}
+        ]
 
         # Add to conversation history
         self.state["conversation_history"].append({
@@ -2172,26 +1914,28 @@ class LLMApp(BaseApp):
             "ai_response": ai_response
         })
 
+        # Generate description of the conversation
+        conv_description = self._generate_conversation_description(user_message, ai_response)
+
         return AppLogEntry(
             timestamp=timestamp,
             app_name=self.app_name,
             api_name="Chat",
-            request={
-                "message": user_message,
-                "session_id": self.state["session_id"]
-            },
+            request={"message": user_message},
             response={
-                "reply": ai_response,
-                "conversation_id": self.state["session_id"]
+                "conversation": conversation_turn,
+                "description": conv_description
             }
         )
 
     def _extract_user_message(self, description: str) -> str:
         """Extract user message from description."""
-        # The description typically describes what the user asks
-        if "asks" in description.lower() or "discusses" in description.lower():
-            # Try to extract the question/topic
-            return description
+        import re
+        # Try to extract from quotes
+        quoted = re.findall(r"'([^']*)'|\"([^\"]*)\"", description)
+        if quoted:
+            return quoted[0][0] or quoted[0][1]
+        # Use description as is
         return description
 
     def _generate_ai_response(self, user_message: str, description: str, context: Dict[str, Any]) -> str:
@@ -2207,6 +1951,14 @@ class LLMApp(BaseApp):
         )
 
         return response
+
+    def _generate_conversation_description(self, user_message: str, ai_response: str) -> str:
+        """Generate a brief description of the conversation."""
+        # Extract key topic from user message
+        user_msg_short = user_message[:50] + "..." if len(user_message) > 50 else user_message
+        ai_resp_short = ai_response[:50] + "..." if len(ai_response) > 50 else ai_response
+
+        return f"User asked about: {user_msg_short}. Assistant provided: {ai_resp_short}"
 
 
 class AppRegistry:
@@ -2236,8 +1988,6 @@ class AppRegistry:
                 self.apps[key] = SimpleNoteApp(user_id)
             elif app_name == "LLM":
                 self.apps[key] = LLMApp(user_id)
-            elif app_name == "Calendar":
-                self.apps[key] = CalendarApp(user_id)
             elif app_name == "Message":
                 self.apps[key] = MessageApp(user_id)
             elif app_name == "Fitness":
