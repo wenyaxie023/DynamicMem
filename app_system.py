@@ -35,31 +35,64 @@ class AppLogEntry:
 APP_API_SCHEMAS: Dict[str, Dict[str, Dict[str, Any]]] = {
     "Amazon": {
         "Login": {
-            "input": {"user_id": "string"},
-            "output": {"success": "boolean", "session_id": "string", "user_name": "string"}
+            "input": {
+                "username": "string",
+                "password": "string"
+            },
+            "output": {
+                "success": "boolean",
+                "session_id": "string",
+                "membership": "string"
+            }
         },
         "SearchProducts": {
-            "input": {"query": "string", "session_id": "string"},
+            "input": {
+                "query": "string",
+                "session_id": "string"
+            },
             "output": {
                 "products": [
-                    {"product_id": "string", "name": "string", "price": "number", "rating": "number"}
+                    {
+                        "product_id": "string",
+                        "name": "string",
+                        "price": "number",
+                        "rating": "number",
+                    }
                 ],
-                "total_results": "integer"
+                "results_count": "integer"
             }
         },
         "ShowProduct": {
-            "input": {"product_id": "string", "session_id": "string"},
+            "input": {
+                "product_id": "string",
+                "session_id": "string"
+            },
             "output": {
                 "product_id": "string",
                 "name": "string",
                 "price": "number",
                 "rating": "number",
-                "reviews": "integer",
+                "reviews_count": "integer",
                 "description": "string"
             }
         },
+        "AddToCart": {
+            "input": {
+                "product_id": "string",
+                "quantity": "integer",
+                "session_id": "string"
+            },
+            "output": {
+                "success": "boolean",
+                "cart": "object"
+            }
+        },
         "Checkout": {
-            "input": {"product_id": "string", "quantity": "integer", "session_id": "string"},
+            "input": {
+                "product_id": "string",
+                "quantity": "integer",
+                "session_id": "string"
+            },
             "output": {
                 "order_id": "string",
                 "product": "object",
@@ -69,41 +102,249 @@ APP_API_SCHEMAS: Dict[str, Dict[str, Dict[str, Any]]] = {
             }
         },
         "ShowOrders": {
-            "input": {"session_id": "string"},
-            "output": {"orders": ["object"], "total_orders": "integer"}
+            "input": {
+                "session_id": "string"
+            },
+            "output": {
+                "orders": ["object"],
+                "orders_count": "integer",
+                "total_orders": "integer"
+            }
+        }
+    },
+    "Walmart": {
+        "Login": {
+            "input": {
+                "username": "string",
+                "password": "string"
+            },
+            "output": {
+                "success": "boolean",
+                "session_id": "string",
+                "membership": "string"
+            }
+        },
+        "SearchProducts": {
+            "input": {
+                "query": "string",
+                "session_id": "string"
+            },
+            "output": {
+                "products": [
+                    {
+                        "product_id": "string",
+                        "name": "string",
+                        "price": "number",
+                        "rating": "number",
+                    }
+                ],
+                "results_count": "integer"
+            }
+        },
+        "ShowProduct": {
+            "input": {
+                "product_id": "string",
+                "session_id": "string"
+            },
+            "output": {
+                "product_id": "string",
+                "name": "string",
+                "price": "number",
+                "rating": "number",
+                "reviews_count": "integer",
+                "description": "string"
+            }
+        },
+        "AddToCart": {
+            "input": {
+                "product_id": "string",
+                "quantity": "integer",
+                "session_id": "string"
+            },
+            "output": {
+                "success": "boolean",
+                "cart": "object"
+            }
+        },
+        "Checkout": {
+            "input": {
+                "product_id": "string",
+                "quantity": "integer",
+                "session_id": "string"
+            },
+            "output": {
+                "order_id": "string",
+                "product": "object",
+                "timestamp": "YYYY-MM-DD HH:MM:SS",
+                "status": "string",
+                "delivery_date": "YYYY-MM-DD"
+            }
+        },
+        "ShowOrders": {
+            "input": {
+                "session_id": "string"
+            },
+            "output": {
+                "orders": ["object"],
+                "orders_count": "integer",
+                "total_orders": "integer"
+            }
         }
     },
     "Google": {
         "Search": {
-            "input": {"query": "string", "session_id": "string"},
+            "input": {
+                "query": "string"
+            },
             "output": {
-                "results": [{"title": "string", "url": "string", "snippet": "string"}],
-                "total_results": "integer"
+                "results": [
+                    {
+                        "title": "string",
+                        "url": "string",
+                        "snippet": "string"
+                    }
+                ],
+                "results_count": "integer"
+            }
+        }
+    },
+    "Gmail": {
+        "Login": {
+            "input": {
+                "username": "string",
+                "password": "string"
+            },
+            "output": {
+                "success": "boolean",
+                "session_id": "string"
+            }
+        },
+        "GetNewMails": {
+            "input": {
+                "session_id": "string"
+            },
+            "output": {
+                "emails": [
+                    {
+                        "email_id": "string",
+                        "sender": "string",
+                        "subject": "string",
+                        "snippet": "string",
+                        "timestamp": "YYYY-MM-DD HH:MM:SS"
+                    }
+                ],
+                "emails_count": "integer"
+            }
+        },
+        "FetchEmails": {
+            "input": {
+                "query": "string",
+                "limit": "integer",
+                "session_id": "string"
+            },
+            "output": {
+                "emails": [
+                    {
+                        "email_id": "string",
+                        "sender": "string",
+                        "subject": "string",
+                        "snippet": "string",
+                        "timestamp": "YYYY-MM-DD HH:MM:SS"
+                    }
+                ]
+            }
+        },
+        "SendEmail": {
+            "input": {
+                "to": "string",
+                "subject": "string",
+                "body": "string",
+                "session_id": "string"
+            },
+            "output": {
+                "success": "boolean",
+                "message_id": "string"
             }
         }
     },
     "SimpleNote": {
         "Login": {
-            "input": {"user_id": "string"},
-            "output": {"success": "boolean", "session_id": "string"}
-        },
-        "ShowNotes": {
-            "input": {"session_id": "string"},
+            "input": {
+                "username": "string",
+                "password": "string"
+            },
             "output": {
-                "notes": [{"note_id": "string", "title": "string", "preview": "string", "created_at": "string"}],
-                "total_notes": "integer"
+                "success": "boolean",
+                "session_id": "string"
+            }
+        },
+        "ShowAllNotes": {
+            "input": {
+                "session_id": "string"
+            },
+            "output": {
+                "notes": [
+                    {
+                        "note_id": "string",
+                        "title": "string",
+                        "preview": "string",
+                        "created_at": "YYYY-MM-DD HH:MM:SS"
+                    }
+                ],
+                "notes_count": "integer"
             }
         },
         "ShowNote": {
-            "input": {"note_id": "string", "session_id": "string"},
-            "output": {"note_id": "string", "title": "string", "content": "string", "created_at": "string"}
+            "input": {
+                "note_id": "string",
+                "session_id": "string"
+            },
+            "output": {
+                "note_id": "string",
+                "title": "string",
+                "content": "string",
+                "created_at": "YYYY-MM-DD HH:MM:SS"
+            }
         },
         "CreateNote": {
-            "input": {"title": "string", "content": "string", "session_id": "string"},
-            "output": {"note_id": "string", "title": "string", "content": "string", "created_at": "string"}
+            "input": {
+                "title": "string",
+                "content": "string",
+                "session_id": "string"
+            },
+            "output": {
+                "note_id": "string",
+                "title": "string",
+                "content": "string",
+                "created_at": "YYYY-MM-DD HH:MM:SS"
+            }
+        },
+        "UpdateNote": {
+            "input": {
+                "note_id": "string",
+                "title": "string",
+                "content": "string",
+                "session_id": "string"
+            },
+            "output": {
+                "note_id": "string",
+                "title": "string",
+                "content": "string",
+                "updated_at": "YYYY-MM-DD HH:MM:SS"
+            }
+        },
+        "DeleteNote": {
+            "input": {
+                "note_id": "string",
+                "session_id": "string"
+            },
+            "output": {
+                "success": "boolean",
+                "deleted_note_id": "string"
+            }
         }
     },
-    "Calendar": {
+    "Google Calendar": {
         "CreateEvent": {
             "input": {
                 "title": "string",
@@ -121,19 +362,40 @@ APP_API_SCHEMAS: Dict[str, Dict[str, Dict[str, Any]]] = {
             }
         },
         "UpdateEvent": {
-            "input": {"event_id": "string", "session_id": "string"},
-            "output": {"event_id": "string", "title": "string", "updated_at": "YYYY-MM-DD HH:MM:SS"}
+            "input": {
+                "event_id": "string",
+                "session_id": "string"
+            },
+            "output": {
+                "event_id": "string",
+                "title": "string",
+                "updated_at": "YYYY-MM-DD HH:MM:SS"
+            }
         },
         "DeleteEvent": {
-            "input": {"event_id": "string", "session_id": "string"},
-            "output": {"success": "boolean", "deleted_event_id": "string"}
+            "input": {
+                "event_id": "string",
+                "session_id": "string"
+            },
+            "output": {
+                "success": "boolean",
+                "deleted_event_id": "string"
+            }
         },
-        "ShowEvents": {
-            "input": {"session_id": "string"},
-            "output": {"events": ["object"], "total_count": "integer"}
+        "ShowAllEvents": {
+            "input": {
+                "session_id": "string"
+            },
+            "output": {
+                "events": ["object"],
+                "total_count": "integer"
+            }
         },
         "ShowEvent": {
-            "input": {"event_id": "string", "session_id": "string"},
+            "input": {
+                "event_id": "string",
+                "session_id": "string"
+            },
             "output": {
                 "event_id": "string",
                 "title": "string",
@@ -143,13 +405,33 @@ APP_API_SCHEMAS: Dict[str, Dict[str, Dict[str, Any]]] = {
             }
         },
         "RespondToInvite": {
-            "input": {"invite_id": "string", "response": "accepted|declined", "session_id": "string"},
-            "output": {"success": "boolean", "status": "string"}
+            "input": {
+                "invite_id": "string",
+                "response": "accepted|declined",
+                "session_id": "string"
+            },
+            "output": {
+                "success": "boolean",
+                "status": "string"
+            }
         }
     },
-    "Message": {
+    "WhatsApp": {
+        "ReadNewMessages": {
+            "input": {
+                "session_id": "string"
+            },
+            "output": {
+                "messages": ["object"],
+                "messages_count": "integer"
+            }
+        },
         "SendMessage": {
-            "input": {"to": "string", "text": "string", "session_id": "string"},
+            "input": {
+                "to": "string",
+                "text": "string",
+                "session_id": "string"
+            },
             "output": {
                 "message_id": "string",
                 "from": "string",
@@ -160,17 +442,34 @@ APP_API_SCHEMAS: Dict[str, Dict[str, Dict[str, Any]]] = {
             }
         },
         "SearchMessages": {
-            "input": {"query": "string", "session_id": "string"},
-            "output": {"messages": ["object"], "total_count": "integer"}
+            "input": {
+                "query": "string",
+                "session_id": "string"
+            },
+            "output": {
+                "messages": ["object"],
+                "total_count": "integer"
+            }
         },
         "GetMessages": {
-            "input": {"contact_id": "string", "session_id": "string"},
-            "output": {"contact_id": "string", "messages": ["object"], "total_count": "integer"}
+            "input": {
+                "to": "string",
+                "session_id": "string"
+            },
+            "output": {
+                "to": "string",
+                "messages": ["object"],
+                "messages_count": "integer"
+            }
         },
         "CreateGroup": {
-            "input": {"name": "string", "members": ["string"], "session_id": "string"},
+            "input": {
+                "name": "string",
+                "members": ["string"],
+                "session_id": "string"
+            },
             "output": {
-                "group_id": "string",s
+                "group_id": "string",
                 "name": "string",
                 "members": ["string"],
                 "created_at": "YYYY-MM-DD HH:MM:SS",
@@ -178,10 +477,454 @@ APP_API_SCHEMAS: Dict[str, Dict[str, Dict[str, Any]]] = {
             }
         }
     },
-    "LLM": {
-        "Chat": {
-            "input": {"message": "string"},
-            "output": {"reply": "string", "conversation_id": "string"}
+    "ChatGPT": {
+        "GetConversations": {
+            "input": {
+                "session_id": "string"
+            },
+            "output": {
+                "conversations": ["object"],
+                "conversations_count": "integer"
+            }
+        },
+        "NewChat": {
+            "input": {
+                "session_id": "string"
+            },
+            "output": {
+                "conversation_id": "string"
+            }
+        },
+        "LoadChat": {
+            "input": {
+                "conversation_id": "string",
+                "session_id": "string"
+            },
+            "output": {
+                "conversation_id": "string",
+                "messages": ["object"],
+                "messages_count": "integer"
+            }
+        },
+        "SendMessage": {
+            "input": {
+                "conversation_id": "string",
+                "message": "string",
+                "session_id": "string"
+            },
+            "output": {
+                "message_id": "string",
+                "conversation_id": "string",
+                "message": "string",
+                "Response": "string"
+            }
+        }
+    },
+    "Spotify": {
+        "Login": {
+            "input": {
+                "username": "string",
+                "password": "string"
+            },
+            "output": {
+                "success": "boolean",
+                "session_id": "string",
+                "premium": "boolean"
+            }
+        },
+        "SearchSongs": {
+            "input": {
+                "query": "string",
+                "session_id": "string"
+            },
+            "output": {
+                "songs": [
+                    {
+                        "song_id": "string",
+                        "title": "string",
+                        "artist": "string",
+                        "album": "string",
+                        "duration": "integer"
+                    }
+                ],
+                "total_results": "integer"
+            }
+        },
+        "PlaySong": {
+            "input": {
+                "song_id": "string",
+                "session_id": "string"
+            },
+            "output": {
+                "song": "object",
+                "status": "string",
+                "duration_seconds": "integer"
+            }
+        },
+        "ShowPlaylists": {
+            "input": {
+                "session_id": "string"
+            },
+            "output": {
+                "playlists": [
+                    {
+                        "playlist_id": "string",
+                        "name": "string",
+                        "song_count": "integer"
+                    }
+                ]
+            }
+        },
+        "ShowRecentlyPlayed": {
+            "input": {
+                "session_id": "string"
+            },
+            "output": {
+                "songs": ["object"]
+            }
+        }
+    },
+    "Fitbit": {
+        "LogWorkout": {
+            "input": {
+                "type": "string",
+                "duration_minutes": "integer",
+                "intensity": "string",
+                "session_id": "string"
+            },
+            "output": {
+                "workout_id": "string",
+                "type": "string",
+                "duration_minutes": "integer",
+                "intensity": "string",
+                "calories_burned": "integer",
+                "heart_rate_avg": "integer",
+                "timestamp": "YYYY-MM-DD HH:MM:SS",
+                "date": "YYYY-MM-DD"
+            }
+        },
+        "GetDailyStats": {
+            "input": {
+                "date": "YYYY-MM-DD",
+                "session_id": "string"
+            },
+            "output": {
+                "date": "YYYY-MM-DD",
+                "steps": "integer",
+                "active_minutes": "integer",
+                "calories": "integer",
+                "workouts": ["string"]
+            }
+        },
+        "GetWeeklyStats": {
+            "input": {
+                "session_id": "string"
+            },
+            "output": {
+                "period": "string",
+                "total_workouts": "integer",
+                "total_active_minutes": "integer",
+                "avg_daily_steps": "integer",
+                "goal_completion": "object"
+            }
+        },
+        "GetWorkoutHistory": {
+            "input": {
+                "session_id": "string"
+            },
+            "output": {
+                "workouts": ["object"],
+                "total_count": "integer"
+            }
+        },
+        "UpdateGoals": {
+            "input": {
+                "goals": "object",
+                "session_id": "string"
+            },
+            "output": {
+                "success": "boolean",
+                "goals": "object"
+            }
+        },
+        "SyncDevice": {
+            "input": {
+                "device_name": "string",
+                "session_id": "string"
+            },
+            "output": {
+                "steps": "integer",
+                "heart_rate_measurements": "integer",
+                "sleep_hours": "number",
+                "last_sync": "YYYY-MM-DD HH:MM:SS"
+            }
+        }
+    },
+    "Chase": {
+        "Login": {
+            "input": {
+                "username": "string",
+                "password": "string"
+            },
+            "output": {
+                "success": "boolean",
+                "session_id": "string"
+            }
+        },
+        "GetTransactions": {
+            "input": {
+                "session_id": "string",
+                "month": "string"
+            },
+            "output": {
+                "transactions": [
+                    {
+                        "transaction_id": "string",
+                        "date": "YYYY-MM-DD",
+                        "description": "string",
+                        "amount": "number",
+                        "type": "debit|credit"
+                    }
+                ],
+                "balance": "number"
+            }
+        },
+        "TransferMoney": {
+            "input": {
+                "to_account": "string",
+                "amount": "number",
+                "session_id": "string"
+            },
+            "output": {
+                "success": "boolean",
+                "transaction_id": "string",
+                "new_balance": "number"
+            }
+        },
+        "PayBill": {
+            "input": {
+                "biller_name": "string",
+                "amount": "number",
+                "session_id": "string"
+            },
+            "output": {
+                "success": "boolean",
+                "transaction_id": "string"
+            }
+        }
+    },
+    "Robinhood": {
+        "Login": {
+            "input": {
+                "username": "string",
+                "password": "string"
+            },
+            "output": {
+                "success": "boolean",
+                "session_id": "string",
+                "portfolio_value": "number"
+            }
+        },
+        "GetPortfolio": {
+            "input": {
+                "session_id": "string"
+            },
+            "output": {
+                "cash_balance": "number",
+                "holdings": [
+                    {
+                        "symbol": "string",
+                        "quantity": "integer",
+                        "current_price": "number",
+                        "total_value": "number"
+                    }
+                ],
+                "total_value": "number"
+            }
+        },
+        "GetStockQuote": {
+            "input": {
+                "symbol": "string",
+                "session_id": "string"
+            },
+            "output": {
+                "symbol": "string",
+                "price": "number",
+                "change_percent": "number",
+                "timestamp": "YYYY-MM-DD HH:MM:SS"
+            }
+        },
+        "BuyStock": {
+            "input": {
+                "symbol": "string",
+                "quantity": "integer",
+                "session_id": "string"
+            },
+            "output": {
+                "success": "boolean",
+                "transaction_id": "string",
+                "price": "number",
+                "total_cost": "number"
+            }
+        },
+        "SellStock": {
+            "input": {
+                "symbol": "string",
+                "quantity": "integer",
+                "session_id": "string"
+            },
+            "output": {
+                "success": "boolean",
+                "transaction_id": "string",
+                "price": "number",
+                "total_proceeds": "number"
+            }
+        },
+        "BuyCrypto": {
+            "input": {
+                "symbol": "string",
+                "quantity": "integer",
+                "session_id": "string"
+            },
+            "output": {
+                "success": "boolean",
+                "transaction_id": "string",
+                "price": "number",
+                "total_cost": "number"
+            }
+        },
+        "SellCrypto": {
+            "input": {
+                "symbol": "string",
+                "quantity": "integer",
+                "session_id": "string"
+            },
+            "output": {
+                "success": "boolean",
+                "transaction_id": "string",
+                "price": "number",
+                "total_proceeds": "number"
+            }
+        },
+        "GetHistory": {
+            "input": {
+                "session_id": "string"
+            },
+            "output": {
+                "transactions": ["object"],
+                "count": "integer"
+            }
+        }
+    },
+    "X": {
+        "Login": {
+            "input": {
+                "username": "string",
+                "password": "string"
+            },
+            "output": {
+                "success": "boolean",
+                "session_id": "string",
+                "user_id": "string"
+            }
+        },
+        "GetHomeTimeline": {
+            "input": {
+                "session_id": "string"
+            },
+            "output": {
+                "posts": [
+                    {
+                        "post_id": "string",
+                        "author": "string",
+                        "content": "string",
+                        "likes": "integer",
+                        "timestamp": "YYYY-MM-DD HH:MM:SS"
+                    }
+                ]
+            }
+        },
+        "PostTweet": {
+            "input": {
+                "content": "string",
+                "session_id": "string"
+            },
+            "output": {
+                "success": "boolean",
+                "post_id": "string",
+                "timestamp": "YYYY-MM-DD HH:MM:SS"
+            }
+        },
+        "LikeTweet": {
+            "input": {
+                "post_id": "string",
+                "session_id": "string"
+            },
+            "output": {
+                "success": "boolean",
+                "likes_count": "integer"
+            }
+        },
+        "FollowUser": {
+            "input": {
+                "user_id": "string",
+                "session_id": "string"
+            },
+            "output": {
+                "success": "boolean",
+                "follow_status": "string"
+            }
+        },
+        "GetUserProfile": {
+            "input": {
+                "user_id": "string",
+                "session_id": "string"
+            },
+            "output": {
+                "username": "string",
+                "followers": "integer",
+                "following": "integer",
+                "bio": "string"
+            }
+        }
+    },
+    "Google Home": {
+        "SetLightState": {
+            "input": {
+                "device_id": "string",
+                "state": "on|off",
+                "brightness": "integer",
+                "session_id": "string"
+            },
+            "output": {
+                "success": "boolean",
+                "device_id": "string",
+                "state": "string"
+            }
+        },
+        "GetDeviceStatus": {
+            "input": {
+                "device_id": "string",
+                "session_id": "string"
+            },
+            "output": {
+                "device_id": "string",
+                "name": "string",
+                "type": "string",
+                "state": "string",
+                "is_online": "boolean"
+            }
+        },
+        "RunRoutine": {
+            "input": {
+                "routine_name": "string",
+                "session_id": "string"
+            },
+            "output": {
+                "success": "boolean",
+                "routine_name": "string",
+                "actions_executed": ["string"]
+            }
         }
     }
 }
