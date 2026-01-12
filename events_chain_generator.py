@@ -417,56 +417,45 @@ Given a user's dynamic profile for a specific domain and time window, generate a
 You must specify which app and API each event uses. Available apps and APIs:
 
 ### Amazon App
-- **Login**: authenticate and start a session
 - **SearchProducts**: search catalog with filters and sort
-- **ShowProduct**: view details for a specific product
-- **Checkout**: place an order for selected items
-- **ShowOrders**: list recent orders and statuses
+- **ViewProduct**: view details for a specific product
+- **PurchaseProduct**: place an order for selected items
+- **ViewOrders**: list recent orders and statuses
 
 ### Spotify App
-- **Login**: authenticate and start a session
 - **SearchSongs**: search tracks by query
-- **PlaySong**: start playback of a track
-- **ShowPlaylists**: list user playlists
-- **ShowRecentlyPlayed**: list recent listens
+- **PlaySong**: start playback of a track by title and artist
+- **ViewPlaylists**: list user playlists
+- **ViewRecentlyPlayed**: list recent listens
 
 ### SimpleNote App
-- **Login**: authenticate and start a session
-- **ShowNotes**: list notes, optionally by tag
-- **ShowNote**: open a specific note
+- **ViewNotes**: list all notes
+- **ReadNote**: open a specific note by title
 - **CreateNote**: create a new note
 
 ### LLM App
 - **Chat**: ask a question or request advice
 
-### Google APP
+### Google App
 - **Search**: web search for information
 
-### Fitness APP
-- **Login**: authenticate and start a session
-- **LogWorkout**: record a workout
-- **ShowDailyStats**: fetch daily fitness summary
+### Fitness App
+- **LogWorkout**: record a workout with activity type, duration, intensity
+- **ViewTodayStats**: fetch today's fitness summary
+- **ViewWeeklyStats**: fetch weekly fitness summary
+- **SyncDevice**: sync fitness device data
 
-### Calendar APP
-- **CreateEvent**: create a calendar event
-- **UpdateEvent**: modify an existing event
-- **DeleteEvent**: remove an event
-- **ShowEvents**: list events in a time window
-- **ShowEvent**: show details for a specific event
-- **RespondToInvite**: respond to an event invitation
-
-### Message APP
-- **SendMessage**: send a message to a user
+### Message App
+- **SendMessage**: send a message to a contact
+- **ViewConversation**: view messages with a specific contact
 - **SearchMessages**: search message history
-- **GetMessages**: fetch messages in a thread
-- **CreateGroup**: create a group chat
 
 ---
 
 ## Event Types and App Usage
 
 Each event in your event chain must specify:
-1. **app_name**: Which app is used (Amazon, Spotify, SimpleNote, LLM, Google, Fitness, Calendar, Message)
+1. **app_name**: Which app is used (Amazon, Spotify, SimpleNote, LLM, Google, Fitness, Message)
 2. **api_name**: Which specific API is called
 3. **user_intent**: Why this event occurs (user intent tied to attributes/habits/preferences)
 4. **time_specification**: Explicit schedule_dates with time or start_time/end_time
@@ -553,7 +542,6 @@ Return ONLY a valid JSON object with this structure:
       ],
       "events": [
         {
-          "event_id": "unique_identifier",
           "time_specification": {
             "schedule_dates": ["YYYY-MM-DD", "YYYY-MM-DD"],
             "time": "HH:MM:SS",
@@ -561,8 +549,8 @@ Return ONLY a valid JSON object with this structure:
             "end_time": "HH:MM:SS",
             "note": "string"
           },
-          "app_name": "Amazon | Spotify | SimpleNote | LLM | Google | Fitness | Calendar | Message",
-          "api_name": "Login | SearchProducts | Chat | SearchSongs | ShowNotes | ShowNote | CreateNote | Search | etc.",
+          "app_name": "Amazon | Spotify | SimpleNote | LLM | Google | Fitness | Message",
+          "api_name": "SearchProducts | ViewProduct | PurchaseProduct | ViewOrders | Chat | SearchSongs | PlaySong | ViewPlaylists | ViewRecentlyPlayed | ViewNotes | ReadNote | CreateNote | Search | LogWorkout | ViewTodayStats | ViewWeeklyStats | SyncDevice | SendMessage | ViewConversation | SearchMessages",
           "user_intent": "Why this event occurs (attribute acquisition, habit execution, preference demonstration, etc.)"
         }
       ]
@@ -623,7 +611,6 @@ Generate 1-2 events showing the preference shift/refinement process and generate
   ],
   "events": [
     {
-      "event_id": "w1_health_001_e001",
       "time_specification": {
         "schedule_dates": ["2024-01-02"],
         "time": "21:10:00"
@@ -633,17 +620,6 @@ Generate 1-2 events showing the preference shift/refinement process and generate
       "user_intent": "research and planning before starting the habit."
     },
     {
-      "event_id": "w1_health_001_e002",
-      "time_specification": {
-        "schedule_dates": ["2024-01-03"],
-        "time": "20:45:00"
-      },
-      "app_name": "Calendar",
-      "api_name": "CreateEvent",
-      "user_intent": "Habit acquisition: setup and commitment via calendar reminder."
-    },
-    {
-      "event_id": "w1_health_001_e003",
       "time_specification": {
         "schedule_dates": [
           "2024-01-04",
@@ -677,7 +653,6 @@ Generate 1-2 events showing the preference shift/refinement process and generate
   ],
   "events": [
     {
-      "event_id": "w1_shopping_002_e001",
       "time_specification": {
         "schedule_dates": ["2024-02-05"],
         "time": "12:30:10"
@@ -687,7 +662,6 @@ Generate 1-2 events showing the preference shift/refinement process and generate
       "user_intent": "Attribute acquisition: research and decision support."
     },
     {
-      "event_id": "w1_shopping_002_e002",
       "time_specification": {
         "schedule_dates": ["2024-02-05"],
         "time": "12:45:40"
@@ -697,23 +671,21 @@ Generate 1-2 events showing the preference shift/refinement process and generate
       "user_intent": "Attribute acquisition: product discovery with constraints."
     },
     {
-      "event_id": "w1_shopping_002_e003",
       "time_specification": {
         "schedule_dates": ["2024-02-05"],
         "time": "12:48:05"
       },
       "app_name": "Amazon",
-      "api_name": "ShowProduct",
+      "api_name": "ViewProduct",
       "user_intent": "Attribute acquisition: evaluation before purchase."
     },
     {
-      "event_id": "w1_shopping_002_e004",
       "time_specification": {
         "schedule_dates": ["2024-02-05"],
         "time": "12:55:22"
       },
       "app_name": "Amazon",
-      "api_name": "Checkout",
+      "api_name": "PurchaseProduct",
       "user_intent": "Attribute acquisition: completing ownership change via transaction."
     }
   ]
@@ -731,7 +703,6 @@ Generate 1-2 events showing the preference shift/refinement process and generate
   ],
   "events": [
     {
-      "event_id": "w1_focusmusic_003_e001",
       "time_specification": {
         "schedule_dates": ["2024-03-11"],
         "time": "09:05:00"
@@ -741,7 +712,6 @@ Generate 1-2 events showing the preference shift/refinement process and generate
       "user_intent": "Preference demonstration: selecting content consistent with preference."
     },
     {
-      "event_id": "w1_focusmusic_003_e002",
       "time_specification": {
         "schedule_dates": [
           "2024-03-11",

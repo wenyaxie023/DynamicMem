@@ -8564,17 +8564,21 @@ class GenerationPipeline:
                             "related_state_items": related_state_items,
                         })
 
-        def _event_sort_key(item: Dict[str, Any]) -> tuple[str, str, str, str]:
+        def _event_sort_key(item: Dict[str, Any]) -> tuple[str, str, str]:
             event = item.get("event", {})
             timestamp = event.get("timestamp") or "9999-12-31 23:59:59"
             return (
                 timestamp,
                 item.get("domain_name", ""),
                 item.get("window_id", ""),
-                event.get("event_id", ""),
             )
 
         flattened_events.sort(key=_event_sort_key)
+
+        # Assign event IDs after sorting
+        for idx, item in enumerate(flattened_events):
+            event = item["event"]
+            event["event_id"] = f"e{idx+1:04d}"  # e0001, e0002, etc.
 
         for item in flattened_events:
             event = item["event"]
@@ -10246,13 +10250,71 @@ def debug_generate_real_data() -> None:
     model_name = "gemini-3-flash-preview"
     output_dir = base_dir / "generated_outputs_debug_v14" / _slugify(model_name)
 
-    events_file = output_dir / "work_education_events_chain.json"
+    try:
+        from pydantic import BaseModel, Field, ValidationError
+    except ImportError as exc:
+        raise RuntimeError(
+            "pydantic is required for structured output in debug_generate_real_data"
+        ) from exc
 
-    print("Loading events chain from:")
-    print(f"  - {events_file}")
+    class AppCallPayload(BaseModel):
+        input: Dict[str, Any] = Field(description="API input payload.")
+        output: Dict[str, Any] = Field(description="API output payload.")
 
-    with open(events_file, "r") as f:
-        domain_data = json.load(f)
+    def _pydantic_validate(model: type[BaseModel], payload: Dict[str, Any]) -> BaseModel:
+        if hasattr(model, "model_validate"):
+            return model.model_validate(payload)
+        return model.parse_obj(payload)
+
+    def _pydantic_dump(model_obj: BaseModel) -> Dict[str, Any]:
+        if hasattr(model_obj, "model_dump"):
+            return model_obj.model_dump()
+        return model_obj.dict()
+
+    def _spec_to_json_schema(spec: Any) -> Dict[str, Any]:
+        if isinstance(spec, dict):
+            properties = {key: _spec_to_json_schema(value) for key, value in spec.items()}
+            return {
+                "type": "object",
+                "properties": properties,
+                "required": list(spec.keys()),
+                "additionalProperties": False,
+            }
+        if isinstance(spec, list):
+            if spec:
+                items_schema = _spec_to_json_schema(spec[0])
+            else:
+                items_schema = {"type": "object", "additionalProperties": True}
+            return {"type": "array", "items": items_schema}
+        if isinstance(spec, str):
+            if "|" in spec:
+                options = [part.strip() for part in spec.split("|") if part.strip()]
+                if options:
+                    return {"type": "string", "enum": options}
+            type_map = {
+                "string": "string",
+                "integer": "integer",
+                "number": "number",
+                "boolean": "boolean",
+                "object": "object",
+            }
+            if spec in type_map:
+                schema = {"type": type_map[spec]}
+                if spec == "object":
+                    schema["additionalProperties"] = True
+                return schema
+            return {"type": "string", "description": spec}
+        return {"type": "string"}
+
+
+    events_files = sorted(output_dir.glob("*_events_chain.json"))
+    if not events_files:
+        print("No events chain files found. Aborting app log generation.")
+        return
+
+    print("Loading events chains from:")
+    for events_file in events_files:
+        print(f"  - {events_file}")
 
     def _normalize_time(time_value: Optional[str]) -> str:
         if not time_value:
@@ -10319,11 +10381,70 @@ def debug_generate_real_data() -> None:
         return events
 
     all_events: List[Dict[str, Any]] = []
-    all_events.extend(_collect_events(domain_data, "Work & Education"))
+    for events_file in events_files:
+        with open(events_file, "r") as f:
+            domain_data = json.load(f)
+        fallback_domain = domain_data.get("domain") or "Unknown"
+        all_events.extend(_collect_events(domain_data, fallback_domain))
 
     if not all_events:
         print("No events found. Aborting app log generation.")
         return
+
+    def _load_domain_window_summaries(
+        domain_names: Sequence[str], output_dir: Path
+    ) -> Dict[str, Dict[str, Any]]:
+        summaries: Dict[str, Dict[str, Any]] = {}
+        for domain_name in domain_names:
+            if not domain_name:
+                continue
+            slug = _slugify(domain_name)
+            resolved_path = output_dir / f"{slug}_resolved_windows.json"
+            if not resolved_path.exists():
+                continue
+            with open(resolved_path, "r") as f:
+                windows = json.load(f)
+            window_order: List[str] = []
+            summary_by_window: Dict[str, str] = {}
+            motivation_by_window: Dict[str, str] = {}
+            for entry in windows:
+                if not isinstance(entry, dict):
+                    continue
+                window_id = entry.get("window_id")
+                if not window_id:
+                    continue
+                window_order.append(window_id)
+                summary_by_window[window_id] = entry.get("summary", "")
+                motivation_by_window[window_id] = entry.get("window_description", "")
+            summaries[domain_name] = {
+                "window_order": window_order,
+                "summary_by_window": summary_by_window,
+                "motivation_by_window": motivation_by_window,
+            }
+        return summaries
+
+    def _build_domain_context(
+        domain_name: str,
+        window_id: str,
+        domain_summaries: Dict[str, Dict[str, Any]],
+    ) -> Dict[str, Any]:
+        info = domain_summaries.get(domain_name)
+        window_summaries: Dict[str, str] = {}
+        current_motivation = ""
+        if info:
+            for window_key in info.get("window_order", []):
+                window_summaries[window_key] = info.get("summary_by_window", {}).get(
+                    window_key, ""
+                )
+                if window_key == window_id:
+                    break
+            current_motivation = info.get("motivation_by_window", {}).get(window_id, "")
+        return {
+            "domain_name": domain_name,
+            "current_window_id": window_id,
+            "window_summaries": window_summaries,
+            "current_window_motivation": current_motivation,
+        }
 
     def _event_sort_key(event: Dict[str, Any]) -> tuple[str, str, str, str]:
         timestamp = event.get("timestamp") or "9999-12-31 23:59:59"
@@ -10340,6 +10461,11 @@ def debug_generate_real_data() -> None:
     for event in all_events:
         domain_name = event.get("domain_name", "Unknown")
         domain_event_counts[domain_name] = domain_event_counts.get(domain_name, 0) + 1
+
+    domain_names = sorted(
+        name for name in domain_event_counts.keys() if name and name != "Unknown"
+    )
+    domain_window_summaries = _load_domain_window_summaries(domain_names, output_dir)
 
     total_events = len(all_events)
     print(f"\nExtracted {total_events} events total:")
@@ -10368,35 +10494,28 @@ API schema for this call:
 Return JSON ONLY with this structure:
 {
   "input": { ... }, // the input object of the API call
-  "output": { ... }, // the output object of the API call
-  "state_updates": { ... } // optional patch to update app state
+  "output": { ... } // the output object of the API call
 }
 
 Context:
-User basic profile:
+User profile (basic + domain context):
 {{ user_profile }}
 
-Current app state (before call):
+Current app state for this app (before call):
 {{ app_state }}
 
-Event to execute:
+Event payload:
 {{ event_payload }}
 
 Rules:
 - Respect app_name/api_name exactly as given.
+- Use the user intent, user profile context, and current app state to shape input/output.
 - Keep input/output consistent with the user's intent and schema.
 - Include all keys specified in the schema.
 - Reuse IDs found in app_state when possible (session_id, device_id, account_id).
-- If you create new IDs or records, include them in output and state_updates.
+- If you create new IDs or records, include them in output.
 - Use only the event timestamp; do not invent other dates.
 """)
-
-    def _deep_update_state(state: Dict[str, Any], updates: Dict[str, Any]) -> None:
-        for key, value in updates.items():
-            if isinstance(value, dict) and isinstance(state.get(key), dict):
-                _deep_update_state(state[key], value)
-            else:
-                state[key] = value
 
     def _record_app_call_state(
         state: Dict[str, Any],
@@ -10422,18 +10541,12 @@ Rules:
             if key in request_payload and not state.get(key):
                 state[key] = request_payload[key]
 
-    def _validate_payload_schema(payload: Dict[str, Any], schema: Dict[str, Any]) -> List[str]:
-        if not isinstance(schema, dict):
-            return []
-        missing = [key for key in schema.keys() if key not in payload]
-        return missing
-
     # Convert events to app logs in chronological order
     print("\nGenerating app logs from events...")
     app_logs = []
 
     required_fields = ("event_id", "timestamp", "app_name", "api_name")
-    for event in all_events:
+    for event in all_events[:10]:
         if any(field not in event for field in required_fields):
             print(
                 f"Skipping event with missing fields: {event.get('event_id', 'unknown')}"
@@ -10444,29 +10557,55 @@ Rules:
         event_description = event.get("user_intent") or event.get("description") or ""
 
         app = app_log_gen.app_registry.get_app(app_name, user_id)
-        app.ensure_initialized()
+        # Take snapshot BEFORE initializing to show empty state on first call
         app_state_snapshot = deepcopy(app.state)
+        app.ensure_initialized()
 
         api_schema = APP_API_SCHEMAS.get(app_name, {}).get(api_name)
         if api_schema is None:
             raise ValueError(f"Missing API schema for {app_name}.{api_name}")
+        
+
+        domain_name = event.get("domain_name", "")
+        window_id = event.get("window_id", "")
+        domain_context = _build_domain_context(
+            domain_name=domain_name,
+            window_id=window_id,
+            domain_summaries=domain_window_summaries,
+        )
+        user_profile_payload = {
+            "basic_profile": user_profile,
+            "domain_context": domain_context,
+        }
 
         event_payload = {
-            "event_id": event.get("event_id"),
-            "timestamp": event.get("timestamp"),
-            "app_name": app_name,
-            "api_name": api_name,
-            "user_intent": event_description,
-            "time_specification": event.get("time_specification", {}),
-            "domain": event.get("domain_name", ""),
-            "window_id": event.get("window_id", ""),
-            "chain_id": event.get("chain_id", ""),
-            "related_state_items": event.get("related_state_items", []),
+            "event": {
+                # "event_id": event.get("event_id"),
+                "timestamp": event.get("timestamp"),
+                "user_intent": event_description,
+                "time_specification": event.get("time_specification", {}),
+                "resolved_date": event.get("resolved_date"),
+                "app": {
+                    "app_name": app_name,
+                    "api_name": api_name,
+                },
+            },
+            "chain": {
+                "chain_id": event.get("chain_id", ""),
+                "related_state_items": event.get("related_state_items", []),
+            },
+            # "window": {
+            #     "window_id": window_id,
+            #     "time_range": event.get("time_range", []),
+            # },
+            # "domain": {
+            #     "domain_name": domain_name,
+            # },
         }
 
         prompt = app_log_prompt.render(
             api_schema=json.dumps(api_schema, indent=2, ensure_ascii=False),
-            user_profile=json.dumps(user_profile, indent=2, ensure_ascii=False),
+            user_profile=json.dumps(user_profile_payload, indent=2, ensure_ascii=False),
             app_state=json.dumps(app_state_snapshot, indent=2, ensure_ascii=False),
             event_payload=json.dumps(event_payload, indent=2, ensure_ascii=False),
         )
@@ -10475,28 +10614,35 @@ Rules:
         with open(output_dir / f"app_log_prompt_{event.get('event_id')}.txt", "w") as f:
             f.write(prompt)
 
+        # import pdb; pdb.set_trace()
+
         try:
-            llm_result = client.generate_json(prompt)
+            response_schema = {
+                "type": "object",
+                "properties": {
+                    "input": _spec_to_json_schema(api_schema.get("input", {})),
+                    "output": _spec_to_json_schema(api_schema.get("output", {})),
+                },
+                "required": ["input", "output"],
+                "additionalProperties": False,
+            }
+            llm_result = client.generate_json(prompt, response_schema=response_schema)
+            payload_model = _pydantic_validate(AppCallPayload, llm_result.data or {})
+        except ValidationError as exc:
+            print(
+                f"Warning: Failed to validate app log for event {event.get('event_id')}: {exc}"
+            )
+            continue
         except Exception as exc:
             print(
                 f"Warning: Failed to generate app log for event {event.get('event_id')}: {exc}"
             )
             continue
 
-        payload = llm_result.data or {}
+        payload = _pydantic_dump(payload_model)
         request_payload = payload.get("input") or {}
         response_payload = payload.get("output") or {}
-        state_updates = payload.get("state_updates")
-        missing_input = _validate_payload_schema(request_payload, api_schema.get("input", {}))
-        missing_output = _validate_payload_schema(response_payload, api_schema.get("output", {}))
-        if missing_input or missing_output:
-            raise ValueError(
-                f"Schema mismatch for {app_name}.{api_name}: "
-                f"missing input keys={missing_input}, missing output keys={missing_output}"
-            )
         target_state = app.state
-        if isinstance(state_updates, dict):
-            _deep_update_state(target_state, state_updates)
         _record_app_call_state(target_state, event, request_payload, response_payload)
         
         log = {
@@ -10507,7 +10653,7 @@ Rules:
             "request": request_payload,
             "response": response_payload,
             "metadata": {
-                "purpose": event_description,
+                "user_intent": event_description,
                 "domain": event.get("domain_name", ""),
                 "window_id": event.get("window_id", ""),
                 "chain_id": event.get("chain_id", ""),
@@ -10516,7 +10662,7 @@ Rules:
             },
         }
         app_logs.append(log)
-        import pdb; pdb.set_trace()
+        # import pdb; pdb.set_trace()
 
     app_logs.sort(key=lambda log: log.get("timestamp") or "9999-12-31 23:59:59")
 
