@@ -377,6 +377,28 @@ You are an expert at generating realistic event chains that demonstrate user beh
 ### Your Task
 Given a user's state for a specific time window, generate a sequence of realistic events that would naturally occur based on their attributes, habits, and preferences. Each event must specify which app and API it uses, along with the user intent.
 
+Context Information You Will Receive
+You will be provided with the following context:
+Life Context:
+
+{{ user_life_context }}
+
+User Basic Profile: Contains demographic information, personality traits, and stable characteristics. Use this to ensure event chains match the user's personality and circumstances.
+{{ user_basic_profile }}
+
+Previous Window Summary (All Domains):
+{{ user_previous_window_summary }}
+
+Previous Window Summary (Current Domain): Describes what happened in earlier time windows. Use this to maintain continuity and avoid contradictions.
+{{ user_domain_previous_window_summary }}
+
+Current Window Description (Current Domain): Provides an overview of this window's themes and major developments. Use this as a guide for the types of events to generate.
+{{ user_this_window_description }}
+
+
+**Domain Window State (Current Window):**
+{{ domain_window_state }}
+
 ### What Makes a Good Event Chain
 - **Observable**: Every state item is demonstrated through concrete app interactions
 - **Realistic**: Events follow natural human behavior patterns and realistic timing
@@ -546,7 +568,7 @@ Diversity sources:
             "end_time": "HH:MM:SS",       // for repeated occurrences
             "note": "optional explanation for repeated events"
           },
-          "app_name": "Amazon | Spotify | SimpleNote | LLM | Google | Fitness | Calendar | Message | Finance",
+          "app_name": "Amazon | Spotify | Fitbit | Chase | Robinhood | WhatsApp | Gmail | LinkedIn | Notion | Netflix | Goodreads | Instagram | Google | LLM Assistant",
           "api_name": "specific API name from Section 5",
           "user_intent": "why this event occurs, tied to state item operation"
         }
@@ -597,253 +619,790 @@ Diversity sources:
 
 Each event must specify `app_name` and `api_name`. Below are the available apps and their APIs.
 
-### 5.1 Amazon App (Shopping & Product Research)
-
-**SearchProducts**
-- Search product catalog with filters and sorting
-- Typical use: Initial exploration, finding options, comparison shopping
-- Behavior types: information_seeking, decision_making
-
-**ShowProduct**  
-- View detailed information for a specific product
-- Typical use: Evaluation, reading specifications, checking compatibility
-- Behavior types: information_seeking, decision_making
-
-**ReadReviews**
-- Browse customer reviews and ratings for a product
-- Typical use: Social validation, quality assessment, learning from others' experiences
-- Behavior types: information_seeking, decision_making
-
-**AddToCart**
-- Add item to shopping cart (not yet purchased)
-- Typical use: Saving items for later, building a cart before checkout, comparing total prices
-- Behavior types: decision_making, transactional
-
-**Checkout**
-- Complete purchase transaction
-- Typical use: Final acquisition, converting intent to ownership
-- Behavior types: transactional
-
-**ShowOrders**
-- View order history and current order statuses
-- Typical use: Tracking purchases, reviewing past decisions, monitoring deliveries
-- Behavior types: monitoring
-
-**TrackOrder**
-- Check delivery status for a specific order
-- Typical use: Anticipating arrival, ensuring timely delivery
-- Behavior types: monitoring
-
-### 5.2 Spotify App (Music & Audio)
-
-**SearchSongs**
-- Search for tracks, artists, or albums
-- Typical use: Discovering new music, finding specific songs, exploring genres
-- Behavior types: information_seeking
-
-**ShowArtist**
-- View artist profile and discography
-- Typical use: Learning about artist, exploring their catalog
-- Behavior types: information_seeking
-
-**PlaySong**
-- Start playback of a track or playlist
-- Typical use: Listening, background music, focused work, relaxation
-- Behavior types: consumption
-
-**CreatePlaylist**
-- Create a new playlist
-- Typical use: Organizing music by mood/activity, curating collections
-- Behavior types: creation, maintenance
-
-**AddToPlaylist**
-- Add track to an existing playlist
-- Typical use: Building collections, saving favorites
-- Behavior types: maintenance
-
-**ShowPlaylists**
-- List user's playlists
-- Typical use: Choosing what to listen to, reviewing collections
-- Behavior types: monitoring
-
-**ShowRecentlyPlayed**
-- View listening history
-- Typical use: Re-finding songs, tracking listening habits
-- Behavior types: monitoring
-
-### 5.3 SimpleNote App (Note-taking & Documentation)
-
-**ShowNotes**
-- List notes with optional filtering by tags
-- Typical use: Finding notes, reviewing notes, organizing thoughts
-- Behavior types: monitoring, maintenance
-
-**ShowNote**
-- Open and read a specific note
-- Typical use: Reviewing information, referencing past notes
-- Behavior types: consumption
-
-**CreateNote**
-- Create a new note
-- Typical use: Capturing ideas, documenting information, planning
-- Behavior types: creation
-
-**EditNote**
-- Modify existing note content
-- Typical use: Updating information, refining ideas, adding details
-- Behavior types: maintenance
-
-**SearchNotes**
-- Search note content by keywords
-- Typical use: Finding specific information, retrieving past notes
-- Behavior types: information_seeking
-
-**TagNote**
-- Add or modify tags on a note
-- Typical use: Organizing notes, categorizing information
-- Behavior types: maintenance
-
-### 5.4 LLM App (AI Assistant)
-
-**Chat**
-- Ask questions, request advice, generate content, solve problems
-- Typical use: Research, decision support, learning, brainstorming, code generation, writing assistance
-- Behavior types: information_seeking, decision_making, creation
-
-### 5.5 Google App (Web Search & Research)
-
-**Search**
-- Web search for general information
-- Typical use: Finding information, researching topics, fact-checking
-- Behavior types: information_seeking
-
-**SearchNews**
-- Search for recent news articles
-- Typical use: Staying informed, tracking current events, researching recent developments
-- Behavior types: information_seeking
-
-### 5.6 Fitness App (Health & Exercise Tracking)
-
-**LogWorkout**
-- Record a completed workout session
-- Typical use: Tracking exercise, maintaining workout history, building consistency
-- Behavior types: self_reporting, usage_tracking
-
-**LogActivity**
-- Record daily activity metrics (steps, calories, etc.)
-- Typical use: Tracking daily movement, monitoring activity levels
-- Behavior types: self_reporting, usage_tracking
-
-**ShowDailyStats**
-- View today's fitness summary
-- Typical use: Checking progress, monitoring activity, staying motivated
-- Behavior types: monitoring
-
-**ShowWeeklyStats**
-- View weekly fitness trends and summaries
-- Typical use: Reviewing progress, identifying patterns, adjusting goals
-- Behavior types: monitoring
-
-**SetGoal**
-- Set fitness or health goals
-- Typical use: Defining targets, planning improvement, establishing commitment
-- Behavior types: decision_making
-
-**ShowProgress**
-- View progress toward goals
-- Typical use: Tracking achievement, staying motivated, adjusting approach
-- Behavior types: monitoring
-
-### 5.7 Calendar App (Scheduling & Time Management)
-
-**CreateEvent**
-- Schedule a new calendar event
-- Typical use: Planning activities, blocking time, setting reminders, establishing commitments
-- Behavior types: decision_making, maintenance
-
-**ShowEvents**
-- View calendar schedule
-- Typical use: Checking schedule, planning day, avoiding conflicts
-- Behavior types: monitoring
-
-**EditEvent**
-- Modify existing calendar event
-- Typical use: Rescheduling, updating details, adjusting plans
-- Behavior types: maintenance
-
-**SetReminder**
-- Add reminder to an event
-- Typical use: Ensuring timely action, preventing forgetting, building habits
-- Behavior types: maintenance
-
-### 5.8 Message App (Communication & Collaboration)
-
-**SendMessage**
-- Send a message to an individual or group
-- Typical use: Communication, sharing information, coordination, asking questions
-- Behavior types: social_interaction
-
-**GetMessages**
-- Fetch and read messages in a conversation thread
-- Typical use: Staying informed, following conversations, responding to others
-- Behavior types: consumption, social_interaction
-
-**SearchMessages**
-- Search message history by keywords
-- Typical use: Finding past information, retrieving shared links/files, referencing discussions
-- Behavior types: information_seeking
-
-**CreateGroup**
-- Create a group chat
-- Typical use: Organizing team communication, coordinating activities
-- Behavior types: social_interaction, maintenance
-
-**ReactToMessage**
-- Add reaction (emoji/like) to a message
-- Typical use: Acknowledging receipt, expressing agreement, lightweight feedback
-- Behavior types: social_interaction
-
-### 5.9 Finance App (Financial Management & Tracking)
-
-**ShowAccounts**
-- View list of financial accounts and balances
-- Typical use: Monitoring finances, checking balances, reviewing accounts
-- Behavior types: monitoring
-
-**ShowTransactions**
-- View transaction history for accounts
-- Typical use: Reviewing spending, tracking expenses, finding specific transactions
-- Behavior types: monitoring
-
-**CreateBudget**
-- Set up a spending budget with categories and limits
-- Typical use: Financial planning, controlling spending, establishing limits
-- Behavior types: decision_making, maintenance
-
-**LogExpense**
-- Manually record an expense
-- Typical use: Tracking cash spending, categorizing expenses, maintaining records
-- Behavior types: self_reporting, usage_tracking
-
-**ShowBudgetProgress**
-- View spending against budget limits
-- Typical use: Monitoring spending, staying within budget, adjusting habits
-- Behavior types: monitoring
-
-**SetFinancialGoal**
-- Define a financial goal (savings, debt reduction, etc.)
-- Typical use: Planning financial future, establishing targets, motivating saving
-- Behavior types: decision_making
-
-**ShowInvestments**
-- View investment portfolio and performance
-- Typical use: Monitoring investments, tracking returns, reviewing allocation
-- Behavior types: monitoring
-
-**TransferMoney**
-- Transfer funds between accounts
-- Typical use: Managing cash flow, paying bills, moving money to savings
-- Behavior types: transactional
+{
+  "apps": [
+    {
+      "app_name": "Amazon",
+      "app_category": "E-commerce",
+      "relevant_life_domains": ["Finances & Material Living", "Leisure & Media Consumption"],
+      "apis": [
+        {
+          "api_name": "SearchProducts",
+          "description": "Search for products on Amazon using keywords",
+          "user_insights": [
+            "Shopping needs and product interests",
+            "Price sensitivity through search filters",
+            "Product category preferences",
+            "Purchase planning behavior"
+          ],
+        },
+        {
+          "api_name": "ShowProduct",
+          "description": "View detailed information about a specific product including price, ratings, reviews, and description",
+          "user_insights": [
+            "Purchase decision-making process",
+            "Comparison shopping behavior",
+            "Quality consciousness through review reading",
+            "Time spent evaluating options"
+          ],
+        },
+        {
+          "api_name": "AddToCart",
+          "description": "Add a product to the shopping cart",
+          "user_insights": [
+            "Purchase intent and immediacy",
+            "Impulsive vs. planned buying behavior",
+            "Shopping cart abandonment patterns",
+            "Multi-item purchasing habits"
+          ],
+        },
+        {
+          "api_name": "ShowCart",
+          "description": "View all items currently in the shopping cart",
+          "user_insights": [
+            "Short-term purchase intentions",
+            "Cart management habits",
+            "Price threshold for checkout",
+            "Multi-session shopping behavior"
+          ],
+          "frequency": "medium"
+        },
+        {
+          "api_name": "ShowWishlist",
+          "description": "View all items saved in the wishlist for future consideration",
+          "user_insights": [
+            "Long-term purchase aspirations",
+            "Price monitoring behavior",
+            "Gift planning and special occasion preparation",
+            "Delayed gratification patterns"
+          ],
+        },
+        {
+          "api_name": "Checkout",
+          "description": "Complete the purchase of items in the cart",
+          "user_insights": [
+            "Actual purchasing power and spending",
+            "Buying frequency and volume",
+            "Prime membership utilization",
+            "Payment method preferences"
+          ],
+        }
+      ]
+    },
+    {
+      "app_name": "Spotify",
+      "app_category": "Music Streaming",
+      "relevant_life_domains": ["Leisure & Media Consumption"],
+      "apis": [
+        {
+          "api_name": "SearchSongs",
+          "description": "Search for songs, artists, or albums",
+          "user_insights": [
+            "Music discovery behavior",
+            "Genre preferences and diversity",
+            "Openness to new artists",
+            "Music taste evolution"
+          ],
+        },
+        {
+          "api_name": "PlaySong",
+          "description": "Play a specific song and track listening duration",
+          "user_insights": [
+            "Core music preferences and listening patterns",
+            "Daily routine and activity timing (workout music, commute, sleep)",
+            "Mood and emotional states",
+            "Song repetition and attachment behavior",
+            "Premium subscription status for ad-free experience"
+          ],
+        },
+        {
+          "api_name": "AddToPlaylist",
+          "description": "Add a song to a specific playlist",
+          "user_insights": [
+            "Music curation and organization skills",
+            "Long-term music preferences",
+            "Playlist themes and life contexts (workout, study, party)",
+            "Collection-building behavior"
+          ],
+        },
+        {
+          "api_name": "FollowArtist",
+          "description": "Follow an artist to receive updates and recommendations",
+          "user_insights": [
+            "Artist loyalty and fandom intensity",
+            "Music taste identity and expression",
+            "Social signaling through artist choices",
+            "Engagement with music community"
+          ],
+        }
+      ]
+    },
+    {
+      "app_name": "Fitbit",
+      "app_category": "Health & Fitness Tracking",
+      "relevant_life_domains": ["Health & Self-care"],
+      "apis": [
+        {
+          "api_name": "LogWorkout",
+          "description": "Manually log a workout session with type, duration, and intensity",
+          "user_insights": [
+            "Active fitness engagement and discipline",
+            "Preferred exercise types and variety",
+            "Workout intensity preferences",
+            "Self-tracking motivation and consistency"
+          ],
+        },
+        {
+          "api_name": "SyncDevice",
+          "description": "Sync wearable device data including steps, heart rate, sleep patterns, and passive activity",
+          "user_insights": [
+            "Daily activity levels and sedentary behavior",
+            "Sleep quality and schedule regularity",
+            "Cardiovascular health awareness",
+            "Technology adoption for health monitoring"
+          ],
+        },
+        {
+          "api_name": "SetGoals",
+          "description": "Set or update fitness goals such as daily steps, active minutes, or weight targets",
+          "user_insights": [
+            "Health ambitions and self-expectations",
+            "Goal-setting realism vs. optimism",
+            "Commitment to lifestyle changes",
+            "Self-improvement priorities"
+          ],
+        }
+      ]
+    },
+    {
+      "app_name": "Chase",
+      "app_category": "Banking & Financial Management",
+      "relevant_life_domains": ["Finances & Material Living"],
+      "apis": [
+        {
+          "api_name": "GetBalance",
+          "description": "Check current account balance",
+          "user_insights": [
+            "Financial awareness and monitoring frequency",
+            "Money anxiety or security levels",
+            "Account checking habits as stress indicator",
+            "Financial buffer comfort zone"
+          ],
+          "frequency": "high"
+        },
+        {
+          "api_name": "GetTransactions",
+          "description": "View recent transaction history with merchant details, amounts, and categories",
+          "user_insights": [
+            "Spending patterns across categories (dining, shopping, transportation)",
+            "Financial responsibility and tracking behavior",
+            "Lifestyle spending priorities",
+            "Cash flow management awareness"
+          ],
+          "frequency": "medium"
+        },
+        {
+          "api_name": "SearchTransactions",
+          "description": "Search for specific transactions by merchant, amount, or date range",
+          "user_insights": [
+            "Active financial management and recordkeeping",
+            "Expense dispute or verification needs",
+            "Tax preparation or budgeting diligence",
+            "Financial organization skills"
+          ],
+          "frequency": "low"
+        },
+        {
+          "api_name": "TransferMoney",
+          "description": "Transfer funds between accounts or to other people",
+          "user_insights": [
+            "Liquidity management strategies",
+            "Savings discipline and allocation",
+            "Financial support relationships (family, friends)",
+            "Multi-account optimization behavior"
+          ],
+        },
+        {
+          "api_name": "PayBill",
+          "description": "Pay bills such as utilities, credit cards, or subscriptions",
+          "user_insights": [
+            "Financial responsibility and payment timeliness",
+            "Recurring expense patterns",
+            "Bill management automation preferences",
+            "Essential vs. discretionary spending balance"
+          ],
+        }
+      ]
+    },
+    {
+      "app_name": "Robinhood",
+      "app_category": "Investment & Trading",
+      "relevant_life_domains": ["Finances & Material Living"],
+      "apis": [
+        {
+          "api_name": "GetPortfolio",
+          "description": "View current investment holdings, positions, and portfolio value",
+          "user_insights": [
+            "Investment style (aggressive vs. conservative)",
+            "Asset diversification sophistication",
+            "Portfolio monitoring frequency and anxiety",
+            "Wealth accumulation and investment commitment"
+          ],
+        },
+        {
+          "api_name": "GetWatchlist",
+          "description": "View list of stocks or crypto being monitored for potential investment",
+          "user_insights": [
+            "Investment research and planning behavior",
+            "Market sector interests",
+            "Risk appetite indicators through watchlist choices",
+            "Patient vs. impulsive investing approach"
+          ],
+        },
+        {
+          "api_name": "SearchStocks",
+          "description": "Search for stocks or crypto by symbol or company name",
+          "user_insights": [
+            "Active investment research intensity",
+            "Market opportunity exploration",
+            "Financial curiosity and learning engagement",
+            "New investment consideration frequency"
+          ],
+        },
+        {
+          "api_name": "GetStockQuote",
+          "description": "View current price, change, and details for a specific stock or crypto",
+          "user_insights": [
+            "Market monitoring habits and timing",
+            "Price sensitivity and entry point strategy",
+            "Information-seeking before decisions",
+            "Investment due diligence thoroughness"
+          ],
+        },
+        {
+          "api_name": "BuyStock",
+          "description": "Execute a purchase of stocks or crypto",
+          "user_insights": [
+            "Investment decision-making confidence",
+            "Capital deployment aggressiveness",
+            "Market timing beliefs and behavior",
+            "Financial risk tolerance in action"
+          ],
+        },
+        {
+          "api_name": "SellStock",
+          "description": "Execute a sale of stocks or crypto",
+          "user_insights": [
+            "Profit-taking vs. loss-cutting discipline",
+            "Emotional response to market volatility",
+            "Exit strategy sophistication",
+            "Portfolio rebalancing awareness"
+          ], 
+        }
+      ]
+    },
+    {
+      "app_name": "WhatsApp",
+      "app_category": "Instant Messaging",
+      "relevant_life_domains": ["Family & Close Relationships", "Social & Community"],
+      "apis": [
+        {
+          "api_name": "GetMessages",
+          "description": "Retrieve message history from a specific contact or group",
+          "user_insights": [
+            "Communication frequency with different relationships",
+            "Relationship intimacy and depth through message volume",
+            "Conversation review and reminiscence behavior",
+            "Social network structure and priority contacts"
+          ],
+        },
+        {
+          "api_name": "SendMessage",
+          "description": "Send a text message to a contact or group",
+          "user_insights": [
+            "Communication initiation patterns",
+            "Message length and conversation depth preferences",
+            "Response speed and availability signals",
+            "Relationship maintenance effort and priorities"
+          ],
+        },
+        {
+          "api_name": "SendMedia",
+          "description": "Send photos, videos, or voice messages",
+          "user_insights": [
+            "Rich communication preferences",
+            "Life moment sharing behavior",
+            "Visual vs. text communication style",
+            "Intimacy expression through media types"
+          ],
+        }
+      ]
+    },
+    {
+      "app_name": "Gmail",
+      "app_category": "Email",
+      "relevant_life_domains": ["Work & Education", "Social & Community"],
+      "apis": [
+        {
+          "api_name": "GetInbox",
+          "description": "Retrieve current inbox emails with previews and metadata",
+          "user_insights": [
+            "Email volume as work intensity indicator",
+            "Inbox management style (inbox zero vs. accumulator)",
+            "Information overload levels",
+            "Professional communication burden"
+          ],
+          "frequency": "very_high"
+        },
+        {
+          "api_name": "ReadEmail",
+          "description": "Open and read a specific email",
+          "user_insights": [
+            "Email prioritization and triage decisions",
+            "Information processing speed",
+            "Attention allocation to different senders",
+            "Email response time patterns"
+          ],
+        },
+        {
+          "api_name": "SendEmail",
+          "description": "Compose and send a new email",
+          "user_insights": [
+            "Proactive communication and initiative",
+            "Professional relationship building",
+            "Email formality and communication style",
+            "Work productivity and output generation"
+          ],
+        },
+        {
+          "api_name": "ReplyEmail",
+          "description": "Reply to a received email",
+          "user_insights": [
+            "Responsiveness and reliability",
+            "Communication reciprocity patterns",
+            "Reply speed by sender relationship",
+            "Professional courtesy and engagement"
+          ],
+        }
+      ]
+    },
+    {
+      "app_name": "LinkedIn",
+      "app_category": "Professional Networking",
+      "relevant_life_domains": ["Work & Education", "Social & Community"],
+      "apis": [
+        {
+          "api_name": "UpdateProfile",
+          "description": "Update profile information such as headline, summary, or photo",
+          "user_insights": [
+            "Personal branding awareness and effort",
+            "Career positioning and messaging",
+            "Professional identity evolution",
+            "Job market readiness signals"
+          ],
+        },
+        {
+          "api_name": "AddExperience",
+          "description": "Add or update work experience entries",
+          "user_insights": [
+            "Career progression and mobility",
+            "Achievement documentation habits",
+            "Professional milestone celebration",
+            "Resume maintenance discipline"
+          ],
+        },
+        {
+          "api_name": "AddSkill",
+          "description": "Add new skills to profile",
+          "user_insights": [
+            "Skill development and learning focus areas",
+            "Career development strategy",
+            "Professional growth mindset",
+            "Market positioning through skill signals"
+          ],
+        },
+        {
+          "api_name": "PostUpdate",
+          "description": "Share a post, article, or thought on LinkedIn feed",
+          "user_insights": [
+            "Thought leadership aspirations",
+            "Professional content creation and sharing",
+            "Industry engagement and visibility efforts",
+            "Personal brand building activity"
+          ],
+        },
+        {
+          "api_name": "GetFeed",
+          "description": "View LinkedIn feed with posts from connections and followed pages",
+          "user_insights": [
+            "Professional content consumption habits",
+            "Industry news and trend awareness",
+            "Learning and development engagement",
+            "Professional network monitoring"
+          ],
+        },
+        {
+          "api_name": "LikePost",
+          "description": "Like a post in the feed",
+          "user_insights": [
+            "Content preference signals",
+            "Network engagement and support behavior",
+            "Professional relationship nurturing",
+            "Visibility and presence maintenance"
+          ],
+        },
+        {
+          "api_name": "CommentOnPost",
+          "description": "Comment on a post to share thoughts or engage in discussion",
+          "user_insights": [
+            "Deep engagement with professional content",
+            "Thought leadership and expertise demonstration",
+            "Network relationship deepening efforts",
+            "Discussion participation willingness"
+          ],
+        },
+        {
+          "api_name": "SearchJobs",
+          "description": "Search for job openings by keywords, location, or company",
+          "user_insights": [
+            "Active job seeking status and intensity",
+            "Career change considerations",
+            "Job market exploration and dissatisfaction signals",
+            "Career goals and aspirations"
+          ],
+        },
+        {
+          "api_name": "ApplyJob",
+          "description": "Submit application for a job posting",
+          "user_insights": [
+            "Serious job transition intent",
+            "Job application volume and selectivity",
+            "Career change readiness",
+            "Job search commitment level"
+          ],
+        },
+        {
+          "api_name": "SendConnectionRequest",
+          "description": "Send a connection request to another LinkedIn user",
+          "user_insights": [
+            "Networking proactivity and strategy",
+            "Professional relationship building efforts",
+            "Career network expansion goals",
+            "Social capital investment behavior"
+          ],
+        }
+      ]
+    },
+    {
+      "app_name": "Notion",
+      "app_category": "Knowledge Management & Productivity",
+      "relevant_life_domains": ["Work & Education", "Health & Self-care"],
+      "apis": [
+        {
+          "api_name": "GetPages",
+          "description": "Retrieve list of pages and notebooks in workspace",
+          "user_insights": [
+            "Knowledge management system scope",
+            "Organization complexity and structure",
+            "Content creation volume and diversity",
+            "Digital workspace organization style"
+          ],
+        },
+        {
+          "api_name": "CreatePage",
+          "description": "Create a new page or note",
+          "user_insights": [
+            "Knowledge production and documentation habits",
+            "Note-taking frequency and triggers",
+            "Thinking and learning process externalization",
+            "Creative or analytical work patterns"
+          ],
+        },
+        {
+          "api_name": "UpdatePage",
+          "description": "Edit and update existing page content",
+          "user_insights": [
+            "Iterative thinking and refinement behavior",
+            "Content maintenance and quality standards",
+            "Knowledge evolution and updates tracking",
+            "Perfectionism vs. completion tendencies"
+          ],
+        },
+        {
+          "api_name": "SearchContent",
+          "description": "Search across all pages and databases",
+          "user_insights": [
+            "Information retrieval efficiency needs",
+            "Knowledge reuse and reference behavior",
+            "Memory reliance vs. search dependence",
+            "Information organization effectiveness"
+          ],
+        },
+        {
+          "api_name": "CreateDatabaseEntry",
+          "description": "Add entry to a database (task, project, habit tracker, etc.)",
+          "user_insights": [
+            "Structured productivity and tracking systems",
+            "Task and project management discipline",
+            "Quantified self and habit tracking behavior",
+            "Goal-oriented planning and execution"
+          ],
+        }
+      ]
+    },
+    {
+      "app_name": "Netflix",
+      "app_category": "Video Streaming",
+      "relevant_life_domains": ["Leisure & Media Consumption"],
+      "apis": [
+        {
+          "api_name": "SearchContent",
+          "description": "Search for movies, TV shows, or documentaries",
+          "user_insights": [
+            "Active content discovery preferences",
+            "Genre and topic interests",
+            "Specific viewing intent vs. browsing",
+            "Decision-making approach for entertainment"
+          ],
+          "frequency": "medium"
+        },
+        {
+          "api_name": "ShowTitle",
+          "description": "View detailed information about a specific title including description, cast, and ratings",
+          "user_insights": [
+            "Content evaluation thoroughness",
+            "Decision-making deliberation for viewing",
+            "Quality consciousness and selectivity",
+            "Time spent on content selection"
+          ],
+        },
+        {
+          "api_name": "PlayContent",
+          "description": "Start playing a movie or TV show episode",
+          "user_insights": [
+            "Viewing frequency and binge-watching patterns",
+            "Content preferences and genre tastes",
+            "Viewing time distribution (weekday vs. weekend, time of day)",
+            "Watch duration and completion rates",
+            "Subscription tier for streaming quality"
+          ],
+        },
+        {
+          "api_name": "AddToMyList",
+          "description": "Add a title to personal watchlist",
+          "user_insights": [
+            "Content curation and planning behavior",
+            "Delayed viewing intentions",
+            "Aspiration vs. actual viewing gap",
+            "List management and follow-through"
+          ],
+        },
+        {
+          "api_name": "RateContent",
+          "description": "Rate a watched title with thumbs up or down",
+          "user_insights": [
+            "Feedback and opinion expression willingness",
+            "Algorithm training engagement",
+            "Content evaluation standards and taste clarity",
+            "Platform interaction and investment"
+          ],
+        }
+      ]
+    },
+    {
+      "app_name": "Goodreads",
+      "app_category": "Book Tracking & Reviews",
+      "relevant_life_domains": ["Leisure & Media Consumption", "Work & Education"],
+      "apis": [
+        {
+          "api_name": "SearchBooks",
+          "description": "Search for books by title, author, or keywords",
+          "user_insights": [
+            "Reading interests and topic preferences",
+            "Book discovery methods (recommendations vs. direct search)",
+            "Genre preferences and reading diversity",
+            "Intellectual curiosity areas"
+          ],
+        },
+        {
+          "api_name": "ShowBook",
+          "description": "View detailed information about a specific book including synopsis, ratings, and reviews",
+          "user_insights": [
+            "Reading decision-making thoroughness",
+            "Book selection criteria and standards",
+            "Review reliance and opinion-seeking",
+            "Quality consciousness for reading material"
+          ],
+        },
+        {
+          "api_name": "AddToShelf",
+          "description": "Add a book to a specific shelf (want-to-read, currently-reading, read)",
+          "user_insights": [
+            "Reading planning and intention setting",
+            "Book collection curation behavior",
+            "Reading progress tracking discipline",
+            "Aspirational vs. actual reading habits"
+          ],
+        },
+        {
+          "api_name": "RateBook",
+          "description": "Rate a book on a 1-5 star scale",
+          "user_insights": [
+            "Reading engagement and completion",
+            "Critical thinking and evaluation skills",
+            "Rating standards and generosity",
+            "Personal taste clarity and confidence"
+          ],
+          "frequency": "low"
+        },
+        {
+          "api_name": "WriteReview",
+          "description": "Write a text review for a book",
+          "user_insights": [
+            "Deep reflection on reading experience",
+            "Written expression and articulation skills",
+            "Willingness to share opinions publicly",
+            "Intellectual engagement depth with material"
+          ],
+          "frequency": "very_low"
+        }
+      ]
+    },
+    {
+      "app_name": "Instagram",
+      "app_category": "Social Media & Photo Sharing",
+      "relevant_life_domains": ["Social & Community", "Leisure & Media Consumption"],
+      "apis": [
+        {
+          "api_name": "PostStory",
+          "description": "Post a photo or video to Instagram Stories (24-hour temporary content)",
+          "user_insights": [
+            "Daily life sharing frequency and openness",
+            "Casual vs. curated content preferences",
+            "Social presence maintenance",
+            "Ephemeral vs. permanent sharing comfort"
+          ],
+        },
+        {
+          "api_name": "LikePost",
+          "description": "Like a post in the feed",
+          "user_insights": [
+            "Social engagement levels and generosity",
+            "Content consumption patterns and interests",
+            "Relationship acknowledgment behavior",
+            "Feed scrolling depth and time"
+          ],
+        },
+        {
+          "api_name": "CommentOnPost",
+          "description": "Comment on a post",
+          "user_insights": [
+            "Deep social engagement willingness",
+            "Relationship investment and maintenance",
+            "Public communication comfort",
+            "Thoughtfulness in interactions"
+          ],
+        },
+        {
+          "api_name": "SendDirectMessage",
+          "description": "Send a private message to another user",
+          "user_insights": [
+            "Private communication preferences",
+            "Content sharing behavior (memes, posts, personal messages)",
+            "Close friendship maintenance",
+            "Social initiation patterns"
+          ],
+        },
+        {
+          "api_name": "FollowUser",
+          "description": "Follow another user's account",
+          "user_insights": [
+            "Social network expansion behavior",
+            "Interest-based following vs. social obligation",
+            "Content curation preferences",
+            "New relationship openness"
+          ],
+        },
+        {
+          "api_name": "UnfollowUser",
+          "description": "Unfollow a user's account",
+          "user_insights": [
+            "Social network curation and pruning",
+            "Relationship ending or distancing",
+            "Content quality standards enforcement",
+            "Digital boundary setting"
+          ],
+        },
+        {
+          "api_name": "GetFollowing",
+          "description": "View list of accounts currently followed",
+          "user_insights": [
+            "Social network size and composition review",
+            "Following audit and cleanup consideration",
+            "Social comparison behavior",
+            "Network management awareness"
+          ],
+        }
+      ]
+    },
+    {
+      "app_name": "Google",
+      "app_category": "Search Engine",
+      "life_domains": ["All domains - cross-cutting tool"],
+      "apis": [
+        {
+          "api_name": "Search",
+          "description": "Perform a web search and receive list of results",
+          "user_insights": [
+            "Information needs and curiosity areas",
+            "Search query formulation sophistication",
+            "Problem-solving approach (search vs. ask AI)",
+            "Fact-checking and verification habits"
+          ],
+        },
+        {
+          "api_name": "ClickResult",
+          "description": "Click on a specific search result to view the webpage",
+          "user_insights": [
+            "Result evaluation and selection criteria",
+            "Source trustworthiness judgment",
+            "Information gathering depth",
+            "Click position bias (top results vs. deeper exploration)"
+          ],
+        }
+      ]
+    },
+    {
+      "app_name": "LLM Assistant",
+      "app_category": "AI Assistant",
+      "relevant_life_domains": ["All domains - cross-cutting tool"],
+      "apis": [
+        {
+          "api_name": "CreateConversation",
+          "description": "Start a new conversation thread with the AI assistant",
+          "user_insights": [
+            "Task switching and compartmentalization",
+            "New problem or topic initiation",
+            "AI usage frequency and dependency",
+            "Conversation organization preferences"
+          ],
+        },
+        {
+          "api_name": "ContinueConversation",
+          "description": "Send a message in an existing conversation thread",
+          "user_insights": [
+            "Conversation continuity and depth",
+            "Complex task breakdown and iteration",
+            "Clarification and refinement patterns",
+            "Multi-turn interaction engagement",
+            "Query types and domains (work, learning, creative, personal)",
+            "Problem-solving approach and follow-through"
+          ],
+        }
+      ]
+    }
+  ]
+}
 
 ---
 
@@ -853,11 +1412,11 @@ Each event must specify `app_name` and `api_name`. Below are the available apps 
 
 | State Category | Operation | Event Pattern | Typical APIs |
 |---------------|-----------|---------------|--------------|
-| **user_attributes_state** | add | Acquisition: research → decision → acquisition → usage | LLM.Chat, Google.Search, Amazon.SearchProducts, Amazon.Checkout, etc. |
-| | modify | Transition: awareness → adjustment → new usage | LLM.Chat, various usage APIs |
+| **user_attributes_state** | add | Acquisition: research → decision → acquisition → usage | LLM Assistant.ContinueConversation, Google.Search, Amazon.SearchProducts, Amazon.Checkout, etc. |
+| | modify | Transition: awareness → adjustment → new usage | LLM Assistant.ContinueConversation, various usage APIs |
 | | stable | Ongoing usage | Usage APIs relevant to attribute |
-| **habits_state** | acquire | Establishment: exploration → setup → execution (repeated) | LLM.Chat, Calendar.CreateEvent, habit-specific APIs |
-| | adjust | Adaptation: reason awareness → modification → adjusted execution | LLM.Chat, Calendar.EditEvent, habit-specific APIs |
+| **habits_state** | acquire | Establishment: exploration → setup → execution (repeated) | LLM Assistant.ContinueConversation, Notion.CreateDatabaseEntry, habit-specific APIs |
+| | adjust | Adaptation: reason awareness → modification → adjusted execution | LLM Assistant.ContinueConversation, Notion.UpdatePage, habit-specific APIs |
 | | stable | Execution (repeated) | Habit-specific APIs with schedule_dates |
 | **preferences_state** | refine/shift | Evolution: change reason awareness → experimentation → new demonstration | Various choice-making APIs |
 | | stable | Demonstration through choices | Various choice-making APIs |
@@ -880,23 +1439,23 @@ Each event must specify `app_name` and `api_name`. Below are the available apps 
 2. **Research-Heavy Path:**
    - Thorough comparison and evaluation
    - Multiple information sources
-   - Example: LLM.Chat (research) → Google.Search → Amazon.SearchProducts → Amazon.ReadReviews → Amazon.ShowProduct (multiple products) → Checkout
+   - Example: LLM Assistant.ContinueConversation (research) → Google.Search → Amazon.SearchProducts → Amazon.ShowProduct → Amazon.ShowProduct (multiple products) → Checkout
 
 3. **Social Validation Path:**
    - Consulting others or reading reviews extensively
-   - Example: Message.SendMessage (asking friends) → Amazon.ReadReviews → Amazon.ShowProduct → Checkout
+   - Example: WhatsApp.SendMessage (asking friends) → Amazon.ShowProduct → Amazon.ShowProduct → Checkout
 
 4. **Trial-First Path:**
    - User tries before full commitment (where applicable)
-   - Example: Spotify.SearchSongs (trial song) → Spotify.PlaySong → LLM.Chat (evaluate) → [subsequent acquisition]
+   - Example: Spotify.SearchSongs (trial song) → Spotify.PlaySong → LLM Assistant.ContinueConversation (evaluate) → [subsequent acquisition]
 
 5. **Problem-Driven Path:**
    - Reactive acquisition due to specific need
-   - Example: Google.Search (problem symptoms) → LLM.Chat (solutions) → Amazon.SearchProducts → Checkout
+   - Example: Google.Search (problem symptoms) → LLM Assistant.ContinueConversation (solutions) → Amazon.SearchProducts → Checkout
 
 6. **Gradual/Delayed Path:**
    - User gathers information over time before deciding
-   - Example: Amazon.SearchProducts (Day 1) → Amazon.ShowProduct (Day 3) → Amazon.ReadReviews (Day 5) → Amazon.AddToCart (Day 7) → Checkout (Day 10)
+   - Example: Amazon.SearchProducts (Day 1) → Amazon.ShowProduct (Day 3) → Amazon.ShowProduct (Day 5) → Amazon.AddToCart (Day 7) → Checkout (Day 10)
 
 **Generation Guidelines:**
 - **MUST include change_reason demonstration:** If `change_reason` exists, include 1-2 events that make this reason observable
@@ -929,8 +1488,8 @@ Each event must specify `app_name` and `api_name`. Below are the available apps 
         "schedule_dates": ["2024-01-05"],
         "time": "10:30:00"
       },
-      "app_name": "LLM",
-      "api_name": "Chat",
+      "app_name": "LLM Assistant",
+      "api_name": "ContinueConversation",
       "user_intent": "Decision support: evaluating GitHub Copilot capabilities for legacy codebase"
     },
     {
@@ -938,8 +1497,8 @@ Each event must specify `app_name` and `api_name`. Below are the available apps 
         "schedule_dates": ["2024-01-08"],
         "time": "14:20:00"
       },
-      "app_name": "LLM",
-      "api_name": "Chat",
+      "app_name": "LLM Assistant",
+      "api_name": "ContinueConversation",
       "user_intent": "Initial usage: using ChatGPT to generate unit tests for firmware module"
     }
   ]
@@ -981,26 +1540,26 @@ Each event must specify `app_name` and `api_name`. Below are the available apps 
 
 1. **Planned & Prepared:**
    - User researches habit formation strategies
-   - Creates calendar events and reminders
-   - Example: LLM.Chat (habit research) → Calendar.CreateEvent → Calendar.SetReminder → [executions]
+   - Creates habit-tracking entries and a setup routine
+   - Example: LLM Assistant.ContinueConversation (habit research) → Notion.CreateDatabaseEntry → Notion.UpdatePage → [executions]
 
 2. **Inspiration-Driven:**
    - User gets inspired and starts immediately
    - Minimal planning
-   - Example: Google.SearchNews (inspiring article) → Fitness.SetGoal → [executions start next day]
+   - Example: Google.Search (inspiring article) → Fitbit.SetGoals → [executions start next day]
 
 3. **Problem-Solving:**
    - Habit formed to solve a specific issue
-   - Example: LLM.Chat (addressing problem) → Google.Search (solutions) → Calendar.CreateEvent → [executions]
+   - Example: LLM Assistant.ContinueConversation (addressing problem) → Google.Search (solutions) → Notion.CreateDatabaseEntry → [executions]
 
 4. **Gradual Build-Up:**
    - User eases into the habit
    - Early executions are exploratory
-   - Example: [single trial execution] → LLM.Chat (evaluate) → Calendar.CreateEvent (commit) → [regular executions]
+   - Example: [single trial execution] → LLM Assistant.ContinueConversation (evaluate) → Notion.CreateDatabaseEntry (commit) → [regular executions]
 
 5. **Social-Influenced:**
    - Habit adopted due to social influence
-   - Example: Message.GetMessages (friend recommendation) → Google.Search (research) → [executions]
+   - Example: WhatsApp.GetMessages (friend recommendation) → Google.Search (research) → [executions]
 
 **Generation Guidelines:**
 - **MUST include change_reason demonstration:** Include 1-2 events showing why the habit was acquired
@@ -1025,8 +1584,8 @@ Each event must specify `app_name` and `api_name`. Below are the available apps 
         "schedule_dates": ["2024-01-03"],
         "time": "20:45:00"
       },
-      "app_name": "LLM",
-      "api_name": "Chat",
+      "app_name": "LLM Assistant",
+      "api_name": "ContinueConversation",
       "user_intent": "Change reason awareness: exploring how AI tools handle legacy C++ codebases"
     },
     {
@@ -1034,8 +1593,8 @@ Each event must specify `app_name` and `api_name`. Below are the available apps 
         "schedule_dates": ["2024-01-04"],
         "time": "14:30:00"
       },
-      "app_name": "Calendar",
-      "api_name": "CreateEvent",
+      "app_name": "Notion",
+      "api_name": "CreateDatabaseEntry",
       "user_intent": "Habit establishment: blocking Friday afternoons for dedicated AI tool evaluation"
     },
     {
@@ -1049,8 +1608,8 @@ Each event must specify `app_name` and `api_name`. Below are the available apps 
         "end_time": "16:30:00",
         "note": "Weekly Friday afternoon sessions. Early weeks focus on GitHub Copilot evaluation with simple refactoring tasks. Mid-period sessions test ChatGPT for unit test generation. Later weeks experiment with AI-assisted debugging on legacy modules."
       },
-      "app_name": "LLM",
-      "api_name": "Chat",
+      "app_name": "LLM Assistant",
+      "api_name": "ContinueConversation",
       "user_intent": "Habit execution: regular AI tool experimentation evolving from basic code completion to complex legacy codebase interactions"
     }
   ]
@@ -1065,7 +1624,7 @@ Each event must specify `app_name` and `api_name`. Below are the available apps 
 
 **Generation Guidelines:**
 - Include events showing why adjustment was needed (change_reason)
-- Show adjustment actions (e.g., Calendar.EditEvent, LLM.Chat for new approach)
+- Show adjustment actions (e.g., Notion.UpdatePage, LLM Assistant.ContinueConversation for new approach)
 - Generate recurring execution events with the new pattern
 
 #### 6.3.3 Habits with `stable` Operation
@@ -1103,7 +1662,7 @@ Each event must specify `app_name` and `api_name`. Below are the available apps 
         "end_time": "10:30:00",
         "note": "Daily morning code review sessions on all weekdays."
       },
-      "app_name": "SimpleNote",
+      "app_name": "Notion",
       "api_name": "CreateNote",
       "user_intent": "Daily habit execution: documenting code review findings and maintaining review checklist. Early weeks focus on familiarizing with new team members' coding styles; later weeks incorporate mentoring notes for junior engineers."
     }
@@ -1123,15 +1682,15 @@ Each event must specify `app_name` and `api_name`. Below are the available apps 
 
 1. **Sudden Shift:**
    - User encounters a compelling reason and shifts quickly
-   - Example: Google.SearchNews (new insight) → LLM.Chat (evaluating new approach) → [new behaviors immediately]
+   - Example: Google.Search (new insight) → LLM Assistant.ContinueConversation (evaluating new approach) → [new behaviors immediately]
 
 2. **Gradual Refinement:**
    - User tries new approach alongside old, then transitions
-   - Example: [mix of old and new behaviors] → LLM.Chat (reflection) → [predominantly new behaviors]
+   - Example: [mix of old and new behaviors] → LLM Assistant.ContinueConversation (reflection) → [predominantly new behaviors]
 
 3. **Problem-Prompted:**
    - User changes preference due to dissatisfaction with old approach
-   - Example: SimpleNote.CreateNote (documenting frustration) → LLM.Chat (exploring alternatives) → [new behaviors]
+   - Example: Notion.CreatePage (documenting frustration) → LLM Assistant.ContinueConversation (exploring alternatives) → [new behaviors]
 
 **Generation Guidelines:**
 - **MUST demonstrate change_reason:** Include 1-2 events that show why the preference evolved
@@ -1155,8 +1714,8 @@ Each event must specify `app_name` and `api_name`. Below are the available apps 
         "schedule_dates": ["2024-01-06"],
         "time": "16:45:00"
       },
-      "app_name": "LLM",
-      "api_name": "Chat",
+      "app_name": "LLM Assistant",
+      "api_name": "ContinueConversation",
       "user_intent": "Change reason: discovering that AI-assisted coding accelerates project-based learning for new technologies"
     },
     {
@@ -1164,8 +1723,8 @@ Each event must specify `app_name` and `api_name`. Below are the available apps 
         "schedule_dates": ["2024-01-15"],
         "time": "21:00:00"
       },
-      "app_name": "LLM",
-      "api_name": "Chat",
+      "app_name": "LLM Assistant",
+      "api_name": "ContinueConversation",
       "user_intent": "New preference demonstration: using AI to refactor complex state machine instead of reading documentation"
     },
     {
@@ -1173,8 +1732,8 @@ Each event must specify `app_name` and `api_name`. Below are the available apps 
         "schedule_dates": ["2024-02-03"],
         "time": "15:30:00"
       },
-      "app_name": "LLM",
-      "api_name": "Chat",
+      "app_name": "LLM Assistant",
+      "api_name": "ContinueConversation",
       "user_intent": "New preference demonstration: prompt-engineering test scripts via AI rather than searching StackOverflow"
     },
     {
@@ -1182,8 +1741,8 @@ Each event must specify `app_name` and `api_name`. Below are the available apps 
         "schedule_dates": ["2024-02-20"],
         "time": "19:15:00"
       },
-      "app_name": "LLM",
-      "api_name": "Chat",
+      "app_name": "LLM Assistant",
+      "api_name": "ContinueConversation",
       "user_intent": "New preference demonstration: building toy project with AI assistance to test code generation limits on ARM assembly"
     }
   ]
@@ -1204,7 +1763,7 @@ Each event must specify `app_name` and `api_name`. Below are the available apps 
 
 2. **Avoidance-Based Demonstration:**
    - User avoids certain options or patterns
-   - Example: User creates detailed docs (SimpleNote.CreateNote) to avoid meetings (implied by absence of Calendar.CreateEvent for calls)
+   - Example: User creates detailed docs (Notion.CreatePage) to avoid meetings (implied by absence of Notion.CreateDatabaseEntry for calls)
 
 3. **Active Organization:**
    - User organizes activities/content according to preference
@@ -1212,7 +1771,7 @@ Each event must specify `app_name` and `api_name`. Below are the available apps 
 
 4. **Consistency Across Contexts:**
    - Preference shows up in different contexts
-   - Example: Preference for async communication shown in Message.SendMessage (detailed messages) + SimpleNote.CreateNote (documentation) + Email (if available)
+   - Example: Preference for async communication shown in WhatsApp.SendMessage (detailed messages) + Notion.CreatePage (documentation) + Gmail
 
 **Generation Guidelines:**
 - **Generate 3-5 events demonstrating preference**
@@ -1236,7 +1795,7 @@ Each event must specify `app_name` and `api_name`. Below are the available apps 
         "schedule_dates": ["2024-01-11"],
         "time": "10:15:00"
       },
-      "app_name": "Message",
+      "app_name": "WhatsApp",
       "api_name": "SendMessage",
       "user_intent": "Preference demonstration: sending detailed technical message with diagrams rather than requesting a meeting"
     },
@@ -1245,7 +1804,7 @@ Each event must specify `app_name` and `api_name`. Below are the available apps 
         "schedule_dates": ["2024-01-18"],
         "time": "14:45:00"
       },
-      "app_name": "SimpleNote",
+      "app_name": "Notion",
       "api_name": "CreateNote",
       "user_intent": "Preference demonstration: authoring 10-page technical specification to clarify design instead of scheduling design meeting"
     },
@@ -1254,7 +1813,7 @@ Each event must specify `app_name` and `api_name`. Below are the available apps 
         "schedule_dates": ["2024-02-07"],
         "time": "16:30:00"
       },
-      "app_name": "Message",
+      "app_name": "WhatsApp",
       "api_name": "SendMessage",
       "user_intent": "Preference demonstration: requesting written agenda before accepting sync meeting invitation"
     },
@@ -1263,7 +1822,7 @@ Each event must specify `app_name` and `api_name`. Below are the available apps 
         "schedule_dates": ["2024-03-05"],
         "time": "11:20:00"
       },
-      "app_name": "SimpleNote",
+      "app_name": "Notion",
       "api_name": "EditNote",
       "user_intent": "Preference demonstration: updating team status in shared note instead of giving verbal briefing"
     }
@@ -1301,9 +1860,9 @@ Scenario C: **Habit execution involves an attribute**
 
 **When NOT to Merge:**
 
-- ❌ Multiple items have the same `change_reason` but are acquired through independent events
-- ❌ Items are thematically related but don't directly interweave in actual usage
-- ❌ More than 2 items are involved
+- Multiple items have the same `change_reason` but are acquired through independent events
+- Items are thematically related but don't directly interweave in actual usage
+- More than 2 items are involved
 
 **Example of Merged Chain:**
 ```json
@@ -1404,43 +1963,43 @@ Scenario C: **Habit execution involves an attribute**
 ### 7.4 Mandatory Fields
 
 **For every event:**
-- ✅ `time_specification` (with `schedule_dates`)
-- ✅ `app_name` (must match Section 5)
-- ✅ `api_name` (must match Section 5)
-- ✅ `user_intent` (clear explanation tied to state item)
+- `time_specification` (with `schedule_dates`)
+-  `app_name` (must match Section 5)
+- `api_name` (must match Section 5)
+- `user_intent` (clear explanation tied to state item)
 
 **For every chain:**
-- ✅ `related_state_items` (at least one, max two)
-- ✅ `events` (at least one event)
+- `related_state_items` (at least one, max two)
+- `events` (at least one event)
 
 **Do NOT include:**
-- ❌ Event-level `description` field (use `user_intent` instead)
-- ❌ Time ranges or cadence strings in `time_specification`
-- ❌ Apps or APIs not listed in Section 5
+- Event-level `description` field (use `user_intent` instead)
+- Time ranges or cadence strings in `time_specification`
+- Apps or APIs not listed in Section 5
 
 ### 7.5 Anti-Patterns to Avoid
 
 **Pattern Repetition:**
-- ❌ Don't use "search → view → purchase" for every attribute acquisition
-- ❌ Don't use "research → calendar setup → execution" for every habit
-- ✅ Vary acquisition paths based on user context and attribute type
+-  Don't use "search → view → purchase" for every attribute acquisition
+-  Don't use "research → habit setup → execution" for every habit
+- Vary acquisition paths based on user context and attribute type
 
 **Unrealistic Clustering:**
-- ❌ Don't put 10 events on the same day unless they're genuinely related
-- ✅ Spread events naturally across the window
+-  Don't put 10 events on the same day unless they're genuinely related
+-  Spread events naturally across the window
 
 **Over-Explaining:**
-- ❌ Don't write novel-length `user_intent` descriptions
-- ✅ Be concise: one sentence explaining why this event occurs
+-  Don't write novel-length `user_intent` descriptions
+-  Be concise: one sentence explaining why this event occurs
 
 **Ignoring Change Reasons:**
-- ❌ Don't skip demonstrating `change_reason` when it exists
-- ✅ Always include events that make the reason observable
+-  Don't skip demonstrating `change_reason` when it exists
+-  Always include events that make the reason observable
 
 **Generic User Intents:**
-- ❌ "User is using the app"
-- ❌ "Executing the habit"
-- ✅ "Habit execution: daily code review with focus on low-latency patterns, documenting findings for team knowledge base"
+-  "User is using the app"
+-  "Executing the habit"
+-  "Habit execution: daily code review with focus on low-latency patterns, documenting findings for team knowledge base"
 
 ---
 
@@ -1473,7 +2032,7 @@ Scenario C: **Habit execution involves an attribute**
         "time": "21:00:00"
       },
       "app_name": "Google",
-      "api_name": "SearchNews",
+      "api_name": "Search",
       "user_intent": "Information seeking: checking recent developments in AI code generation tools"
     },
     {
@@ -1481,8 +2040,8 @@ Scenario C: **Habit execution involves an attribute**
         "schedule_dates": ["2024-01-05"],
         "time": "14:15:00"
       },
-      "app_name": "LLM",
-      "api_name": "Chat",
+      "app_name": "LLM Assistant",
+      "api_name": "ContinueConversation",
       "user_intent": "Decision support: evaluating GitHub Copilot vs ChatGPT for C++ legacy codebases"
     },
     {
@@ -1490,8 +2049,8 @@ Scenario C: **Habit execution involves an attribute**
         "schedule_dates": ["2024-01-10"],
         "time": "16:30:00"
       },
-      "app_name": "LLM",
-      "api_name": "Chat",
+      "app_name": "LLM Assistant",
+      "api_name": "ContinueConversation",
       "user_intent": "Skill acquisition: experimenting with AI-generated unit test for firmware module"
     },
     {
@@ -1499,8 +2058,8 @@ Scenario C: **Habit execution involves an attribute**
         "schedule_dates": ["2024-01-22"],
         "time": "11:00:00"
       },
-      "app_name": "LLM",
-      "api_name": "Chat",
+      "app_name": "LLM Assistant",
+      "api_name": "ContinueConversation",
       "user_intent": "Post-acquisition usage: using AI to refactor complex state machine implementation"
     },
     {
@@ -1508,8 +2067,8 @@ Scenario C: **Habit execution involves an attribute**
         "schedule_dates": ["2024-02-14"],
         "time": "15:45:00"
       },
-      "app_name": "LLM",
-      "api_name": "Chat",
+      "app_name": "LLM Assistant",
+      "api_name": "ContinueConversation",
       "user_intent": "Post-acquisition usage: generating boilerplate code for new sensor integration module"
     }
   ]
@@ -1533,8 +2092,8 @@ Scenario C: **Habit execution involves an attribute**
         "schedule_dates": ["2024-01-08"],
         "time": "19:15:00"
       },
-      "app_name": "LLM",
-      "api_name": "Chat",
+      "app_name": "LLM Assistant",
+      "api_name": "ContinueConversation",
       "user_intent": "Change reason awareness: exploring Python for processing robotics telemetry logs more efficiently than current tools"
     },
     {
@@ -1542,8 +2101,8 @@ Scenario C: **Habit execution involves an attribute**
         "schedule_dates": ["2024-01-12"],
         "time": "21:30:00"
       },
-      "app_name": "LLM",
-      "api_name": "Chat",
+      "app_name": "LLM Assistant",
+      "api_name": "ContinueConversation",
       "user_intent": "Skill acquisition: learning NumPy basics for log analysis via interactive examples"
     },
     {
@@ -1551,8 +2110,8 @@ Scenario C: **Habit execution involves an attribute**
         "schedule_dates": ["2024-01-18"],
         "time": "10:00:00"
       },
-      "app_name": "LLM",
-      "api_name": "Chat",
+      "app_name": "LLM Assistant",
+      "api_name": "ContinueConversation",
       "user_intent": "Post-acquisition usage: using Pandas to parse and visualize motor performance data from test runs"
     },
     {
@@ -1560,7 +2119,7 @@ Scenario C: **Habit execution involves an attribute**
         "schedule_dates": ["2024-02-09"],
         "time": "13:45:00"
       },
-      "app_name": "SimpleNote",
+      "app_name": "Notion",
       "api_name": "CreateNote",
       "user_intent": "Post-acquisition usage: documenting Python analysis script for recurring telemetry review"
     }
@@ -1585,8 +2144,8 @@ Scenario C: **Habit execution involves an attribute**
         "schedule_dates": ["2024-01-02"],
         "time": "21:00:00"
       },
-      "app_name": "LLM",
-      "api_name": "Chat",
+      "app_name": "LLM Assistant",
+      "api_name": "ContinueConversation",
       "user_intent": "Change reason awareness: researching how to systematically evaluate AI tools for legacy C++ codebases"
     },
     {
@@ -1594,8 +2153,8 @@ Scenario C: **Habit execution involves an attribute**
         "schedule_dates": ["2024-01-04"],
         "time": "20:15:00"
       },
-      "app_name": "Calendar",
-      "api_name": "CreateEvent",
+      "app_name": "Notion",
+      "api_name": "CreateDatabaseEntry",
       "user_intent": "Habit establishment: scheduling recurring Friday afternoon block for AI tool experimentation"
     },
     {
@@ -1603,8 +2162,8 @@ Scenario C: **Habit execution involves an attribute**
         "schedule_dates": ["2024-01-04"],
         "time": "20:18:00"
       },
-      "app_name": "Calendar",
-      "api_name": "SetReminder",
+      "app_name": "Notion",
+      "api_name": "UpdatePage",
       "user_intent": "Habit establishment: adding reminder to maintain consistency and track progress"
     },
     {
@@ -1618,8 +2177,8 @@ Scenario C: **Habit execution involves an attribute**
         "end_time": "16:30:00",
         "note": "Weekly Friday experimentation sessions. January: focus on GitHub Copilot with basic refactoring. February: testing ChatGPT for unit test generation. March: advanced experiments with AI-assisted debugging on legacy modules."
       },
-      "app_name": "LLM",
-      "api_name": "Chat",
+      "app_name": "LLM Assistant",
+      "api_name": "ContinueConversation",
       "user_intent": "Habit execution: weekly AI tool evaluation sessions evolving from simple code completion to complex legacy codebase challenges"
     }
   ]
@@ -1654,7 +2213,7 @@ Scenario C: **Habit execution involves an attribute**
         "note": "Tuesday and Thursday evening reading sessions."
       },
       "app_name": "Google",
-      "api_name": "SearchNews",
+      "api_name": "Search",
       "user_intent": "Stable habit execution: staying current with embedded systems and industrial automation developments through biweekly evening reading"
     }
   ]
@@ -1678,8 +2237,8 @@ Scenario C: **Habit execution involves an attribute**
         "schedule_dates": ["2024-01-07"],
         "time": "16:20:00"
       },
-      "app_name": "LLM",
-      "api_name": "Chat",
+      "app_name": "LLM Assistant",
+      "api_name": "ContinueConversation",
       "user_intent": "Change reason awareness: discovering AI-assisted coding significantly accelerates project-based learning"
     },
     {
@@ -1687,8 +2246,8 @@ Scenario C: **Habit execution involves an attribute**
         "schedule_dates": ["2024-01-15"],
         "time": "21:15:00"
       },
-      "app_name": "LLM",
-      "api_name": "Chat",
+      "app_name": "LLM Assistant",
+      "api_name": "ContinueConversation",
       "user_intent": "New preference demonstration: using AI-pair programming to refactor state machine rather than reading manuals"
     },
     {
@@ -1696,8 +2255,8 @@ Scenario C: **Habit execution involves an attribute**
         "schedule_dates": ["2024-01-28"],
         "time": "19:45:00"
       },
-      "app_name": "LLM",
-      "api_name": "Chat",
+      "app_name": "LLM Assistant",
+      "api_name": "ContinueConversation",
       "user_intent": "New preference demonstration: prompt-engineering test script instead of searching StackOverflow"
     },
     {
@@ -1705,8 +2264,8 @@ Scenario C: **Habit execution involves an attribute**
         "schedule_dates": ["2024-02-18"],
         "time": "14:30:00"
       },
-      "app_name": "LLM",
-      "api_name": "Chat",
+      "app_name": "LLM Assistant",
+      "api_name": "ContinueConversation",
       "user_intent": "New preference demonstration: building toy ARM assembly project with AI to test code generation limits through doing"
     },
     {
@@ -1714,7 +2273,7 @@ Scenario C: **Habit execution involves an attribute**
         "schedule_dates": ["2024-03-10"],
         "time": "11:00:00"
       },
-      "app_name": "SimpleNote",
+      "app_name": "Notion",
       "api_name": "CreateNote",
       "user_intent": "New preference demonstration: documenting learning insights from AI-assisted experimentation rather than passive reading"
     }
@@ -1739,7 +2298,7 @@ Scenario C: **Habit execution involves an attribute**
         "schedule_dates": ["2024-01-11"],
         "time": "10:30:00"
       },
-      "app_name": "Message",
+      "app_name": "WhatsApp",
       "api_name": "SendMessage",
       "user_intent": "Preference demonstration: sending comprehensive async technical explanation with diagrams instead of scheduling meeting"
     },
@@ -1748,7 +2307,7 @@ Scenario C: **Habit execution involves an attribute**
         "schedule_dates": ["2024-01-19"],
         "time": "15:00:00"
       },
-      "app_name": "SimpleNote",
+      "app_name": "Notion",
       "api_name": "CreateNote",
       "user_intent": "Preference demonstration: authoring detailed technical specification document to replace need for multi-hour design session"
     },
@@ -1757,7 +2316,7 @@ Scenario C: **Habit execution involves an attribute**
         "schedule_dates": ["2024-02-05"],
         "time": "09:15:00"
       },
-      "app_name": "Message",
+      "app_name": "WhatsApp",
       "api_name": "SendMessage",
       "user_intent": "Preference demonstration: requesting written agenda before accepting sync meeting invitation"
     },
@@ -1766,7 +2325,7 @@ Scenario C: **Habit execution involves an attribute**
         "schedule_dates": ["2024-02-22"],
         "time": "16:45:00"
       },
-      "app_name": "SimpleNote",
+      "app_name": "Notion",
       "api_name": "EditNote",
       "user_intent": "Preference demonstration: providing detailed status update in shared documentation rather than verbal standup"
     },
@@ -1775,7 +2334,7 @@ Scenario C: **Habit execution involves an attribute**
         "schedule_dates": ["2024-03-14"],
         "time": "11:20:00"
       },
-      "app_name": "Message",
+      "app_name": "WhatsApp",
       "api_name": "SendMessage",
       "user_intent": "Preference demonstration: answering technical question with thorough async writeup including code examples"
     }
@@ -1824,7 +2383,7 @@ Scenario C: **Habit execution involves an attribute**
         "time": "13:05:00"
       },
       "app_name": "Amazon",
-      "api_name": "ReadReviews",
+      "api_name": "ShowProduct",
       "user_intent": "Attribute acquisition: checking reviews for comfort during extended coding sessions"
     },
     {
@@ -1927,8 +2486,8 @@ def render_events_chain_prompt(request: EventsChainRequest) -> str:
         user_previous_window_summary=request.user_previous_window_summary,
         user_domain_previous_window_summary=request.user_domain_previous_window_summary,
         user_this_window_description=request.user_this_window_description,
-        world_background=request.world_background,
         domain_window_state=request.domain_window_state,
+        world_background=request.world_background,
     )
 
 

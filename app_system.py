@@ -12,13 +12,862 @@ import random
 import uuid
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Any, Dict, List, Optional
 
 from mem_bench.behavior_and_conversation.app_data_sources import (
     SpotifyDatabase,
     get_data_generator
 )
+
+
+from typing import Dict, List, Optional, Any
+from pydantic import BaseModel, Field
+from datetime import datetime
+from enum import Enum
+
+#######新增定义 begin
+
+# ==================== Amazon ====================
+class AmazonProduct(BaseModel):
+    product_id: str
+    name: str
+    price: float
+    category: str
+    rating: float
+    
+class AmazonOrder(BaseModel):
+    order_id: str
+    product_id: str
+    product_name: str
+    quantity: int
+    total_price: float
+    order_date: datetime
+    
+class AmazonState(BaseModel):
+    user_id: str
+    prime_member: bool = False
+    order_history: List[AmazonOrder] = Field(default_factory=list)
+    search_history: List[str] = Field(default_factory=list)  # search queries
+    viewed_products: List[str] = Field(default_factory=list)  # product_ids
+    cart: List[Dict[str, Any]] = Field(default_factory=list)  # {product_id, quantity}
+    wishlist: List[str] = Field(default_factory=list)  # product_ids
+    
+# ==================== Spotify ====================
+class SpotifyPlaylist(BaseModel):
+    playlist_id: str
+    name: str
+    song_ids: List[str] = Field(default_factory=list)
+    
+class SpotifySong(BaseModel):
+    song_id: str
+    title: str
+    artist: str
+    genre: str
+    duration_seconds: int
+    
+class SpotifyPlayHistory(BaseModel):
+    song_id: str
+    played_at: datetime
+    duration_played: int  # seconds actually played
+    
+class SpotifyState(BaseModel):
+    user_id: str
+    premium: bool = False
+    playlists: List[SpotifyPlaylist] = Field(default_factory=list)
+    followed_artists: List[str] = Field(default_factory=list)  # artist_ids
+    play_history: List[SpotifyPlayHistory] = Field(default_factory=list)
+    favorite_genres: List[str] = Field(default_factory=list)
+    
+# ==================== Fitbit ====================
+class FitbitGoal(BaseModel):
+    goal_type: str  # "steps", "active_minutes", "weight", etc.
+    target_value: float
+    
+class FitbitWorkout(BaseModel):
+    workout_id: str
+    activity_type: str
+    duration_minutes: int
+    intensity: str
+    calories_burned: int
+    timestamp: datetime
+    
+class FitbitDailySync(BaseModel):
+    date: str  # YYYY-MM-DD
+    steps: int
+    active_minutes: int
+    calories_burned: int
+    sleep_hours: float
+    avg_heart_rate: int
+    
+class FitbitState(BaseModel):
+    user_id: str
+    goals: List[FitbitGoal] = Field(default_factory=list)
+    workout_history: List[FitbitWorkout] = Field(default_factory=list)
+    daily_syncs: List[FitbitDailySync] = Field(default_factory=list)
+    
+# ==================== Chase ====================
+class ChaseTransaction(BaseModel):
+    transaction_id: str
+    date: str  # YYYY-MM-DD
+    merchant: str
+    amount: float
+    transaction_type: str  # "debit" or "credit"
+    category: str  # "dining", "shopping", "transportation", etc.
+    
+class ChaseAccount(BaseModel):
+    account_id: str
+    account_type: str  # "checking", "savings", "credit_card"
+    balance: float
+    
+class ChaseState(BaseModel):
+    user_id: str
+    accounts: List[ChaseAccount] = Field(default_factory=list)
+    transaction_history: List[ChaseTransaction] = Field(default_factory=list)
+    
+# ==================== Robinhood ====================
+class RobinhoodHolding(BaseModel):
+    symbol: str
+    asset_type: str  # "stock" or "crypto"
+    quantity: float
+    average_buy_price: float
+    
+class RobinhoodTransaction(BaseModel):
+    transaction_id: str
+    symbol: str
+    asset_type: str
+    transaction_type: str  # "buy" or "sell"
+    quantity: float
+    price: float
+    timestamp: datetime
+    
+class RobinhoodState(BaseModel):
+    user_id: str
+    cash_balance: float
+    holdings: List[RobinhoodHolding] = Field(default_factory=list)
+    watchlist: List[str] = Field(default_factory=list)  # symbols
+    transaction_history: List[RobinhoodTransaction] = Field(default_factory=list)
+    
+# ==================== WhatsApp ====================
+class WhatsAppMessage(BaseModel):
+    message_id: str
+    from_user: str
+    to_user: str  # or group_id
+    message_type: str  # "text" or "media"
+    content: str
+    timestamp: datetime
+    
+class WhatsAppState(BaseModel):
+    user_id: str
+    contacts: List[str] = Field(default_factory=list)
+    message_history: List[WhatsAppMessage] = Field(default_factory=list)
+    
+# ==================== Gmail ====================
+class GmailEmail(BaseModel):
+    email_id: str
+    from_address: str
+    to_address: str
+    subject: str
+    body: str
+    timestamp: datetime
+    is_read: bool = False
+    labels: List[str] = Field(default_factory=list)
+    
+class GmailState(BaseModel):
+    user_id: str
+    email_address: str
+    inbox: List[GmailEmail] = Field(default_factory=list)
+    sent_emails: List[GmailEmail] = Field(default_factory=list)
+    
+# ==================== LinkedIn ====================
+class LinkedInExperience(BaseModel):
+    company: str
+    title: str
+    start_date: str
+    end_date: Optional[str] = None
+    
+class LinkedInPost(BaseModel):
+    post_id: str
+    author: str
+    content: str
+    timestamp: datetime
+    likes_count: int = 0
+    
+class LinkedInState(BaseModel):
+    user_id: str
+    headline: str = ""
+    summary: str = ""
+    experiences: List[LinkedInExperience] = Field(default_factory=list)
+    skills: List[str] = Field(default_factory=list)
+    connections: List[str] = Field(default_factory=list)  # user_ids
+    posts: List[LinkedInPost] = Field(default_factory=list)
+    
+# ==================== Notion ====================
+class NotionPage(BaseModel):
+    page_id: str
+    title: str
+    content: str
+    created_at: datetime
+    updated_at: datetime
+    
+class NotionDatabaseEntry(BaseModel):
+    entry_id: str
+    database_name: str  # "tasks", "habits", "projects"
+    properties: Dict[str, Any]
+    created_at: datetime
+    
+class NotionState(BaseModel):
+    user_id: str
+    pages: List[NotionPage] = Field(default_factory=list)
+    database_entries: List[NotionDatabaseEntry] = Field(default_factory=list)
+    
+# ==================== Netflix ====================
+class NetflixTitle(BaseModel):
+    title_id: str
+    name: str
+    content_type: str  # "movie" or "series"
+    genre: str
+    
+class NetflixViewHistory(BaseModel):
+    title_id: str
+    watched_at: datetime
+    duration_watched: int  # minutes
+    completed: bool
+    
+class NetflixState(BaseModel):
+    user_id: str
+    subscription_plan: str = "Standard"  # "Basic", "Standard", "Premium"
+    my_list: List[str] = Field(default_factory=list)  # title_ids
+    watch_history: List[NetflixViewHistory] = Field(default_factory=list)
+    
+# ==================== Goodreads ====================
+class GoodreadsBook(BaseModel):
+    book_id: str
+    title: str
+    author: str
+    genre: str
+    
+class GoodreadsShelfEntry(BaseModel):
+    book_id: str
+    shelf: str  # "want-to-read", "currently-reading", "read"
+    added_at: datetime
+    
+class GoodreadsReview(BaseModel):
+    book_id: str
+    rating: int  # 1-5
+    review_text: Optional[str] = None
+    reviewed_at: datetime
+    
+class GoodreadsState(BaseModel):
+    user_id: str
+    shelves: List[GoodreadsShelfEntry] = Field(default_factory=list)
+    reviews: List[GoodreadsReview] = Field(default_factory=list)
+    
+# ==================== Instagram ====================
+class InstagramPost(BaseModel):
+    post_id: str
+    author: str
+    content_type: str  # "photo", "video", "story"
+    caption: str
+    timestamp: datetime
+    likes_count: int = 0
+    
+class InstagramState(BaseModel):
+    user_id: str
+    followers: List[str] = Field(default_factory=list)
+    following: List[str] = Field(default_factory=list)
+    posts: List[InstagramPost] = Field(default_factory=list)
+    
+# ==================== LLM Assistant ====================
+class LLMMessage(BaseModel):
+    message_id: str
+    role: str  # "user" or "assistant"
+    content: str
+    timestamp: datetime
+    
+class LLMConversation(BaseModel):
+    conversation_id: str
+    messages: List[LLMMessage] = Field(default_factory=list)
+    created_at: datetime
+    
+class LLMState(BaseModel):
+    user_id: str
+    conversations: List[LLMConversation] = Field(default_factory=list)
+    
+# ==================== Google ====================
+class GoogleSearchResult(BaseModel):
+    result_id: str
+    title: str
+    snippet: str
+    
+class GoogleSearchHistory(BaseModel):
+    query: str
+    results: List[GoogleSearchResult]
+    searched_at: datetime
+    clicked_result_id: Optional[str] = None  # which result was clicked
+    
+class GoogleState(BaseModel):
+    user_id: str
+    search_history: List[GoogleSearchHistory] = Field(default_factory=list)
+
+
+from pydantic import BaseModel
+from typing import List, Optional
+from datetime import datetime
+
+# ==================== Amazon APIs ====================
+class SearchProductsInput(BaseModel):
+    query: str
+    
+class SearchProductsOutput(BaseModel):
+    products: List[AmazonProduct]
+    search_timestamp: datetime
+    
+class ShowProductInput(BaseModel):
+    product_id: str
+    
+class ShowProductOutput(BaseModel):
+    product: AmazonProduct
+    reviews: List[Dict[str, Any]]  # {rating, text, author}
+    in_cart: bool
+    in_wishlist: bool
+    
+class AddToCartInput(BaseModel):
+    product_id: str
+    quantity: int = 1
+    
+class AddToCartOutput(BaseModel):
+    success: bool
+    cart: List[Dict[str, Any]]  # updated cart
+    cart_total: float
+    
+class ShowCartInput(BaseModel):
+    pass  # no input needed
+    
+class ShowCartOutput(BaseModel):
+    cart_items: List[Dict[str, Any]]  # {product_id, name, price, quantity}
+    cart_total: float
+    prime_member: bool
+    
+class ShowWishlistInput(BaseModel):
+    pass
+    
+class ShowWishlistOutput(BaseModel):
+    wishlist_items: List[Dict[str, Any]]  # {product_id, name, price, added_date}
+    
+class CheckoutInput(BaseModel):
+    pass  # checkout all items in cart
+    
+class CheckoutOutput(BaseModel):
+    order_id: str
+    order_items: List[Dict[str, Any]]
+    total_price: float
+    order_date: datetime
+    estimated_delivery: str  # YYYY-MM-DD
+    prime_member: bool
+
+# ==================== Spotify APIs ====================
+class SearchSongsInput(BaseModel):
+    query: str
+    
+class SearchSongsOutput(BaseModel):
+    songs: List[SpotifySong]
+    search_timestamp: datetime
+    
+class PlaySongInput(BaseModel):
+    song_id: str
+    
+class PlaySongOutput(BaseModel):
+    song: SpotifySong
+    playing_status: str  # "playing"
+    premium: bool  # affects quality/ads
+    play_started_at: datetime
+    
+class AddToPlaylistInput(BaseModel):
+    playlist_id: str
+    song_id: str
+    
+class AddToPlaylistOutput(BaseModel):
+    success: bool
+    playlist: SpotifyPlaylist  # updated playlist
+    
+class FollowArtistInput(BaseModel):
+    artist_id: str
+    artist_name: str
+    
+class FollowArtistOutput(BaseModel):
+    success: bool
+    followed_artists: List[str]  # updated list
+
+# ==================== Fitbit APIs ====================
+class LogWorkoutInput(BaseModel):
+    activity_type: str
+    duration_minutes: int
+    intensity: str  # "low", "medium", "high"
+    
+class LogWorkoutOutput(BaseModel):
+    workout: FitbitWorkout
+    calories_burned: int
+    today_total_active_minutes: int
+    
+class SyncDeviceInput(BaseModel):
+    device_name: str = "Fitbit Device"
+    
+class SyncDeviceOutput(BaseModel):
+    sync_data: FitbitDailySync
+    sync_timestamp: datetime
+    
+class SetGoalsInput(BaseModel):
+    goals: List[FitbitGoal]
+    
+class SetGoalsOutput(BaseModel):
+    goals: List[FitbitGoal]
+    updated_at: datetime
+
+# ==================== Chase APIs ====================
+class GetBalanceInput(BaseModel):
+    account_id: Optional[str] = None  # if None, return all accounts
+    
+class GetBalanceOutput(BaseModel):
+    accounts: List[ChaseAccount]
+    total_balance: float
+    last_updated: datetime
+    
+class GetTransactionsInput(BaseModel):
+    account_id: Optional[str] = None
+    start_date: Optional[str] = None  # YYYY-MM-DD
+    end_date: Optional[str] = None
+    limit: int = 50
+    
+class GetTransactionsOutput(BaseModel):
+    transactions: List[ChaseTransaction]
+    account_balance: float
+    
+class SearchTransactionsInput(BaseModel):
+    query: str  # search by merchant name or category
+    
+class SearchTransactionsOutput(BaseModel):
+    transactions: List[ChaseTransaction]
+    
+class TransferMoneyInput(BaseModel):
+    from_account_id: str
+    to_account_id: str
+    amount: float
+    
+class TransferMoneyOutput(BaseModel):
+    success: bool
+    transaction_id: str
+    from_account_new_balance: float
+    to_account_new_balance: float
+    timestamp: datetime
+    
+class PayBillInput(BaseModel):
+    biller_name: str
+    amount: float
+    from_account_id: str
+    
+class PayBillOutput(BaseModel):
+    success: bool
+    transaction_id: str
+    new_balance: float
+    timestamp: datetime
+
+# ==================== Robinhood APIs ====================
+class GetPortfolioInput(BaseModel):
+    pass
+    
+class GetPortfolioOutput(BaseModel):
+    cash_balance: float
+    holdings: List[RobinhoodHolding]
+    total_portfolio_value: float
+    
+class GetWatchlistInput(BaseModel):
+    pass
+    
+class GetWatchlistOutput(BaseModel):
+    watchlist: List[Dict[str, Any]]  # {symbol, current_price, change_percent}
+    
+class SearchStocksInput(BaseModel):
+    query: str
+    
+class SearchStocksOutput(BaseModel):
+    results: List[Dict[str, Any]]  # {symbol, name, current_price}
+    
+class GetStockQuoteInput(BaseModel):
+    symbol: str
+    
+class GetStockQuoteOutput(BaseModel):
+    symbol: str
+    current_price: float
+    change_percent: float
+    timestamp: datetime
+    in_watchlist: bool
+    
+class BuyStockInput(BaseModel):
+    symbol: str
+    quantity: float
+    asset_type: str  # "stock" or "crypto"
+    
+class BuyStockOutput(BaseModel):
+    success: bool
+    transaction: RobinhoodTransaction
+    new_cash_balance: float
+    new_holding: RobinhoodHolding
+    
+class SellStockInput(BaseModel):
+    symbol: str
+    quantity: float
+    asset_type: str
+    
+class SellStockOutput(BaseModel):
+    success: bool
+    transaction: RobinhoodTransaction
+    new_cash_balance: float
+    remaining_holding: Optional[RobinhoodHolding]
+
+# ==================== WhatsApp APIs ====================
+class GetMessagesInput(BaseModel):
+    contact_id: str
+    limit: int = 50
+    
+class GetMessagesOutput(BaseModel):
+    contact_id: str
+    messages: List[WhatsAppMessage]
+    
+class SendMessageInput(BaseModel):
+    to: str  # contact_id
+    message: str
+    
+class SendMessageOutput(BaseModel):
+    message: WhatsAppMessage
+    sent_timestamp: datetime
+    
+class SendMediaInput(BaseModel):
+    to: str
+    media_type: str  # "photo", "video", "voice"
+    caption: Optional[str] = None
+    
+class SendMediaOutput(BaseModel):
+    message: WhatsAppMessage
+    sent_timestamp: datetime
+
+# ==================== Gmail APIs ====================
+class GetInboxInput(BaseModel):
+    limit: int = 50
+    unread_only: bool = False
+    
+class GetInboxOutput(BaseModel):
+    emails: List[Dict[str, Any]]  # {email_id, from, subject, snippet, timestamp, is_read}
+    unread_count: int
+    
+class ReadEmailInput(BaseModel):
+    email_id: str
+    
+class ReadEmailOutput(BaseModel):
+    email: GmailEmail
+    
+class SendEmailInput(BaseModel):
+    to: str
+    subject: str
+    body: str
+    
+class SendEmailOutput(BaseModel):
+    email: GmailEmail
+    sent_timestamp: datetime
+    
+class ReplyEmailInput(BaseModel):
+    email_id: str  # replying to this email
+    body: str
+    
+class ReplyEmailOutput(BaseModel):
+    email: GmailEmail
+    sent_timestamp: datetime
+
+# ==================== LinkedIn APIs ====================
+class UpdateProfileInput(BaseModel):
+    headline: Optional[str] = None
+    summary: Optional[str] = None
+    
+class UpdateProfileOutput(BaseModel):
+    success: bool
+    updated_fields: Dict[str, str]
+    
+class AddExperienceInput(BaseModel):
+    company: str
+    title: str
+    start_date: str  # YYYY-MM
+    end_date: Optional[str] = None
+    
+class AddExperienceOutput(BaseModel):
+    experience: LinkedInExperience
+    total_experiences: int
+    
+class AddSkillInput(BaseModel):
+    skill: str
+    
+class AddSkillOutput(BaseModel):
+    success: bool
+    skills: List[str]  # updated skills list
+    
+class PostUpdateInput(BaseModel):
+    content: str
+    
+class PostUpdateOutput(BaseModel):
+    post: LinkedInPost
+    
+class GetFeedInput(BaseModel):
+    limit: int = 20
+    
+class GetFeedOutput(BaseModel):
+    posts: List[LinkedInPost]
+    
+class LikePostInput(BaseModel):
+    post_id: str
+    
+class LikePostOutput(BaseModel):
+    success: bool
+    post_id: str
+    new_likes_count: int
+    
+class CommentOnPostInput(BaseModel):
+    post_id: str
+    comment: str
+    
+class CommentOnPostOutput(BaseModel):
+    success: bool
+    post_id: str
+    comment_timestamp: datetime
+    
+class SearchJobsInput(BaseModel):
+    query: str
+    location: Optional[str] = None
+    
+class SearchJobsOutput(BaseModel):
+    jobs: List[Dict[str, Any]]  # {job_id, title, company, location}
+    
+class ApplyJobInput(BaseModel):
+    job_id: str
+    
+class ApplyJobOutput(BaseModel):
+    success: bool
+    job_id: str
+    applied_at: datetime
+    
+class SendConnectionRequestInput(BaseModel):
+    user_id: str
+    message: Optional[str] = None
+    
+class SendConnectionRequestOutput(BaseModel):
+    success: bool
+    user_id: str
+    sent_at: datetime
+
+# ==================== Notion APIs ====================
+class GetPagesInput(BaseModel):
+    limit: int = 50
+    
+class GetPagesOutput(BaseModel):
+    pages: List[Dict[str, Any]]  # {page_id, title, created_at, updated_at}
+    
+class CreatePageInput(BaseModel):
+    title: str
+    content: str
+    
+class CreatePageOutput(BaseModel):
+    page: NotionPage
+    
+class UpdatePageInput(BaseModel):
+    page_id: str
+    title: Optional[str] = None
+    content: Optional[str] = None
+    
+class UpdatePageOutput(BaseModel):
+    page: NotionPage
+    
+class SearchContentInput(BaseModel):
+    query: str
+    
+class SearchContentOutput(BaseModel):
+    results: List[Dict[str, Any]]  # {page_id, title, snippet}
+    
+class CreateDatabaseEntryInput(BaseModel):
+    database_name: str
+    properties: Dict[str, Any]
+    
+class CreateDatabaseEntryOutput(BaseModel):
+    entry: NotionDatabaseEntry
+
+# ==================== Netflix APIs ====================
+class SearchContentInput(BaseModel):
+    query: str
+    
+class SearchContentOutput(BaseModel):
+    titles: List[NetflixTitle]
+    
+class ShowTitleInput(BaseModel):
+    title_id: str
+    
+class ShowTitleOutput(BaseModel):
+    title: NetflixTitle
+    description: str
+    rating: float
+    in_my_list: bool
+    
+class PlayContentInput(BaseModel):
+    title_id: str
+    
+class PlayContentOutput(BaseModel):
+    title: NetflixTitle
+    playing_status: str
+    subscription_plan: str
+    play_started_at: datetime
+    
+class AddToMyListInput(BaseModel):
+    title_id: str
+    
+class AddToMyListOutput(BaseModel):
+    success: bool
+    my_list: List[str]  # updated list of title_ids
+    
+class RateContentInput(BaseModel):
+    title_id: str
+    rating: int  # thumbs up (1) or down (0)
+    
+class RateContentOutput(BaseModel):
+    success: bool
+    title_id: str
+    rating: int
+
+# ==================== Goodreads APIs ====================
+class SearchBooksInput(BaseModel):
+    query: str
+    
+class SearchBooksOutput(BaseModel):
+    books: List[GoodreadsBook]
+    
+class ShowBookInput(BaseModel):
+    book_id: str
+    
+class ShowBookOutput(BaseModel):
+    book: GoodreadsBook
+    description: str
+    average_rating: float
+    on_shelf: Optional[str] = None  # which shelf it's on, if any
+    
+class AddToShelfInput(BaseModel):
+    book_id: str
+    shelf: str  # "want-to-read", "currently-reading", "read"
+    
+class AddToShelfOutput(BaseModel):
+    success: bool
+    shelf_entry: GoodreadsShelfEntry
+    
+class RateBookInput(BaseModel):
+    book_id: str
+    rating: int  # 1-5
+    
+class RateBookOutput(BaseModel):
+    success: bool
+    rating: int
+    rated_at: datetime
+    
+class WriteReviewInput(BaseModel):
+    book_id: str
+    review_text: str
+    rating: Optional[int] = None
+    
+class WriteReviewOutput(BaseModel):
+    review: GoodreadsReview
+
+# ==================== Instagram APIs ====================
+class PostStoryInput(BaseModel):
+    content_type: str  # "photo" or "video"
+    caption: Optional[str] = None
+    
+class PostStoryOutput(BaseModel):
+    post: InstagramPost
+    
+class LikePostInput(BaseModel):
+    post_id: str
+    
+class LikePostOutput(BaseModel):
+    success: bool
+    post_id: str
+    new_likes_count: int
+    
+class CommentOnPostInput(BaseModel):
+    post_id: str
+    comment: str
+    
+class CommentOnPostOutput(BaseModel):
+    success: bool
+    post_id: str
+    comment_timestamp: datetime
+    
+class SendDirectMessageInput(BaseModel):
+    to_user_id: str
+    message: str
+    
+class SendDirectMessageOutput(BaseModel):
+    message_id: str
+    sent_timestamp: datetime
+    
+class FollowUserInput(BaseModel):
+    user_id: str
+    
+class FollowUserOutput(BaseModel):
+    success: bool
+    following: List[str]  # updated following list
+    
+class UnfollowUserInput(BaseModel):
+    user_id: str
+    
+class UnfollowUserOutput(BaseModel):
+    success: bool
+    following: List[str]
+    
+class GetFollowingInput(BaseModel):
+    pass
+    
+class GetFollowingOutput(BaseModel):
+    following: List[str]
+    following_count: int
+
+# ==================== LLM Assistant APIs ====================
+class CreateConversationInput(BaseModel):
+    initial_message: Optional[str] = None
+    
+class CreateConversationOutput(BaseModel):
+    conversation_id: str
+    created_at: datetime
+    
+class ContinueConversationInput(BaseModel):
+    conversation_id: str
+    message: str
+    
+class ContinueConversationOutput(BaseModel):
+    conversation_id: str
+    user_message: LLMMessage
+    assistant_response: LLMMessage
+
+# ==================== Google APIs ====================
+class GoogleSearchInput(BaseModel):
+    query: str
+    
+class GoogleSearchOutput(BaseModel):
+    results: List[GoogleSearchResult]
+    search_timestamp: datetime
+    
+class ClickResultInput(BaseModel):
+    result_id: str
+    search_query: str  # to link back to which search
+    
+class ClickResultOutput(BaseModel):
+    result: GoogleSearchResult
+    clicked_at: datetime
+
+#######新增定义 end
+
 
 
 @dataclass
@@ -34,548 +883,167 @@ class AppLogEntry:
 
 APP_API_SCHEMAS: Dict[str, Dict[str, Dict[str, Any]]] = {
     "Amazon": {
-        "Login": {
-            "input": {
-                "username": "string",
-                "password": "string"
-            },
-            "output": {
-                "success": "boolean",
-                "session_id": "string",
-                "membership": "string"
-            }
-        },
         "SearchProducts": {
-            "input": {
-                "query": "string",
-                "session_id": "string"
-            },
+            "input": {"query": "string"},
             "output": {
                 "products": [
-                    {
-                        "product_id": "string",
-                        "name": "string",
-                        "price": "number",
-                        "rating": "number",
-                    }
+                    {"name": "string", "price": "number", "rating": "number", "description": "string"}
                 ],
-                "results_count": "integer"
+                "total_results": "integer"
             }
         },
         "ShowProduct": {
-            "input": {
-                "product_id": "string",
-                "session_id": "string"
-            },
+            "input": {"product_name": "string"},
             "output": {
                 "name": "string",
                 "price": "number",
                 "rating": "number",
-                "reviews_count": "integer",
-                "description": "string"
+                "reviews": "integer",
+                "description": "string",
+                "in_stock": "boolean"
+            }
+        },
+        "ReadReviews": {
+            "input": {"product_name": "string"},
+            "output": {
+                "product_name": "string",
+                "reviews": ["object"],
+                "average_rating": "number",
+                "total_reviews": "integer"
             }
         },
         "AddToCart": {
-            "input": {
-                "product_id": "string",
-                "quantity": "integer",
-                "session_id": "string"
-            },
+            "input": {"product_name": "string", "quantity": "integer"},
             "output": {
-                "success": "boolean",
-                "cart": "object"
+                "product_name": "string",
+                "quantity": "integer",
+                "cart_total": "number",
+                "items_in_cart": "integer"
             }
         },
         "Checkout": {
-            "input": {
-                "product_id": "string",
-                "quantity": "integer",
-                "session_id": "string"
-            },
+            "input": {},
             "output": {
                 "order_number": "string",
-                "product_name": "string",
-                "quantity": "integer",
+                "items": ["object"],
                 "total_price": "number",
                 "timestamp": "YYYY-MM-DD HH:MM:SS",
                 "estimated_delivery": "YYYY-MM-DD"
             }
         },
         "ShowOrders": {
-            "input": {
-                "session_id": "string"
-            },
+            "input": {},
+            "output": {"orders": ["object"], "total_orders": "integer"}
+        },
+        "TrackOrder": {
+            "input": {"order_number": "string"},
             "output": {
-                "orders": ["object"],
-                "orders_count": "integer",
-                "total_orders": "integer"
+                "order_number": "string",
+                "status": "string",
+                "current_location": "string",
+                "estimated_delivery": "YYYY-MM-DD",
+                "tracking_events": ["object"]
             }
         }
     },
-    "Walmart": {
-        "Login": {
-            "input": {
-                "username": "string",
-                "password": "string"
-            },
+    "Spotify": {
+        "SearchSongs": {
+            "input": {"query": "string"},
+            "output": {"songs": ["object"], "total_results": "integer"}
+        },
+        "ShowArtist": {
+            "input": {"artist_name": "string"},
+            "output": {"artist": "string", "genres": ["string"], "top_songs": ["object"]}
+        },
+        "PlaySong": {
+            "input": {"song_title": "string", "artist": "string"},
             "output": {
-                "success": "boolean",
-                "session_id": "string",
-                "membership": "string"
+                "song": "object",
+                "status": "string",
+                "duration_seconds": "integer"
             }
         },
-        "SearchProducts": {
+        "CreatePlaylist": {
+            "input": {"playlist_name": "string"},
+            "output": {"playlist_name": "string", "song_count": "integer", "created_at": "YYYY-MM-DD"}
+        },
+        "AddToPlaylist": {
+            "input": {"playlist_name": "string", "song_title": "string", "artist": "string"},
+            "output": {"playlist_name": "string", "song_added": "object", "song_count": "integer"}
+        },
+        "ShowPlaylists": {
+            "input": {},
+            "output": {"playlists": ["object"]}
+        },
+        "ShowRecentlyPlayed": {
+            "input": {},
+            "output": {"songs": ["object"]}
+        }
+    },
+    "SimpleNote": {
+        "ShowNotes": {
+            "input": {},
+            "output": {
+                "notes": [{"title": "string", "preview": "string", "tags": ["string"], "created_at": "string"}],
+                "total_notes": "integer"
+            }
+        },
+        "ShowNote": {
+            "input": {"note_title": "string"},
+            "output": {
+                "title": "string",
+                "content": "string",
+                "tags": ["string"],
+                "created_at": "string",
+                "updated_at": "string"
+            }
+        },
+        "CreateNote": {
+            "input": {"title": "string", "content": "string"},
+            "output": {"title": "string", "content": "string", "tags": ["string"], "created_at": "string"}
+        },
+        "EditNote": {
+            "input": {"note_title": "string", "content": "string"},
+            "output": {"title": "string", "content": "string", "tags": ["string"], "updated_at": "string"}
+        },
+        "SearchNotes": {
+            "input": {"query": "string"},
+            "output": {"notes": ["object"], "total_results": "integer"}
+        },
+        "TagNote": {
+            "input": {"note_title": "string", "tags": ["string"]},
+            "output": {"title": "string", "tags": ["string"], "updated_at": "string"}
+        }
+    },
+    "LLM": {
+        "Chat": {
             "input": {
-                "query": "string",
-                "session_id": "string"
+                "message": "string (description: The user's message to the AI assistant)"
             },
             "output": {
-                "products": [
+                "conversation": [
                     {
-                        "product_id": "string",
-                        "name": "string",
-                        "price": "number",
-                        "rating": "number",
+                        "role": "string (description: Either 'user' or 'assistant')",
+                        "content": "string (description: The message content)"
                     }
                 ],
-                "results_count": "integer"
-            }
-        },
-        "ShowProduct": {
-            "input": {
-                "product_id": "string",
-                "session_id": "string"
-            },
-            "output": {
-                "product_id": "string",
-                "name": "string",
-                "price": "number",
-                "rating": "number",
-                "reviews_count": "integer",
-                "description": "string"
-            }
-        },
-        "AddToCart": {
-            "input": {
-                "product_id": "string",
-                "quantity": "integer",
-                "session_id": "string"
-            },
-            "output": {
-                "success": "boolean",
-                "cart": "object"
-            }
-        },
-        "Checkout": {
-            "input": {
-                "product_id": "string",
-                "quantity": "integer",
-                "session_id": "string"
-            },
-            "output": {
-                "order_id": "string",
-                "product": "object",
-                "timestamp": "YYYY-MM-DD HH:MM:SS",
-                "status": "string",
-                "delivery_date": "YYYY-MM-DD"
-            }
-        },
-        "ShowOrders": {
-            "input": {
-                "session_id": "string"
-            },
-            "output": {
-                "orders": ["object"],
-                "orders_count": "integer",
-                "total_orders": "integer"
+                "description": "string (description: Brief summary of the conversation - what the user asked and what the assistant provided)"
             }
         }
     },
     "Google": {
         "Search": {
-            "input": {
-                "query": "string"
-            },
+            "input": {"query": "string"},
             "output": {
-                "results": [
-                    {
-                        "title": "string",
-                        "url": "string",
-                        "snippet": "string"
-                    }
-                ],
-                "results_count": "integer"
-            }
-        }
-    },
-    "Gmail": {
-        "Login": {
-            "input": {
-                "username": "string",
-                "password": "string"
-            },
-            "output": {
-                "success": "boolean",
-                "session_id": "string"
-            }
-        },
-        "GetNewMails": {
-            "input": {
-                "session_id": "string"
-            },
-            "output": {
-                "emails": [
-                    {
-                        "email_id": "string",
-                        "sender": "string",
-                        "subject": "string",
-                        "snippet": "string",
-                        "timestamp": "YYYY-MM-DD HH:MM:SS"
-                    }
-                ],
-                "emails_count": "integer"
-            }
-        },
-        "FetchEmails": {
-            "input": {
-                "query": "string",
-                "limit": "integer",
-                "session_id": "string"
-            },
-            "output": {
-                "emails": [
-                    {
-                        "email_id": "string",
-                        "sender": "string",
-                        "subject": "string",
-                        "snippet": "string",
-                        "timestamp": "YYYY-MM-DD HH:MM:SS"
-                    }
-                ]
-            }
-        },
-        "SendEmail": {
-            "input": {
-                "to": "string",
-                "subject": "string",
-                "body": "string",
-                "session_id": "string"
-            },
-            "output": {
-                "success": "boolean",
-                "message_id": "string"
-            }
-        }
-    },
-    "SimpleNote": {
-        "Login": {
-            "input": {
-                "username": "string",
-                "password": "string"
-            },
-            "output": {
-                "success": "boolean",
-                "session_id": "string"
-            }
-        },
-        "ShowAllNotes": {
-            "input": {
-                "session_id": "string"
-            },
-            "output": {
-                "notes": [
-                    {
-                        "note_id": "string",
-                        "title": "string",
-                        "preview": "string",
-                        "created_at": "YYYY-MM-DD HH:MM:SS"
-                    }
-                ],
-                "notes_count": "integer"
-            }
-        },
-        "ShowNote": {
-            "input": {
-                "note_id": "string",
-                "session_id": "string"
-            },
-            "output": {
-                "note_id": "string",
-                "title": "string",
-                "content": "string",
-                "created_at": "YYYY-MM-DD HH:MM:SS"
-            }
-        },
-        "CreateNote": {
-            "input": {
-                "title": "string",
-                "content": "string",
-                "session_id": "string"
-            },
-            "output": {
-                "note_id": "string",
-                "title": "string",
-                "content": "string",
-                "created_at": "YYYY-MM-DD HH:MM:SS"
-            }
-        },
-        "UpdateNote": {
-            "input": {
-                "note_id": "string",
-                "title": "string",
-                "content": "string",
-                "session_id": "string"
-            },
-            "output": {
-                "note_id": "string",
-                "title": "string",
-                "content": "string",
-                "updated_at": "YYYY-MM-DD HH:MM:SS"
-            }
-        },
-        "DeleteNote": {
-            "input": {
-                "note_id": "string",
-                "session_id": "string"
-            },
-            "output": {
-                "success": "boolean",
-                "deleted_note_id": "string"
-            }
-        }
-    },
-    "Google Calendar": {
-        "CreateEvent": {
-            "input": {
-                "title": "string",
-                "start_time": "YYYY-MM-DD HH:MM:SS",
-                "duration_minutes": "integer",
-                "session_id": "string"
-            },
-            "output": {
-                "song": "object",
-                "status": "string",
-                "duration_seconds": "integer"
-            }
-        },
-        "UpdateEvent": {
-            "input": {
-                "event_id": "string",
-                "session_id": "string"
-            },
-            "output": {
-                "event_id": "string",
-                "title": "string",
-                "updated_at": "YYYY-MM-DD HH:MM:SS"
-            }
-        },
-        "DeleteEvent": {
-            "input": {
-                "event_id": "string",
-                "session_id": "string"
-            },
-            "output": {
-                "success": "boolean",
-                "deleted_event_id": "string"
-            }
-        },
-        "ShowAllEvents": {
-            "input": {
-                "session_id": "string"
-            },
-            "output": {
-                "events": ["object"],
-                "total_count": "integer"
-            }
-        },
-        "ShowEvent": {
-            "input": {
-                "event_id": "string",
-                "session_id": "string"
-            },
-            "output": {
-                "activity_type": "string",
-                "duration_minutes": "integer",
-                "status": "string"
-            }
-        },
-        "RespondToInvite": {
-            "input": {
-                "invite_id": "string",
-                "response": "accepted|declined",
-                "session_id": "string"
-            },
-            "output": {
-                "success": "boolean",
-                "status": "string"
-            }
-        }
-    },
-    "WhatsApp": {
-        "ReadNewMessages": {
-            "input": {
-                "session_id": "string"
-            },
-            "output": {
-                "messages": ["object"],
-                "messages_count": "integer"
-            }
-        },
-        "SendMessage": {
-            "input": {
-                "to": "string",
-                "text": "string",
-                "session_id": "string"
-            },
-            "output": {
-                "message_id": "string",
-                "from": "string",
-                "to": "string",
-                "text": "string",
-                "timestamp": "YYYY-MM-DD HH:MM:SS",
-                "status": "string"
-            }
-        },
-        "SearchMessages": {
-            "input": {
-                "query": "string",
-                "session_id": "string"
-            },
-            "output": {
-                "messages": ["object"],
-                "total_count": "integer"
-            }
-        },
-        "GetMessages": {
-            "input": {
-                "to": "string",
-                "session_id": "string"
-            },
-            "output": {
-                "to": "string",
-                "messages": ["object"],
-                "messages_count": "integer"
-            }
-        },
-        "CreateGroup": {
-            "input": {
-                "name": "string",
-                "members": ["string"],
-                "session_id": "string"
-            },
-            "output": {
-                "group_id": "string",
-                "name": "string",
-                "members": ["string"],
-                "created_at": "YYYY-MM-DD HH:MM:SS",
-                "created_by": "string"
-            }
-        }
-    },
-    "ChatGPT": {
-        "GetConversations": {
-            "input": {
-                "session_id": "string"
-            },
-            "output": {
-                "conversations": ["object"],
-                "conversations_count": "integer"
-            }
-        },
-        "NewChat": {
-            "input": {
-                "session_id": "string"
-            },
-            "output": {
-                "conversation_id": "string"
-            }
-        },
-        "LoadChat": {
-            "input": {
-                "conversation_id": "string",
-                "session_id": "string"
-            },
-            "output": {
-                "conversation_id": "string",
-                "messages": ["object"],
-                "messages_count": "integer"
-            }
-        },
-        "SendMessage": {
-            "input": {
-                "conversation_id": "string",
-                "message": "string",
-                "session_id": "string"
-            },
-            "output": {
-                "message_id": "string",
-                "conversation_id": "string",
-                "message": "string",
-                "Response": "string"
-            }
-        }
-    },
-    "Spotify": {
-        "Login": {
-            "input": {
-                "username": "string",
-                "password": "string"
-            },
-            "output": {
-                "success": "boolean",
-                "session_id": "string",
-                "premium": "boolean"
-            }
-        },
-        "SearchSongs": {
-            "input": {
-                "query": "string",
-                "session_id": "string"
-            },
-            "output": {
-                "songs": [
-                    {
-                        "song_id": "string",
-                        "title": "string",
-                        "artist": "string",
-                        "album": "string",
-                        "duration": "integer"
-                    }
-                ],
+                "results": [{"title": "string", "snippet": "string", "source": "string"}],
                 "total_results": "integer"
             }
         },
-        "PlaySong": {
-            "input": {
-                "song_id": "string",
-                "session_id": "string"
-            },
+        "SearchNews": {
+            "input": {"query": "string"},
             "output": {
-                "song": "object",
-                "status": "string",
-                "duration_seconds": "integer"
-            }
-        },
-        "ShowPlaylists": {
-            "input": {
-                "session_id": "string"
-            },
-            "output": {
-                "playlists": [
-                    {
-                        "playlist_id": "string",
-                        "name": "string",
-                        "song_count": "integer"
-                    }
-                ]
-            }
-        },
-        "ShowRecentlyPlayed": {
-            "input": {
-                "session_id": "string"
-            },
-            "output": {
-                "songs": ["object"]
+                "results": [{"title": "string", "snippet": "string", "source": "string", "date": "string"}],
+                "total_results": "integer"
             }
         }
     },
@@ -598,11 +1066,12 @@ APP_API_SCHEMAS: Dict[str, Dict[str, Dict[str, Any]]] = {
                 "date": "YYYY-MM-DD"
             }
         },
-        "GetDailyStats": {
-            "input": {
-                "date": "YYYY-MM-DD",
-                "session_id": "string"
-            },
+        "LogActivity": {
+            "input": {"steps": "integer", "calories": "integer", "active_minutes": "integer"},
+            "output": {"date": "YYYY-MM-DD", "steps": "integer", "calories": "integer", "active_minutes": "integer"}
+        },
+        "ShowDailyStats": {
+            "input": {},
             "output": {
                 "date": "YYYY-MM-DD",
                 "steps": "integer",
@@ -611,315 +1080,111 @@ APP_API_SCHEMAS: Dict[str, Dict[str, Dict[str, Any]]] = {
                 "workouts": ["string"]
             }
         },
-        "GetWeeklyStats": {
-            "input": {
-                "session_id": "string"
-            },
+        "ShowWeeklyStats": {
+            "input": {},
             "output": {
                 "period": "string",
                 "total_workouts": "integer",
                 "total_active_minutes": "integer",
-                "avg_daily_steps": "integer",
-                "goal_completion": "object"
+                "avg_daily_steps": "integer"
             }
         },
-        "GetWorkoutHistory": {
-            "input": {
-                "session_id": "string"
-            },
-            "output": {
-                "workouts": ["object"],
-                "total_count": "integer"
-            }
+        "SetGoal": {
+            "input": {"goal_type": "string", "target": "integer"},
+            "output": {"goals": "object"}
         },
-        "UpdateGoals": {
-            "input": {
-                "goals": "object",
-                "session_id": "string"
-            },
-            "output": {
-                "success": "boolean",
-                "goals": "object"
-            }
-        },
-        "SyncDevice": {
-            "input": {
-                "device_name": "string",
-                "session_id": "string"
-            },
-            "output": {
-                "steps": "integer",
-                "heart_rate_measurements": "integer",
-                "sleep_hours": "number",
-                "last_sync": "YYYY-MM-DD HH:MM:SS"
-            }
+        "ShowProgress": {
+            "input": {},
+            "output": {"progress": "object"}
         }
     },
-    "Chase": {
-        "Login": {
-            "input": {
-                "username": "string",
-                "password": "string"
-            },
+    "Calendar": {
+        "CreateEvent": {
+            "input": {"title": "string", "date": "YYYY-MM-DD", "start_time": "HH:MM", "end_time": "HH:MM"},
             "output": {
-                "success": "boolean",
-                "session_id": "string"
+                "event_id": "string",
+                "title": "string",
+                "date": "YYYY-MM-DD",
+                "start_time": "HH:MM",
+                "end_time": "HH:MM",
+                "location": "string",
+                "reminder": "string"
             }
         },
-        "GetTransactions": {
-            "input": {
-                "session_id": "string",
-                "month": "string"
-            },
+        "ShowEvents": {
+            "input": {},
+            "output": {"events": ["object"], "total_events": "integer"}
+        },
+        "EditEvent": {
+            "input": {"event_id": "string", "updates": "object"},
+            "output": {"event": "object"}
+        },
+        "SetReminder": {
+            "input": {"event_id": "string", "reminder_minutes": "integer"},
+            "output": {"event_id": "string", "reminder_minutes": "integer"}
+        }
+    },
+    "Message": {
+        "SendMessage": {
+            "input": {"to": "string", "text": "string"},
             "output": {
-                "transactions": [
-                    {
-                        "transaction_id": "string",
-                        "date": "YYYY-MM-DD",
-                        "description": "string",
-                        "amount": "number",
-                        "type": "debit|credit"
-                    }
-                ],
-                "balance": "number"
+                "message_id": "string",
+                "from": "string",
+                "to": "string",
+                "text": "string",
+                "timestamp": "YYYY-MM-DD HH:MM:SS",
+                "status": "string"
             }
+        },
+        "GetMessages": {
+            "input": {"contact_name": "string"},
+            "output": {"contact_name": "string", "messages": ["object"], "total_count": "integer"}
+        },
+        "SearchMessages": {
+            "input": {"query": "string"},
+            "output": {"messages": ["object"], "total_count": "integer"}
+        },
+        "CreateGroup": {
+            "input": {"group_name": "string", "members": ["string"]},
+            "output": {"group_id": "string", "group_name": "string", "members": ["string"]}
+        },
+        "ReactToMessage": {
+            "input": {"message_id": "string", "reaction": "string"},
+            "output": {"message_id": "string", "reaction": "string", "status": "string"}
+        }
+    },
+    "Finance": {
+        "ShowAccounts": {
+            "input": {},
+            "output": {"accounts": ["object"]}
+        },
+        "ShowTransactions": {
+            "input": {},
+            "output": {"transactions": ["object"], "total_transactions": "integer"}
+        },
+        "CreateBudget": {
+            "input": {"categories": ["object"]},
+            "output": {"budgets": ["object"]}
+        },
+        "LogExpense": {
+            "input": {"amount": "number", "category": "string", "merchant": "string"},
+            "output": {"transaction": "object"}
+        },
+        "ShowBudgetProgress": {
+            "input": {},
+            "output": {"categories": ["object"]}
+        },
+        "SetFinancialGoal": {
+            "input": {"goal_name": "string", "target_amount": "number"},
+            "output": {"goal": "object"}
+        },
+        "ShowInvestments": {
+            "input": {},
+            "output": {"investments": ["object"]}
         },
         "TransferMoney": {
-            "input": {
-                "to_account": "string",
-                "amount": "number",
-                "session_id": "string"
-            },
-            "output": {
-                "success": "boolean",
-                "transaction_id": "string",
-                "new_balance": "number"
-            }
-        },
-        "PayBill": {
-            "input": {
-                "biller_name": "string",
-                "amount": "number",
-                "session_id": "string"
-            },
-            "output": {
-                "success": "boolean",
-                "transaction_id": "string"
-            }
-        }
-    },
-    "Robinhood": {
-        "Login": {
-            "input": {
-                "username": "string",
-                "password": "string"
-            },
-            "output": {
-                "success": "boolean",
-                "session_id": "string",
-                "portfolio_value": "number"
-            }
-        },
-        "GetPortfolio": {
-            "input": {
-                "session_id": "string"
-            },
-            "output": {
-                "cash_balance": "number",
-                "holdings": [
-                    {
-                        "symbol": "string",
-                        "quantity": "integer",
-                        "current_price": "number",
-                        "total_value": "number"
-                    }
-                ],
-                "total_value": "number"
-            }
-        },
-        "GetStockQuote": {
-            "input": {
-                "symbol": "string",
-                "session_id": "string"
-            },
-            "output": {
-                "symbol": "string",
-                "price": "number",
-                "change_percent": "number",
-                "timestamp": "YYYY-MM-DD HH:MM:SS"
-            }
-        },
-        "BuyStock": {
-            "input": {
-                "symbol": "string",
-                "quantity": "integer",
-                "session_id": "string"
-            },
-            "output": {
-                "success": "boolean",
-                "transaction_id": "string",
-                "price": "number",
-                "total_cost": "number"
-            }
-        },
-        "SellStock": {
-            "input": {
-                "symbol": "string",
-                "quantity": "integer",
-                "session_id": "string"
-            },
-            "output": {
-                "success": "boolean",
-                "transaction_id": "string",
-                "price": "number",
-                "total_proceeds": "number"
-            }
-        },
-        "BuyCrypto": {
-            "input": {
-                "symbol": "string",
-                "quantity": "integer",
-                "session_id": "string"
-            },
-            "output": {
-                "success": "boolean",
-                "transaction_id": "string",
-                "price": "number",
-                "total_cost": "number"
-            }
-        },
-        "SellCrypto": {
-            "input": {
-                "symbol": "string",
-                "quantity": "integer",
-                "session_id": "string"
-            },
-            "output": {
-                "success": "boolean",
-                "transaction_id": "string",
-                "price": "number",
-                "total_proceeds": "number"
-            }
-        },
-        "GetHistory": {
-            "input": {
-                "session_id": "string"
-            },
-            "output": {
-                "transactions": ["object"],
-                "count": "integer"
-            }
-        }
-    },
-    "X": {
-        "Login": {
-            "input": {
-                "username": "string",
-                "password": "string"
-            },
-            "output": {
-                "success": "boolean",
-                "session_id": "string",
-                "user_id": "string"
-            }
-        },
-        "GetHomeTimeline": {
-            "input": {
-                "session_id": "string"
-            },
-            "output": {
-                "posts": [
-                    {
-                        "post_id": "string",
-                        "author": "string",
-                        "content": "string",
-                        "likes": "integer",
-                        "timestamp": "YYYY-MM-DD HH:MM:SS"
-                    }
-                ]
-            }
-        },
-        "PostTweet": {
-            "input": {
-                "content": "string",
-                "session_id": "string"
-            },
-            "output": {
-                "success": "boolean",
-                "post_id": "string",
-                "timestamp": "YYYY-MM-DD HH:MM:SS"
-            }
-        },
-        "LikeTweet": {
-            "input": {
-                "post_id": "string",
-                "session_id": "string"
-            },
-            "output": {
-                "success": "boolean",
-                "likes_count": "integer"
-            }
-        },
-        "FollowUser": {
-            "input": {
-                "user_id": "string",
-                "session_id": "string"
-            },
-            "output": {
-                "success": "boolean",
-                "follow_status": "string"
-            }
-        },
-        "GetUserProfile": {
-            "input": {
-                "user_id": "string",
-                "session_id": "string"
-            },
-            "output": {
-                "username": "string",
-                "followers": "integer",
-                "following": "integer",
-                "bio": "string"
-            }
-        }
-    },
-    "Google Home": {
-        "SetLightState": {
-            "input": {
-                "device_id": "string",
-                "state": "on|off",
-                "brightness": "integer",
-                "session_id": "string"
-            },
-            "output": {
-                "success": "boolean",
-                "device_id": "string",
-                "state": "string"
-            }
-        },
-        "GetDeviceStatus": {
-            "input": {
-                "device_id": "string",
-                "session_id": "string"
-            },
-            "output": {
-                "device_id": "string",
-                "name": "string",
-                "type": "string",
-                "state": "string",
-                "is_online": "boolean"
-            }
-        },
-        "RunRoutine": {
-            "input": {
-                "routine_name": "string",
-                "session_id": "string"
-            },
-            "output": {
-                "success": "boolean",
-                "routine_name": "string",
-                "actions_executed": ["string"]
-            }
+            "input": {"from_account": "string", "to_account": "string", "amount": "number"},
+            "output": {"transfer": "object"}
         }
     }
 }
@@ -981,7 +1246,8 @@ class AmazonApp(BaseApp):
         self.state = {
             "order_history": [],
             "search_history": [],
-            "viewed_products": []
+            "viewed_products": [],
+            "cart": []
         }
 
     def call_api(
@@ -996,12 +1262,18 @@ class AmazonApp(BaseApp):
 
         if api_name == "SearchProducts":
             return self._search_products(timestamp, description, context)
-        elif api_name == "ViewProduct":
-            return self._view_product(timestamp, description, context)
-        elif api_name == "PurchaseProduct":
-            return self._purchase_product(timestamp, description, context)
-        elif api_name == "ViewOrders":
-            return self._view_orders(timestamp, description, context)
+        elif api_name == "ShowProduct":
+            return self._show_product(timestamp, description, context)
+        elif api_name == "ReadReviews":
+            return self._read_reviews(timestamp, description, context)
+        elif api_name == "AddToCart":
+            return self._add_to_cart(timestamp, description, context)
+        elif api_name == "Checkout":
+            return self._checkout(timestamp, description, context)
+        elif api_name == "ShowOrders":
+            return self._show_orders(timestamp, description, context)
+        elif api_name == "TrackOrder":
+            return self._track_order(timestamp, description, context)
         else:
             raise ValueError(f"Unknown Amazon API: {api_name}")
 
@@ -1028,8 +1300,8 @@ class AmazonApp(BaseApp):
             }
         )
 
-    def _view_product(self, timestamp: str, description: str, context: Dict[str, Any]) -> AppLogEntry:
-        """View product details."""
+    def _show_product(self, timestamp: str, description: str, context: Dict[str, Any]) -> AppLogEntry:
+        """Show product details."""
         product_name = self._extract_product_name(description)
         product = self._get_or_create_product(product_name, context)
 
@@ -1042,49 +1314,164 @@ class AmazonApp(BaseApp):
         return AppLogEntry(
             timestamp=timestamp,
             app_name=self.app_name,
-            api_name="ViewProduct",
+            api_name="ShowProduct",
             request={"product_name": product_name},
             response=product
         )
 
-    def _purchase_product(self, timestamp: str, description: str, context: Dict[str, Any]) -> AppLogEntry:
-        """Handle product purchase."""
+    def _read_reviews(self, timestamp: str, description: str, context: Dict[str, Any]) -> AppLogEntry:
+        """Read reviews for a product."""
+        product_name = self._extract_product_name(description)
+        product = self._get_or_create_product(product_name, context)
+        reviews = self._generate_reviews(product_name, product["rating"])
+
+        return AppLogEntry(
+            timestamp=timestamp,
+            app_name=self.app_name,
+            api_name="ReadReviews",
+            request={"product_name": product_name},
+            response={
+                "product_name": product_name,
+                "reviews": reviews,
+                "average_rating": product["rating"],
+                "total_reviews": product["reviews"]
+            }
+        )
+
+    def _add_to_cart(self, timestamp: str, description: str, context: Dict[str, Any]) -> AppLogEntry:
+        """Add product to cart."""
         product_name = self._extract_product_name(description)
         quantity = self._extract_quantity(description)
         product = self._get_or_create_product(product_name, context)
 
-        order_number = f"AMZ{random.randint(100000000, 999999999)}"
-        total_price = product["price"] * quantity
-        order = {
-            "order_number": order_number,
-            "product_name": product["name"],
-            "quantity": quantity,
-            "total_price": round(total_price, 2),
-            "timestamp": timestamp,
-            "estimated_delivery": self._calculate_delivery_date(timestamp)
-        }
+        for item in self.state["cart"]:
+            if item["product_name"].lower() == product_name.lower():
+                item["quantity"] += quantity
+                break
+        else:
+            self.state["cart"].append({
+                "product_name": product["name"],
+                "price": product["price"],
+                "quantity": quantity
+            })
 
-        # Add to order history
-        self.state["order_history"].append(order)
+        cart_total = sum(item["price"] * item["quantity"] for item in self.state["cart"])
+        items_in_cart = sum(item["quantity"] for item in self.state["cart"])
 
         return AppLogEntry(
             timestamp=timestamp,
             app_name=self.app_name,
-            api_name="PurchaseProduct",
+            api_name="AddToCart",
             request={"product_name": product_name, "quantity": quantity},
-            response=order
+            response={
+                "product_name": product["name"],
+                "quantity": quantity,
+                "cart_total": round(cart_total, 2),
+                "items_in_cart": items_in_cart
+            }
         )
 
-    def _view_orders(self, timestamp: str, description: str, context: Dict[str, Any]) -> AppLogEntry:
-        """View order history."""
+    def _checkout(self, timestamp: str, description: str, context: Dict[str, Any]) -> AppLogEntry:
+        """Complete purchase checkout."""
+        if self.state["cart"]:
+            items = [
+                {
+                    "product_name": item["product_name"],
+                    "quantity": item["quantity"],
+                    "price": item["price"]
+                }
+                for item in self.state["cart"]
+            ]
+        else:
+            product_name = self._extract_product_name(description)
+            quantity = self._extract_quantity(description)
+            product = self._get_or_create_product(product_name, context)
+            items = [{
+                "product_name": product["name"],
+                "quantity": quantity,
+                "price": product["price"]
+            }]
+
+        total_price = sum(item["price"] * item["quantity"] for item in items)
+        order_number = f"AMZ{random.randint(100000000, 999999999)}"
+        order = {
+            "order_number": order_number,
+            "items": items,
+            "total_price": round(total_price, 2),
+            "timestamp": timestamp,
+            "estimated_delivery": self._calculate_delivery_date(timestamp),
+            "status": "processing",
+            "current_location": "Fulfillment Center"
+        }
+
+        self.state["order_history"].append(order)
+        self.state["cart"] = []
+
         return AppLogEntry(
             timestamp=timestamp,
             app_name=self.app_name,
-            api_name="ViewOrders",
+            api_name="Checkout",
+            request={},
+            response={
+                "order_number": order_number,
+                "items": items,
+                "total_price": round(total_price, 2),
+                "timestamp": timestamp,
+                "estimated_delivery": order["estimated_delivery"]
+            }
+        )
+
+    def _show_orders(self, timestamp: str, description: str, context: Dict[str, Any]) -> AppLogEntry:
+        """Show order history."""
+        return AppLogEntry(
+            timestamp=timestamp,
+            app_name=self.app_name,
+            api_name="ShowOrders",
             request={},
             response={
                 "orders": self.state["order_history"][-10:],
                 "total_orders": len(self.state["order_history"])
+            }
+        )
+
+    def _track_order(self, timestamp: str, description: str, context: Dict[str, Any]) -> AppLogEntry:
+        """Track a specific order."""
+        order_number = self._extract_order_number(description)
+        order = None
+        for existing in reversed(self.state["order_history"]):
+            if existing["order_number"] == order_number:
+                order = existing
+                break
+
+        if not order and self.state["order_history"]:
+            order = self.state["order_history"][-1]
+            order_number = order["order_number"]
+
+        if not order:
+            order_number = order_number or f"AMZ{random.randint(100000000, 999999999)}"
+            order = {
+                "order_number": order_number,
+                "estimated_delivery": self._calculate_delivery_date(timestamp)
+            }
+
+        status = random.choice(["processing", "shipped", "out_for_delivery", "delivered"])
+        current_location = random.choice(["Fulfillment Center", "Regional Hub", "Local Facility", "Out for delivery"])
+        tracking_events = [
+            {"status": "processing", "timestamp": order.get("timestamp", timestamp)},
+            {"status": status, "timestamp": timestamp}
+        ]
+
+        return AppLogEntry(
+            timestamp=timestamp,
+            app_name=self.app_name,
+            api_name="TrackOrder",
+            request={"order_number": order_number},
+            response={
+                "order_number": order_number,
+                "status": status,
+                "current_location": current_location,
+                "estimated_delivery": order.get("estimated_delivery", self._calculate_delivery_date(timestamp)),
+                "tracking_events": tracking_events
             }
         )
 
@@ -1154,10 +1541,34 @@ class AmazonApp(BaseApp):
 
     def _calculate_delivery_date(self, order_timestamp: str) -> str:
         """Calculate delivery date (2-5 days from order)."""
-        from datetime import datetime, timedelta
         dt = datetime.strptime(order_timestamp, "%Y-%m-%d %H:%M:%S")
         delivery_dt = dt + timedelta(days=random.randint(2, 5))
         return delivery_dt.strftime("%Y-%m-%d")
+
+    def _generate_reviews(self, product_name: str, rating: float) -> List[Dict[str, Any]]:
+        """Generate lightweight review samples."""
+        review_templates = [
+            "Works exactly as expected for daily use.",
+            "Solid quality for the price.",
+            "Setup was easy and it performs well.",
+            "Decent product, but could be improved.",
+            "Exceeded my expectations so far."
+        ]
+        reviews = []
+        for _ in range(random.randint(3, 6)):
+            review_rating = max(1, min(5, int(round(random.uniform(rating - 1, rating + 1)))))
+            reviews.append({
+                "reviewer": random.choice(["Alex", "Jamie", "Taylor", "Morgan", "Riley"]),
+                "rating": review_rating,
+                "text": random.choice(review_templates)
+            })
+        return reviews
+
+    def _extract_order_number(self, description: str) -> str:
+        """Extract order number from description."""
+        import re
+        match = re.search(r'AMZ\d{6,}', description)
+        return match.group(0) if match else ""
 
 
 class GoogleApp(BaseApp):
@@ -1184,6 +1595,8 @@ class GoogleApp(BaseApp):
 
         if api_name == "Search":
             return self._search(timestamp, description, context)
+        elif api_name == "SearchNews":
+            return self._search_news(timestamp, description, context)
         else:
             raise ValueError(f"Unknown Google API: {api_name}")
 
@@ -1200,6 +1613,24 @@ class GoogleApp(BaseApp):
             timestamp=timestamp,
             app_name=self.app_name,
             api_name="Search",
+            request={"query": query},
+            response={"results": results, "total_results": len(results)}
+        )
+
+    def _search_news(self, timestamp: str, description: str, context: Dict[str, Any]) -> AppLogEntry:
+        """Handle news search."""
+        query = self._extract_search_query(description)
+        base_date = datetime.strptime(timestamp, "%Y-%m-%d %H:%M:%S")
+        results = self._generate_news_results(query, base_date)
+
+        self.state["search_history"].append(
+            {"timestamp": timestamp, "query": query, "results_count": len(results), "type": "news"}
+        )
+
+        return AppLogEntry(
+            timestamp=timestamp,
+            app_name=self.app_name,
+            api_name="SearchNews",
             request={"query": query},
             response={"results": results, "total_results": len(results)}
         )
@@ -1225,6 +1656,19 @@ class GoogleApp(BaseApp):
             })
         return results
 
+    def _generate_news_results(self, query: str, base_date: datetime) -> List[Dict[str, Any]]:
+        """Generate basic news results."""
+        results = []
+        sources = ["Reuters", "AP News", "BBC", "The Verge", "Local News", "Financial Times"]
+        for idx in range(random.randint(3, 6)):
+            results.append({
+                "title": f"{query.title()} - Update {idx + 1}",
+                "snippet": f"Recent developments related to {query}.",
+                "source": random.choice(sources),
+                "date": (base_date - timedelta(days=idx)).strftime("%Y-%m-%d")
+            })
+        return results
+
 
 class SpotifyApp(BaseApp):
     """Spotify music streaming app."""
@@ -1245,11 +1689,13 @@ class SpotifyApp(BaseApp):
         return [
             {
                 "name": "My Favorites",
-                "song_count": random.randint(20, 100)
+                "songs": [SpotifyDatabase.get_random_song() for _ in range(3)],
+                "created_at": datetime.now().strftime("%Y-%m-%d")
             },
             {
                 "name": "Workout Mix",
-                "song_count": random.randint(15, 50)
+                "songs": [SpotifyDatabase.get_random_song() for _ in range(3)],
+                "created_at": datetime.now().strftime("%Y-%m-%d")
             }
         ]
 
@@ -1265,12 +1711,18 @@ class SpotifyApp(BaseApp):
 
         if api_name == "SearchSongs":
             return self._search_songs(timestamp, description, context)
+        elif api_name == "ShowArtist":
+            return self._show_artist(timestamp, description, context)
         elif api_name == "PlaySong":
             return self._play_song(timestamp, description, context)
-        elif api_name == "ViewPlaylists":
-            return self._view_playlists(timestamp, description, context)
-        elif api_name == "ViewRecentlyPlayed":
-            return self._view_recently_played(timestamp, description, context)
+        elif api_name == "CreatePlaylist":
+            return self._create_playlist(timestamp, description, context)
+        elif api_name == "AddToPlaylist":
+            return self._add_to_playlist(timestamp, description, context)
+        elif api_name == "ShowPlaylists":
+            return self._show_playlists(timestamp, description, context)
+        elif api_name == "ShowRecentlyPlayed":
+            return self._show_recently_played(timestamp, description, context)
         else:
             raise ValueError(f"Unknown Spotify API: {api_name}")
 
@@ -1285,6 +1737,26 @@ class SpotifyApp(BaseApp):
             api_name="SearchSongs",
             request={"query": query},
             response={"songs": songs, "total_results": len(songs)}
+        )
+
+    def _show_artist(self, timestamp: str, description: str, context: Dict[str, Any]) -> AppLogEntry:
+        """Show artist profile and top songs."""
+        artist_name = self._extract_artist_name(description)
+        songs = SpotifyDatabase.get_songs_by_artist(artist_name, limit=5)
+        if not songs:
+            songs = SpotifyDatabase.search_songs(artist_name, limit=5)
+        genres = sorted({song.get("genre", "Unknown") for song in songs}) or ["Unknown"]
+
+        return AppLogEntry(
+            timestamp=timestamp,
+            app_name=self.app_name,
+            api_name="ShowArtist",
+            request={"artist_name": artist_name},
+            response={
+                "artist": artist_name,
+                "genres": genres,
+                "top_songs": songs
+            }
         )
 
     def _play_song(self, timestamp: str, description: str, context: Dict[str, Any]) -> AppLogEntry:
@@ -1313,22 +1785,81 @@ class SpotifyApp(BaseApp):
             }
         )
 
-    def _view_playlists(self, timestamp: str, description: str, context: Dict[str, Any]) -> AppLogEntry:
-        """View user playlists."""
+    def _create_playlist(self, timestamp: str, description: str, context: Dict[str, Any]) -> AppLogEntry:
+        """Create a new playlist."""
+        playlist_name = self._extract_playlist_name(description)
+        playlist = {
+            "name": playlist_name,
+            "songs": [],
+            "created_at": timestamp.split()[0]
+        }
+        self.state["playlists"].append(playlist)
+
         return AppLogEntry(
             timestamp=timestamp,
             app_name=self.app_name,
-            api_name="ViewPlaylists",
-            request={},
-            response={"playlists": self.state["playlists"]}
+            api_name="CreatePlaylist",
+            request={"playlist_name": playlist_name},
+            response={
+                "playlist_name": playlist_name,
+                "song_count": len(playlist["songs"]),
+                "created_at": playlist["created_at"]
+            }
         )
 
-    def _view_recently_played(self, timestamp: str, description: str, context: Dict[str, Any]) -> AppLogEntry:
+    def _add_to_playlist(self, timestamp: str, description: str, context: Dict[str, Any]) -> AppLogEntry:
+        """Add a song to an existing playlist."""
+        playlist_name = self._extract_playlist_name(description)
+        playlist = self._find_playlist(playlist_name)
+        if not playlist:
+            playlist = {
+                "name": playlist_name,
+                "songs": [],
+                "created_at": timestamp.split()[0]
+            }
+            self.state["playlists"].append(playlist)
+
+        song_title, artist = self._extract_song_info(description)
+        song = self._get_or_create_song(song_title, artist, context)
+        playlist["songs"].append(song)
+
+        return AppLogEntry(
+            timestamp=timestamp,
+            app_name=self.app_name,
+            api_name="AddToPlaylist",
+            request={"playlist_name": playlist_name, "song_title": song_title, "artist": artist},
+            response={
+                "playlist_name": playlist_name,
+                "song_added": song,
+                "song_count": len(playlist["songs"])
+            }
+        )
+
+    def _show_playlists(self, timestamp: str, description: str, context: Dict[str, Any]) -> AppLogEntry:
+        """Show user playlists."""
+        return AppLogEntry(
+            timestamp=timestamp,
+            app_name=self.app_name,
+            api_name="ShowPlaylists",
+            request={},
+            response={
+                "playlists": [
+                    {
+                        "name": playlist["name"],
+                        "song_count": len(playlist.get("songs", [])),
+                        "created_at": playlist.get("created_at", "")
+                    }
+                    for playlist in self.state["playlists"]
+                ]
+            }
+        )
+
+    def _show_recently_played(self, timestamp: str, description: str, context: Dict[str, Any]) -> AppLogEntry:
         """View recently played songs."""
         return AppLogEntry(
             timestamp=timestamp,
             app_name=self.app_name,
-            api_name="ViewRecentlyPlayed",
+            api_name="ShowRecentlyPlayed",
             request={},
             response={
                 "songs": [item["song"] for item in self.state["recently_played"][:20]]
@@ -1362,6 +1893,38 @@ class SpotifyApp(BaseApp):
         # Fallback: use description
         words = description.split()
         return " ".join(words[:3]), "Unknown Artist"
+
+    def _extract_artist_name(self, description: str) -> str:
+        """Extract artist name from description."""
+        import re
+        quoted = re.findall(r"'([^']*)'|\"([^\"]*)\"", description)
+        if quoted:
+            artist = quoted[0][0] or quoted[0][1]
+            if " by " in artist.lower():
+                return artist.split(" by ", 1)[1].strip()
+            return artist.strip()
+        match = re.search(r'\bby\s+([A-Z][a-zA-Z]+(?:\s+[A-Z][a-zA-Z]+)*)', description)
+        if match:
+            return match.group(1).strip()
+        return "Unknown Artist"
+
+    def _extract_playlist_name(self, description: str) -> str:
+        """Extract playlist name from description."""
+        import re
+        quoted = re.findall(r"'([^']*)'|\"([^\"]*)\"", description)
+        if quoted:
+            return quoted[0][0] or quoted[0][1]
+        match = re.search(r'playlist\s+([A-Za-z0-9 _-]+)', description, re.IGNORECASE)
+        if match:
+            return match.group(1).strip()
+        return random.choice(["New Playlist", "Favorites", "Daily Mix"])
+
+    def _find_playlist(self, playlist_name: str) -> Optional[Dict[str, Any]]:
+        """Find a playlist by name."""
+        for playlist in self.state["playlists"]:
+            if playlist["name"].lower() == playlist_name.lower():
+                return playlist
+        return None
 
     def _generate_song_results(self, query: str) -> List[Dict]:
         """Generate song search results using static database."""
@@ -1414,27 +1977,34 @@ class SimpleNoteApp(BaseApp):
         """Call SimpleNote API."""
         self.ensure_initialized()
 
-        if api_name == "ViewNotes":
-            return self._view_notes(timestamp, description, context)
-        elif api_name == "ReadNote":
-            return self._read_note(timestamp, description, context)
+        if api_name == "ShowNotes":
+            return self._show_notes(timestamp, description, context)
+        elif api_name == "ShowNote":
+            return self._show_note(timestamp, description, context)
         elif api_name == "CreateNote":
             return self._create_note(timestamp, description, context)
+        elif api_name == "EditNote":
+            return self._edit_note(timestamp, description, context)
+        elif api_name == "SearchNotes":
+            return self._search_notes(timestamp, description, context)
+        elif api_name == "TagNote":
+            return self._tag_note(timestamp, description, context)
         else:
             raise ValueError(f"Unknown SimpleNote API: {api_name}")
 
-    def _view_notes(self, timestamp: str, description: str, context: Dict[str, Any]) -> AppLogEntry:
-        """View all notes."""
+    def _show_notes(self, timestamp: str, description: str, context: Dict[str, Any]) -> AppLogEntry:
+        """Show all notes."""
         return AppLogEntry(
             timestamp=timestamp,
             app_name=self.app_name,
-            api_name="ViewNotes",
+            api_name="ShowNotes",
             request={},
             response={
                 "notes": [
                     {
                         "title": note["title"],
                         "preview": note["content"][:50] + ("..." if len(note["content"]) > 50 else ""),
+                        "tags": note.get("tags", []),
                         "created_at": note["created_at"]
                     }
                     for note in self.state["notes"]
@@ -1443,8 +2013,8 @@ class SimpleNoteApp(BaseApp):
             }
         )
 
-    def _read_note(self, timestamp: str, description: str, context: Dict[str, Any]) -> AppLogEntry:
-        """Read a specific note by title."""
+    def _show_note(self, timestamp: str, description: str, context: Dict[str, Any]) -> AppLogEntry:
+        """Show a specific note by title."""
         note_title = self._extract_note_title(description)
 
         # Find note by title
@@ -1462,15 +2032,23 @@ class SimpleNoteApp(BaseApp):
                 note = {
                     "title": note_title,
                     "content": "This is a placeholder note.",
-                    "created_at": timestamp
+                    "created_at": timestamp,
+                    "updated_at": timestamp,
+                    "tags": []
                 }
 
         return AppLogEntry(
             timestamp=timestamp,
             app_name=self.app_name,
-            api_name="ReadNote",
+            api_name="ShowNote",
             request={"note_title": note_title},
-            response=note
+            response={
+                "title": note["title"],
+                "content": note["content"],
+                "tags": note.get("tags", []),
+                "created_at": note.get("created_at", timestamp),
+                "updated_at": note.get("updated_at", note.get("created_at", timestamp))
+            }
         )
 
     def _create_note(self, timestamp: str, description: str, context: Dict[str, Any]) -> AppLogEntry:
@@ -1480,7 +2058,9 @@ class SimpleNoteApp(BaseApp):
         note = {
             "title": title,
             "content": content,
-            "created_at": timestamp
+            "created_at": timestamp,
+            "updated_at": timestamp,
+            "tags": self._extract_tags(description)
         }
 
         self.state["notes"].append(note)
@@ -1490,7 +2070,104 @@ class SimpleNoteApp(BaseApp):
             app_name=self.app_name,
             api_name="CreateNote",
             request={"title": title, "content": content},
-            response=note
+            response={
+                "title": note["title"],
+                "content": note["content"],
+                "tags": note["tags"],
+                "created_at": note["created_at"]
+            }
+        )
+
+    def _edit_note(self, timestamp: str, description: str, context: Dict[str, Any]) -> AppLogEntry:
+        """Edit an existing note."""
+        note_title = self._extract_note_title(description)
+        content_update = description
+        note = None
+        for existing in self.state["notes"]:
+            if existing["title"].lower() == note_title.lower():
+                note = existing
+                break
+
+        if not note:
+            note = {
+                "title": note_title,
+                "content": "",
+                "created_at": timestamp,
+                "tags": []
+            }
+            self.state["notes"].append(note)
+
+        note["content"] = content_update
+        note["updated_at"] = timestamp
+
+        return AppLogEntry(
+            timestamp=timestamp,
+            app_name=self.app_name,
+            api_name="EditNote",
+            request={"note_title": note_title, "content": content_update},
+            response={
+                "title": note["title"],
+                "content": note["content"],
+                "tags": note.get("tags", []),
+                "updated_at": note["updated_at"]
+            }
+        )
+
+    def _search_notes(self, timestamp: str, description: str, context: Dict[str, Any]) -> AppLogEntry:
+        """Search notes by query."""
+        query = self._extract_search_query(description)
+        query_lower = query.lower()
+        results = [
+            note for note in self.state["notes"]
+            if query_lower in note["title"].lower()
+            or query_lower in note["content"].lower()
+            or query_lower in " ".join(note.get("tags", [])).lower()
+        ]
+
+        return AppLogEntry(
+            timestamp=timestamp,
+            app_name=self.app_name,
+            api_name="SearchNotes",
+            request={"query": query},
+            response={
+                "notes": results[:10],
+                "total_results": len(results)
+            }
+        )
+
+    def _tag_note(self, timestamp: str, description: str, context: Dict[str, Any]) -> AppLogEntry:
+        """Add tags to a note."""
+        note_title = self._extract_note_title(description)
+        tags = self._extract_tags(description)
+        note = None
+        for existing in self.state["notes"]:
+            if existing["title"].lower() == note_title.lower():
+                note = existing
+                break
+
+        if not note:
+            note = {
+                "title": note_title,
+                "content": "",
+                "created_at": timestamp,
+                "updated_at": timestamp,
+                "tags": []
+            }
+            self.state["notes"].append(note)
+
+        note["tags"] = sorted(set(note.get("tags", []) + tags))
+        note["updated_at"] = timestamp
+
+        return AppLogEntry(
+            timestamp=timestamp,
+            app_name=self.app_name,
+            api_name="TagNote",
+            request={"note_title": note_title, "tags": tags},
+            response={
+                "title": note["title"],
+                "tags": note["tags"],
+                "updated_at": note["updated_at"]
+            }
         )
 
     def _extract_note_title(self, description: str) -> str:
@@ -1509,6 +2186,21 @@ class SimpleNoteApp(BaseApp):
         content = description
         return title, content
 
+    def _extract_search_query(self, description: str) -> str:
+        """Extract search query from description."""
+        import re
+        quoted = re.findall(r"'([^']*)'|\"([^\"]*)\"", description)
+        if quoted:
+            return quoted[0][0] or quoted[0][1]
+        return "note"
+
+    def _extract_tags(self, description: str) -> List[str]:
+        """Extract tags from description."""
+        tags = [word.lstrip("#") for word in description.split() if word.startswith("#")]
+        if tags:
+            return tags
+        return []
+
 
 class MessageApp(BaseApp):
     """Messaging app."""
@@ -1520,7 +2212,8 @@ class MessageApp(BaseApp):
         """Initialize messaging state."""
         self.state = {
             "conversations": {},  # contact_name -> list of messages
-            "contacts": ["Alice", "Bob", "Carol", "Dave", "Emma"]
+            "contacts": ["Alice", "Bob", "Carol", "Dave", "Emma"],
+            "groups": {}  # group_name -> group info
         }
 
     def call_api(
@@ -1535,10 +2228,14 @@ class MessageApp(BaseApp):
 
         if api_name == "SendMessage":
             return self._send_message(timestamp, description, context)
-        elif api_name == "ViewConversation":
-            return self._view_conversation(timestamp, description, context)
+        elif api_name == "GetMessages":
+            return self._get_messages(timestamp, description, context)
         elif api_name == "SearchMessages":
             return self._search_messages(timestamp, description, context)
+        elif api_name == "CreateGroup":
+            return self._create_group(timestamp, description, context)
+        elif api_name == "ReactToMessage":
+            return self._react_to_message(timestamp, description, context)
         else:
             raise ValueError(f"Unknown Message API: {api_name}")
 
@@ -1547,11 +2244,13 @@ class MessageApp(BaseApp):
         recipient, message_text = self._extract_message_details(description)
 
         message = {
+            "message_id": str(uuid.uuid4()),
             "from": self.user_id,
             "to": recipient,
             "text": message_text,
             "timestamp": timestamp,
-            "status": "sent"
+            "status": "sent",
+            "reactions": []
         }
 
         # Add to conversation
@@ -1567,15 +2266,15 @@ class MessageApp(BaseApp):
             response=message
         )
 
-    def _view_conversation(self, timestamp: str, description: str, context: Dict[str, Any]) -> AppLogEntry:
-        """View conversation with a contact."""
+    def _get_messages(self, timestamp: str, description: str, context: Dict[str, Any]) -> AppLogEntry:
+        """Get messages from a conversation thread."""
         contact_name = self._extract_contact_name(description)
         messages = self.state["conversations"].get(contact_name, [])
 
         return AppLogEntry(
             timestamp=timestamp,
             app_name=self.app_name,
-            api_name="ViewConversation",
+            api_name="GetMessages",
             request={"contact_name": contact_name},
             response={
                 "contact_name": contact_name,
@@ -1604,6 +2303,50 @@ class MessageApp(BaseApp):
                 "messages": results[:10],  # Return up to 10 results
                 "total_count": len(results)
             }
+        )
+
+    def _create_group(self, timestamp: str, description: str, context: Dict[str, Any]) -> AppLogEntry:
+        """Create a group chat."""
+        group_name = self._extract_group_name(description)
+        members = random.sample(self.state["contacts"], min(3, len(self.state["contacts"])))
+        group_id = str(uuid.uuid4())
+
+        self.state["groups"][group_name] = {
+            "group_id": group_id,
+            "group_name": group_name,
+            "members": members
+        }
+        self.state["conversations"].setdefault(group_name, [])
+
+        return AppLogEntry(
+            timestamp=timestamp,
+            app_name=self.app_name,
+            api_name="CreateGroup",
+            request={"group_name": group_name, "members": members},
+            response={
+                "group_id": group_id,
+                "group_name": group_name,
+                "members": members
+            }
+        )
+
+    def _react_to_message(self, timestamp: str, description: str, context: Dict[str, Any]) -> AppLogEntry:
+        """React to a message."""
+        contact_name = self._extract_contact_name(description)
+        reaction = self._extract_reaction(description)
+        messages = self.state["conversations"].get(contact_name, [])
+        target_message = messages[-1] if messages else None
+        message_id = target_message["message_id"] if target_message else str(uuid.uuid4())
+
+        if target_message:
+            target_message.setdefault("reactions", []).append(reaction)
+
+        return AppLogEntry(
+            timestamp=timestamp,
+            app_name=self.app_name,
+            api_name="ReactToMessage",
+            request={"message_id": message_id, "reaction": reaction},
+            response={"message_id": message_id, "reaction": reaction, "status": "added"}
         )
 
     def _extract_contact_name(self, description: str) -> str:
@@ -1639,6 +2382,24 @@ class MessageApp(BaseApp):
             return quoted[0][0] or quoted[0][1]
         return "search query"
 
+    def _extract_group_name(self, description: str) -> str:
+        """Extract group name from description."""
+        import re
+        quoted = re.findall(r"'([^']*)'|\"([^\"]*)\"", description)
+        if quoted:
+            return quoted[0][0] or quoted[0][1]
+        match = re.search(r'group\s+([A-Za-z0-9 _-]+)', description, re.IGNORECASE)
+        if match:
+            return match.group(1).strip()
+        return random.choice(["Project Team", "Friends", "Family"])
+
+    def _extract_reaction(self, description: str) -> str:
+        """Extract reaction emoji or text."""
+        for token in description.split():
+            if token in ["👍", "👎", "❤️", "😂", "🎉"]:
+                return token
+        return random.choice(["👍", "❤️", "😂"])
+
 
 class FitnessApp(BaseApp):
     """Fitness tracking app."""
@@ -1671,12 +2432,16 @@ class FitnessApp(BaseApp):
 
         if api_name == "LogWorkout":
             return self._log_workout(timestamp, description, context)
-        elif api_name == "ViewTodayStats":
-            return self._view_today_stats(timestamp, description, context)
-        elif api_name == "ViewWeeklyStats":
-            return self._view_weekly_stats(timestamp, description, context)
-        elif api_name == "SyncDevice":
-            return self._sync_device(timestamp, description, context)
+        elif api_name == "LogActivity":
+            return self._log_activity(timestamp, description, context)
+        elif api_name == "ShowDailyStats":
+            return self._show_daily_stats(timestamp, description, context)
+        elif api_name == "ShowWeeklyStats":
+            return self._show_weekly_stats(timestamp, description, context)
+        elif api_name == "SetGoal":
+            return self._set_goal(timestamp, description, context)
+        elif api_name == "ShowProgress":
+            return self._show_progress(timestamp, description, context)
         else:
             raise ValueError(f"Unknown Fitness API: {api_name}")
 
@@ -1726,8 +2491,41 @@ class FitnessApp(BaseApp):
             response=workout
         )
 
-    def _view_today_stats(self, timestamp: str, description: str, context: Dict[str, Any]) -> AppLogEntry:
-        """View today's fitness stats."""
+    def _log_activity(self, timestamp: str, description: str, context: Dict[str, Any]) -> AppLogEntry:
+        """Log daily activity metrics."""
+        date = timestamp.split()[0]
+        steps = self._extract_number(description, default=random.randint(3000, 12000))
+        calories = self._extract_number(description, default=random.randint(1800, 2500))
+        active_minutes = random.randint(20, 120)
+
+        if date not in self.state["daily_stats"]:
+            self.state["daily_stats"][date] = {
+                "date": date,
+                "steps": 0,
+                "active_minutes": 0,
+                "calories": 0,
+                "workouts": []
+            }
+
+        self.state["daily_stats"][date]["steps"] = steps
+        self.state["daily_stats"][date]["calories"] = calories
+        self.state["daily_stats"][date]["active_minutes"] = active_minutes
+
+        return AppLogEntry(
+            timestamp=timestamp,
+            app_name=self.app_name,
+            api_name="LogActivity",
+            request={"steps": steps, "calories": calories, "active_minutes": active_minutes},
+            response={
+                "date": date,
+                "steps": steps,
+                "calories": calories,
+                "active_minutes": active_minutes
+            }
+        )
+
+    def _show_daily_stats(self, timestamp: str, description: str, context: Dict[str, Any]) -> AppLogEntry:
+        """Show today's fitness stats."""
         date = timestamp.split()[0]
 
         if date not in self.state["daily_stats"]:
@@ -1745,13 +2543,13 @@ class FitnessApp(BaseApp):
         return AppLogEntry(
             timestamp=timestamp,
             app_name=self.app_name,
-            api_name="ViewTodayStats",
+            api_name="ShowDailyStats",
             request={},
             response=stats
         )
 
-    def _view_weekly_stats(self, timestamp: str, description: str, context: Dict[str, Any]) -> AppLogEntry:
-        """View weekly fitness stats."""
+    def _show_weekly_stats(self, timestamp: str, description: str, context: Dict[str, Any]) -> AppLogEntry:
+        """Show weekly fitness stats."""
         # Aggregate last 7 days
         total_workouts = len(self.state["workouts"][-7:])
         total_active_minutes = sum(w["duration_minutes"] for w in self.state["workouts"][-7:])
@@ -1766,27 +2564,55 @@ class FitnessApp(BaseApp):
         return AppLogEntry(
             timestamp=timestamp,
             app_name=self.app_name,
-            api_name="ViewWeeklyStats",
+            api_name="ShowWeeklyStats",
             request={},
             response=weekly_stats
         )
 
-    def _sync_device(self, timestamp: str, description: str, context: Dict[str, Any]) -> AppLogEntry:
-        """Sync fitness device."""
-        # Simulate syncing data from wearable
-        synced_data = {
-            "steps": random.randint(100, 1000),
-            "heart_rate_measurements": random.randint(10, 50),
-            "sleep_hours": round(random.uniform(6.0, 8.5), 1),
-            "last_sync": timestamp
+    def _set_goal(self, timestamp: str, description: str, context: Dict[str, Any]) -> AppLogEntry:
+        """Set or update a fitness goal."""
+        goal_type = self._extract_goal_type(description)
+        target = self._extract_number(description, default=self.state["goals"].get(goal_type, 100))
+        self.state["goals"][goal_type] = target
+
+        return AppLogEntry(
+            timestamp=timestamp,
+            app_name=self.app_name,
+            api_name="SetGoal",
+            request={"goal_type": goal_type, "target": target},
+            response={"goals": self.state["goals"].copy()}
+        )
+
+    def _show_progress(self, timestamp: str, description: str, context: Dict[str, Any]) -> AppLogEntry:
+        """Show progress toward goals."""
+        date = timestamp.split()[0]
+        stats = self.state["daily_stats"].get(date, {
+            "steps": 0,
+            "active_minutes": 0,
+            "calories": 0
+        })
+
+        progress = {
+            "daily_steps": {
+                "current": stats.get("steps", 0),
+                "target": self.state["goals"].get("daily_steps", 10000)
+            },
+            "weekly_workouts": {
+                "current": len(self.state["workouts"][-7:]),
+                "target": self.state["goals"].get("weekly_workouts", 5)
+            },
+            "weekly_active_minutes": {
+                "current": sum(w["duration_minutes"] for w in self.state["workouts"][-7:]),
+                "target": self.state["goals"].get("weekly_active_minutes", 150)
+            }
         }
 
         return AppLogEntry(
             timestamp=timestamp,
             app_name=self.app_name,
-            api_name="SyncDevice",
+            api_name="ShowProgress",
             request={},
-            response=synced_data
+            response={"progress": progress}
         )
 
     def _initialize_user_baseline(self, context: Dict[str, Any]) -> None:
@@ -1835,6 +2661,23 @@ class FitnessApp(BaseApp):
 
         return workout_type, duration, intensity
 
+    def _extract_goal_type(self, description: str) -> str:
+        """Extract goal type from description."""
+        desc_lower = description.lower()
+        if "steps" in desc_lower:
+            return "daily_steps"
+        if "workout" in desc_lower:
+            return "weekly_workouts"
+        if "active" in desc_lower or "minutes" in desc_lower:
+            return "weekly_active_minutes"
+        return "daily_steps"
+
+    def _extract_number(self, description: str, default: int = 0) -> int:
+        """Extract a number from description."""
+        import re
+        match = re.search(r'\b(\d{2,6})\b', description)
+        return int(match.group(1)) if match else default
+
     def _calculate_calories(self, workout_type: str, duration: int, intensity: str) -> int:
         """Calculate calories burned."""
         base_rate = {
@@ -1864,6 +2707,438 @@ class FitnessApp(BaseApp):
         }.get(intensity, (resting_hr + 30, resting_hr + 50))
 
         return random.randint(*intensity_range)
+
+
+class CalendarApp(BaseApp):
+    """Calendar scheduling app."""
+
+    def __init__(self, user_id: str):
+        super().__init__("Calendar", user_id)
+
+    def _initialize_state(self) -> None:
+        """Initialize calendar state."""
+        self.state = {
+            "events": []
+        }
+
+    def call_api(
+        self,
+        api_name: str,
+        timestamp: str,
+        description: str,
+        context: Dict[str, Any]
+    ) -> AppLogEntry:
+        """Call Calendar API."""
+        self.ensure_initialized()
+
+        if api_name == "CreateEvent":
+            return self._create_event(timestamp, description, context)
+        elif api_name == "ShowEvents":
+            return self._show_events(timestamp, description, context)
+        elif api_name == "EditEvent":
+            return self._edit_event(timestamp, description, context)
+        elif api_name == "SetReminder":
+            return self._set_reminder(timestamp, description, context)
+        else:
+            raise ValueError(f"Unknown Calendar API: {api_name}")
+
+    def _create_event(self, timestamp: str, description: str, context: Dict[str, Any]) -> AppLogEntry:
+        """Create a calendar event."""
+        title = self._extract_event_title(description)
+        date = timestamp.split()[0]
+        start_time, end_time = self._extract_time_range(timestamp, description)
+        location = self._extract_location(description)
+
+        event = {
+            "event_id": str(uuid.uuid4()),
+            "title": title,
+            "date": date,
+            "start_time": start_time,
+            "end_time": end_time,
+            "location": location,
+            "reminder": ""
+        }
+        self.state["events"].append(event)
+
+        return AppLogEntry(
+            timestamp=timestamp,
+            app_name=self.app_name,
+            api_name="CreateEvent",
+            request={"title": title, "date": date, "start_time": start_time, "end_time": end_time},
+            response=event
+        )
+
+    def _show_events(self, timestamp: str, description: str, context: Dict[str, Any]) -> AppLogEntry:
+        """Show calendar events."""
+        return AppLogEntry(
+            timestamp=timestamp,
+            app_name=self.app_name,
+            api_name="ShowEvents",
+            request={},
+            response={
+                "events": self.state["events"],
+                "total_events": len(self.state["events"])
+            }
+        )
+
+    def _edit_event(self, timestamp: str, description: str, context: Dict[str, Any]) -> AppLogEntry:
+        """Edit a calendar event."""
+        title = self._extract_event_title(description)
+        event = self._find_event_by_title(title)
+        if not event and self.state["events"]:
+            event = self.state["events"][-1]
+
+        if not event:
+            event = {
+                "event_id": str(uuid.uuid4()),
+                "title": title,
+                "date": timestamp.split()[0],
+                "start_time": timestamp.split()[1][:5],
+                "end_time": self._add_minutes(timestamp, 60),
+                "location": "",
+                "reminder": ""
+            }
+            self.state["events"].append(event)
+
+        start_time, end_time = self._extract_time_range(timestamp, description)
+        if start_time:
+            event["start_time"] = start_time
+            event["end_time"] = end_time
+        if title:
+            event["title"] = title
+
+        return AppLogEntry(
+            timestamp=timestamp,
+            app_name=self.app_name,
+            api_name="EditEvent",
+            request={"event_id": event["event_id"], "updates": event},
+            response={"event": event}
+        )
+
+    def _set_reminder(self, timestamp: str, description: str, context: Dict[str, Any]) -> AppLogEntry:
+        """Set reminder for a calendar event."""
+        title = self._extract_event_title(description)
+        event = self._find_event_by_title(title)
+        if not event and self.state["events"]:
+            event = self.state["events"][-1]
+
+        reminder_minutes = self._extract_number(description, default=30)
+        if event:
+            event["reminder"] = f"{reminder_minutes} minutes before"
+
+        return AppLogEntry(
+            timestamp=timestamp,
+            app_name=self.app_name,
+            api_name="SetReminder",
+            request={"event_id": event["event_id"] if event else "", "reminder_minutes": reminder_minutes},
+            response={"event_id": event["event_id"] if event else "", "reminder_minutes": reminder_minutes}
+        )
+
+    def _extract_event_title(self, description: str) -> str:
+        """Extract event title from description."""
+        import re
+        quoted = re.findall(r"'([^']*)'|\"([^\"]*)\"", description)
+        if quoted:
+            return quoted[0][0] or quoted[0][1]
+        words = description.split()
+        return " ".join(words[:6]) if words else "New Event"
+
+    def _extract_time_range(self, timestamp: str, description: str) -> tuple[str, str]:
+        """Extract time range from description or fallback to timestamp."""
+        import re
+        times = re.findall(r'\b(\d{1,2}:\d{2})\b', description)
+        if len(times) >= 2:
+            return times[0].zfill(5), times[1].zfill(5)
+        if len(times) == 1:
+            start_time = times[0].zfill(5)
+            end_time = self._add_minutes(f"{timestamp.split()[0]} {start_time}:00", 60)
+            return start_time, end_time
+        start_time = timestamp.split()[1][:5]
+        end_time = self._add_minutes(timestamp, 60)
+        return start_time, end_time
+
+    def _add_minutes(self, timestamp: str, minutes: int) -> str:
+        """Add minutes to a timestamp or time string."""
+        if len(timestamp.split()) == 2:
+            dt = datetime.strptime(timestamp, "%Y-%m-%d %H:%M:%S")
+        else:
+            dt = datetime.strptime(f"2000-01-01 {timestamp}", "%Y-%m-%d %H:%M:%S")
+        return (dt + timedelta(minutes=minutes)).strftime("%H:%M")
+
+    def _extract_location(self, description: str) -> str:
+        """Extract location from description."""
+        import re
+        match = re.search(r'\bat\s+([A-Za-z0-9 ,.-]+)', description)
+        if match:
+            return match.group(1).strip()
+        return "unspecified"
+
+    def _find_event_by_title(self, title: str) -> Optional[Dict[str, Any]]:
+        """Find an event by title."""
+        for event in self.state["events"]:
+            if event["title"].lower() == title.lower():
+                return event
+        return None
+
+    def _extract_number(self, description: str, default: int = 0) -> int:
+        """Extract a number from description."""
+        import re
+        match = re.search(r'\b(\d{1,4})\b', description)
+        return int(match.group(1)) if match else default
+
+
+class FinanceApp(BaseApp):
+    """Finance management app."""
+
+    def __init__(self, user_id: str):
+        super().__init__("Finance", user_id)
+
+    def _initialize_state(self) -> None:
+        """Initialize finance state."""
+        self.state = {
+            "accounts": [
+                {"account_id": "acc_checking", "name": "Checking", "balance": 2500.0, "type": "checking"},
+                {"account_id": "acc_savings", "name": "Savings", "balance": 10000.0, "type": "savings"},
+                {"account_id": "acc_credit", "name": "Credit Card", "balance": -350.0, "type": "credit"}
+            ],
+            "transactions": [],
+            "budgets": {},
+            "financial_goals": [],
+            "investments": [
+                {"symbol": "VTI", "shares": 10, "price": 220.0},
+                {"symbol": "AAPL", "shares": 5, "price": 180.0}
+            ]
+        }
+
+    def call_api(
+        self,
+        api_name: str,
+        timestamp: str,
+        description: str,
+        context: Dict[str, Any]
+    ) -> AppLogEntry:
+        """Call Finance API."""
+        self.ensure_initialized()
+
+        if api_name == "ShowAccounts":
+            return self._show_accounts(timestamp, description, context)
+        elif api_name == "ShowTransactions":
+            return self._show_transactions(timestamp, description, context)
+        elif api_name == "CreateBudget":
+            return self._create_budget(timestamp, description, context)
+        elif api_name == "LogExpense":
+            return self._log_expense(timestamp, description, context)
+        elif api_name == "ShowBudgetProgress":
+            return self._show_budget_progress(timestamp, description, context)
+        elif api_name == "SetFinancialGoal":
+            return self._set_financial_goal(timestamp, description, context)
+        elif api_name == "ShowInvestments":
+            return self._show_investments(timestamp, description, context)
+        elif api_name == "TransferMoney":
+            return self._transfer_money(timestamp, description, context)
+        else:
+            raise ValueError(f"Unknown Finance API: {api_name}")
+
+    def _show_accounts(self, timestamp: str, description: str, context: Dict[str, Any]) -> AppLogEntry:
+        """Show account balances."""
+        return AppLogEntry(
+            timestamp=timestamp,
+            app_name=self.app_name,
+            api_name="ShowAccounts",
+            request={},
+            response={"accounts": self.state["accounts"]}
+        )
+
+    def _show_transactions(self, timestamp: str, description: str, context: Dict[str, Any]) -> AppLogEntry:
+        """Show recent transactions."""
+        return AppLogEntry(
+            timestamp=timestamp,
+            app_name=self.app_name,
+            api_name="ShowTransactions",
+            request={},
+            response={
+                "transactions": self.state["transactions"][-20:],
+                "total_transactions": len(self.state["transactions"])
+            }
+        )
+
+    def _create_budget(self, timestamp: str, description: str, context: Dict[str, Any]) -> AppLogEntry:
+        """Create or update a budget."""
+        categories = self._extract_budget_categories(description)
+        for category, limit in categories.items():
+            self.state["budgets"][category] = limit
+
+        budgets = [{"category": k, "limit": v} for k, v in self.state["budgets"].items()]
+
+        return AppLogEntry(
+            timestamp=timestamp,
+            app_name=self.app_name,
+            api_name="CreateBudget",
+            request={"categories": budgets},
+            response={"budgets": budgets}
+        )
+
+    def _log_expense(self, timestamp: str, description: str, context: Dict[str, Any]) -> AppLogEntry:
+        """Log an expense transaction."""
+        amount = self._extract_amount(description, default=round(random.uniform(5.0, 120.0), 2))
+        category = self._extract_category(description)
+        merchant = self._extract_merchant(description)
+        account = self._select_account("checking")
+
+        transaction = {
+            "transaction_id": str(uuid.uuid4()),
+            "amount": -abs(amount),
+            "category": category,
+            "merchant": merchant,
+            "timestamp": timestamp,
+            "account_id": account["account_id"]
+        }
+        self.state["transactions"].append(transaction)
+        account["balance"] -= abs(amount)
+
+        return AppLogEntry(
+            timestamp=timestamp,
+            app_name=self.app_name,
+            api_name="LogExpense",
+            request={"amount": amount, "category": category, "merchant": merchant},
+            response={"transaction": transaction}
+        )
+
+    def _show_budget_progress(self, timestamp: str, description: str, context: Dict[str, Any]) -> AppLogEntry:
+        """Show budget progress by category."""
+        spending = {}
+        for txn in self.state["transactions"]:
+            category = txn["category"]
+            spending[category] = spending.get(category, 0) + abs(txn["amount"])
+
+        categories = []
+        for category, limit in self.state["budgets"].items():
+            categories.append({
+                "category": category,
+                "spent": round(spending.get(category, 0), 2),
+                "limit": limit
+            })
+
+        return AppLogEntry(
+            timestamp=timestamp,
+            app_name=self.app_name,
+            api_name="ShowBudgetProgress",
+            request={},
+            response={"categories": categories}
+        )
+
+    def _set_financial_goal(self, timestamp: str, description: str, context: Dict[str, Any]) -> AppLogEntry:
+        """Set a financial goal."""
+        goal_name = self._extract_goal_name(description)
+        target_amount = self._extract_amount(description, default=5000.0)
+
+        goal = {
+            "goal_id": str(uuid.uuid4()),
+            "goal_name": goal_name,
+            "target_amount": target_amount,
+            "created_at": timestamp
+        }
+        self.state["financial_goals"].append(goal)
+
+        return AppLogEntry(
+            timestamp=timestamp,
+            app_name=self.app_name,
+            api_name="SetFinancialGoal",
+            request={"goal_name": goal_name, "target_amount": target_amount},
+            response={"goal": goal}
+        )
+
+    def _show_investments(self, timestamp: str, description: str, context: Dict[str, Any]) -> AppLogEntry:
+        """Show investment portfolio."""
+        return AppLogEntry(
+            timestamp=timestamp,
+            app_name=self.app_name,
+            api_name="ShowInvestments",
+            request={},
+            response={"investments": self.state["investments"]}
+        )
+
+    def _transfer_money(self, timestamp: str, description: str, context: Dict[str, Any]) -> AppLogEntry:
+        """Transfer money between accounts."""
+        amount = self._extract_amount(description, default=100.0)
+        from_account = self._select_account("checking")
+        to_account = self._select_account("savings")
+
+        from_account["balance"] -= amount
+        to_account["balance"] += amount
+
+        transfer = {
+            "transfer_id": str(uuid.uuid4()),
+            "from_account": from_account["name"],
+            "to_account": to_account["name"],
+            "amount": amount,
+            "timestamp": timestamp
+        }
+
+        self.state["transactions"].append({
+            "transaction_id": transfer["transfer_id"],
+            "amount": -amount,
+            "category": "transfer",
+            "merchant": f"Transfer to {to_account['name']}",
+            "timestamp": timestamp,
+            "account_id": from_account["account_id"]
+        })
+
+        return AppLogEntry(
+            timestamp=timestamp,
+            app_name=self.app_name,
+            api_name="TransferMoney",
+            request={"from_account": from_account["name"], "to_account": to_account["name"], "amount": amount},
+            response={"transfer": transfer}
+        )
+
+    def _extract_amount(self, description: str, default: float = 0.0) -> float:
+        """Extract a monetary amount."""
+        import re
+        match = re.search(r'\$?(\d+(?:\.\d+)?)', description)
+        return float(match.group(1)) if match else default
+
+    def _extract_category(self, description: str) -> str:
+        """Extract expense category."""
+        categories = ["groceries", "transportation", "dining", "utilities", "entertainment", "health"]
+        for category in categories:
+            if category in description.lower():
+                return category
+        return random.choice(categories)
+
+    def _extract_merchant(self, description: str) -> str:
+        """Extract merchant name."""
+        import re
+        quoted = re.findall(r"'([^']*)'|\"([^\"]*)\"", description)
+        if quoted:
+            return quoted[0][0] or quoted[0][1]
+        return random.choice(["Grocery Store", "Cafe", "Gas Station", "Online Retailer"])
+
+    def _extract_budget_categories(self, description: str) -> Dict[str, float]:
+        """Extract budget categories and limits."""
+        categories = {}
+        if "food" in description.lower():
+            categories["dining"] = 300.0
+        if "rent" in description.lower():
+            categories["housing"] = 1200.0
+        if not categories:
+            categories = {"groceries": 400.0, "transportation": 200.0}
+        return categories
+
+    def _extract_goal_name(self, description: str) -> str:
+        """Extract goal name."""
+        import re
+        quoted = re.findall(r"'([^']*)'|\"([^\"]*)\"", description)
+        if quoted:
+            return quoted[0][0] or quoted[0][1]
+        return random.choice(["Emergency Fund", "Vacation", "New Laptop"])
+
+    def _select_account(self, account_type: str) -> Dict[str, Any]:
+        """Select account by type."""
+        for account in self.state["accounts"]:
+            if account["type"] == account_type:
+                return account
+        return self.state["accounts"][0]
 
 
 class LLMApp(BaseApp):
@@ -1992,6 +3267,10 @@ class AppRegistry:
                 self.apps[key] = MessageApp(user_id)
             elif app_name == "Fitness":
                 self.apps[key] = FitnessApp(user_id)
+            elif app_name == "Calendar":
+                self.apps[key] = CalendarApp(user_id)
+            elif app_name == "Finance":
+                self.apps[key] = FinanceApp(user_id)
             else:
                 raise ValueError(f"Unknown app: {app_name}")
 
