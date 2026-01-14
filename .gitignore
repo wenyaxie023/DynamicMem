@@ -13,3 +13,8 @@ eval/logs/*
 !eval/data/.gitkeep
 .hf_cache
 __pycache__/
+pixi.toml
+eval/eval.zip
+query/
+query_gene/
+trash/

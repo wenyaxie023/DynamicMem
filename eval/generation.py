@@ -16,6 +16,7 @@ from config import (
     GEN_PROVIDER,
     GEN_MODEL_NAME,
     HISTORY_DIR,
+    LLM_MAX_WORKERS,
 )
 
 
@@ -109,6 +110,7 @@ def run_generation(
     save_mode: SaveMode = "final",
 ) -> None:
     total = len(samples)
+    tasks: list[tuple[int, EvalSample, str]] = []
 
     for idx, sample in enumerate(samples, start=1):
         has_pred = bool(sample.prediction and sample.prediction.strip())
@@ -119,10 +121,21 @@ def run_generation(
 
         logger.info(f"[GEN][RUN][{idx}/{total}] id={sample.id}")
 
-        try:
-            prompt = build_generation_prompt(bg=bg, query=sample.query)
-            out = llm.ask(prompt)
+        prompt = build_generation_prompt(bg=bg, query=sample.query)
+        tasks.append((idx, sample, prompt))
 
+    if not tasks:
+        return
+
+    prompts = [prompt for _, _, prompt in tasks]
+    futures = llm.ask_many_async(prompts)
+    results = llm.collect(futures)
+
+    for task_idx, out in enumerate(results):
+        idx, sample, _ = tasks[task_idx]
+        try:
+            if isinstance(out, Exception):
+                raise out
             if not isinstance(out, dict) or "answer" not in out:
                 raise ValueError(f"Bad output: {out}")
 
@@ -143,7 +156,6 @@ def run_generation(
                 mode=save_mode,
                 when="step",
             )
-
         except Exception:
             logger.exception(f"[GEN][FAILED] id={sample.id}")
             raise
@@ -169,6 +181,7 @@ def run(
     gen_llm = LLMClient(
         provider=GEN_PROVIDER,
         model_name=GEN_MODEL_NAME,
+        max_workers=LLM_MAX_WORKERS,
     )
 
     # 4. Run generation
@@ -201,4 +214,8 @@ def run(
 
 
 if __name__ == "__main__":
-    run()
+    run(
+        write_mode="overwrite",
+        save_mode="final",
+        backup_mode="none",
+    )

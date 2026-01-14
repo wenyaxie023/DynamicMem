@@ -14,12 +14,18 @@ GEN_OUTPUT_PATH = DATA_DIR / "QA.json"
 EVAL_INPUT_PATH = DATA_DIR / "QA.json"
 EVAL_OUTPUT_PATH = DATA_DIR / "eval_results.json"
 EVAL_TABLE_PATH = DATA_DIR / "eval_table.csv"
+REAL_ATOMS_PATH = DATA_DIR / "real_atoms.json"
 
 
 LOG_DIR = ROOT / "eval" / "logs"
 
 
-GEN_PROVIDER = "gemini"      # or "openai"
-GEN_MODEL_NAME = "gemini-2.5-flash"   # or "gpt-5-mini"
+GEN_PROVIDER = "openai"      # or "openai"
+GEN_MODEL_NAME = "gpt-4o"   # or "gpt-5-mini"
+
+# Concurrency
+LLM_MAX_WORKERS = 4
+
+EXPERIMENT_NAME = "MemBench_Evaluation_01"
 
 
