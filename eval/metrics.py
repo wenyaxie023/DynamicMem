@@ -77,11 +77,20 @@ def bert_score_metric(samples: List[Any]) -> Dict[str, List[float]]:
 
 
 from client import LLMClient
+from config import LLM_MAX_WORKERS
 from prompts import BASIC_JUDGE_PROMPT
 @register_metric("llm_judge")
 def llm_judge_metric(samples: List[Any]) -> Dict[str, List[float]]:
-    gpt = LLMClient(provider="openai", model_name="gpt-5-mini")
-    gemini = LLMClient(provider="gemini", model_name="gemini-3-flash-preview")
+    gpt = LLMClient(
+        provider="openai",
+        model_name="gpt-5-mini",
+        max_workers=LLM_MAX_WORKERS,
+    )
+    gemini = LLMClient(
+        provider="gemini",
+        model_name="gemini-3-flash-preview",
+        max_workers=LLM_MAX_WORKERS,
+    )
 
     gpt_scores: List[float] = []
     gemini_scores: List[float] = []
@@ -90,27 +99,42 @@ def llm_judge_metric(samples: List[Any]) -> Dict[str, List[float]]:
     refs = [sample.reference for sample in samples]
     querys = [sample.query for sample in samples]
 
+    gpt_futures = []
+    gemini_futures = []
+    prompts: List[str] = []
+
     for query, pred, ref in zip(querys, preds, refs):
         prompt = BASIC_JUDGE_PROMPT.format(
             query=query,
             prediction=pred,
             reference=ref
         )
+        prompts.append(prompt)
+        gpt_futures.append(gpt.ask_async(prompt))
+        gemini_futures.append(gemini.ask_async(prompt))
 
-        # GPT judge
+    gpt_results = gpt.collect(gpt_futures)
+    for idx, out_gpt in enumerate(gpt_results):
+        if isinstance(out_gpt, Exception):
+            logger.warning(f"GPT judge failed at index {idx}: {out_gpt}")
+            gpt_scores.append(0.0)
+            continue
         try:
-            out_gpt = gpt.ask(prompt)
             gpt_scores.append(float(out_gpt["score"]))
         except Exception as e:
-            logger.warning(f"GPT judge failed: {e}")
+            logger.warning(f"GPT judge parse failed at index {idx}: {e}")
             gpt_scores.append(0.0)
 
-        # Gemini judge
+    gemini_results = gemini.collect(gemini_futures)
+    for idx, out_gem in enumerate(gemini_results):
+        if isinstance(out_gem, Exception):
+            logger.warning(f"Gemini judge failed at index {idx}: {out_gem}")
+            gemini_scores.append(0.0)
+            continue
         try:
-            out_gem = gemini.ask(prompt)
             gemini_scores.append(float(out_gem["score"]))
         except Exception as e:
-            logger.warning(f"Gemini judge failed: {e}")
+            logger.warning(f"Gemini judge parse failed at index {idx}: {e}")
             gemini_scores.append(0.0)
 
     return {
