@@ -4,6 +4,8 @@ App System for generating realistic app logs with stateful consistency.
 Each app maintains state about the user to ensure consistency across:
 - Different domains calling the same app
 - Multiple calls within the same domain
+
+Apps implemented based on app_catalog.py and app_models.py definitions.
 """
 
 from __future__ import annotations
@@ -13,861 +15,42 @@ import uuid
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 from mem_bench.behavior_and_conversation.app_data_sources import (
     SpotifyDatabase,
     get_data_generator
 )
-
-
-from typing import Dict, List, Optional, Any
-from pydantic import BaseModel, Field
-from datetime import datetime
-from enum import Enum
-
-#######新增定义 begin
-
-# ==================== Amazon ====================
-class AmazonProduct(BaseModel):
-    product_id: str
-    name: str
-    price: float
-    category: str
-    rating: float
-    
-class AmazonOrder(BaseModel):
-    order_id: str
-    product_id: str
-    product_name: str
-    quantity: int
-    total_price: float
-    order_date: datetime
-    
-class AmazonState(BaseModel):
-    user_id: str
-    prime_member: bool = False
-    order_history: List[AmazonOrder] = Field(default_factory=list)
-    search_history: List[str] = Field(default_factory=list)  # search queries
-    viewed_products: List[str] = Field(default_factory=list)  # product_ids
-    cart: List[Dict[str, Any]] = Field(default_factory=list)  # {product_id, quantity}
-    wishlist: List[str] = Field(default_factory=list)  # product_ids
-    
-# ==================== Spotify ====================
-class SpotifyPlaylist(BaseModel):
-    playlist_id: str
-    name: str
-    song_ids: List[str] = Field(default_factory=list)
-    
-class SpotifySong(BaseModel):
-    song_id: str
-    title: str
-    artist: str
-    genre: str
-    duration_seconds: int
-    
-class SpotifyPlayHistory(BaseModel):
-    song_id: str
-    played_at: datetime
-    duration_played: int  # seconds actually played
-    
-class SpotifyState(BaseModel):
-    user_id: str
-    premium: bool = False
-    playlists: List[SpotifyPlaylist] = Field(default_factory=list)
-    followed_artists: List[str] = Field(default_factory=list)  # artist_ids
-    play_history: List[SpotifyPlayHistory] = Field(default_factory=list)
-    favorite_genres: List[str] = Field(default_factory=list)
-    
-# ==================== Fitbit ====================
-class FitbitGoal(BaseModel):
-    goal_type: str  # "steps", "active_minutes", "weight", etc.
-    target_value: float
-    
-class FitbitWorkout(BaseModel):
-    workout_id: str
-    activity_type: str
-    duration_minutes: int
-    intensity: str
-    calories_burned: int
-    timestamp: datetime
-    
-class FitbitDailySync(BaseModel):
-    date: str  # YYYY-MM-DD
-    steps: int
-    active_minutes: int
-    calories_burned: int
-    sleep_hours: float
-    avg_heart_rate: int
-    
-class FitbitState(BaseModel):
-    user_id: str
-    goals: List[FitbitGoal] = Field(default_factory=list)
-    workout_history: List[FitbitWorkout] = Field(default_factory=list)
-    daily_syncs: List[FitbitDailySync] = Field(default_factory=list)
-    
-# ==================== Chase ====================
-class ChaseTransaction(BaseModel):
-    transaction_id: str
-    date: str  # YYYY-MM-DD
-    merchant: str
-    amount: float
-    transaction_type: str  # "debit" or "credit"
-    category: str  # "dining", "shopping", "transportation", etc.
-    
-class ChaseAccount(BaseModel):
-    account_id: str
-    account_type: str  # "checking", "savings", "credit_card"
-    balance: float
-    
-class ChaseState(BaseModel):
-    user_id: str
-    accounts: List[ChaseAccount] = Field(default_factory=list)
-    transaction_history: List[ChaseTransaction] = Field(default_factory=list)
-    
-# ==================== Robinhood ====================
-class RobinhoodHolding(BaseModel):
-    symbol: str
-    asset_type: str  # "stock" or "crypto"
-    quantity: float
-    average_buy_price: float
-    
-class RobinhoodTransaction(BaseModel):
-    transaction_id: str
-    symbol: str
-    asset_type: str
-    transaction_type: str  # "buy" or "sell"
-    quantity: float
-    price: float
-    timestamp: datetime
-    
-class RobinhoodState(BaseModel):
-    user_id: str
-    cash_balance: float
-    holdings: List[RobinhoodHolding] = Field(default_factory=list)
-    watchlist: List[str] = Field(default_factory=list)  # symbols
-    transaction_history: List[RobinhoodTransaction] = Field(default_factory=list)
-    
-# ==================== WhatsApp ====================
-class WhatsAppMessage(BaseModel):
-    message_id: str
-    from_user: str
-    to_user: str  # or group_id
-    message_type: str  # "text" or "media"
-    content: str
-    timestamp: datetime
-    
-class WhatsAppState(BaseModel):
-    user_id: str
-    contacts: List[str] = Field(default_factory=list)
-    message_history: List[WhatsAppMessage] = Field(default_factory=list)
-    
-# ==================== Gmail ====================
-class GmailEmail(BaseModel):
-    email_id: str
-    from_address: str
-    to_address: str
-    subject: str
-    body: str
-    timestamp: datetime
-    is_read: bool = False
-    labels: List[str] = Field(default_factory=list)
-    
-class GmailState(BaseModel):
-    user_id: str
-    email_address: str
-    inbox: List[GmailEmail] = Field(default_factory=list)
-    sent_emails: List[GmailEmail] = Field(default_factory=list)
-    
-# ==================== LinkedIn ====================
-class LinkedInExperience(BaseModel):
-    company: str
-    title: str
-    start_date: str
-    end_date: Optional[str] = None
-    
-class LinkedInPost(BaseModel):
-    post_id: str
-    author: str
-    content: str
-    timestamp: datetime
-    likes_count: int = 0
-    
-class LinkedInState(BaseModel):
-    user_id: str
-    headline: str = ""
-    summary: str = ""
-    experiences: List[LinkedInExperience] = Field(default_factory=list)
-    skills: List[str] = Field(default_factory=list)
-    connections: List[str] = Field(default_factory=list)  # user_ids
-    posts: List[LinkedInPost] = Field(default_factory=list)
-    
-# ==================== Notion ====================
-class NotionPage(BaseModel):
-    page_id: str
-    title: str
-    content: str
-    created_at: datetime
-    updated_at: datetime
-    
-class NotionDatabaseEntry(BaseModel):
-    entry_id: str
-    database_name: str  # "tasks", "habits", "projects"
-    properties: Dict[str, Any]
-    created_at: datetime
-    
-class NotionState(BaseModel):
-    user_id: str
-    pages: List[NotionPage] = Field(default_factory=list)
-    database_entries: List[NotionDatabaseEntry] = Field(default_factory=list)
-    
-# ==================== Netflix ====================
-class NetflixTitle(BaseModel):
-    title_id: str
-    name: str
-    content_type: str  # "movie" or "series"
-    genre: str
-    
-class NetflixViewHistory(BaseModel):
-    title_id: str
-    watched_at: datetime
-    duration_watched: int  # minutes
-    completed: bool
-    
-class NetflixState(BaseModel):
-    user_id: str
-    subscription_plan: str = "Standard"  # "Basic", "Standard", "Premium"
-    my_list: List[str] = Field(default_factory=list)  # title_ids
-    watch_history: List[NetflixViewHistory] = Field(default_factory=list)
-    
-# ==================== Goodreads ====================
-class GoodreadsBook(BaseModel):
-    book_id: str
-    title: str
-    author: str
-    genre: str
-    
-class GoodreadsShelfEntry(BaseModel):
-    book_id: str
-    shelf: str  # "want-to-read", "currently-reading", "read"
-    added_at: datetime
-    
-class GoodreadsReview(BaseModel):
-    book_id: str
-    rating: int  # 1-5
-    review_text: Optional[str] = None
-    reviewed_at: datetime
-    
-class GoodreadsState(BaseModel):
-    user_id: str
-    shelves: List[GoodreadsShelfEntry] = Field(default_factory=list)
-    reviews: List[GoodreadsReview] = Field(default_factory=list)
-    
-# ==================== Instagram ====================
-class InstagramPost(BaseModel):
-    post_id: str
-    author: str
-    content_type: str  # "photo", "video", "story"
-    caption: str
-    timestamp: datetime
-    likes_count: int = 0
-    
-class InstagramState(BaseModel):
-    user_id: str
-    followers: List[str] = Field(default_factory=list)
-    following: List[str] = Field(default_factory=list)
-    posts: List[InstagramPost] = Field(default_factory=list)
-    
-# ==================== LLM Assistant ====================
-class LLMMessage(BaseModel):
-    message_id: str
-    role: str  # "user" or "assistant"
-    content: str
-    timestamp: datetime
-    
-class LLMConversation(BaseModel):
-    conversation_id: str
-    messages: List[LLMMessage] = Field(default_factory=list)
-    created_at: datetime
-    
-class LLMState(BaseModel):
-    user_id: str
-    conversations: List[LLMConversation] = Field(default_factory=list)
-    
-# ==================== Google ====================
-class GoogleSearchResult(BaseModel):
-    result_id: str
-    title: str
-    snippet: str
-    
-class GoogleSearchHistory(BaseModel):
-    query: str
-    results: List[GoogleSearchResult]
-    searched_at: datetime
-    clicked_result_id: Optional[str] = None  # which result was clicked
-    
-class GoogleState(BaseModel):
-    user_id: str
-    search_history: List[GoogleSearchHistory] = Field(default_factory=list)
-
-
-from pydantic import BaseModel
-from typing import List, Optional
-from datetime import datetime
-
-# ==================== Amazon APIs ====================
-class SearchProductsInput(BaseModel):
-    query: str
-    
-class SearchProductsOutput(BaseModel):
-    products: List[AmazonProduct]
-    search_timestamp: datetime
-    
-class ShowProductInput(BaseModel):
-    product_id: str
-    
-class ShowProductOutput(BaseModel):
-    product: AmazonProduct
-    reviews: List[Dict[str, Any]]  # {rating, text, author}
-    in_cart: bool
-    in_wishlist: bool
-    
-class AddToCartInput(BaseModel):
-    product_id: str
-    quantity: int = 1
-    
-class AddToCartOutput(BaseModel):
-    success: bool
-    cart: List[Dict[str, Any]]  # updated cart
-    cart_total: float
-    
-class ShowCartInput(BaseModel):
-    pass  # no input needed
-    
-class ShowCartOutput(BaseModel):
-    cart_items: List[Dict[str, Any]]  # {product_id, name, price, quantity}
-    cart_total: float
-    prime_member: bool
-    
-class ShowWishlistInput(BaseModel):
-    pass
-    
-class ShowWishlistOutput(BaseModel):
-    wishlist_items: List[Dict[str, Any]]  # {product_id, name, price, added_date}
-    
-class CheckoutInput(BaseModel):
-    pass  # checkout all items in cart
-    
-class CheckoutOutput(BaseModel):
-    order_id: str
-    order_items: List[Dict[str, Any]]
-    total_price: float
-    order_date: datetime
-    estimated_delivery: str  # YYYY-MM-DD
-    prime_member: bool
-
-# ==================== Spotify APIs ====================
-class SearchSongsInput(BaseModel):
-    query: str
-    
-class SearchSongsOutput(BaseModel):
-    songs: List[SpotifySong]
-    search_timestamp: datetime
-    
-class PlaySongInput(BaseModel):
-    song_id: str
-    
-class PlaySongOutput(BaseModel):
-    song: SpotifySong
-    playing_status: str  # "playing"
-    premium: bool  # affects quality/ads
-    play_started_at: datetime
-    
-class AddToPlaylistInput(BaseModel):
-    playlist_id: str
-    song_id: str
-    
-class AddToPlaylistOutput(BaseModel):
-    success: bool
-    playlist: SpotifyPlaylist  # updated playlist
-    
-class FollowArtistInput(BaseModel):
-    artist_id: str
-    artist_name: str
-    
-class FollowArtistOutput(BaseModel):
-    success: bool
-    followed_artists: List[str]  # updated list
-
-# ==================== Fitbit APIs ====================
-class LogWorkoutInput(BaseModel):
-    activity_type: str
-    duration_minutes: int
-    intensity: str  # "low", "medium", "high"
-    
-class LogWorkoutOutput(BaseModel):
-    workout: FitbitWorkout
-    calories_burned: int
-    today_total_active_minutes: int
-    
-class SyncDeviceInput(BaseModel):
-    device_name: str = "Fitbit Device"
-    
-class SyncDeviceOutput(BaseModel):
-    sync_data: FitbitDailySync
-    sync_timestamp: datetime
-    
-class SetGoalsInput(BaseModel):
-    goals: List[FitbitGoal]
-    
-class SetGoalsOutput(BaseModel):
-    goals: List[FitbitGoal]
-    updated_at: datetime
-
-# ==================== Chase APIs ====================
-class GetBalanceInput(BaseModel):
-    account_id: Optional[str] = None  # if None, return all accounts
-    
-class GetBalanceOutput(BaseModel):
-    accounts: List[ChaseAccount]
-    total_balance: float
-    last_updated: datetime
-    
-class GetTransactionsInput(BaseModel):
-    account_id: Optional[str] = None
-    start_date: Optional[str] = None  # YYYY-MM-DD
-    end_date: Optional[str] = None
-    limit: int = 50
-    
-class GetTransactionsOutput(BaseModel):
-    transactions: List[ChaseTransaction]
-    account_balance: float
-    
-class SearchTransactionsInput(BaseModel):
-    query: str  # search by merchant name or category
-    
-class SearchTransactionsOutput(BaseModel):
-    transactions: List[ChaseTransaction]
-    
-class TransferMoneyInput(BaseModel):
-    from_account_id: str
-    to_account_id: str
-    amount: float
-    
-class TransferMoneyOutput(BaseModel):
-    success: bool
-    transaction_id: str
-    from_account_new_balance: float
-    to_account_new_balance: float
-    timestamp: datetime
-    
-class PayBillInput(BaseModel):
-    biller_name: str
-    amount: float
-    from_account_id: str
-    
-class PayBillOutput(BaseModel):
-    success: bool
-    transaction_id: str
-    new_balance: float
-    timestamp: datetime
-
-# ==================== Robinhood APIs ====================
-class GetPortfolioInput(BaseModel):
-    pass
-    
-class GetPortfolioOutput(BaseModel):
-    cash_balance: float
-    holdings: List[RobinhoodHolding]
-    total_portfolio_value: float
-    
-class GetWatchlistInput(BaseModel):
-    pass
-    
-class GetWatchlistOutput(BaseModel):
-    watchlist: List[Dict[str, Any]]  # {symbol, current_price, change_percent}
-    
-class SearchStocksInput(BaseModel):
-    query: str
-    
-class SearchStocksOutput(BaseModel):
-    results: List[Dict[str, Any]]  # {symbol, name, current_price}
-    
-class GetStockQuoteInput(BaseModel):
-    symbol: str
-    
-class GetStockQuoteOutput(BaseModel):
-    symbol: str
-    current_price: float
-    change_percent: float
-    timestamp: datetime
-    in_watchlist: bool
-    
-class BuyStockInput(BaseModel):
-    symbol: str
-    quantity: float
-    asset_type: str  # "stock" or "crypto"
-    
-class BuyStockOutput(BaseModel):
-    success: bool
-    transaction: RobinhoodTransaction
-    new_cash_balance: float
-    new_holding: RobinhoodHolding
-    
-class SellStockInput(BaseModel):
-    symbol: str
-    quantity: float
-    asset_type: str
-    
-class SellStockOutput(BaseModel):
-    success: bool
-    transaction: RobinhoodTransaction
-    new_cash_balance: float
-    remaining_holding: Optional[RobinhoodHolding]
-
-# ==================== WhatsApp APIs ====================
-class GetMessagesInput(BaseModel):
-    contact_id: str
-    limit: int = 50
-    
-class GetMessagesOutput(BaseModel):
-    contact_id: str
-    messages: List[WhatsAppMessage]
-    
-class SendMessageInput(BaseModel):
-    to: str  # contact_id
-    message: str
-    
-class SendMessageOutput(BaseModel):
-    message: WhatsAppMessage
-    sent_timestamp: datetime
-    
-class SendMediaInput(BaseModel):
-    to: str
-    media_type: str  # "photo", "video", "voice"
-    caption: Optional[str] = None
-    
-class SendMediaOutput(BaseModel):
-    message: WhatsAppMessage
-    sent_timestamp: datetime
-
-# ==================== Gmail APIs ====================
-class GetInboxInput(BaseModel):
-    limit: int = 50
-    unread_only: bool = False
-    
-class GetInboxOutput(BaseModel):
-    emails: List[Dict[str, Any]]  # {email_id, from, subject, snippet, timestamp, is_read}
-    unread_count: int
-    
-class ReadEmailInput(BaseModel):
-    email_id: str
-    
-class ReadEmailOutput(BaseModel):
-    email: GmailEmail
-    
-class SendEmailInput(BaseModel):
-    to: str
-    subject: str
-    body: str
-    
-class SendEmailOutput(BaseModel):
-    email: GmailEmail
-    sent_timestamp: datetime
-    
-class ReplyEmailInput(BaseModel):
-    email_id: str  # replying to this email
-    body: str
-    
-class ReplyEmailOutput(BaseModel):
-    email: GmailEmail
-    sent_timestamp: datetime
-
-# ==================== LinkedIn APIs ====================
-class UpdateProfileInput(BaseModel):
-    headline: Optional[str] = None
-    summary: Optional[str] = None
-    
-class UpdateProfileOutput(BaseModel):
-    success: bool
-    updated_fields: Dict[str, str]
-    
-class AddExperienceInput(BaseModel):
-    company: str
-    title: str
-    start_date: str  # YYYY-MM
-    end_date: Optional[str] = None
-    
-class AddExperienceOutput(BaseModel):
-    experience: LinkedInExperience
-    total_experiences: int
-    
-class AddSkillInput(BaseModel):
-    skill: str
-    
-class AddSkillOutput(BaseModel):
-    success: bool
-    skills: List[str]  # updated skills list
-    
-class PostUpdateInput(BaseModel):
-    content: str
-    
-class PostUpdateOutput(BaseModel):
-    post: LinkedInPost
-    
-class GetFeedInput(BaseModel):
-    limit: int = 20
-    
-class GetFeedOutput(BaseModel):
-    posts: List[LinkedInPost]
-    
-class LikePostInput(BaseModel):
-    post_id: str
-    
-class LikePostOutput(BaseModel):
-    success: bool
-    post_id: str
-    new_likes_count: int
-    
-class CommentOnPostInput(BaseModel):
-    post_id: str
-    comment: str
-    
-class CommentOnPostOutput(BaseModel):
-    success: bool
-    post_id: str
-    comment_timestamp: datetime
-    
-class SearchJobsInput(BaseModel):
-    query: str
-    location: Optional[str] = None
-    
-class SearchJobsOutput(BaseModel):
-    jobs: List[Dict[str, Any]]  # {job_id, title, company, location}
-    
-class ApplyJobInput(BaseModel):
-    job_id: str
-    
-class ApplyJobOutput(BaseModel):
-    success: bool
-    job_id: str
-    applied_at: datetime
-    
-class SendConnectionRequestInput(BaseModel):
-    user_id: str
-    message: Optional[str] = None
-    
-class SendConnectionRequestOutput(BaseModel):
-    success: bool
-    user_id: str
-    sent_at: datetime
-
-# ==================== Notion APIs ====================
-class GetPagesInput(BaseModel):
-    limit: int = 50
-    
-class GetPagesOutput(BaseModel):
-    pages: List[Dict[str, Any]]  # {page_id, title, created_at, updated_at}
-    
-class CreatePageInput(BaseModel):
-    title: str
-    content: str
-    
-class CreatePageOutput(BaseModel):
-    page: NotionPage
-    
-class UpdatePageInput(BaseModel):
-    page_id: str
-    title: Optional[str] = None
-    content: Optional[str] = None
-    
-class UpdatePageOutput(BaseModel):
-    page: NotionPage
-    
-class SearchContentInput(BaseModel):
-    query: str
-    
-class SearchContentOutput(BaseModel):
-    results: List[Dict[str, Any]]  # {page_id, title, snippet}
-    
-class CreateDatabaseEntryInput(BaseModel):
-    database_name: str
-    properties: Dict[str, Any]
-    
-class CreateDatabaseEntryOutput(BaseModel):
-    entry: NotionDatabaseEntry
-
-# ==================== Netflix APIs ====================
-class SearchContentInput(BaseModel):
-    query: str
-    
-class SearchContentOutput(BaseModel):
-    titles: List[NetflixTitle]
-    
-class ShowTitleInput(BaseModel):
-    title_id: str
-    
-class ShowTitleOutput(BaseModel):
-    title: NetflixTitle
-    description: str
-    rating: float
-    in_my_list: bool
-    
-class PlayContentInput(BaseModel):
-    title_id: str
-    
-class PlayContentOutput(BaseModel):
-    title: NetflixTitle
-    playing_status: str
-    subscription_plan: str
-    play_started_at: datetime
-    
-class AddToMyListInput(BaseModel):
-    title_id: str
-    
-class AddToMyListOutput(BaseModel):
-    success: bool
-    my_list: List[str]  # updated list of title_ids
-    
-class RateContentInput(BaseModel):
-    title_id: str
-    rating: int  # thumbs up (1) or down (0)
-    
-class RateContentOutput(BaseModel):
-    success: bool
-    title_id: str
-    rating: int
-
-# ==================== Goodreads APIs ====================
-class SearchBooksInput(BaseModel):
-    query: str
-    
-class SearchBooksOutput(BaseModel):
-    books: List[GoodreadsBook]
-    
-class ShowBookInput(BaseModel):
-    book_id: str
-    
-class ShowBookOutput(BaseModel):
-    book: GoodreadsBook
-    description: str
-    average_rating: float
-    on_shelf: Optional[str] = None  # which shelf it's on, if any
-    
-class AddToShelfInput(BaseModel):
-    book_id: str
-    shelf: str  # "want-to-read", "currently-reading", "read"
-    
-class AddToShelfOutput(BaseModel):
-    success: bool
-    shelf_entry: GoodreadsShelfEntry
-    
-class RateBookInput(BaseModel):
-    book_id: str
-    rating: int  # 1-5
-    
-class RateBookOutput(BaseModel):
-    success: bool
-    rating: int
-    rated_at: datetime
-    
-class WriteReviewInput(BaseModel):
-    book_id: str
-    review_text: str
-    rating: Optional[int] = None
-    
-class WriteReviewOutput(BaseModel):
-    review: GoodreadsReview
-
-# ==================== Instagram APIs ====================
-class PostStoryInput(BaseModel):
-    content_type: str  # "photo" or "video"
-    caption: Optional[str] = None
-    
-class PostStoryOutput(BaseModel):
-    post: InstagramPost
-    
-class LikePostInput(BaseModel):
-    post_id: str
-    
-class LikePostOutput(BaseModel):
-    success: bool
-    post_id: str
-    new_likes_count: int
-    
-class CommentOnPostInput(BaseModel):
-    post_id: str
-    comment: str
-    
-class CommentOnPostOutput(BaseModel):
-    success: bool
-    post_id: str
-    comment_timestamp: datetime
-    
-class SendDirectMessageInput(BaseModel):
-    to_user_id: str
-    message: str
-    
-class SendDirectMessageOutput(BaseModel):
-    message_id: str
-    sent_timestamp: datetime
-    
-class FollowUserInput(BaseModel):
-    user_id: str
-    
-class FollowUserOutput(BaseModel):
-    success: bool
-    following: List[str]  # updated following list
-    
-class UnfollowUserInput(BaseModel):
-    user_id: str
-    
-class UnfollowUserOutput(BaseModel):
-    success: bool
-    following: List[str]
-    
-class GetFollowingInput(BaseModel):
-    pass
-    
-class GetFollowingOutput(BaseModel):
-    following: List[str]
-    following_count: int
-
-# ==================== LLM Assistant APIs ====================
-class CreateConversationInput(BaseModel):
-    initial_message: Optional[str] = None
-    
-class CreateConversationOutput(BaseModel):
-    conversation_id: str
-    created_at: datetime
-    
-class ContinueConversationInput(BaseModel):
-    conversation_id: str
-    message: str
-    
-class ContinueConversationOutput(BaseModel):
-    conversation_id: str
-    user_message: LLMMessage
-    assistant_response: LLMMessage
-
-# ==================== Google APIs ====================
-class GoogleSearchInput(BaseModel):
-    query: str
-    
-class GoogleSearchOutput(BaseModel):
-    results: List[GoogleSearchResult]
-    search_timestamp: datetime
-    
-class ClickResultInput(BaseModel):
-    result_id: str
-    search_query: str  # to link back to which search
-    
-class ClickResultOutput(BaseModel):
-    result: GoogleSearchResult
-    clicked_at: datetime
-
-#######新增定义 end
-
+from mem_bench.behavior_and_conversation.app_models import (
+    # Amazon
+    AmazonState, AmazonProduct, AmazonOrder,
+    # Spotify
+    SpotifyState, SpotifyPlaylist, SpotifySong, SpotifyPlayHistory,
+    # Fitbit
+    FitbitState, FitbitGoal, FitbitWorkout, FitbitDailySync,
+    # Chase
+    ChaseState, ChaseAccount, ChaseTransaction,
+    # Robinhood
+    RobinhoodState, RobinhoodHolding, RobinhoodTransaction,
+    # WhatsApp
+    WhatsAppState, WhatsAppMessage,
+    # Gmail
+    GmailState, GmailEmail,
+    # LinkedIn
+    LinkedInState, LinkedInExperience, LinkedInPost,
+    # Notion
+    NotionState, NotionPage, NotionDatabaseEntry,
+    # Netflix
+    NetflixState, NetflixTitle, NetflixViewHistory,
+    # Goodreads
+    GoodreadsState, GoodreadsBook, GoodreadsShelfEntry, GoodreadsReview,
+    # Instagram
+    InstagramState, InstagramPost,
+    # LLM
+    LLMState, LLMConversation, LLMMessage,
+    # Google
+    GoogleState, GoogleSearchHistory, GoogleSearchResult,
+)
 
 
 @dataclass
@@ -881,313 +64,424 @@ class AppLogEntry:
     metadata: Dict[str, Any] = field(default_factory=dict)
 
 
-APP_API_SCHEMAS: Dict[str, Dict[str, Dict[str, Any]]] = {
-    "Amazon": {
+def _model_to_schema(model_class) -> Dict[str, Any]:
+    """Convert a Pydantic model to JSON schema dict."""
+    if hasattr(model_class, "model_json_schema"):
+        return model_class.model_json_schema()
+    elif hasattr(model_class, "schema"):
+        return model_class.schema()
+    return {}
+
+
+def _build_api_schemas() -> Dict[str, Dict[str, Dict[str, Any]]]:
+    """Build API schemas from app_models.py Pydantic models."""
+    from mem_bench.behavior_and_conversation import app_models
+    
+    schemas: Dict[str, Dict[str, Dict[str, Any]]] = {}
+    
+    # Amazon APIs
+    schemas["Amazon"] = {
         "SearchProducts": {
-            "input": {"query": "string"},
-            "output": {
-                "products": [
-                    {"name": "string", "price": "number", "rating": "number", "description": "string"}
-                ],
-                "total_results": "integer"
-            }
+            "input": _model_to_schema(app_models.SearchProductsInput),
+            "output": _model_to_schema(app_models.SearchProductsOutput),
         },
         "ShowProduct": {
-            "input": {"product_name": "string"},
-            "output": {
-                "name": "string",
-                "price": "number",
-                "rating": "number",
-                "reviews": "integer",
-                "description": "string",
-                "in_stock": "boolean"
-            }
-        },
-        "ReadReviews": {
-            "input": {"product_name": "string"},
-            "output": {
-                "product_name": "string",
-                "reviews": ["object"],
-                "average_rating": "number",
-                "total_reviews": "integer"
-            }
+            "input": _model_to_schema(app_models.ShowProductInput),
+            "output": _model_to_schema(app_models.ShowProductOutput),
         },
         "AddToCart": {
-            "input": {"product_name": "string", "quantity": "integer"},
-            "output": {
-                "product_name": "string",
-                "quantity": "integer",
-                "cart_total": "number",
-                "items_in_cart": "integer"
-            }
+            "input": _model_to_schema(app_models.AddToCartInput),
+            "output": _model_to_schema(app_models.AddToCartOutput),
+        },
+        "ShowCart": {
+            "input": _model_to_schema(app_models.ShowCartInput),
+            "output": _model_to_schema(app_models.ShowCartOutput),
+        },
+        "ShowWishlist": {
+            "input": _model_to_schema(app_models.ShowWishlistInput),
+            "output": _model_to_schema(app_models.ShowWishlistOutput),
         },
         "Checkout": {
-            "input": {},
-            "output": {
-                "order_number": "string",
-                "items": ["object"],
-                "total_price": "number",
-                "timestamp": "YYYY-MM-DD HH:MM:SS",
-                "estimated_delivery": "YYYY-MM-DD"
-            }
+            "input": _model_to_schema(app_models.CheckoutInput),
+            "output": _model_to_schema(app_models.CheckoutOutput),
         },
-        "ShowOrders": {
-            "input": {},
-            "output": {"orders": ["object"], "total_orders": "integer"}
-        },
-        "TrackOrder": {
-            "input": {"order_number": "string"},
-            "output": {
-                "order_number": "string",
-                "status": "string",
-                "current_location": "string",
-                "estimated_delivery": "YYYY-MM-DD",
-                "tracking_events": ["object"]
-            }
-        }
-    },
-    "Spotify": {
+    }
+    
+    # Spotify APIs
+    schemas["Spotify"] = {
         "SearchSongs": {
-            "input": {"query": "string"},
-            "output": {"songs": ["object"], "total_results": "integer"}
-        },
-        "ShowArtist": {
-            "input": {"artist_name": "string"},
-            "output": {"artist": "string", "genres": ["string"], "top_songs": ["object"]}
+            "input": _model_to_schema(app_models.SearchSongsInput),
+            "output": _model_to_schema(app_models.SearchSongsOutput),
         },
         "PlaySong": {
-            "input": {"song_title": "string", "artist": "string"},
-            "output": {
-                "song": "object",
-                "status": "string",
-                "duration_seconds": "integer"
-            }
-        },
-        "CreatePlaylist": {
-            "input": {"playlist_name": "string"},
-            "output": {"playlist_name": "string", "song_count": "integer", "created_at": "YYYY-MM-DD"}
+            "input": _model_to_schema(app_models.PlaySongInput),
+            "output": _model_to_schema(app_models.PlaySongOutput),
         },
         "AddToPlaylist": {
-            "input": {"playlist_name": "string", "song_title": "string", "artist": "string"},
-            "output": {"playlist_name": "string", "song_added": "object", "song_count": "integer"}
+            "input": _model_to_schema(app_models.AddToPlaylistInput),
+            "output": _model_to_schema(app_models.AddToPlaylistOutput),
         },
-        "ShowPlaylists": {
-            "input": {},
-            "output": {"playlists": ["object"]}
+        "FollowArtist": {
+            "input": _model_to_schema(app_models.FollowArtistInput),
+            "output": _model_to_schema(app_models.FollowArtistOutput),
         },
-        "ShowRecentlyPlayed": {
-            "input": {},
-            "output": {"songs": ["object"]}
-        }
-    },
-    "SimpleNote": {
-        "ShowNotes": {
-            "input": {},
-            "output": {
-                "notes": [{"title": "string", "preview": "string", "tags": ["string"], "created_at": "string"}],
-                "total_notes": "integer"
-            }
-        },
-        "ShowNote": {
-            "input": {"note_title": "string"},
-            "output": {
-                "title": "string",
-                "content": "string",
-                "tags": ["string"],
-                "created_at": "string",
-                "updated_at": "string"
-            }
-        },
-        "CreateNote": {
-            "input": {"title": "string", "content": "string"},
-            "output": {"title": "string", "content": "string", "tags": ["string"], "created_at": "string"}
-        },
-        "EditNote": {
-            "input": {"note_title": "string", "content": "string"},
-            "output": {"title": "string", "content": "string", "tags": ["string"], "updated_at": "string"}
-        },
-        "SearchNotes": {
-            "input": {"query": "string"},
-            "output": {"notes": ["object"], "total_results": "integer"}
-        },
-        "TagNote": {
-            "input": {"note_title": "string", "tags": ["string"]},
-            "output": {"title": "string", "tags": ["string"], "updated_at": "string"}
-        }
-    },
-    "LLM": {
-        "Chat": {
-            "input": {
-                "message": "string (description: The user's message to the AI assistant)"
-            },
-            "output": {
-                "conversation": [
-                    {
-                        "role": "string (description: Either 'user' or 'assistant')",
-                        "content": "string (description: The message content)"
-                    }
-                ],
-                "description": "string (description: Brief summary of the conversation - what the user asked and what the assistant provided)"
-            }
-        }
-    },
-    "Google": {
-        "Search": {
-            "input": {"query": "string"},
-            "output": {
-                "results": [{"title": "string", "snippet": "string", "source": "string"}],
-                "total_results": "integer"
-            }
-        },
-        "SearchNews": {
-            "input": {"query": "string"},
-            "output": {
-                "results": [{"title": "string", "snippet": "string", "source": "string", "date": "string"}],
-                "total_results": "integer"
-            }
-        }
-    },
-    "Fitbit": {
+    }
+    
+    # Fitbit APIs
+    schemas["Fitbit"] = {
         "LogWorkout": {
-            "input": {
-                "type": "string",
-                "duration_minutes": "integer",
-                "intensity": "string",
-                "session_id": "string"
-            },
-            "output": {
-                "workout_id": "string",
-                "type": "string",
-                "duration_minutes": "integer",
-                "intensity": "string",
-                "calories_burned": "integer",
-                "heart_rate_avg": "integer",
-                "timestamp": "YYYY-MM-DD HH:MM:SS",
-                "date": "YYYY-MM-DD"
-            }
+            "input": _model_to_schema(app_models.LogWorkoutInput),
+            "output": _model_to_schema(app_models.LogWorkoutOutput),
         },
-        "LogActivity": {
-            "input": {"steps": "integer", "calories": "integer", "active_minutes": "integer"},
-            "output": {"date": "YYYY-MM-DD", "steps": "integer", "calories": "integer", "active_minutes": "integer"}
+        "SyncDevice": {
+            "input": _model_to_schema(app_models.SyncDeviceInput),
+            "output": _model_to_schema(app_models.SyncDeviceOutput),
         },
-        "ShowDailyStats": {
-            "input": {},
-            "output": {
-                "date": "YYYY-MM-DD",
-                "steps": "integer",
-                "active_minutes": "integer",
-                "calories": "integer",
-                "workouts": ["string"]
-            }
+        "SetGoals": {
+            "input": _model_to_schema(app_models.SetGoalsInput),
+            "output": _model_to_schema(app_models.SetGoalsOutput),
         },
-        "ShowWeeklyStats": {
-            "input": {},
-            "output": {
-                "period": "string",
-                "total_workouts": "integer",
-                "total_active_minutes": "integer",
-                "avg_daily_steps": "integer"
-            }
+    }
+    
+    # Chase APIs
+    schemas["Chase"] = {
+        "GetBalance": {
+            "input": _model_to_schema(app_models.GetBalanceInput),
+            "output": _model_to_schema(app_models.GetBalanceOutput),
         },
-        "SetGoal": {
-            "input": {"goal_type": "string", "target": "integer"},
-            "output": {"goals": "object"}
+        "GetTransactions": {
+            "input": _model_to_schema(app_models.GetTransactionsInput),
+            "output": _model_to_schema(app_models.GetTransactionsOutput),
         },
-        "ShowProgress": {
-            "input": {},
-            "output": {"progress": "object"}
-        }
-    },
-    "Calendar": {
-        "CreateEvent": {
-            "input": {"title": "string", "date": "YYYY-MM-DD", "start_time": "HH:MM", "end_time": "HH:MM"},
-            "output": {
-                "event_id": "string",
-                "title": "string",
-                "date": "YYYY-MM-DD",
-                "start_time": "HH:MM",
-                "end_time": "HH:MM",
-                "location": "string",
-                "reminder": "string"
-            }
-        },
-        "ShowEvents": {
-            "input": {},
-            "output": {"events": ["object"], "total_events": "integer"}
-        },
-        "EditEvent": {
-            "input": {"event_id": "string", "updates": "object"},
-            "output": {"event": "object"}
-        },
-        "SetReminder": {
-            "input": {"event_id": "string", "reminder_minutes": "integer"},
-            "output": {"event_id": "string", "reminder_minutes": "integer"}
-        }
-    },
-    "Message": {
-        "SendMessage": {
-            "input": {"to": "string", "text": "string"},
-            "output": {
-                "message_id": "string",
-                "from": "string",
-                "to": "string",
-                "text": "string",
-                "timestamp": "YYYY-MM-DD HH:MM:SS",
-                "status": "string"
-            }
-        },
-        "GetMessages": {
-            "input": {"contact_name": "string"},
-            "output": {"contact_name": "string", "messages": ["object"], "total_count": "integer"}
-        },
-        "SearchMessages": {
-            "input": {"query": "string"},
-            "output": {"messages": ["object"], "total_count": "integer"}
-        },
-        "CreateGroup": {
-            "input": {"group_name": "string", "members": ["string"]},
-            "output": {"group_id": "string", "group_name": "string", "members": ["string"]}
-        },
-        "ReactToMessage": {
-            "input": {"message_id": "string", "reaction": "string"},
-            "output": {"message_id": "string", "reaction": "string", "status": "string"}
-        }
-    },
-    "Finance": {
-        "ShowAccounts": {
-            "input": {},
-            "output": {"accounts": ["object"]}
-        },
-        "ShowTransactions": {
-            "input": {},
-            "output": {"transactions": ["object"], "total_transactions": "integer"}
-        },
-        "CreateBudget": {
-            "input": {"categories": ["object"]},
-            "output": {"budgets": ["object"]}
-        },
-        "LogExpense": {
-            "input": {"amount": "number", "category": "string", "merchant": "string"},
-            "output": {"transaction": "object"}
-        },
-        "ShowBudgetProgress": {
-            "input": {},
-            "output": {"categories": ["object"]}
-        },
-        "SetFinancialGoal": {
-            "input": {"goal_name": "string", "target_amount": "number"},
-            "output": {"goal": "object"}
-        },
-        "ShowInvestments": {
-            "input": {},
-            "output": {"investments": ["object"]}
+        "SearchTransactions": {
+            "input": _model_to_schema(app_models.SearchTransactionsInput),
+            "output": _model_to_schema(app_models.SearchTransactionsOutput),
         },
         "TransferMoney": {
-            "input": {"from_account": "string", "to_account": "string", "amount": "number"},
-            "output": {"transfer": "object"}
-        }
+            "input": _model_to_schema(app_models.TransferMoneyInput),
+            "output": _model_to_schema(app_models.TransferMoneyOutput),
+        },
+        "PayBill": {
+            "input": _model_to_schema(app_models.PayBillInput),
+            "output": _model_to_schema(app_models.PayBillOutput),
+        },
     }
-}
+    
+    # Robinhood APIs
+    schemas["Robinhood"] = {
+        "GetPortfolio": {
+            "input": _model_to_schema(app_models.GetPortfolioInput),
+            "output": _model_to_schema(app_models.GetPortfolioOutput),
+        },
+        "GetWatchlist": {
+            "input": _model_to_schema(app_models.GetWatchlistInput),
+            "output": _model_to_schema(app_models.GetWatchlistOutput),
+        },
+        "SearchStocks": {
+            "input": _model_to_schema(app_models.SearchStocksInput),
+            "output": _model_to_schema(app_models.SearchStocksOutput),
+        },
+        "GetStockQuote": {
+            "input": _model_to_schema(app_models.GetStockQuoteInput),
+            "output": _model_to_schema(app_models.GetStockQuoteOutput),
+        },
+        "BuyStock": {
+            "input": _model_to_schema(app_models.BuyStockInput),
+            "output": _model_to_schema(app_models.BuyStockOutput),
+        },
+        "SellStock": {
+            "input": _model_to_schema(app_models.SellStockInput),
+            "output": _model_to_schema(app_models.SellStockOutput),
+        },
+    }
+    
+    # WhatsApp APIs
+    schemas["WhatsApp"] = {
+        "GetMessages": {
+            "input": _model_to_schema(app_models.GetMessagesInput),
+            "output": _model_to_schema(app_models.GetMessagesOutput),
+        },
+        "SendMessage": {
+            "input": _model_to_schema(app_models.SendMessageInput),
+            "output": _model_to_schema(app_models.SendMessageOutput),
+        },
+        "SendMedia": {
+            "input": _model_to_schema(app_models.SendMediaInput),
+            "output": _model_to_schema(app_models.SendMediaOutput),
+        },
+    }
+    
+    # Gmail APIs
+    schemas["Gmail"] = {
+        "GetInbox": {
+            "input": _model_to_schema(app_models.GetInboxInput),
+            "output": _model_to_schema(app_models.GetInboxOutput),
+        },
+        "ReadEmail": {
+            "input": _model_to_schema(app_models.ReadEmailInput),
+            "output": _model_to_schema(app_models.ReadEmailOutput),
+        },
+        "SendEmail": {
+            "input": _model_to_schema(app_models.SendEmailInput),
+            "output": _model_to_schema(app_models.SendEmailOutput),
+        },
+        "ReplyEmail": {
+            "input": _model_to_schema(app_models.ReplyEmailInput),
+            "output": _model_to_schema(app_models.ReplyEmailOutput),
+        },
+    }
+    
+    # LinkedIn APIs
+    schemas["LinkedIn"] = {
+        "UpdateProfile": {
+            "input": _model_to_schema(app_models.UpdateProfileInput),
+            "output": _model_to_schema(app_models.UpdateProfileOutput),
+        },
+        "AddExperience": {
+            "input": _model_to_schema(app_models.AddExperienceInput),
+            "output": _model_to_schema(app_models.AddExperienceOutput),
+        },
+        "AddSkill": {
+            "input": _model_to_schema(app_models.AddSkillInput),
+            "output": _model_to_schema(app_models.AddSkillOutput),
+        },
+        "PostUpdate": {
+            "input": _model_to_schema(app_models.PostUpdateInput),
+            "output": _model_to_schema(app_models.PostUpdateOutput),
+        },
+        "GetFeed": {
+            "input": _model_to_schema(app_models.GetFeedInput),
+            "output": _model_to_schema(app_models.GetFeedOutput),
+        },
+        "LikePost": {
+            "input": _model_to_schema(app_models.LikePostInput),
+            "output": _model_to_schema(app_models.LikePostOutput),
+        },
+        "CommentOnPost": {
+            "input": _model_to_schema(app_models.CommentOnPostInput),
+            "output": _model_to_schema(app_models.CommentOnPostOutput),
+        },
+        "SearchJobs": {
+            "input": _model_to_schema(app_models.SearchJobsInput),
+            "output": _model_to_schema(app_models.SearchJobsOutput),
+        },
+        "ApplyJob": {
+            "input": _model_to_schema(app_models.ApplyJobInput),
+            "output": _model_to_schema(app_models.ApplyJobOutput),
+        },
+        "SendConnectionRequest": {
+            "input": _model_to_schema(app_models.SendConnectionRequestInput),
+            "output": _model_to_schema(app_models.SendConnectionRequestOutput),
+        },
+    }
+    
+    # Notion APIs - use generic schemas since some overlap with Netflix
+    schemas["Notion"] = {
+        "GetPages": {
+            "input": _model_to_schema(app_models.GetPagesInput),
+            "output": _model_to_schema(app_models.GetPagesOutput),
+        },
+        "CreatePage": {
+            "input": _model_to_schema(app_models.CreatePageInput),
+            "output": _model_to_schema(app_models.CreatePageOutput),
+        },
+        "UpdatePage": {
+            "input": _model_to_schema(app_models.UpdatePageInput),
+            "output": _model_to_schema(app_models.UpdatePageOutput),
+        },
+        "SearchContent": {
+            "input": _model_to_schema(app_models.SearchContentInput),
+            "output": _model_to_schema(app_models.SearchContentOutput),
+        },
+        "CreateDatabaseEntry": {
+            "input": _model_to_schema(app_models.CreateDatabaseEntryInput),
+            "output": _model_to_schema(app_models.CreateDatabaseEntryOutput),
+        },
+    }
+    
+    # Netflix APIs
+    schemas["Netflix"] = {
+        "SearchContent": {
+            "input": {"type": "object", "properties": {"query": {"type": "string"}}, "required": ["query"]},
+            "output": {"type": "object", "properties": {"titles": {"type": "array", "items": {"type": "object"}}}, "required": ["titles"]},
+        },
+        "ShowTitle": {
+            "input": _model_to_schema(app_models.ShowTitleInput),
+            "output": _model_to_schema(app_models.ShowTitleOutput),
+        },
+        "PlayContent": {
+            "input": _model_to_schema(app_models.PlayContentInput),
+            "output": _model_to_schema(app_models.PlayContentOutput),
+        },
+        "AddToMyList": {
+            "input": _model_to_schema(app_models.AddToMyListInput),
+            "output": _model_to_schema(app_models.AddToMyListOutput),
+        },
+        "RateContent": {
+            "input": _model_to_schema(app_models.RateContentInput),
+            "output": _model_to_schema(app_models.RateContentOutput),
+        },
+    }
+    
+    # Goodreads APIs
+    schemas["Goodreads"] = {
+        "SearchBooks": {
+            "input": _model_to_schema(app_models.SearchBooksInput),
+            "output": _model_to_schema(app_models.SearchBooksOutput),
+        },
+        "ShowBook": {
+            "input": _model_to_schema(app_models.ShowBookInput),
+            "output": _model_to_schema(app_models.ShowBookOutput),
+        },
+        "AddToShelf": {
+            "input": _model_to_schema(app_models.AddToShelfInput),
+            "output": _model_to_schema(app_models.AddToShelfOutput),
+        },
+        "RateBook": {
+            "input": _model_to_schema(app_models.RateBookInput),
+            "output": _model_to_schema(app_models.RateBookOutput),
+        },
+        "WriteReview": {
+            "input": _model_to_schema(app_models.WriteReviewInput),
+            "output": _model_to_schema(app_models.WriteReviewOutput),
+        },
+    }
+    
+    # Instagram APIs
+    schemas["Instagram"] = {
+        "PostStory": {
+            "input": _model_to_schema(app_models.PostStoryInput),
+            "output": _model_to_schema(app_models.PostStoryOutput),
+        },
+        "LikePost": {
+            "input": {"type": "object", "properties": {"post_id": {"type": "string"}}, "required": ["post_id"]},
+            "output": {"type": "object", "properties": {"success": {"type": "boolean"}, "post_id": {"type": "string"}, "new_likes_count": {"type": "integer"}}, "required": ["success", "post_id", "new_likes_count"]},
+        },
+        "CommentOnPost": {
+            "input": {"type": "object", "properties": {"post_id": {"type": "string"}, "comment": {"type": "string"}}, "required": ["post_id", "comment"]},
+            "output": {"type": "object", "properties": {"success": {"type": "boolean"}, "post_id": {"type": "string"}, "comment_timestamp": {"type": "string"}}, "required": ["success", "post_id", "comment_timestamp"]},
+        },
+        "SendDirectMessage": {
+            "input": _model_to_schema(app_models.SendDirectMessageInput),
+            "output": _model_to_schema(app_models.SendDirectMessageOutput),
+        },
+        "FollowUser": {
+            "input": _model_to_schema(app_models.FollowUserInput),
+            "output": _model_to_schema(app_models.FollowUserOutput),
+        },
+        "UnfollowUser": {
+            "input": _model_to_schema(app_models.UnfollowUserInput),
+            "output": _model_to_schema(app_models.UnfollowUserOutput),
+        },
+        "GetFollowing": {
+            "input": _model_to_schema(app_models.GetFollowingInput),
+            "output": _model_to_schema(app_models.GetFollowingOutput),
+        },
+    }
+    
+    # Google APIs
+    schemas["Google"] = {
+        "Search": {
+            "input": _model_to_schema(app_models.GoogleSearchInput),
+            "output": _model_to_schema(app_models.GoogleSearchOutput),
+        },
+        "ClickResult": {
+            "input": _model_to_schema(app_models.ClickResultInput),
+            "output": _model_to_schema(app_models.ClickResultOutput),
+        },
+    }
+    
+    # LLM Assistant APIs
+    schemas["LLM Assistant"] = {
+        "CreateConversation": {
+            "input": _model_to_schema(app_models.CreateConversationInput),
+            "output": _model_to_schema(app_models.CreateConversationOutput),
+        },
+        "ContinueConversation": {
+            "input": _model_to_schema(app_models.ContinueConversationInput),
+            "output": _model_to_schema(app_models.ContinueConversationOutput),
+        },
+    }
+    
+    return schemas
+
+
+# Build schemas on module load
+APP_API_SCHEMAS: Dict[str, Dict[str, Dict[str, Any]]] = _build_api_schemas()
+
+
+def get_api_input_output_models(app_name: str, api_name: str):
+    """Get the Pydantic Input and Output model classes for a specific API."""
+    from mem_bench.behavior_and_conversation import app_models
+    
+    model_map = {
+        ("Amazon", "SearchProducts"): (app_models.SearchProductsInput, app_models.SearchProductsOutput),
+        ("Amazon", "ShowProduct"): (app_models.ShowProductInput, app_models.ShowProductOutput),
+        ("Amazon", "AddToCart"): (app_models.AddToCartInput, app_models.AddToCartOutput),
+        ("Amazon", "ShowCart"): (app_models.ShowCartInput, app_models.ShowCartOutput),
+        ("Amazon", "ShowWishlist"): (app_models.ShowWishlistInput, app_models.ShowWishlistOutput),
+        ("Amazon", "Checkout"): (app_models.CheckoutInput, app_models.CheckoutOutput),
+        ("Spotify", "SearchSongs"): (app_models.SearchSongsInput, app_models.SearchSongsOutput),
+        ("Spotify", "PlaySong"): (app_models.PlaySongInput, app_models.PlaySongOutput),
+        ("Spotify", "AddToPlaylist"): (app_models.AddToPlaylistInput, app_models.AddToPlaylistOutput),
+        ("Spotify", "FollowArtist"): (app_models.FollowArtistInput, app_models.FollowArtistOutput),
+        ("Fitbit", "LogWorkout"): (app_models.LogWorkoutInput, app_models.LogWorkoutOutput),
+        ("Fitbit", "SyncDevice"): (app_models.SyncDeviceInput, app_models.SyncDeviceOutput),
+        ("Fitbit", "SetGoals"): (app_models.SetGoalsInput, app_models.SetGoalsOutput),
+        ("Chase", "GetBalance"): (app_models.GetBalanceInput, app_models.GetBalanceOutput),
+        ("Chase", "GetTransactions"): (app_models.GetTransactionsInput, app_models.GetTransactionsOutput),
+        ("Chase", "SearchTransactions"): (app_models.SearchTransactionsInput, app_models.SearchTransactionsOutput),
+        ("Chase", "TransferMoney"): (app_models.TransferMoneyInput, app_models.TransferMoneyOutput),
+        ("Chase", "PayBill"): (app_models.PayBillInput, app_models.PayBillOutput),
+        ("Robinhood", "GetPortfolio"): (app_models.GetPortfolioInput, app_models.GetPortfolioOutput),
+        ("Robinhood", "GetWatchlist"): (app_models.GetWatchlistInput, app_models.GetWatchlistOutput),
+        ("Robinhood", "SearchStocks"): (app_models.SearchStocksInput, app_models.SearchStocksOutput),
+        ("Robinhood", "GetStockQuote"): (app_models.GetStockQuoteInput, app_models.GetStockQuoteOutput),
+        ("Robinhood", "BuyStock"): (app_models.BuyStockInput, app_models.BuyStockOutput),
+        ("Robinhood", "SellStock"): (app_models.SellStockInput, app_models.SellStockOutput),
+        ("WhatsApp", "GetMessages"): (app_models.GetMessagesInput, app_models.GetMessagesOutput),
+        ("WhatsApp", "SendMessage"): (app_models.SendMessageInput, app_models.SendMessageOutput),
+        ("WhatsApp", "SendMedia"): (app_models.SendMediaInput, app_models.SendMediaOutput),
+        ("Gmail", "GetInbox"): (app_models.GetInboxInput, app_models.GetInboxOutput),
+        ("Gmail", "ReadEmail"): (app_models.ReadEmailInput, app_models.ReadEmailOutput),
+        ("Gmail", "SendEmail"): (app_models.SendEmailInput, app_models.SendEmailOutput),
+        ("Gmail", "ReplyEmail"): (app_models.ReplyEmailInput, app_models.ReplyEmailOutput),
+        ("LinkedIn", "UpdateProfile"): (app_models.UpdateProfileInput, app_models.UpdateProfileOutput),
+        ("LinkedIn", "AddExperience"): (app_models.AddExperienceInput, app_models.AddExperienceOutput),
+        ("LinkedIn", "AddSkill"): (app_models.AddSkillInput, app_models.AddSkillOutput),
+        ("LinkedIn", "PostUpdate"): (app_models.PostUpdateInput, app_models.PostUpdateOutput),
+        ("LinkedIn", "GetFeed"): (app_models.GetFeedInput, app_models.GetFeedOutput),
+        ("LinkedIn", "LikePost"): (app_models.LikePostInput, app_models.LikePostOutput),
+        ("LinkedIn", "CommentOnPost"): (app_models.CommentOnPostInput, app_models.CommentOnPostOutput),
+        ("LinkedIn", "SearchJobs"): (app_models.SearchJobsInput, app_models.SearchJobsOutput),
+        ("LinkedIn", "ApplyJob"): (app_models.ApplyJobInput, app_models.ApplyJobOutput),
+        ("LinkedIn", "SendConnectionRequest"): (app_models.SendConnectionRequestInput, app_models.SendConnectionRequestOutput),
+        ("Notion", "GetPages"): (app_models.GetPagesInput, app_models.GetPagesOutput),
+        ("Notion", "CreatePage"): (app_models.CreatePageInput, app_models.CreatePageOutput),
+        ("Notion", "UpdatePage"): (app_models.UpdatePageInput, app_models.UpdatePageOutput),
+        ("Notion", "SearchContent"): (app_models.SearchContentInput, app_models.SearchContentOutput),
+        ("Notion", "CreateDatabaseEntry"): (app_models.CreateDatabaseEntryInput, app_models.CreateDatabaseEntryOutput),
+        ("Netflix", "ShowTitle"): (app_models.ShowTitleInput, app_models.ShowTitleOutput),
+        ("Netflix", "PlayContent"): (app_models.PlayContentInput, app_models.PlayContentOutput),
+        ("Netflix", "AddToMyList"): (app_models.AddToMyListInput, app_models.AddToMyListOutput),
+        ("Netflix", "RateContent"): (app_models.RateContentInput, app_models.RateContentOutput),
+        ("Goodreads", "SearchBooks"): (app_models.SearchBooksInput, app_models.SearchBooksOutput),
+        ("Goodreads", "ShowBook"): (app_models.ShowBookInput, app_models.ShowBookOutput),
+        ("Goodreads", "AddToShelf"): (app_models.AddToShelfInput, app_models.AddToShelfOutput),
+        ("Goodreads", "RateBook"): (app_models.RateBookInput, app_models.RateBookOutput),
+        ("Goodreads", "WriteReview"): (app_models.WriteReviewInput, app_models.WriteReviewOutput),
+        ("Instagram", "PostStory"): (app_models.PostStoryInput, app_models.PostStoryOutput),
+        ("Instagram", "SendDirectMessage"): (app_models.SendDirectMessageInput, app_models.SendDirectMessageOutput),
+        ("Instagram", "FollowUser"): (app_models.FollowUserInput, app_models.FollowUserOutput),
+        ("Instagram", "UnfollowUser"): (app_models.UnfollowUserInput, app_models.UnfollowUserOutput),
+        ("Instagram", "GetFollowing"): (app_models.GetFollowingInput, app_models.GetFollowingOutput),
+        ("Google", "Search"): (app_models.GoogleSearchInput, app_models.GoogleSearchOutput),
+        ("Google", "ClickResult"): (app_models.ClickResultInput, app_models.ClickResultOutput),
+        ("LLM Assistant", "CreateConversation"): (app_models.CreateConversationInput, app_models.CreateConversationOutput),
+        ("LLM Assistant", "ContinueConversation"): (app_models.ContinueConversationInput, app_models.ContinueConversationOutput),
+    }
+    
+    return model_map.get((app_name, api_name), (None, None))
 
 
 class BaseApp(ABC):
@@ -1236,18 +530,22 @@ class BaseApp(ABC):
 
 
 class AmazonApp(BaseApp):
-    """Amazon shopping app."""
+    """Amazon e-commerce app based on app_catalog.py definitions."""
 
     def __init__(self, user_id: str):
         super().__init__("Amazon", user_id)
+        self._product_cache: Dict[str, Dict] = {}  # Cache products for consistency
 
     def _initialize_state(self) -> None:
-        """Initialize Amazon state."""
+        """Initialize Amazon state based on AmazonState model."""
         self.state = {
+            "user_id": self.user_id,
+            "prime_member": random.choice([True, False]),
             "order_history": [],
             "search_history": [],
             "viewed_products": [],
-            "cart": []
+            "cart": [],
+            "wishlist": []
         }
 
     def call_api(
@@ -1257,37 +555,31 @@ class AmazonApp(BaseApp):
         description: str,
         context: Dict[str, Any]
     ) -> AppLogEntry:
-        """Call Amazon API."""
+        """Call Amazon API based on app_catalog.py definitions."""
         self.ensure_initialized()
 
         if api_name == "SearchProducts":
             return self._search_products(timestamp, description, context)
         elif api_name == "ShowProduct":
             return self._show_product(timestamp, description, context)
-        elif api_name == "ReadReviews":
-            return self._read_reviews(timestamp, description, context)
         elif api_name == "AddToCart":
             return self._add_to_cart(timestamp, description, context)
+        elif api_name == "ShowCart":
+            return self._show_cart(timestamp, description, context)
+        elif api_name == "ShowWishlist":
+            return self._show_wishlist(timestamp, description, context)
         elif api_name == "Checkout":
             return self._checkout(timestamp, description, context)
-        elif api_name == "ShowOrders":
-            return self._show_orders(timestamp, description, context)
-        elif api_name == "TrackOrder":
-            return self._track_order(timestamp, description, context)
         else:
             raise ValueError(f"Unknown Amazon API: {api_name}")
 
     def _search_products(self, timestamp: str, description: str, context: Dict[str, Any]) -> AppLogEntry:
-        """Handle product search."""
+        """Search for products on Amazon using keywords."""
         query = self._extract_search_query(description)
         products = self._generate_search_results(query, context)
 
         # Update search history
-        self.state["search_history"].append({
-            "timestamp": timestamp,
-            "query": query,
-            "results_count": len(products)
-        })
+        self.state["search_history"].append(query)
 
         return AppLogEntry(
             timestamp=timestamp,
@@ -1296,115 +588,161 @@ class AmazonApp(BaseApp):
             request={"query": query},
             response={
                 "products": products,
-                "total_results": len(products)
+                "search_timestamp": timestamp
             }
         )
 
     def _show_product(self, timestamp: str, description: str, context: Dict[str, Any]) -> AppLogEntry:
-        """Show product details."""
-        product_name = self._extract_product_name(description)
-        product = self._get_or_create_product(product_name, context)
+        """View detailed information about a specific product."""
+        product_id = self._extract_product_id(description)
+        product = self._get_or_create_product(product_id, description, context)
+        reviews = self._generate_reviews(product["name"], product["rating"])
 
-        # Add to viewed products
-        self.state["viewed_products"].append({
-            "timestamp": timestamp,
-            "product_name": product["name"]
-        })
+        # Track viewed product
+        if product_id not in self.state["viewed_products"]:
+            self.state["viewed_products"].append(product_id)
+
+        in_cart = any(item.get("product_id") == product_id for item in self.state["cart"])
+        in_wishlist = product_id in self.state["wishlist"]
 
         return AppLogEntry(
             timestamp=timestamp,
             app_name=self.app_name,
             api_name="ShowProduct",
-            request={"product_name": product_name},
-            response=product
-        )
-
-    def _read_reviews(self, timestamp: str, description: str, context: Dict[str, Any]) -> AppLogEntry:
-        """Read reviews for a product."""
-        product_name = self._extract_product_name(description)
-        product = self._get_or_create_product(product_name, context)
-        reviews = self._generate_reviews(product_name, product["rating"])
-
-        return AppLogEntry(
-            timestamp=timestamp,
-            app_name=self.app_name,
-            api_name="ReadReviews",
-            request={"product_name": product_name},
+            request={"product_id": product_id},
             response={
-                "product_name": product_name,
+                "product": product,
                 "reviews": reviews,
-                "average_rating": product["rating"],
-                "total_reviews": product["reviews"]
+                "in_cart": in_cart,
+                "in_wishlist": in_wishlist
             }
         )
 
     def _add_to_cart(self, timestamp: str, description: str, context: Dict[str, Any]) -> AppLogEntry:
-        """Add product to cart."""
-        product_name = self._extract_product_name(description)
+        """Add a product to the shopping cart."""
+        product_id = self._extract_product_id(description)
         quantity = self._extract_quantity(description)
-        product = self._get_or_create_product(product_name, context)
+        product = self._get_or_create_product(product_id, description, context)
 
+        # Check if product already in cart
         for item in self.state["cart"]:
-            if item["product_name"].lower() == product_name.lower():
+            if item.get("product_id") == product_id:
                 item["quantity"] += quantity
                 break
         else:
             self.state["cart"].append({
-                "product_name": product["name"],
+                "product_id": product_id,
+                "name": product["name"],
                 "price": product["price"],
                 "quantity": quantity
             })
 
         cart_total = sum(item["price"] * item["quantity"] for item in self.state["cart"])
-        items_in_cart = sum(item["quantity"] for item in self.state["cart"])
 
         return AppLogEntry(
             timestamp=timestamp,
             app_name=self.app_name,
             api_name="AddToCart",
-            request={"product_name": product_name, "quantity": quantity},
+            request={"product_id": product_id, "quantity": quantity},
             response={
-                "product_name": product["name"],
-                "quantity": quantity,
+                "success": True,
+                "cart": self.state["cart"],
+                "cart_total": round(cart_total, 2)
+            }
+        )
+
+    def _show_cart(self, timestamp: str, description: str, context: Dict[str, Any]) -> AppLogEntry:
+        """View all items currently in the shopping cart."""
+        cart_items = []
+        for item in self.state["cart"]:
+            cart_items.append({
+                "product_id": item.get("product_id"),
+                "name": item.get("name"),
+                "price": item.get("price"),
+                "quantity": item.get("quantity")
+            })
+
+        cart_total = sum(item["price"] * item["quantity"] for item in self.state["cart"])
+
+        return AppLogEntry(
+            timestamp=timestamp,
+            app_name=self.app_name,
+            api_name="ShowCart",
+            request={},
+            response={
+                "cart_items": cart_items,
                 "cart_total": round(cart_total, 2),
-                "items_in_cart": items_in_cart
+                "prime_member": self.state["prime_member"]
+            }
+        )
+
+    def _show_wishlist(self, timestamp: str, description: str, context: Dict[str, Any]) -> AppLogEntry:
+        """View all items saved in the wishlist."""
+        wishlist_items = []
+        for product_id in self.state["wishlist"]:
+            product = self._product_cache.get(product_id, {
+                "product_id": product_id,
+                "name": f"Product {product_id}",
+                "price": round(random.uniform(19.99, 199.99), 2)
+            })
+            wishlist_items.append({
+                "product_id": product_id,
+                "name": product.get("name"),
+                "price": product.get("price"),
+                "added_date": timestamp.split()[0]
+            })
+
+        return AppLogEntry(
+            timestamp=timestamp,
+            app_name=self.app_name,
+            api_name="ShowWishlist",
+            request={},
+            response={
+                "wishlist_items": wishlist_items
             }
         )
 
     def _checkout(self, timestamp: str, description: str, context: Dict[str, Any]) -> AppLogEntry:
-        """Complete purchase checkout."""
-        if self.state["cart"]:
-            items = [
-                {
-                    "product_name": item["product_name"],
-                    "quantity": item["quantity"],
-                    "price": item["price"]
-                }
-                for item in self.state["cart"]
-            ]
-        else:
-            product_name = self._extract_product_name(description)
-            quantity = self._extract_quantity(description)
-            product = self._get_or_create_product(product_name, context)
-            items = [{
-                "product_name": product["name"],
-                "quantity": quantity,
-                "price": product["price"]
-            }]
+        """Complete the purchase of items in the cart."""
+        if not self.state["cart"]:
+            # If cart is empty, create a single item from description
+            product_id = self._extract_product_id(description)
+            product = self._get_or_create_product(product_id, description, context)
+            self.state["cart"].append({
+                "product_id": product_id,
+                "name": product["name"],
+                "price": product["price"],
+                "quantity": 1
+            })
 
-        total_price = sum(item["price"] * item["quantity"] for item in items)
-        order_number = f"AMZ{random.randint(100000000, 999999999)}"
+        order_items = []
+        total_price = 0.0
+        for item in self.state["cart"]:
+            order_items.append({
+                "product_id": item.get("product_id"),
+                "name": item.get("name"),
+                "price": item.get("price"),
+                "quantity": item.get("quantity")
+            })
+            total_price += item["price"] * item["quantity"]
+
+        order_id = f"AMZ-{uuid.uuid4().hex[:8].upper()}"
+        order_date = datetime.strptime(timestamp, "%Y-%m-%d %H:%M:%S")
+        
+        # Prime members get faster delivery
+        delivery_days = random.randint(1, 2) if self.state["prime_member"] else random.randint(3, 5)
+        estimated_delivery = (order_date + timedelta(days=delivery_days)).strftime("%Y-%m-%d")
+
+        # Record order in history
         order = {
-            "order_number": order_number,
-            "items": items,
+            "order_id": order_id,
+            "items": order_items,
             "total_price": round(total_price, 2),
-            "timestamp": timestamp,
-            "estimated_delivery": self._calculate_delivery_date(timestamp),
-            "status": "processing",
-            "current_location": "Fulfillment Center"
+            "order_date": timestamp
         }
-
         self.state["order_history"].append(order)
+
+        # Clear cart
         self.state["cart"] = []
 
         return AppLogEntry(
@@ -1413,65 +751,12 @@ class AmazonApp(BaseApp):
             api_name="Checkout",
             request={},
             response={
-                "order_number": order_number,
-                "items": items,
+                "order_id": order_id,
+                "order_items": order_items,
                 "total_price": round(total_price, 2),
-                "timestamp": timestamp,
-                "estimated_delivery": order["estimated_delivery"]
-            }
-        )
-
-    def _show_orders(self, timestamp: str, description: str, context: Dict[str, Any]) -> AppLogEntry:
-        """Show order history."""
-        return AppLogEntry(
-            timestamp=timestamp,
-            app_name=self.app_name,
-            api_name="ShowOrders",
-            request={},
-            response={
-                "orders": self.state["order_history"][-10:],
-                "total_orders": len(self.state["order_history"])
-            }
-        )
-
-    def _track_order(self, timestamp: str, description: str, context: Dict[str, Any]) -> AppLogEntry:
-        """Track a specific order."""
-        order_number = self._extract_order_number(description)
-        order = None
-        for existing in reversed(self.state["order_history"]):
-            if existing["order_number"] == order_number:
-                order = existing
-                break
-
-        if not order and self.state["order_history"]:
-            order = self.state["order_history"][-1]
-            order_number = order["order_number"]
-
-        if not order:
-            order_number = order_number or f"AMZ{random.randint(100000000, 999999999)}"
-            order = {
-                "order_number": order_number,
-                "estimated_delivery": self._calculate_delivery_date(timestamp)
-            }
-
-        status = random.choice(["processing", "shipped", "out_for_delivery", "delivered"])
-        current_location = random.choice(["Fulfillment Center", "Regional Hub", "Local Facility", "Out for delivery"])
-        tracking_events = [
-            {"status": "processing", "timestamp": order.get("timestamp", timestamp)},
-            {"status": status, "timestamp": timestamp}
-        ]
-
-        return AppLogEntry(
-            timestamp=timestamp,
-            app_name=self.app_name,
-            api_name="TrackOrder",
-            request={"order_number": order_number},
-            response={
-                "order_number": order_number,
-                "status": status,
-                "current_location": current_location,
-                "estimated_delivery": order.get("estimated_delivery", self._calculate_delivery_date(timestamp)),
-                "tracking_events": tracking_events
+                "order_date": timestamp,
+                "estimated_delivery": estimated_delivery,
+                "prime_member": self.state["prime_member"]
             }
         )
 
@@ -1484,14 +769,19 @@ class AmazonApp(BaseApp):
         words = description.split()
         return " ".join(words[:5])
 
-    def _extract_product_name(self, description: str) -> str:
-        """Extract product name from description."""
+    def _extract_product_id(self, description: str) -> str:
+        """Extract or generate product ID from description."""
         import re
+        # Try to find existing product ID
+        match = re.search(r'PROD[A-Z0-9]+', description)
+        if match:
+            return match.group(0)
+        # Generate from description
         quoted = re.findall(r"'([^']*)'|\"([^\"]*)\"", description)
         if quoted:
-            return quoted[0][0] or quoted[0][1]
-        words = description.split()
-        return " ".join(words[:5])
+            name = quoted[0][0] or quoted[0][1]
+            return f"PROD{abs(hash(name)) % 100000:05d}"
+        return f"PROD{random.randint(10000, 99999)}"
 
     def _extract_quantity(self, description: str) -> int:
         """Extract quantity from description."""
@@ -1505,48 +795,54 @@ class AmazonApp(BaseApp):
         products = []
 
         for i in range(num_products):
-            products.append({
-                "name": f"{query.title()} - Model {chr(65+i)}",
+            product_id = f"PROD{abs(hash(query + str(i))) % 100000:05d}"
+            product = {
+                "product_id": product_id,
+                "name": f"{query.title()} - Option {chr(65+i)}",
                 "price": round(random.uniform(19.99, 299.99), 2),
-                "rating": round(random.uniform(3.5, 5.0), 1),
-                "description": f"High-quality {query} product"
-            })
+                "category": self._infer_category(query),
+                "rating": round(random.uniform(3.5, 5.0), 1)
+            }
+            products.append(product)
+            self._product_cache[product_id] = product
 
         return products
 
-    def _get_or_create_product(self, product_name: str, context: Dict[str, Any]) -> Dict:
-        """Get or create product by name."""
-        # Check if we have recently viewed this product
-        for viewed in reversed(self.state["viewed_products"]):
-            if viewed["product_name"].lower() == product_name.lower():
-                # Return existing product with same attributes
-                return {
-                    "name": viewed["product_name"],
-                    "price": round(random.uniform(19.99, 299.99), 2),
-                    "rating": round(random.uniform(3.5, 5.0), 1),
-                    "reviews": random.randint(10, 5000),
-                    "description": f"High-quality {viewed['product_name']}",
-                    "in_stock": True
-                }
+    def _get_or_create_product(self, product_id: str, description: str, context: Dict[str, Any]) -> Dict:
+        """Get or create product by ID."""
+        if product_id in self._product_cache:
+            return self._product_cache[product_id]
 
-        # Create new product
-        return {
-            "name": product_name,
+        # Extract name from description
+        import re
+        quoted = re.findall(r"'([^']*)'|\"([^\"]*)\"", description)
+        name = quoted[0][0] or quoted[0][1] if quoted else f"Product {product_id}"
+
+        product = {
+            "product_id": product_id,
+            "name": name,
             "price": round(random.uniform(19.99, 299.99), 2),
-            "rating": round(random.uniform(3.5, 5.0), 1),
-            "reviews": random.randint(10, 5000),
-            "description": f"High-quality {product_name}",
-            "in_stock": True
+            "category": self._infer_category(name),
+            "rating": round(random.uniform(3.5, 5.0), 1)
         }
+        self._product_cache[product_id] = product
+        return product
 
-    def _calculate_delivery_date(self, order_timestamp: str) -> str:
-        """Calculate delivery date (2-5 days from order)."""
-        dt = datetime.strptime(order_timestamp, "%Y-%m-%d %H:%M:%S")
-        delivery_dt = dt + timedelta(days=random.randint(2, 5))
-        return delivery_dt.strftime("%Y-%m-%d")
+    def _infer_category(self, text: str) -> str:
+        """Infer product category from text."""
+        text_lower = text.lower()
+        if any(w in text_lower for w in ["phone", "laptop", "computer", "tablet", "headphone"]):
+            return "Electronics"
+        elif any(w in text_lower for w in ["shirt", "pants", "dress", "shoes", "jacket"]):
+            return "Clothing"
+        elif any(w in text_lower for w in ["book", "novel", "textbook"]):
+            return "Books"
+        elif any(w in text_lower for w in ["kitchen", "cookware", "appliance"]):
+            return "Home & Kitchen"
+        return "General"
 
     def _generate_reviews(self, product_name: str, rating: float) -> List[Dict[str, Any]]:
-        """Generate lightweight review samples."""
+        """Generate review samples."""
         review_templates = [
             "Works exactly as expected for daily use.",
             "Solid quality for the price.",
@@ -1558,28 +854,24 @@ class AmazonApp(BaseApp):
         for _ in range(random.randint(3, 6)):
             review_rating = max(1, min(5, int(round(random.uniform(rating - 1, rating + 1)))))
             reviews.append({
-                "reviewer": random.choice(["Alex", "Jamie", "Taylor", "Morgan", "Riley"]),
                 "rating": review_rating,
-                "text": random.choice(review_templates)
+                "text": random.choice(review_templates),
+                "author": random.choice(["Alex", "Jamie", "Taylor", "Morgan", "Riley"])
             })
         return reviews
 
-    def _extract_order_number(self, description: str) -> str:
-        """Extract order number from description."""
-        import re
-        match = re.search(r'AMZ\d{6,}', description)
-        return match.group(0) if match else ""
-
 
 class GoogleApp(BaseApp):
-    """Google search app."""
+    """Google search app based on app_catalog.py definitions."""
 
     def __init__(self, user_id: str):
         super().__init__("Google", user_id)
+        self._results_cache: Dict[str, List[Dict]] = {}  # query -> results
 
     def _initialize_state(self) -> None:
-        """Initialize Google state."""
+        """Initialize Google state based on GoogleState model."""
         self.state = {
+            "user_id": self.user_id,
             "search_history": []
         }
 
@@ -1590,49 +882,80 @@ class GoogleApp(BaseApp):
         description: str,
         context: Dict[str, Any]
     ) -> AppLogEntry:
-        """Call Google API."""
+        """Call Google API based on app_catalog.py definitions."""
         self.ensure_initialized()
 
         if api_name == "Search":
             return self._search(timestamp, description, context)
-        elif api_name == "SearchNews":
-            return self._search_news(timestamp, description, context)
+        elif api_name == "ClickResult":
+            return self._click_result(timestamp, description, context)
         else:
             raise ValueError(f"Unknown Google API: {api_name}")
 
     def _search(self, timestamp: str, description: str, context: Dict[str, Any]) -> AppLogEntry:
-        """Handle search."""
+        """Perform a web search and receive list of results."""
         query = self._extract_search_query(description)
         results = self._generate_search_results(query)
 
-        self.state["search_history"].append(
-            {"timestamp": timestamp, "query": query, "results_count": len(results)}
-        )
+        # Store in cache for ClickResult
+        self._results_cache[query] = results
+
+        # Record search history
+        search_record = {
+            "query": query,
+            "results": results,
+            "searched_at": timestamp,
+            "clicked_result_id": None
+        }
+        self.state["search_history"].append(search_record)
 
         return AppLogEntry(
             timestamp=timestamp,
             app_name=self.app_name,
             api_name="Search",
             request={"query": query},
-            response={"results": results, "total_results": len(results)}
+            response={
+                "results": results,
+                "search_timestamp": timestamp
+            }
         )
 
-    def _search_news(self, timestamp: str, description: str, context: Dict[str, Any]) -> AppLogEntry:
-        """Handle news search."""
-        query = self._extract_search_query(description)
-        base_date = datetime.strptime(timestamp, "%Y-%m-%d %H:%M:%S")
-        results = self._generate_news_results(query, base_date)
+    def _click_result(self, timestamp: str, description: str, context: Dict[str, Any]) -> AppLogEntry:
+        """Click on a specific search result to view the webpage."""
+        result_id = self._extract_result_id(description)
+        search_query = self._extract_search_query(description)
 
-        self.state["search_history"].append(
-            {"timestamp": timestamp, "query": query, "results_count": len(results), "type": "news"}
-        )
+        # Find the result
+        result = None
+        if search_query in self._results_cache:
+            for r in self._results_cache[search_query]:
+                if r.get("result_id") == result_id:
+                    result = r
+                    break
+
+        # If not found, create a placeholder
+        if not result:
+            result = {
+                "result_id": result_id,
+                "title": f"Search Result {result_id}",
+                "snippet": "Detailed information about the search topic."
+            }
+
+        # Update search history with clicked result
+        for record in reversed(self.state["search_history"]):
+            if record.get("query") == search_query:
+                record["clicked_result_id"] = result_id
+                break
 
         return AppLogEntry(
             timestamp=timestamp,
             app_name=self.app_name,
-            api_name="SearchNews",
-            request={"query": query},
-            response={"results": results, "total_results": len(results)}
+            api_name="ClickResult",
+            request={"result_id": result_id, "search_query": search_query},
+            response={
+                "result": result,
+                "clicked_at": timestamp
+            }
         )
 
     def _extract_search_query(self, description: str) -> str:
@@ -1644,60 +967,59 @@ class GoogleApp(BaseApp):
         words = description.split()
         return " ".join(words[:6])
 
+    def _extract_result_id(self, description: str) -> str:
+        """Extract result ID from description."""
+        import re
+        match = re.search(r'RES[A-Z0-9]+', description)
+        if match:
+            return match.group(0)
+        return f"RES{random.randint(1000, 9999)}"
+
     def _generate_search_results(self, query: str) -> List[Dict[str, Any]]:
-        """Generate basic search results without URLs to avoid hallucination."""
+        """Generate search results."""
         results = []
         sources = ["Wikipedia", "News article", "Academic paper", "Blog post", "Forum discussion", "Official site"]
         for idx in range(random.randint(3, 6)):
+            result_id = f"RES{abs(hash(query + str(idx))) % 10000:04d}"
             results.append({
+                "result_id": result_id,
                 "title": f"{query.title()} - Result {idx + 1}",
                 "snippet": f"Relevant information about {query}. This result provides useful context and details.",
                 "source": random.choice(sources)
             })
         return results
 
-    def _generate_news_results(self, query: str, base_date: datetime) -> List[Dict[str, Any]]:
-        """Generate basic news results."""
-        results = []
-        sources = ["Reuters", "AP News", "BBC", "The Verge", "Local News", "Financial Times"]
-        for idx in range(random.randint(3, 6)):
-            results.append({
-                "title": f"{query.title()} - Update {idx + 1}",
-                "snippet": f"Recent developments related to {query}.",
-                "source": random.choice(sources),
-                "date": (base_date - timedelta(days=idx)).strftime("%Y-%m-%d")
-            })
-        return results
-
 
 class SpotifyApp(BaseApp):
-    """Spotify music streaming app."""
+    """Spotify music streaming app based on app_catalog.py definitions."""
 
     def __init__(self, user_id: str):
         super().__init__("Spotify", user_id)
+        self._song_cache: Dict[str, Dict] = {}
 
     def _initialize_state(self) -> None:
-        """Initialize Spotify state."""
+        """Initialize Spotify state based on SpotifyState model."""
         self.state = {
+            "user_id": self.user_id,
+            "premium": random.choice([True, False]),
             "playlists": self._create_initial_playlists(),
-            "recently_played": [],
-            "favorite_genres": ["Pop", "Rock", "Electronic"]
+            "followed_artists": [],
+            "play_history": [],
+            "favorite_genres": random.sample(["Pop", "Rock", "Hip Hop", "Electronic", "R&B", "Jazz", "Classical"], 3)
         }
 
     def _create_initial_playlists(self) -> List[Dict]:
         """Create some initial playlists."""
-        return [
-            {
-                "name": "My Favorites",
-                "songs": [SpotifyDatabase.get_random_song() for _ in range(3)],
-                "created_at": datetime.now().strftime("%Y-%m-%d")
-            },
-            {
-                "name": "Workout Mix",
-                "songs": [SpotifyDatabase.get_random_song() for _ in range(3)],
-                "created_at": datetime.now().strftime("%Y-%m-%d")
-            }
-        ]
+        playlists = []
+        playlist_names = ["My Favorites", "Workout Mix", "Chill Vibes"]
+        for name in playlist_names:
+            playlist_id = f"PL{uuid.uuid4().hex[:8].upper()}"
+            playlists.append({
+                "playlist_id": playlist_id,
+                "name": name,
+                "song_ids": [SpotifyDatabase.get_random_song().get("song_id", f"SONG{random.randint(1000,9999)}") for _ in range(3)]
+            })
+        return playlists
 
     def call_api(
         self,
@@ -1706,28 +1028,22 @@ class SpotifyApp(BaseApp):
         description: str,
         context: Dict[str, Any]
     ) -> AppLogEntry:
-        """Call Spotify API."""
+        """Call Spotify API based on app_catalog.py definitions."""
         self.ensure_initialized()
 
         if api_name == "SearchSongs":
             return self._search_songs(timestamp, description, context)
-        elif api_name == "ShowArtist":
-            return self._show_artist(timestamp, description, context)
         elif api_name == "PlaySong":
             return self._play_song(timestamp, description, context)
-        elif api_name == "CreatePlaylist":
-            return self._create_playlist(timestamp, description, context)
         elif api_name == "AddToPlaylist":
             return self._add_to_playlist(timestamp, description, context)
-        elif api_name == "ShowPlaylists":
-            return self._show_playlists(timestamp, description, context)
-        elif api_name == "ShowRecentlyPlayed":
-            return self._show_recently_played(timestamp, description, context)
+        elif api_name == "FollowArtist":
+            return self._follow_artist(timestamp, description, context)
         else:
             raise ValueError(f"Unknown Spotify API: {api_name}")
 
     def _search_songs(self, timestamp: str, description: str, context: Dict[str, Any]) -> AppLogEntry:
-        """Search for songs."""
+        """Search for songs, artists, or albums."""
         query = self._extract_search_query(description)
         songs = self._generate_song_results(query)
 
@@ -1736,133 +1052,91 @@ class SpotifyApp(BaseApp):
             app_name=self.app_name,
             api_name="SearchSongs",
             request={"query": query},
-            response={"songs": songs, "total_results": len(songs)}
-        )
-
-    def _show_artist(self, timestamp: str, description: str, context: Dict[str, Any]) -> AppLogEntry:
-        """Show artist profile and top songs."""
-        artist_name = self._extract_artist_name(description)
-        songs = SpotifyDatabase.get_songs_by_artist(artist_name, limit=5)
-        if not songs:
-            songs = SpotifyDatabase.search_songs(artist_name, limit=5)
-        genres = sorted({song.get("genre", "Unknown") for song in songs}) or ["Unknown"]
-
-        return AppLogEntry(
-            timestamp=timestamp,
-            app_name=self.app_name,
-            api_name="ShowArtist",
-            request={"artist_name": artist_name},
             response={
-                "artist": artist_name,
-                "genres": genres,
-                "top_songs": songs
+                "songs": songs,
+                "search_timestamp": timestamp
             }
         )
 
     def _play_song(self, timestamp: str, description: str, context: Dict[str, Any]) -> AppLogEntry:
-        """Play a song."""
-        song_title, artist = self._extract_song_info(description)
-        song = self._get_or_create_song(song_title, artist, context)
+        """Play a specific song and track listening duration."""
+        song_id = self._extract_song_id(description)
+        song = self._get_or_create_song(song_id, description, context)
 
-        # Add to recently played
-        self.state["recently_played"].insert(0, {
-            "timestamp": timestamp,
-            "song": song
-        })
+        # Record play history
+        play_record = {
+            "song_id": song_id,
+            "played_at": timestamp,
+            "duration_played": song.get("duration_seconds", random.randint(180, 300))
+        }
+        self.state["play_history"].append(play_record)
 
-        # Keep only last 50
-        self.state["recently_played"] = self.state["recently_played"][:50]
+        # Keep only last 100 plays
+        self.state["play_history"] = self.state["play_history"][-100:]
 
         return AppLogEntry(
             timestamp=timestamp,
             app_name=self.app_name,
             api_name="PlaySong",
-            request={"song_title": song_title, "artist": artist},
+            request={"song_id": song_id},
             response={
                 "song": song,
-                "status": "playing",
-                "duration_seconds": song["duration"]
-            }
-        )
-
-    def _create_playlist(self, timestamp: str, description: str, context: Dict[str, Any]) -> AppLogEntry:
-        """Create a new playlist."""
-        playlist_name = self._extract_playlist_name(description)
-        playlist = {
-            "name": playlist_name,
-            "songs": [],
-            "created_at": timestamp.split()[0]
-        }
-        self.state["playlists"].append(playlist)
-
-        return AppLogEntry(
-            timestamp=timestamp,
-            app_name=self.app_name,
-            api_name="CreatePlaylist",
-            request={"playlist_name": playlist_name},
-            response={
-                "playlist_name": playlist_name,
-                "song_count": len(playlist["songs"]),
-                "created_at": playlist["created_at"]
+                "playing_status": "playing",
+                "premium": self.state["premium"],
+                "play_started_at": timestamp
             }
         )
 
     def _add_to_playlist(self, timestamp: str, description: str, context: Dict[str, Any]) -> AppLogEntry:
-        """Add a song to an existing playlist."""
-        playlist_name = self._extract_playlist_name(description)
-        playlist = self._find_playlist(playlist_name)
+        """Add a song to a specific playlist."""
+        playlist_id, playlist_name = self._extract_playlist_info(description)
+        song_id = self._extract_song_id(description)
+
+        # Find or create playlist
+        playlist = None
+        for pl in self.state["playlists"]:
+            if pl["playlist_id"] == playlist_id or pl["name"].lower() == playlist_name.lower():
+                playlist = pl
+                break
+
         if not playlist:
             playlist = {
+                "playlist_id": playlist_id or f"PL{uuid.uuid4().hex[:8].upper()}",
                 "name": playlist_name,
-                "songs": [],
-                "created_at": timestamp.split()[0]
+                "song_ids": []
             }
             self.state["playlists"].append(playlist)
 
-        song_title, artist = self._extract_song_info(description)
-        song = self._get_or_create_song(song_title, artist, context)
-        playlist["songs"].append(song)
+        # Add song to playlist
+        if song_id not in playlist["song_ids"]:
+            playlist["song_ids"].append(song_id)
 
         return AppLogEntry(
             timestamp=timestamp,
             app_name=self.app_name,
             api_name="AddToPlaylist",
-            request={"playlist_name": playlist_name, "song_title": song_title, "artist": artist},
+            request={"playlist_id": playlist["playlist_id"], "song_id": song_id},
             response={
-                "playlist_name": playlist_name,
-                "song_added": song,
-                "song_count": len(playlist["songs"])
+                "success": True,
+                "playlist": playlist
             }
         )
 
-    def _show_playlists(self, timestamp: str, description: str, context: Dict[str, Any]) -> AppLogEntry:
-        """Show user playlists."""
-        return AppLogEntry(
-            timestamp=timestamp,
-            app_name=self.app_name,
-            api_name="ShowPlaylists",
-            request={},
-            response={
-                "playlists": [
-                    {
-                        "name": playlist["name"],
-                        "song_count": len(playlist.get("songs", [])),
-                        "created_at": playlist.get("created_at", "")
-                    }
-                    for playlist in self.state["playlists"]
-                ]
-            }
-        )
+    def _follow_artist(self, timestamp: str, description: str, context: Dict[str, Any]) -> AppLogEntry:
+        """Follow an artist to receive updates and recommendations."""
+        artist_id, artist_name = self._extract_artist_info(description)
 
-    def _show_recently_played(self, timestamp: str, description: str, context: Dict[str, Any]) -> AppLogEntry:
-        """View recently played songs."""
+        if artist_id not in self.state["followed_artists"]:
+            self.state["followed_artists"].append(artist_id)
+
         return AppLogEntry(
             timestamp=timestamp,
             app_name=self.app_name,
-            api_name="ShowRecentlyPlayed",
-            request={},
+            api_name="FollowArtist",
+            request={"artist_id": artist_id, "artist_name": artist_name},
             response={
-                "songs": [item["song"] for item in self.state["recently_played"][:20]]
+                "success": True,
+                "followed_artists": self.state["followed_artists"]
             }
         )
 
@@ -1874,346 +1148,106 @@ class SpotifyApp(BaseApp):
             return quoted[0][0] or quoted[0][1]
         return "popular music"
 
-    def _extract_song_info(self, description: str) -> tuple[str, str]:
-        """Extract song title and artist from description."""
+    def _extract_song_id(self, description: str) -> str:
+        """Extract or generate song ID from description."""
         import re
-        # Try to extract from quotes
+        match = re.search(r'SONG[A-Z0-9]+', description)
+        if match:
+            return match.group(0)
         quoted = re.findall(r"'([^']*)'|\"([^\"]*)\"", description)
+        if quoted:
+            name = quoted[0][0] or quoted[0][1]
+            return f"SONG{abs(hash(name)) % 100000:05d}"
+        return f"SONG{random.randint(10000, 99999)}"
+
+    def _extract_playlist_info(self, description: str) -> Tuple[str, str]:
+        """Extract playlist ID and name from description."""
+        import re
+        quoted = re.findall(r"'([^']*)'|\"([^\"]*)\"", description)
+        playlist_name = quoted[0][0] or quoted[0][1] if quoted else "My Playlist"
+        
+        match = re.search(r'PL[A-Z0-9]+', description)
+        playlist_id = match.group(0) if match else f"PL{abs(hash(playlist_name)) % 100000:05d}"
+        
+        return playlist_id, playlist_name
+
+    def _extract_artist_info(self, description: str) -> Tuple[str, str]:
+        """Extract artist ID and name from description."""
+        import re
+        quoted = re.findall(r"'([^']*)'|\"([^\"]*)\"", description)
+        artist_name = quoted[0][0] or quoted[0][1] if quoted else "Unknown Artist"
+        
+        # Look for "by" pattern
+        match = re.search(r'\bby\s+([A-Z][a-zA-Z]+(?:\s+[A-Z][a-zA-Z]+)*)', description)
+        if match:
+            artist_name = match.group(1).strip()
+        
+        artist_id = f"ART{abs(hash(artist_name)) % 100000:05d}"
+        return artist_id, artist_name
+
+    def _generate_song_results(self, query: str) -> List[Dict]:
+        """Generate song search results."""
+        songs = SpotifyDatabase.search_songs(query, limit=8)
+        # Ensure songs have the required fields
+        for song in songs:
+            if "song_id" not in song:
+                song["song_id"] = f"SONG{random.randint(10000, 99999)}"
+            if "duration_seconds" not in song:
+                song["duration_seconds"] = random.randint(180, 300)
+            self._song_cache[song["song_id"]] = song
+        return songs
+
+    def _get_or_create_song(self, song_id: str, description: str, context: Dict[str, Any]) -> Dict:
+        """Get or create a song by ID."""
+        if song_id in self._song_cache:
+            return self._song_cache[song_id]
+
+        # Try to get from database
+        import re
+        quoted = re.findall(r"'([^']*)'|\"([^\"]*)\"", description)
+        
         if quoted:
             song_info = quoted[0][0] or quoted[0][1]
             # Try to split by 'by' or '-'
             if " by " in song_info.lower():
                 parts = song_info.split(" by ", 1)
-                return parts[0].strip(), parts[1].strip() if len(parts) > 1 else "Unknown Artist"
+                title = parts[0].strip()
+                artist = parts[1].strip() if len(parts) > 1 else "Unknown Artist"
             elif " - " in song_info:
                 parts = song_info.split(" - ", 1)
-                return parts[0].strip(), parts[1].strip() if len(parts) > 1 else "Unknown Artist"
-            return song_info, "Unknown Artist"
-
-        # Fallback: use description
-        words = description.split()
-        return " ".join(words[:3]), "Unknown Artist"
-
-    def _extract_artist_name(self, description: str) -> str:
-        """Extract artist name from description."""
-        import re
-        quoted = re.findall(r"'([^']*)'|\"([^\"]*)\"", description)
-        if quoted:
-            artist = quoted[0][0] or quoted[0][1]
-            if " by " in artist.lower():
-                return artist.split(" by ", 1)[1].strip()
-            return artist.strip()
-        match = re.search(r'\bby\s+([A-Z][a-zA-Z]+(?:\s+[A-Z][a-zA-Z]+)*)', description)
-        if match:
-            return match.group(1).strip()
-        return "Unknown Artist"
-
-    def _extract_playlist_name(self, description: str) -> str:
-        """Extract playlist name from description."""
-        import re
-        quoted = re.findall(r"'([^']*)'|\"([^\"]*)\"", description)
-        if quoted:
-            return quoted[0][0] or quoted[0][1]
-        match = re.search(r'playlist\s+([A-Za-z0-9 _-]+)', description, re.IGNORECASE)
-        if match:
-            return match.group(1).strip()
-        return random.choice(["New Playlist", "Favorites", "Daily Mix"])
-
-    def _find_playlist(self, playlist_name: str) -> Optional[Dict[str, Any]]:
-        """Find a playlist by name."""
-        for playlist in self.state["playlists"]:
-            if playlist["name"].lower() == playlist_name.lower():
-                return playlist
-        return None
-
-    def _generate_song_results(self, query: str) -> List[Dict]:
-        """Generate song search results using static database."""
-        songs = SpotifyDatabase.search_songs(query, limit=8)
-        return songs
-
-    def _get_or_create_song(self, song_title: str, artist: str, context: Dict[str, Any]) -> Dict:
-        """Get or create a song using static database."""
-        # Check recently played for exact match
-        for item in self.state["recently_played"]:
-            song = item["song"]
-            if (song.get("title", "").lower() == song_title.lower() and
-                song.get("artist", "").lower() == artist.lower()):
-                return song
-
-        # Try to find in database
-        desc_lower = song_title.lower() + " " + artist.lower()
-        if "workout" in desc_lower or "energy" in desc_lower:
-            songs = SpotifyDatabase.get_songs_by_genre("Hip Hop", limit=1)
-            return songs[0] if songs else SpotifyDatabase.get_random_song()
-        elif "chill" in desc_lower or "relax" in desc_lower:
-            songs = SpotifyDatabase.get_songs_by_genre("Ambient", limit=1)
-            return songs[0] if songs else SpotifyDatabase.get_random_song()
-        elif "indie" in desc_lower:
-            songs = SpotifyDatabase.get_songs_by_genre("Indie Rock", limit=1)
-            return songs[0] if songs else SpotifyDatabase.get_random_song()
+                title = parts[0].strip()
+                artist = parts[1].strip() if len(parts) > 1 else "Unknown Artist"
         else:
-            return SpotifyDatabase.get_random_song()
+                title = song_info
+                artist = "Unknown Artist"
 
-
-class SimpleNoteApp(BaseApp):
-    """Simple note-taking app."""
-
-    def __init__(self, user_id: str):
-        super().__init__("SimpleNote", user_id)
-
-    def _initialize_state(self) -> None:
-        """Initialize note state."""
-        self.state = {
-            "notes": []
-        }
-
-    def call_api(
-        self,
-        api_name: str,
-        timestamp: str,
-        description: str,
-        context: Dict[str, Any]
-    ) -> AppLogEntry:
-        """Call SimpleNote API."""
-        self.ensure_initialized()
-
-        if api_name == "ShowNotes":
-            return self._show_notes(timestamp, description, context)
-        elif api_name == "ShowNote":
-            return self._show_note(timestamp, description, context)
-        elif api_name == "CreateNote":
-            return self._create_note(timestamp, description, context)
-        elif api_name == "EditNote":
-            return self._edit_note(timestamp, description, context)
-        elif api_name == "SearchNotes":
-            return self._search_notes(timestamp, description, context)
-        elif api_name == "TagNote":
-            return self._tag_note(timestamp, description, context)
-        else:
-            raise ValueError(f"Unknown SimpleNote API: {api_name}")
-
-    def _show_notes(self, timestamp: str, description: str, context: Dict[str, Any]) -> AppLogEntry:
-        """Show all notes."""
-        return AppLogEntry(
-            timestamp=timestamp,
-            app_name=self.app_name,
-            api_name="ShowNotes",
-            request={},
-            response={
-                "notes": [
-                    {
-                        "title": note["title"],
-                        "preview": note["content"][:50] + ("..." if len(note["content"]) > 50 else ""),
-                        "tags": note.get("tags", []),
-                        "created_at": note["created_at"]
-                    }
-                    for note in self.state["notes"]
-                ],
-                "total_notes": len(self.state["notes"])
-            }
-        )
-
-    def _show_note(self, timestamp: str, description: str, context: Dict[str, Any]) -> AppLogEntry:
-        """Show a specific note by title."""
-        note_title = self._extract_note_title(description)
-
-        # Find note by title
-        note = None
-        for n in self.state["notes"]:
-            if n["title"].lower() == note_title.lower():
-                note = n
-                break
-
-        # If not found, use most recent or create placeholder
-        if not note:
-            if self.state["notes"]:
-                note = self.state["notes"][-1]
-            else:
-                note = {
-                    "title": note_title,
-                    "content": "This is a placeholder note.",
-                    "created_at": timestamp,
-                    "updated_at": timestamp,
-                    "tags": []
-                }
-
-        return AppLogEntry(
-            timestamp=timestamp,
-            app_name=self.app_name,
-            api_name="ShowNote",
-            request={"note_title": note_title},
-            response={
-                "title": note["title"],
-                "content": note["content"],
-                "tags": note.get("tags", []),
-                "created_at": note.get("created_at", timestamp),
-                "updated_at": note.get("updated_at", note.get("created_at", timestamp))
-            }
-        )
-
-    def _create_note(self, timestamp: str, description: str, context: Dict[str, Any]) -> AppLogEntry:
-        """Create a new note."""
-        title, content = self._extract_note_content(description)
-
-        note = {
+        song = {
+            "song_id": song_id,
             "title": title,
-            "content": content,
-            "created_at": timestamp,
-            "updated_at": timestamp,
-            "tags": self._extract_tags(description)
+            "artist": artist,
+            "genre": random.choice(self.state.get("favorite_genres", ["Pop"])),
+            "duration_seconds": random.randint(180, 300)
         }
-
-        self.state["notes"].append(note)
-
-        return AppLogEntry(
-            timestamp=timestamp,
-            app_name=self.app_name,
-            api_name="CreateNote",
-            request={"title": title, "content": content},
-            response={
-                "title": note["title"],
-                "content": note["content"],
-                "tags": note["tags"],
-                "created_at": note["created_at"]
-            }
-        )
-
-    def _edit_note(self, timestamp: str, description: str, context: Dict[str, Any]) -> AppLogEntry:
-        """Edit an existing note."""
-        note_title = self._extract_note_title(description)
-        content_update = description
-        note = None
-        for existing in self.state["notes"]:
-            if existing["title"].lower() == note_title.lower():
-                note = existing
-                break
-
-        if not note:
-            note = {
-                "title": note_title,
-                "content": "",
-                "created_at": timestamp,
-                "tags": []
-            }
-            self.state["notes"].append(note)
-
-        note["content"] = content_update
-        note["updated_at"] = timestamp
-
-        return AppLogEntry(
-            timestamp=timestamp,
-            app_name=self.app_name,
-            api_name="EditNote",
-            request={"note_title": note_title, "content": content_update},
-            response={
-                "title": note["title"],
-                "content": note["content"],
-                "tags": note.get("tags", []),
-                "updated_at": note["updated_at"]
-            }
-        )
-
-    def _search_notes(self, timestamp: str, description: str, context: Dict[str, Any]) -> AppLogEntry:
-        """Search notes by query."""
-        query = self._extract_search_query(description)
-        query_lower = query.lower()
-        results = [
-            note for note in self.state["notes"]
-            if query_lower in note["title"].lower()
-            or query_lower in note["content"].lower()
-            or query_lower in " ".join(note.get("tags", [])).lower()
-        ]
-
-        return AppLogEntry(
-            timestamp=timestamp,
-            app_name=self.app_name,
-            api_name="SearchNotes",
-            request={"query": query},
-            response={
-                "notes": results[:10],
-                "total_results": len(results)
-            }
-        )
-
-    def _tag_note(self, timestamp: str, description: str, context: Dict[str, Any]) -> AppLogEntry:
-        """Add tags to a note."""
-        note_title = self._extract_note_title(description)
-        tags = self._extract_tags(description)
-        note = None
-        for existing in self.state["notes"]:
-            if existing["title"].lower() == note_title.lower():
-                note = existing
-                break
-
-        if not note:
-            note = {
-                "title": note_title,
-                "content": "",
-                "created_at": timestamp,
-                "updated_at": timestamp,
-                "tags": []
-            }
-            self.state["notes"].append(note)
-
-        note["tags"] = sorted(set(note.get("tags", []) + tags))
-        note["updated_at"] = timestamp
-
-        return AppLogEntry(
-            timestamp=timestamp,
-            app_name=self.app_name,
-            api_name="TagNote",
-            request={"note_title": note_title, "tags": tags},
-            response={
-                "title": note["title"],
-                "tags": note["tags"],
-                "updated_at": note["updated_at"]
-            }
-        )
-
-    def _extract_note_title(self, description: str) -> str:
-        """Extract note title from description."""
-        import re
-        quoted = re.findall(r"'([^']*)'|\"([^\"]*)\"", description)
-        if quoted:
-            return quoted[0][0] or quoted[0][1]
-        words = description.split()
-        return " ".join(words[:5])
-
-    def _extract_note_content(self, description: str) -> tuple[str, str]:
-        """Extract note title and content from description."""
-        words = description.split()
-        title = " ".join(words[:5])
-        content = description
-        return title, content
-
-    def _extract_search_query(self, description: str) -> str:
-        """Extract search query from description."""
-        import re
-        quoted = re.findall(r"'([^']*)'|\"([^\"]*)\"", description)
-        if quoted:
-            return quoted[0][0] or quoted[0][1]
-        return "note"
-
-    def _extract_tags(self, description: str) -> List[str]:
-        """Extract tags from description."""
-        tags = [word.lstrip("#") for word in description.split() if word.startswith("#")]
-        if tags:
-            return tags
-        return []
+        self._song_cache[song_id] = song
+        return song
 
 
-class MessageApp(BaseApp):
-    """Messaging app."""
+class FitbitApp(BaseApp):
+    """Fitbit health & fitness tracking app based on app_catalog.py definitions."""
 
     def __init__(self, user_id: str):
-        super().__init__("Message", user_id)
+        super().__init__("Fitbit", user_id)
 
     def _initialize_state(self) -> None:
-        """Initialize messaging state."""
+        """Initialize Fitbit state based on FitbitState model."""
         self.state = {
-            "conversations": {},  # contact_name -> list of messages
-            "contacts": ["Alice", "Bob", "Carol", "Dave", "Emma"],
-            "groups": {}  # group_name -> group info
+            "user_id": self.user_id,
+            "goals": [
+                {"goal_type": "steps", "target_value": 10000},
+                {"goal_type": "active_minutes", "target_value": 30},
+            ],
+            "workout_history": [],
+            "daily_syncs": []
         }
 
     def call_api(
@@ -2223,261 +1257,42 @@ class MessageApp(BaseApp):
         description: str,
         context: Dict[str, Any]
     ) -> AppLogEntry:
-        """Call Message API."""
-        self.ensure_initialized()
-
-        if api_name == "SendMessage":
-            return self._send_message(timestamp, description, context)
-        elif api_name == "GetMessages":
-            return self._get_messages(timestamp, description, context)
-        elif api_name == "SearchMessages":
-            return self._search_messages(timestamp, description, context)
-        elif api_name == "CreateGroup":
-            return self._create_group(timestamp, description, context)
-        elif api_name == "ReactToMessage":
-            return self._react_to_message(timestamp, description, context)
-        else:
-            raise ValueError(f"Unknown Message API: {api_name}")
-
-    def _send_message(self, timestamp: str, description: str, context: Dict[str, Any]) -> AppLogEntry:
-        """Send a message."""
-        recipient, message_text = self._extract_message_details(description)
-
-        message = {
-            "message_id": str(uuid.uuid4()),
-            "from": self.user_id,
-            "to": recipient,
-            "text": message_text,
-            "timestamp": timestamp,
-            "status": "sent",
-            "reactions": []
-        }
-
-        # Add to conversation
-        if recipient not in self.state["conversations"]:
-            self.state["conversations"][recipient] = []
-        self.state["conversations"][recipient].append(message)
-
-        return AppLogEntry(
-            timestamp=timestamp,
-            app_name=self.app_name,
-            api_name="SendMessage",
-            request={"to": recipient, "text": message_text},
-            response=message
-        )
-
-    def _get_messages(self, timestamp: str, description: str, context: Dict[str, Any]) -> AppLogEntry:
-        """Get messages from a conversation thread."""
-        contact_name = self._extract_contact_name(description)
-        messages = self.state["conversations"].get(contact_name, [])
-
-        return AppLogEntry(
-            timestamp=timestamp,
-            app_name=self.app_name,
-            api_name="GetMessages",
-            request={"contact_name": contact_name},
-            response={
-                "contact_name": contact_name,
-                "messages": messages[-20:],  # Last 20 messages
-                "total_count": len(messages)
-            }
-        )
-
-    def _search_messages(self, timestamp: str, description: str, context: Dict[str, Any]) -> AppLogEntry:
-        """Search messages."""
-        query = self._extract_search_query(description)
-
-        # Simple search through all conversations
-        results = []
-        for contact, messages in self.state["conversations"].items():
-            for msg in messages:
-                if query.lower() in msg["text"].lower():
-                    results.append(msg)
-
-        return AppLogEntry(
-            timestamp=timestamp,
-            app_name=self.app_name,
-            api_name="SearchMessages",
-            request={"query": query},
-            response={
-                "messages": results[:10],  # Return up to 10 results
-                "total_count": len(results)
-            }
-        )
-
-    def _create_group(self, timestamp: str, description: str, context: Dict[str, Any]) -> AppLogEntry:
-        """Create a group chat."""
-        group_name = self._extract_group_name(description)
-        members = random.sample(self.state["contacts"], min(3, len(self.state["contacts"])))
-        group_id = str(uuid.uuid4())
-
-        self.state["groups"][group_name] = {
-            "group_id": group_id,
-            "group_name": group_name,
-            "members": members
-        }
-        self.state["conversations"].setdefault(group_name, [])
-
-        return AppLogEntry(
-            timestamp=timestamp,
-            app_name=self.app_name,
-            api_name="CreateGroup",
-            request={"group_name": group_name, "members": members},
-            response={
-                "group_id": group_id,
-                "group_name": group_name,
-                "members": members
-            }
-        )
-
-    def _react_to_message(self, timestamp: str, description: str, context: Dict[str, Any]) -> AppLogEntry:
-        """React to a message."""
-        contact_name = self._extract_contact_name(description)
-        reaction = self._extract_reaction(description)
-        messages = self.state["conversations"].get(contact_name, [])
-        target_message = messages[-1] if messages else None
-        message_id = target_message["message_id"] if target_message else str(uuid.uuid4())
-
-        if target_message:
-            target_message.setdefault("reactions", []).append(reaction)
-
-        return AppLogEntry(
-            timestamp=timestamp,
-            app_name=self.app_name,
-            api_name="ReactToMessage",
-            request={"message_id": message_id, "reaction": reaction},
-            response={"message_id": message_id, "reaction": reaction, "status": "added"}
-        )
-
-    def _extract_contact_name(self, description: str) -> str:
-        """Extract contact name from description."""
-        import re
-        quoted = re.findall(r"'([^']*)'|\"([^\"]*)\"", description)
-        if quoted:
-            return quoted[0][0] or quoted[0][1]
-        # Fallback to random contact
-        return random.choice(self.state["contacts"]) if self.state["contacts"] else "Friend"
-
-    def _extract_message_details(self, description: str) -> tuple[str, str]:
-        """Extract recipient and message from description."""
-        import re
-        # Try to find quoted message
-        quoted = re.findall(r"'([^']*)'|\"([^\"]*)\"", description)
-        message_text = quoted[0][0] or quoted[0][1] if quoted else description[:100]
-
-        # Extract recipient - look for "to X" pattern
-        recipient_match = re.search(r'\bto\s+([A-Z][a-z]+)', description)
-        if recipient_match:
-            recipient = recipient_match.group(1)
-        else:
-            recipient = random.choice(self.state["contacts"]) if self.state["contacts"] else "Friend"
-
-        return recipient, message_text
-
-    def _extract_search_query(self, description: str) -> str:
-        """Extract search query from description."""
-        import re
-        quoted = re.findall(r"'([^']*)'|\"([^\"]*)\"", description)
-        if quoted:
-            return quoted[0][0] or quoted[0][1]
-        return "search query"
-
-    def _extract_group_name(self, description: str) -> str:
-        """Extract group name from description."""
-        import re
-        quoted = re.findall(r"'([^']*)'|\"([^\"]*)\"", description)
-        if quoted:
-            return quoted[0][0] or quoted[0][1]
-        match = re.search(r'group\s+([A-Za-z0-9 _-]+)', description, re.IGNORECASE)
-        if match:
-            return match.group(1).strip()
-        return random.choice(["Project Team", "Friends", "Family"])
-
-    def _extract_reaction(self, description: str) -> str:
-        """Extract reaction emoji or text."""
-        for token in description.split():
-            if token in ["👍", "👎", "❤️", "😂", "🎉"]:
-                return token
-        return random.choice(["👍", "❤️", "😂"])
-
-
-class FitnessApp(BaseApp):
-    """Fitness tracking app."""
-
-    def __init__(self, user_id: str):
-        super().__init__("Fitness", user_id)
-
-    def _initialize_state(self) -> None:
-        """Initialize fitness state."""
-        self.state = {
-            "workouts": [],
-            "daily_stats": {},  # date -> stats
-            "goals": {
-                "daily_steps": 10000,
-                "weekly_workouts": 5,
-                "weekly_active_minutes": 150
-            },
-            "user_baseline": None  # Will be initialized on first use
-        }
-
-    def call_api(
-        self,
-        api_name: str,
-        timestamp: str,
-        description: str,
-        context: Dict[str, Any]
-    ) -> AppLogEntry:
-        """Call Fitness API."""
+        """Call Fitbit API based on app_catalog.py definitions."""
         self.ensure_initialized()
 
         if api_name == "LogWorkout":
             return self._log_workout(timestamp, description, context)
-        elif api_name == "LogActivity":
-            return self._log_activity(timestamp, description, context)
-        elif api_name == "ShowDailyStats":
-            return self._show_daily_stats(timestamp, description, context)
-        elif api_name == "ShowWeeklyStats":
-            return self._show_weekly_stats(timestamp, description, context)
-        elif api_name == "SetGoal":
-            return self._set_goal(timestamp, description, context)
-        elif api_name == "ShowProgress":
-            return self._show_progress(timestamp, description, context)
+        elif api_name == "SyncDevice":
+            return self._sync_device(timestamp, description, context)
+        elif api_name == "SetGoals":
+            return self._set_goals(timestamp, description, context)
         else:
-            raise ValueError(f"Unknown Fitness API: {api_name}")
+            raise ValueError(f"Unknown Fitbit API: {api_name}")
 
     def _log_workout(self, timestamp: str, description: str, context: Dict[str, Any]) -> AppLogEntry:
-        """Log a workout."""
-        # Initialize baseline if needed
-        if self.state["user_baseline"] is None:
-            self._initialize_user_baseline(context)
+        """Manually log a workout session with type, duration, and intensity."""
+        activity_type = self._extract_activity_type(description)
+        duration_minutes = self._extract_duration(description)
+        intensity = self._extract_intensity(description)
+        calories_burned = self._calculate_calories(activity_type, duration_minutes, intensity)
 
-        activity_type, duration, intensity = self._extract_workout_details(description)
-
+        workout_id = f"WKT{uuid.uuid4().hex[:8].upper()}"
         workout = {
+            "workout_id": workout_id,
             "activity_type": activity_type,
-            "duration_minutes": duration,
+            "duration_minutes": duration_minutes,
             "intensity": intensity,
-            "calories_burned": self._calculate_calories(activity_type, duration, intensity),
-            "heart_rate_avg": self._generate_heart_rate(intensity),
+            "calories_burned": calories_burned,
             "timestamp": timestamp
         }
+        self.state["workout_history"].append(workout)
 
-        self.state["workouts"].append(workout)
-
-        # Update daily stats
+        # Calculate today's total active minutes
         date = timestamp.split()[0]
-        if date not in self.state["daily_stats"]:
-            self.state["daily_stats"][date] = {
-                "date": date,
-                "steps": 0,
-                "active_minutes": 0,
-                "calories": 0,
-                "workouts": []
-            }
-
-        self.state["daily_stats"][date]["active_minutes"] += duration
-        self.state["daily_stats"][date]["calories"] += workout["calories_burned"]
-        self.state["daily_stats"][date]["workouts"].append(workout)
+        today_active_minutes = sum(
+            w["duration_minutes"] for w in self.state["workout_history"]
+            if w["timestamp"].startswith(date)
+        )
 
         return AppLogEntry(
             timestamp=timestamp,
@@ -2485,429 +1300,169 @@ class FitnessApp(BaseApp):
             api_name="LogWorkout",
             request={
                 "activity_type": activity_type,
-                "duration_minutes": duration,
+                "duration_minutes": duration_minutes,
                 "intensity": intensity
             },
-            response=workout
-        )
-
-    def _log_activity(self, timestamp: str, description: str, context: Dict[str, Any]) -> AppLogEntry:
-        """Log daily activity metrics."""
-        date = timestamp.split()[0]
-        steps = self._extract_number(description, default=random.randint(3000, 12000))
-        calories = self._extract_number(description, default=random.randint(1800, 2500))
-        active_minutes = random.randint(20, 120)
-
-        if date not in self.state["daily_stats"]:
-            self.state["daily_stats"][date] = {
-                "date": date,
-                "steps": 0,
-                "active_minutes": 0,
-                "calories": 0,
-                "workouts": []
-            }
-
-        self.state["daily_stats"][date]["steps"] = steps
-        self.state["daily_stats"][date]["calories"] = calories
-        self.state["daily_stats"][date]["active_minutes"] = active_minutes
-
-        return AppLogEntry(
-            timestamp=timestamp,
-            app_name=self.app_name,
-            api_name="LogActivity",
-            request={"steps": steps, "calories": calories, "active_minutes": active_minutes},
             response={
-                "date": date,
-                "steps": steps,
-                "calories": calories,
-                "active_minutes": active_minutes
+                "workout": workout,
+                "calories_burned": calories_burned,
+                "today_total_active_minutes": today_active_minutes
             }
         )
 
-    def _show_daily_stats(self, timestamp: str, description: str, context: Dict[str, Any]) -> AppLogEntry:
-        """Show today's fitness stats."""
+    def _sync_device(self, timestamp: str, description: str, context: Dict[str, Any]) -> AppLogEntry:
+        """Sync wearable device data including steps, heart rate, sleep patterns."""
+        device_name = self._extract_device_name(description)
         date = timestamp.split()[0]
 
-        if date not in self.state["daily_stats"]:
-            # Generate daily stats
-            self.state["daily_stats"][date] = {
-                "date": date,
-                "steps": random.randint(3000, 12000),
-                "active_minutes": random.randint(20, 90),
-                "calories": random.randint(1800, 2500),
-                "workouts": []
-            }
-
-        stats = self.state["daily_stats"][date]
-
-        return AppLogEntry(
-            timestamp=timestamp,
-            app_name=self.app_name,
-            api_name="ShowDailyStats",
-            request={},
-            response=stats
-        )
-
-    def _show_weekly_stats(self, timestamp: str, description: str, context: Dict[str, Any]) -> AppLogEntry:
-        """Show weekly fitness stats."""
-        # Aggregate last 7 days
-        total_workouts = len(self.state["workouts"][-7:])
-        total_active_minutes = sum(w["duration_minutes"] for w in self.state["workouts"][-7:])
-
-        weekly_stats = {
-            "period": "last_7_days",
-            "total_workouts": total_workouts,
-            "total_active_minutes": total_active_minutes,
-            "avg_daily_steps": random.randint(6000, 10000)
-        }
-
-        return AppLogEntry(
-            timestamp=timestamp,
-            app_name=self.app_name,
-            api_name="ShowWeeklyStats",
-            request={},
-            response=weekly_stats
-        )
-
-    def _set_goal(self, timestamp: str, description: str, context: Dict[str, Any]) -> AppLogEntry:
-        """Set or update a fitness goal."""
-        goal_type = self._extract_goal_type(description)
-        target = self._extract_number(description, default=self.state["goals"].get(goal_type, 100))
-        self.state["goals"][goal_type] = target
-
-        return AppLogEntry(
-            timestamp=timestamp,
-            app_name=self.app_name,
-            api_name="SetGoal",
-            request={"goal_type": goal_type, "target": target},
-            response={"goals": self.state["goals"].copy()}
-        )
-
-    def _show_progress(self, timestamp: str, description: str, context: Dict[str, Any]) -> AppLogEntry:
-        """Show progress toward goals."""
-        date = timestamp.split()[0]
-        stats = self.state["daily_stats"].get(date, {
-            "steps": 0,
-            "active_minutes": 0,
-            "calories": 0
-        })
-
-        progress = {
-            "daily_steps": {
-                "current": stats.get("steps", 0),
-                "target": self.state["goals"].get("daily_steps", 10000)
-            },
-            "weekly_workouts": {
-                "current": len(self.state["workouts"][-7:]),
-                "target": self.state["goals"].get("weekly_workouts", 5)
-            },
-            "weekly_active_minutes": {
-                "current": sum(w["duration_minutes"] for w in self.state["workouts"][-7:]),
-                "target": self.state["goals"].get("weekly_active_minutes", 150)
-            }
-        }
-
-        return AppLogEntry(
-            timestamp=timestamp,
-            app_name=self.app_name,
-            api_name="ShowProgress",
-            request={},
-            response={"progress": progress}
-        )
-
-    def _initialize_user_baseline(self, context: Dict[str, Any]) -> None:
-        """Initialize user fitness baseline based on context using LLM data generator."""
-        # Use LLM data generator for personalized baseline
-        data_gen = get_data_generator()
-        user_profile = context.get("user_profile", {})
-
-        # Extract description from context if available
-        description = context.get("description", "")
-
-        self.state["user_baseline"] = data_gen.generate_fitness_baseline(
-            user_profile=user_profile,
-            description=description
-        )
-
-    def _extract_workout_details(self, description: str) -> tuple[str, int, str]:
-        """Extract workout type, duration, and intensity."""
-        # Parse description for workout details
-        desc_lower = description.lower()
-
-        # Determine workout type
-        if "run" in desc_lower or "jog" in desc_lower:
-            workout_type = "running"
-        elif "bike" in desc_lower or "cycle" in desc_lower:
-            workout_type = "cycling"
-        elif "swim" in desc_lower:
-            workout_type = "swimming"
-        elif "strength" in desc_lower or "weight" in desc_lower:
-            workout_type = "strength_training"
-        elif "yoga" in desc_lower:
-            workout_type = "yoga"
-        else:
-            workout_type = random.choice(["running", "cycling", "strength_training", "other"])
-
-        # Duration
-        duration = random.randint(20, 90)
-
-        # Intensity
-        if "intense" in desc_lower or "hard" in desc_lower:
-            intensity = "high"
-        elif "easy" in desc_lower or "light" in desc_lower:
-            intensity = "low"
-        else:
-            intensity = "moderate"
-
-        return workout_type, duration, intensity
-
-    def _extract_goal_type(self, description: str) -> str:
-        """Extract goal type from description."""
-        desc_lower = description.lower()
-        if "steps" in desc_lower:
-            return "daily_steps"
-        if "workout" in desc_lower:
-            return "weekly_workouts"
-        if "active" in desc_lower or "minutes" in desc_lower:
-            return "weekly_active_minutes"
-        return "daily_steps"
-
-    def _extract_number(self, description: str, default: int = 0) -> int:
-        """Extract a number from description."""
-        import re
-        match = re.search(r'\b(\d{2,6})\b', description)
-        return int(match.group(1)) if match else default
-
-    def _calculate_calories(self, workout_type: str, duration: int, intensity: str) -> int:
-        """Calculate calories burned."""
-        base_rate = {
-            "running": 10,
-            "cycling": 8,
-            "swimming": 9,
-            "strength_training": 6,
-            "yoga": 3,
-            "other": 5
-        }.get(workout_type, 5)
-
-        intensity_multiplier = {"low": 0.7, "moderate": 1.0, "high": 1.3}.get(intensity, 1.0)
-
-        return int(base_rate * duration * intensity_multiplier)
-
-    def _generate_heart_rate(self, intensity: str) -> int:
-        """Generate average heart rate for workout."""
-        if self.state["user_baseline"]:
-            resting_hr = self.state["user_baseline"]["avg_resting_heart_rate"]
-        else:
-            resting_hr = 65
-
-        intensity_range = {
-            "low": (resting_hr + 20, resting_hr + 40),
-            "moderate": (resting_hr + 40, resting_hr + 60),
-            "high": (resting_hr + 60, resting_hr + 80)
-        }.get(intensity, (resting_hr + 30, resting_hr + 50))
-
-        return random.randint(*intensity_range)
-
-
-class CalendarApp(BaseApp):
-    """Calendar scheduling app."""
-
-    def __init__(self, user_id: str):
-        super().__init__("Calendar", user_id)
-
-    def _initialize_state(self) -> None:
-        """Initialize calendar state."""
-        self.state = {
-            "events": []
-        }
-
-    def call_api(
-        self,
-        api_name: str,
-        timestamp: str,
-        description: str,
-        context: Dict[str, Any]
-    ) -> AppLogEntry:
-        """Call Calendar API."""
-        self.ensure_initialized()
-
-        if api_name == "CreateEvent":
-            return self._create_event(timestamp, description, context)
-        elif api_name == "ShowEvents":
-            return self._show_events(timestamp, description, context)
-        elif api_name == "EditEvent":
-            return self._edit_event(timestamp, description, context)
-        elif api_name == "SetReminder":
-            return self._set_reminder(timestamp, description, context)
-        else:
-            raise ValueError(f"Unknown Calendar API: {api_name}")
-
-    def _create_event(self, timestamp: str, description: str, context: Dict[str, Any]) -> AppLogEntry:
-        """Create a calendar event."""
-        title = self._extract_event_title(description)
-        date = timestamp.split()[0]
-        start_time, end_time = self._extract_time_range(timestamp, description)
-        location = self._extract_location(description)
-
-        event = {
-            "event_id": str(uuid.uuid4()),
-            "title": title,
+        # Generate sync data
+        sync_data = {
             "date": date,
-            "start_time": start_time,
-            "end_time": end_time,
-            "location": location,
-            "reminder": ""
+            "steps": random.randint(3000, 15000),
+            "active_minutes": random.randint(15, 90),
+            "calories_burned": random.randint(1500, 2500),
+            "sleep_hours": round(random.uniform(5.5, 9.0), 1),
+            "avg_heart_rate": random.randint(60, 85)
         }
-        self.state["events"].append(event)
+
+        # Store sync data
+        self.state["daily_syncs"].append(sync_data)
 
         return AppLogEntry(
             timestamp=timestamp,
             app_name=self.app_name,
-            api_name="CreateEvent",
-            request={"title": title, "date": date, "start_time": start_time, "end_time": end_time},
-            response=event
-        )
-
-    def _show_events(self, timestamp: str, description: str, context: Dict[str, Any]) -> AppLogEntry:
-        """Show calendar events."""
-        return AppLogEntry(
-            timestamp=timestamp,
-            app_name=self.app_name,
-            api_name="ShowEvents",
-            request={},
+            api_name="SyncDevice",
+            request={"device_name": device_name},
             response={
-                "events": self.state["events"],
-                "total_events": len(self.state["events"])
+                "sync_data": sync_data,
+                "sync_timestamp": timestamp
             }
         )
 
-    def _edit_event(self, timestamp: str, description: str, context: Dict[str, Any]) -> AppLogEntry:
-        """Edit a calendar event."""
-        title = self._extract_event_title(description)
-        event = self._find_event_by_title(title)
-        if not event and self.state["events"]:
-            event = self.state["events"][-1]
+    def _set_goals(self, timestamp: str, description: str, context: Dict[str, Any]) -> AppLogEntry:
+        """Set or update fitness goals such as daily steps, active minutes, or weight targets."""
+        goals = self._extract_goals(description)
 
-        if not event:
-            event = {
-                "event_id": str(uuid.uuid4()),
-                "title": title,
-                "date": timestamp.split()[0],
-                "start_time": timestamp.split()[1][:5],
-                "end_time": self._add_minutes(timestamp, 60),
-                "location": "",
-                "reminder": ""
-            }
-            self.state["events"].append(event)
-
-        start_time, end_time = self._extract_time_range(timestamp, description)
-        if start_time:
-            event["start_time"] = start_time
-            event["end_time"] = end_time
-        if title:
-            event["title"] = title
+        # Update existing goals or add new ones
+        for new_goal in goals:
+            found = False
+            for existing_goal in self.state["goals"]:
+                if existing_goal["goal_type"] == new_goal["goal_type"]:
+                    existing_goal["target_value"] = new_goal["target_value"]
+                    found = True
+                break
+            if not found:
+                self.state["goals"].append(new_goal)
 
         return AppLogEntry(
             timestamp=timestamp,
             app_name=self.app_name,
-            api_name="EditEvent",
-            request={"event_id": event["event_id"], "updates": event},
-            response={"event": event}
+            api_name="SetGoals",
+            request={"goals": goals},
+            response={
+                "goals": self.state["goals"],
+                "updated_at": timestamp
+            }
         )
 
-    def _set_reminder(self, timestamp: str, description: str, context: Dict[str, Any]) -> AppLogEntry:
-        """Set reminder for a calendar event."""
-        title = self._extract_event_title(description)
-        event = self._find_event_by_title(title)
-        if not event and self.state["events"]:
-            event = self.state["events"][-1]
+    def _extract_activity_type(self, description: str) -> str:
+        """Extract activity type from description."""
+        desc_lower = description.lower()
+        if "run" in desc_lower or "jog" in desc_lower:
+            return "running"
+        elif "bike" in desc_lower or "cycl" in desc_lower:
+            return "cycling"
+        elif "swim" in desc_lower:
+            return "swimming"
+        elif "walk" in desc_lower:
+            return "walking"
+        elif "yoga" in desc_lower:
+            return "yoga"
+        elif "weight" in desc_lower or "strength" in desc_lower:
+            return "strength_training"
+        return random.choice(["running", "cycling", "walking", "strength_training"])
 
-        reminder_minutes = self._extract_number(description, default=30)
-        if event:
-            event["reminder"] = f"{reminder_minutes} minutes before"
+    def _extract_duration(self, description: str) -> int:
+        """Extract duration in minutes from description."""
+        import re
+        match = re.search(r'(\d+)\s*(?:min|minute)', description, re.IGNORECASE)
+        if match:
+            return int(match.group(1))
+        match = re.search(r'(\d+)\s*(?:hour|hr)', description, re.IGNORECASE)
+        if match:
+            return int(match.group(1)) * 60
+        return random.randint(20, 60)
 
-        return AppLogEntry(
-            timestamp=timestamp,
-            app_name=self.app_name,
-            api_name="SetReminder",
-            request={"event_id": event["event_id"] if event else "", "reminder_minutes": reminder_minutes},
-            response={"event_id": event["event_id"] if event else "", "reminder_minutes": reminder_minutes}
-        )
+    def _extract_intensity(self, description: str) -> str:
+        """Extract intensity from description."""
+        desc_lower = description.lower()
+        if any(w in desc_lower for w in ["intense", "hard", "vigorous", "high"]):
+            return "high"
+        elif any(w in desc_lower for w in ["easy", "light", "gentle", "low"]):
+            return "low"
+        return "medium"
 
-    def _extract_event_title(self, description: str) -> str:
-        """Extract event title from description."""
+    def _extract_device_name(self, description: str) -> str:
+        """Extract device name from description."""
         import re
         quoted = re.findall(r"'([^']*)'|\"([^\"]*)\"", description)
         if quoted:
             return quoted[0][0] or quoted[0][1]
-        words = description.split()
-        return " ".join(words[:6]) if words else "New Event"
+        return "Fitbit Device"
 
-    def _extract_time_range(self, timestamp: str, description: str) -> tuple[str, str]:
-        """Extract time range from description or fallback to timestamp."""
+    def _extract_goals(self, description: str) -> List[Dict]:
+        """Extract goals from description."""
         import re
-        times = re.findall(r'\b(\d{1,2}:\d{2})\b', description)
-        if len(times) >= 2:
-            return times[0].zfill(5), times[1].zfill(5)
-        if len(times) == 1:
-            start_time = times[0].zfill(5)
-            end_time = self._add_minutes(f"{timestamp.split()[0]} {start_time}:00", 60)
-            return start_time, end_time
-        start_time = timestamp.split()[1][:5]
-        end_time = self._add_minutes(timestamp, 60)
-        return start_time, end_time
+        goals = []
+        desc_lower = description.lower()
 
-    def _add_minutes(self, timestamp: str, minutes: int) -> str:
-        """Add minutes to a timestamp or time string."""
-        if len(timestamp.split()) == 2:
-            dt = datetime.strptime(timestamp, "%Y-%m-%d %H:%M:%S")
-        else:
-            dt = datetime.strptime(f"2000-01-01 {timestamp}", "%Y-%m-%d %H:%M:%S")
-        return (dt + timedelta(minutes=minutes)).strftime("%H:%M")
-
-    def _extract_location(self, description: str) -> str:
-        """Extract location from description."""
-        import re
-        match = re.search(r'\bat\s+([A-Za-z0-9 ,.-]+)', description)
+        # Look for steps goal
+        match = re.search(r'(\d+)\s*steps', desc_lower)
         if match:
-            return match.group(1).strip()
-        return "unspecified"
+            goals.append({"goal_type": "steps", "target_value": int(match.group(1))})
 
-    def _find_event_by_title(self, title: str) -> Optional[Dict[str, Any]]:
-        """Find an event by title."""
-        for event in self.state["events"]:
-            if event["title"].lower() == title.lower():
-                return event
-        return None
+        # Look for active minutes goal
+        match = re.search(r'(\d+)\s*(?:active\s*)?minutes?', desc_lower)
+        if match:
+            goals.append({"goal_type": "active_minutes", "target_value": int(match.group(1))})
 
-    def _extract_number(self, description: str, default: int = 0) -> int:
-        """Extract a number from description."""
-        import re
-        match = re.search(r'\b(\d{1,4})\b', description)
-        return int(match.group(1)) if match else default
+        # Look for weight goal
+        match = re.search(r'(\d+(?:\.\d+)?)\s*(?:lbs?|kg|pounds?)', desc_lower)
+        if match:
+            goals.append({"goal_type": "weight", "target_value": float(match.group(1))})
+
+        if not goals:
+            goals = [{"goal_type": "steps", "target_value": 10000}]
+
+        return goals
+
+    def _calculate_calories(self, activity_type: str, duration: int, intensity: str) -> int:
+        """Calculate calories burned."""
+        base_rates = {
+            "running": 10,
+            "cycling": 8,
+            "swimming": 9,
+            "walking": 4,
+            "yoga": 3,
+            "strength_training": 6
+        }
+        base_rate = base_rates.get(activity_type, 5)
+        intensity_mult = {"low": 0.7, "medium": 1.0, "high": 1.3}.get(intensity, 1.0)
+        return int(base_rate * duration * intensity_mult)
 
 
-class FinanceApp(BaseApp):
-    """Finance management app."""
+class WhatsAppApp(BaseApp):
+    """WhatsApp instant messaging app based on app_catalog.py definitions."""
 
     def __init__(self, user_id: str):
-        super().__init__("Finance", user_id)
+        super().__init__("WhatsApp", user_id)
 
     def _initialize_state(self) -> None:
-        """Initialize finance state."""
+        """Initialize WhatsApp state based on WhatsAppState model."""
         self.state = {
-            "accounts": [
-                {"account_id": "acc_checking", "name": "Checking", "balance": 2500.0, "type": "checking"},
-                {"account_id": "acc_savings", "name": "Savings", "balance": 10000.0, "type": "savings"},
-                {"account_id": "acc_credit", "name": "Credit Card", "balance": -350.0, "type": "credit"}
-            ],
-            "transactions": [],
-            "budgets": {},
-            "financial_goals": [],
-            "investments": [
-                {"symbol": "VTI", "shares": 10, "price": 220.0},
-                {"symbol": "AAPL", "shares": 5, "price": 180.0}
-            ]
+            "user_id": self.user_id,
+            "contacts": ["Alice", "Bob", "Carol", "Dave", "Emma", "Family Group", "Work Team"],
+            "message_history": []
         }
 
     def call_api(
@@ -2917,240 +1472,462 @@ class FinanceApp(BaseApp):
         description: str,
         context: Dict[str, Any]
     ) -> AppLogEntry:
-        """Call Finance API."""
+        """Call WhatsApp API based on app_catalog.py definitions."""
         self.ensure_initialized()
 
-        if api_name == "ShowAccounts":
-            return self._show_accounts(timestamp, description, context)
-        elif api_name == "ShowTransactions":
-            return self._show_transactions(timestamp, description, context)
-        elif api_name == "CreateBudget":
-            return self._create_budget(timestamp, description, context)
-        elif api_name == "LogExpense":
-            return self._log_expense(timestamp, description, context)
-        elif api_name == "ShowBudgetProgress":
-            return self._show_budget_progress(timestamp, description, context)
-        elif api_name == "SetFinancialGoal":
-            return self._set_financial_goal(timestamp, description, context)
-        elif api_name == "ShowInvestments":
-            return self._show_investments(timestamp, description, context)
-        elif api_name == "TransferMoney":
-            return self._transfer_money(timestamp, description, context)
+        if api_name == "GetMessages":
+            return self._get_messages(timestamp, description, context)
+        elif api_name == "SendMessage":
+            return self._send_message(timestamp, description, context)
+        elif api_name == "SendMedia":
+            return self._send_media(timestamp, description, context)
         else:
-            raise ValueError(f"Unknown Finance API: {api_name}")
+            raise ValueError(f"Unknown WhatsApp API: {api_name}")
 
-    def _show_accounts(self, timestamp: str, description: str, context: Dict[str, Any]) -> AppLogEntry:
-        """Show account balances."""
+    def _get_messages(self, timestamp: str, description: str, context: Dict[str, Any]) -> AppLogEntry:
+        """Retrieve message history from a specific contact or group."""
+        contact_id = self._extract_contact_id(description)
+        limit = self._extract_limit(description)
+
+        # Filter messages for this contact
+        messages = [
+            msg for msg in self.state["message_history"]
+            if msg.get("to_user") == contact_id or msg.get("from_user") == contact_id
+        ][-limit:]
+
         return AppLogEntry(
             timestamp=timestamp,
             app_name=self.app_name,
-            api_name="ShowAccounts",
-            request={},
-            response={"accounts": self.state["accounts"]}
-        )
-
-    def _show_transactions(self, timestamp: str, description: str, context: Dict[str, Any]) -> AppLogEntry:
-        """Show recent transactions."""
-        return AppLogEntry(
-            timestamp=timestamp,
-            app_name=self.app_name,
-            api_name="ShowTransactions",
-            request={},
+            api_name="GetMessages",
+            request={"contact_id": contact_id, "limit": limit},
             response={
-                "transactions": self.state["transactions"][-20:],
-                "total_transactions": len(self.state["transactions"])
+                "contact_id": contact_id,
+                "messages": messages
             }
         )
 
-    def _create_budget(self, timestamp: str, description: str, context: Dict[str, Any]) -> AppLogEntry:
-        """Create or update a budget."""
-        categories = self._extract_budget_categories(description)
-        for category, limit in categories.items():
-            self.state["budgets"][category] = limit
+    def _send_message(self, timestamp: str, description: str, context: Dict[str, Any]) -> AppLogEntry:
+        """Send a text message to a contact or group."""
+        to_user = self._extract_contact_id(description)
+        message_content = self._extract_message_content(description)
 
-        budgets = [{"category": k, "limit": v} for k, v in self.state["budgets"].items()]
-
-        return AppLogEntry(
-            timestamp=timestamp,
-            app_name=self.app_name,
-            api_name="CreateBudget",
-            request={"categories": budgets},
-            response={"budgets": budgets}
-        )
-
-    def _log_expense(self, timestamp: str, description: str, context: Dict[str, Any]) -> AppLogEntry:
-        """Log an expense transaction."""
-        amount = self._extract_amount(description, default=round(random.uniform(5.0, 120.0), 2))
-        category = self._extract_category(description)
-        merchant = self._extract_merchant(description)
-        account = self._select_account("checking")
-
-        transaction = {
-            "transaction_id": str(uuid.uuid4()),
-            "amount": -abs(amount),
-            "category": category,
-            "merchant": merchant,
-            "timestamp": timestamp,
-            "account_id": account["account_id"]
+        message_id = f"MSG{uuid.uuid4().hex[:8].upper()}"
+        message = {
+            "message_id": message_id,
+            "from_user": self.user_id,
+            "to_user": to_user,
+            "message_type": "text",
+            "content": message_content,
+            "timestamp": timestamp
         }
-        self.state["transactions"].append(transaction)
-        account["balance"] -= abs(amount)
+        self.state["message_history"].append(message)
 
         return AppLogEntry(
             timestamp=timestamp,
             app_name=self.app_name,
-            api_name="LogExpense",
-            request={"amount": amount, "category": category, "merchant": merchant},
-            response={"transaction": transaction}
+            api_name="SendMessage",
+            request={"to": to_user, "message": message_content},
+            response={
+                "message": message,
+                "sent_timestamp": timestamp
+            }
         )
 
-    def _show_budget_progress(self, timestamp: str, description: str, context: Dict[str, Any]) -> AppLogEntry:
-        """Show budget progress by category."""
-        spending = {}
-        for txn in self.state["transactions"]:
-            category = txn["category"]
-            spending[category] = spending.get(category, 0) + abs(txn["amount"])
+    def _send_media(self, timestamp: str, description: str, context: Dict[str, Any]) -> AppLogEntry:
+        """Send photos, videos, or voice messages."""
+        to_user = self._extract_contact_id(description)
+        media_type = self._extract_media_type(description)
+        caption = self._extract_caption(description)
 
-        categories = []
-        for category, limit in self.state["budgets"].items():
-            categories.append({
-                "category": category,
-                "spent": round(spending.get(category, 0), 2),
-                "limit": limit
+        message_id = f"MSG{uuid.uuid4().hex[:8].upper()}"
+        message = {
+            "message_id": message_id,
+            "from_user": self.user_id,
+            "to_user": to_user,
+            "message_type": "media",
+            "content": f"[{media_type}]" + (f": {caption}" if caption else ""),
+            "timestamp": timestamp
+        }
+        self.state["message_history"].append(message)
+
+        return AppLogEntry(
+            timestamp=timestamp,
+            app_name=self.app_name,
+            api_name="SendMedia",
+            request={"to": to_user, "media_type": media_type, "caption": caption},
+            response={
+                "message": message,
+                "sent_timestamp": timestamp
+            }
+        )
+
+    def _extract_contact_id(self, description: str) -> str:
+        """Extract contact ID from description."""
+        import re
+        quoted = re.findall(r"'([^']*)'|\"([^\"]*)\"", description)
+        if quoted:
+            return quoted[0][0] or quoted[0][1]
+        
+        # Look for "to X" pattern
+        match = re.search(r'\bto\s+([A-Z][a-zA-Z]+(?:\s+[A-Z][a-zA-Z]+)?)', description)
+        if match:
+            return match.group(1)
+        
+        return random.choice(self.state["contacts"])
+
+    def _extract_message_content(self, description: str) -> str:
+        """Extract message content from description."""
+        import re
+        quoted = re.findall(r"'([^']*)'|\"([^\"]*)\"", description)
+        if quoted:
+            return quoted[0][0] or quoted[0][1]
+        return description[:100]
+
+    def _extract_media_type(self, description: str) -> str:
+        """Extract media type from description."""
+        desc_lower = description.lower()
+        if "photo" in desc_lower or "image" in desc_lower or "picture" in desc_lower:
+            return "photo"
+        elif "video" in desc_lower:
+            return "video"
+        elif "voice" in desc_lower or "audio" in desc_lower:
+            return "voice"
+        return "photo"
+
+    def _extract_caption(self, description: str) -> Optional[str]:
+        """Extract caption from description."""
+        import re
+        # Look for text after media type keywords
+        match = re.search(r'(?:caption|with|saying)\s*[:\s]?\s*["\']?([^"\']+)["\']?', description, re.IGNORECASE)
+        if match:
+            return match.group(1).strip()
+        return None
+
+    def _extract_limit(self, description: str) -> int:
+        """Extract message limit from description."""
+        import re
+        match = re.search(r'(\d+)\s*messages?', description, re.IGNORECASE)
+        if match:
+            return int(match.group(1))
+        return 50
+
+
+class ChaseApp(BaseApp):
+    """Chase banking & financial management app based on app_catalog.py definitions."""
+
+    def __init__(self, user_id: str):
+        super().__init__("Chase", user_id)
+
+    def _initialize_state(self) -> None:
+        """Initialize Chase state based on ChaseState model."""
+        self.state = {
+            "user_id": self.user_id,
+            "accounts": [
+                {"account_id": "CHK001", "account_type": "checking", "balance": round(random.uniform(1000, 8000), 2)},
+                {"account_id": "SAV001", "account_type": "savings", "balance": round(random.uniform(5000, 25000), 2)},
+                {"account_id": "CC001", "account_type": "credit_card", "balance": round(-random.uniform(200, 2000), 2)}
+            ],
+            "transaction_history": self._generate_initial_transactions()
+        }
+
+    def _generate_initial_transactions(self) -> List[Dict]:
+        """Generate some initial transaction history."""
+        merchants = ["Amazon", "Whole Foods", "Starbucks", "Shell Gas", "Netflix", "Uber", "Target"]
+        categories = ["shopping", "groceries", "dining", "transportation", "entertainment", "transportation", "shopping"]
+        transactions = []
+        base_date = datetime.now()
+        
+        for i in range(10):
+            date = (base_date - timedelta(days=i)).strftime("%Y-%m-%d")
+            transactions.append({
+                "transaction_id": f"TXN{uuid.uuid4().hex[:8].upper()}",
+                "date": date,
+                "merchant": merchants[i % len(merchants)],
+                "amount": round(random.uniform(5, 150), 2),
+                "transaction_type": "debit",
+                "category": categories[i % len(categories)]
             })
+        return transactions
+
+    def call_api(
+        self,
+        api_name: str,
+        timestamp: str,
+        description: str,
+        context: Dict[str, Any]
+    ) -> AppLogEntry:
+        """Call Chase API based on app_catalog.py definitions."""
+        self.ensure_initialized()
+
+        if api_name == "GetBalance":
+            return self._get_balance(timestamp, description, context)
+        elif api_name == "GetTransactions":
+            return self._get_transactions(timestamp, description, context)
+        elif api_name == "SearchTransactions":
+            return self._search_transactions(timestamp, description, context)
+        elif api_name == "TransferMoney":
+            return self._transfer_money(timestamp, description, context)
+        elif api_name == "PayBill":
+            return self._pay_bill(timestamp, description, context)
+        else:
+            raise ValueError(f"Unknown Chase API: {api_name}")
+
+    def _get_balance(self, timestamp: str, description: str, context: Dict[str, Any]) -> AppLogEntry:
+        """Check current account balance."""
+        account_id = self._extract_account_id(description)
+
+        if account_id:
+            accounts = [acc for acc in self.state["accounts"] if acc["account_id"] == account_id]
+        else:
+            accounts = self.state["accounts"]
+
+        total_balance = sum(acc["balance"] for acc in accounts)
 
         return AppLogEntry(
             timestamp=timestamp,
             app_name=self.app_name,
-            api_name="ShowBudgetProgress",
-            request={},
-            response={"categories": categories}
+            api_name="GetBalance",
+            request={"account_id": account_id},
+            response={
+                "accounts": accounts,
+                "total_balance": round(total_balance, 2),
+                "last_updated": timestamp
+            }
         )
 
-    def _set_financial_goal(self, timestamp: str, description: str, context: Dict[str, Any]) -> AppLogEntry:
-        """Set a financial goal."""
-        goal_name = self._extract_goal_name(description)
-        target_amount = self._extract_amount(description, default=5000.0)
+    def _get_transactions(self, timestamp: str, description: str, context: Dict[str, Any]) -> AppLogEntry:
+        """View recent transaction history."""
+        account_id = self._extract_account_id(description)
+        limit = self._extract_limit(description)
 
-        goal = {
-            "goal_id": str(uuid.uuid4()),
-            "goal_name": goal_name,
-            "target_amount": target_amount,
-            "created_at": timestamp
-        }
-        self.state["financial_goals"].append(goal)
+        transactions = self.state["transaction_history"][-limit:]
+        
+        # Get account balance
+        account_balance = 0.0
+        for acc in self.state["accounts"]:
+            if not account_id or acc["account_id"] == account_id:
+                account_balance += acc["balance"]
 
         return AppLogEntry(
             timestamp=timestamp,
             app_name=self.app_name,
-            api_name="SetFinancialGoal",
-            request={"goal_name": goal_name, "target_amount": target_amount},
-            response={"goal": goal}
+            api_name="GetTransactions",
+            request={"account_id": account_id, "limit": limit},
+            response={
+                "transactions": transactions,
+                "account_balance": round(account_balance, 2)
+            }
         )
 
-    def _show_investments(self, timestamp: str, description: str, context: Dict[str, Any]) -> AppLogEntry:
-        """Show investment portfolio."""
+    def _search_transactions(self, timestamp: str, description: str, context: Dict[str, Any]) -> AppLogEntry:
+        """Search for specific transactions by merchant, amount, or date range."""
+        query = self._extract_search_query(description)
+        query_lower = query.lower()
+
+        # Search by merchant or category
+        results = [
+            txn for txn in self.state["transaction_history"]
+            if query_lower in txn.get("merchant", "").lower()
+            or query_lower in txn.get("category", "").lower()
+        ]
+
         return AppLogEntry(
             timestamp=timestamp,
             app_name=self.app_name,
-            api_name="ShowInvestments",
-            request={},
-            response={"investments": self.state["investments"]}
+            api_name="SearchTransactions",
+            request={"query": query},
+            response={
+                "transactions": results
+            }
         )
 
     def _transfer_money(self, timestamp: str, description: str, context: Dict[str, Any]) -> AppLogEntry:
-        """Transfer money between accounts."""
-        amount = self._extract_amount(description, default=100.0)
-        from_account = self._select_account("checking")
-        to_account = self._select_account("savings")
+        """Transfer funds between accounts or to other people."""
+        from_account_id, to_account_id = self._extract_transfer_accounts(description)
+        amount = self._extract_amount(description)
 
-        from_account["balance"] -= amount
-        to_account["balance"] += amount
+        # Find accounts
+        from_account = None
+        to_account = None
+        for acc in self.state["accounts"]:
+            if acc["account_id"] == from_account_id:
+                from_account = acc
+            if acc["account_id"] == to_account_id:
+                to_account = acc
 
-        transfer = {
-            "transfer_id": str(uuid.uuid4()),
-            "from_account": from_account["name"],
-            "to_account": to_account["name"],
-            "amount": amount,
-            "timestamp": timestamp
-        }
+        # Perform transfer
+        if from_account:
+            from_account["balance"] -= amount
+        if to_account:
+            to_account["balance"] += amount
 
-        self.state["transactions"].append({
-            "transaction_id": transfer["transfer_id"],
-            "amount": -amount,
-            "category": "transfer",
-            "merchant": f"Transfer to {to_account['name']}",
-            "timestamp": timestamp,
-            "account_id": from_account["account_id"]
-        })
+        transaction_id = f"TRF{uuid.uuid4().hex[:8].upper()}"
 
         return AppLogEntry(
             timestamp=timestamp,
             app_name=self.app_name,
             api_name="TransferMoney",
-            request={"from_account": from_account["name"], "to_account": to_account["name"], "amount": amount},
-            response={"transfer": transfer}
+            request={
+                "from_account_id": from_account_id,
+                "to_account_id": to_account_id,
+                "amount": amount
+            },
+            response={
+                "success": True,
+                "transaction_id": transaction_id,
+                "from_account_new_balance": round(from_account["balance"], 2) if from_account else 0,
+                "to_account_new_balance": round(to_account["balance"], 2) if to_account else 0,
+                "timestamp": timestamp
+            }
         )
 
-    def _extract_amount(self, description: str, default: float = 0.0) -> float:
-        """Extract a monetary amount."""
+    def _pay_bill(self, timestamp: str, description: str, context: Dict[str, Any]) -> AppLogEntry:
+        """Pay bills such as utilities, credit cards, or subscriptions."""
+        biller_name = self._extract_biller_name(description)
+        amount = self._extract_amount(description)
+        from_account_id = self._extract_account_id(description) or "CHK001"
+
+        # Find account and deduct
+        account = None
+        for acc in self.state["accounts"]:
+            if acc["account_id"] == from_account_id:
+                account = acc
+                break
+
+        if account:
+            account["balance"] -= amount
+
+        # Record transaction
+        transaction = {
+            "transaction_id": f"BILL{uuid.uuid4().hex[:8].upper()}",
+            "date": timestamp.split()[0],
+            "merchant": biller_name,
+            "amount": amount,
+            "transaction_type": "debit",
+            "category": "bills"
+        }
+        self.state["transaction_history"].append(transaction)
+
+        return AppLogEntry(
+            timestamp=timestamp,
+            app_name=self.app_name,
+            api_name="PayBill",
+            request={
+                "biller_name": biller_name,
+                "amount": amount,
+                "from_account_id": from_account_id
+            },
+            response={
+                "success": True,
+                "transaction_id": transaction["transaction_id"],
+                "new_balance": round(account["balance"], 2) if account else 0,
+                "timestamp": timestamp
+            }
+        )
+
+    def _extract_account_id(self, description: str) -> Optional[str]:
+        """Extract account ID from description."""
         import re
-        match = re.search(r'\$?(\d+(?:\.\d+)?)', description)
-        return float(match.group(1)) if match else default
+        match = re.search(r'(CHK|SAV|CC)\d+', description, re.IGNORECASE)
+        if match:
+            return match.group(0).upper()
+        
+        desc_lower = description.lower()
+        if "checking" in desc_lower:
+            return "CHK001"
+        elif "saving" in desc_lower:
+            return "SAV001"
+        elif "credit" in desc_lower:
+            return "CC001"
+        return None
 
-    def _extract_category(self, description: str) -> str:
-        """Extract expense category."""
-        categories = ["groceries", "transportation", "dining", "utilities", "entertainment", "health"]
-        for category in categories:
-            if category in description.lower():
-                return category
-        return random.choice(categories)
+    def _extract_amount(self, description: str) -> float:
+        """Extract monetary amount from description."""
+        import re
+        match = re.search(r'\$?(\d+(?:\.\d{2})?)', description)
+        if match:
+            return float(match.group(1))
+        return round(random.uniform(50, 500), 2)
 
-    def _extract_merchant(self, description: str) -> str:
-        """Extract merchant name."""
+    def _extract_limit(self, description: str) -> int:
+        """Extract limit from description."""
+        import re
+        match = re.search(r'(\d+)\s*(?:transactions?|items?)', description, re.IGNORECASE)
+        if match:
+            return int(match.group(1))
+        return 50
+
+    def _extract_search_query(self, description: str) -> str:
+        """Extract search query from description."""
         import re
         quoted = re.findall(r"'([^']*)'|\"([^\"]*)\"", description)
         if quoted:
             return quoted[0][0] or quoted[0][1]
-        return random.choice(["Grocery Store", "Cafe", "Gas Station", "Online Retailer"])
+        return "transaction"
 
-    def _extract_budget_categories(self, description: str) -> Dict[str, float]:
-        """Extract budget categories and limits."""
-        categories = {}
-        if "food" in description.lower():
-            categories["dining"] = 300.0
-        if "rent" in description.lower():
-            categories["housing"] = 1200.0
-        if not categories:
-            categories = {"groceries": 400.0, "transportation": 200.0}
-        return categories
+    def _extract_transfer_accounts(self, description: str) -> Tuple[str, str]:
+        """Extract from and to account IDs."""
+        import re
+        
+        from_match = re.search(r'from\s+(CHK|SAV|CC|checking|savings?|credit)\d*', description, re.IGNORECASE)
+        to_match = re.search(r'to\s+(CHK|SAV|CC|checking|savings?|credit)\d*', description, re.IGNORECASE)
+        
+        from_id = "CHK001"
+        to_id = "SAV001"
+        
+        if from_match:
+            from_type = from_match.group(1).lower()
+            if "sav" in from_type:
+                from_id = "SAV001"
+            elif "credit" in from_type or "cc" in from_type:
+                from_id = "CC001"
+        
+        if to_match:
+            to_type = to_match.group(1).lower()
+            if "sav" in to_type:
+                to_id = "SAV001"
+            elif "credit" in to_type or "cc" in to_type:
+                to_id = "CC001"
+            elif "chk" in to_type or "check" in to_type:
+                to_id = "CHK001"
+        
+        return from_id, to_id
 
-    def _extract_goal_name(self, description: str) -> str:
-        """Extract goal name."""
+    def _extract_biller_name(self, description: str) -> str:
+        """Extract biller name from description."""
         import re
         quoted = re.findall(r"'([^']*)'|\"([^\"]*)\"", description)
         if quoted:
             return quoted[0][0] or quoted[0][1]
-        return random.choice(["Emergency Fund", "Vacation", "New Laptop"])
+        
+        # Common billers
+        billers = ["Electric Company", "Water Utility", "Internet Provider", "Phone Bill", "Insurance"]
+        desc_lower = description.lower()
+        for biller in billers:
+            if biller.lower().split()[0] in desc_lower:
+                return biller
+        
+        return random.choice(billers)
 
-    def _select_account(self, account_type: str) -> Dict[str, Any]:
-        """Select account by type."""
-        for account in self.state["accounts"]:
-            if account["type"] == account_type:
-                return account
-        return self.state["accounts"][0]
 
-
-class LLMApp(BaseApp):
-    """LLM chat app."""
+class RobinhoodApp(BaseApp):
+    """Robinhood investment & trading app based on app_catalog.py definitions."""
 
     def __init__(self, user_id: str):
-        super().__init__("LLM", user_id)
+        super().__init__("Robinhood", user_id)
 
     def _initialize_state(self) -> None:
-        """Initialize LLM state."""
+        """Initialize Robinhood state based on RobinhoodState model."""
         self.state = {
-            "conversation_history": []
+            "user_id": self.user_id,
+            "cash_balance": round(random.uniform(500, 5000), 2),
+            "holdings": [
+                {"symbol": "AAPL", "asset_type": "stock", "quantity": random.randint(1, 10), "average_buy_price": round(random.uniform(150, 180), 2)},
+                {"symbol": "GOOGL", "asset_type": "stock", "quantity": random.randint(1, 5), "average_buy_price": round(random.uniform(130, 150), 2)},
+                {"symbol": "BTC", "asset_type": "crypto", "quantity": round(random.uniform(0.01, 0.5), 4), "average_buy_price": round(random.uniform(40000, 50000), 2)},
+            ],
+            "watchlist": ["TSLA", "MSFT", "NVDA", "ETH", "AMZN"],
+            "transaction_history": []
         }
 
     def call_api(
@@ -3160,80 +1937,1223 @@ class LLMApp(BaseApp):
         description: str,
         context: Dict[str, Any]
     ) -> AppLogEntry:
-        """Call LLM API."""
+        """Call Robinhood API based on app_catalog.py definitions."""
         self.ensure_initialized()
 
-        if api_name == "Chat":
-            return self._chat(timestamp, description, context)
+        if api_name == "GetPortfolio":
+            return self._get_portfolio(timestamp, description, context)
+        elif api_name == "GetWatchlist":
+            return self._get_watchlist(timestamp, description, context)
+        elif api_name == "SearchStocks":
+            return self._search_stocks(timestamp, description, context)
+        elif api_name == "GetStockQuote":
+            return self._get_stock_quote(timestamp, description, context)
+        elif api_name == "BuyStock":
+            return self._buy_stock(timestamp, description, context)
+        elif api_name == "SellStock":
+            return self._sell_stock(timestamp, description, context)
         else:
-            raise ValueError(f"Unknown LLM API: {api_name}")
+            raise ValueError(f"Unknown Robinhood API: {api_name}")
 
-    def _chat(self, timestamp: str, description: str, context: Dict[str, Any]) -> AppLogEntry:
-        """Handle chat - returns full conversation turn."""
-        # Extract user message from description
-        user_message = self._extract_user_message(description)
-
-        # Generate AI response based on description
-        ai_response = self._generate_ai_response(user_message, description, context)
-
-        # Create conversation turn
-        conversation_turn = [
-            {"role": "user", "content": user_message},
-            {"role": "assistant", "content": ai_response}
-        ]
-
-        # Add to conversation history
-        self.state["conversation_history"].append({
-            "timestamp": timestamp,
-            "user_message": user_message,
-            "ai_response": ai_response
-        })
-
-        # Generate description of the conversation
-        conv_description = self._generate_conversation_description(user_message, ai_response)
+    def _get_portfolio(self, timestamp: str, description: str, context: Dict[str, Any]) -> AppLogEntry:
+        """View current investment holdings, positions, and portfolio value."""
+        # Calculate total portfolio value
+        total_value = self.state["cash_balance"]
+        for holding in self.state["holdings"]:
+            current_price = self._get_current_price(holding["symbol"], holding["asset_type"])
+            total_value += holding["quantity"] * current_price
 
         return AppLogEntry(
             timestamp=timestamp,
             app_name=self.app_name,
-            api_name="Chat",
-            request={"message": user_message},
+            api_name="GetPortfolio",
+            request={},
             response={
-                "conversation": conversation_turn,
-                "description": conv_description
+                "cash_balance": round(self.state["cash_balance"], 2),
+                "holdings": self.state["holdings"],
+                "total_portfolio_value": round(total_value, 2)
             }
         )
 
-    def _extract_user_message(self, description: str) -> str:
-        """Extract user message from description."""
+    def _get_watchlist(self, timestamp: str, description: str, context: Dict[str, Any]) -> AppLogEntry:
+        """View list of stocks or crypto being monitored."""
+        watchlist_details = []
+        for symbol in self.state["watchlist"]:
+            asset_type = "crypto" if symbol in ["BTC", "ETH", "DOGE"] else "stock"
+            current_price = self._get_current_price(symbol, asset_type)
+            change_percent = round(random.uniform(-5, 5), 2)
+            watchlist_details.append({
+                "symbol": symbol,
+                "current_price": current_price,
+                "change_percent": change_percent
+            })
+
+        return AppLogEntry(
+            timestamp=timestamp,
+            app_name=self.app_name,
+            api_name="GetWatchlist",
+            request={},
+            response={
+                "watchlist": watchlist_details
+            }
+        )
+
+    def _search_stocks(self, timestamp: str, description: str, context: Dict[str, Any]) -> AppLogEntry:
+        """Search for stocks or crypto by symbol or company name."""
+        query = self._extract_search_query(description)
+
+        # Generate search results
+        results = self._generate_search_results(query)
+
+        return AppLogEntry(
+            timestamp=timestamp,
+            app_name=self.app_name,
+            api_name="SearchStocks",
+            request={"query": query},
+            response={
+                "results": results
+            }
+        )
+
+    def _get_stock_quote(self, timestamp: str, description: str, context: Dict[str, Any]) -> AppLogEntry:
+        """View current price, change, and details for a specific stock or crypto."""
+        symbol = self._extract_symbol(description)
+        asset_type = "crypto" if symbol in ["BTC", "ETH", "DOGE", "SOL", "XRP"] else "stock"
+        current_price = self._get_current_price(symbol, asset_type)
+        change_percent = round(random.uniform(-5, 5), 2)
+        in_watchlist = symbol in self.state["watchlist"]
+
+        return AppLogEntry(
+            timestamp=timestamp,
+            app_name=self.app_name,
+            api_name="GetStockQuote",
+            request={"symbol": symbol},
+            response={
+                "symbol": symbol,
+                "current_price": current_price,
+                "change_percent": change_percent,
+                "timestamp": timestamp,
+                "in_watchlist": in_watchlist
+            }
+        )
+
+    def _buy_stock(self, timestamp: str, description: str, context: Dict[str, Any]) -> AppLogEntry:
+        """Execute a purchase of stocks or crypto."""
+        symbol = self._extract_symbol(description)
+        quantity = self._extract_quantity(description)
+        asset_type = self._extract_asset_type(description, symbol)
+        current_price = self._get_current_price(symbol, asset_type)
+        total_cost = quantity * current_price
+
+        # Check if we have enough cash
+        if total_cost > self.state["cash_balance"]:
+            quantity = self.state["cash_balance"] / current_price
+            total_cost = quantity * current_price
+
+        # Deduct cash
+        self.state["cash_balance"] -= total_cost
+
+        # Update or create holding
+        existing_holding = None
+        for holding in self.state["holdings"]:
+            if holding["symbol"] == symbol:
+                existing_holding = holding
+                break
+
+        if existing_holding:
+            # Update average price
+            old_value = existing_holding["quantity"] * existing_holding["average_buy_price"]
+            new_value = quantity * current_price
+            new_quantity = existing_holding["quantity"] + quantity
+            existing_holding["quantity"] = new_quantity
+            existing_holding["average_buy_price"] = round((old_value + new_value) / new_quantity, 2)
+            new_holding = existing_holding
+        else:
+            new_holding = {
+                "symbol": symbol,
+                "asset_type": asset_type,
+                "quantity": quantity,
+                "average_buy_price": current_price
+            }
+            self.state["holdings"].append(new_holding)
+
+        # Record transaction
+        transaction_id = f"TXN{uuid.uuid4().hex[:8].upper()}"
+        transaction = {
+            "transaction_id": transaction_id,
+            "symbol": symbol,
+            "asset_type": asset_type,
+            "transaction_type": "buy",
+            "quantity": quantity,
+            "price": current_price,
+            "timestamp": timestamp
+        }
+        self.state["transaction_history"].append(transaction)
+
+        return AppLogEntry(
+            timestamp=timestamp,
+            app_name=self.app_name,
+            api_name="BuyStock",
+            request={"symbol": symbol, "quantity": quantity, "asset_type": asset_type},
+            response={
+                "success": True,
+                "transaction": transaction,
+                "new_cash_balance": round(self.state["cash_balance"], 2),
+                "new_holding": new_holding
+            }
+        )
+
+    def _sell_stock(self, timestamp: str, description: str, context: Dict[str, Any]) -> AppLogEntry:
+        """Execute a sale of stocks or crypto."""
+        symbol = self._extract_symbol(description)
+        quantity = self._extract_quantity(description)
+        asset_type = self._extract_asset_type(description, symbol)
+        current_price = self._get_current_price(symbol, asset_type)
+
+        # Find holding
+        holding = None
+        for h in self.state["holdings"]:
+            if h["symbol"] == symbol:
+                holding = h
+                break
+
+        remaining_holding = None
+        if holding:
+            # Limit quantity to what we have
+            quantity = min(quantity, holding["quantity"])
+            holding["quantity"] -= quantity
+            
+            if holding["quantity"] > 0:
+                remaining_holding = holding
+        else:
+            self.state["holdings"].remove(holding)
+
+            # Add cash
+            self.state["cash_balance"] += quantity * current_price
+
+        # Record transaction
+        transaction_id = f"TXN{uuid.uuid4().hex[:8].upper()}"
+        transaction = {
+            "transaction_id": transaction_id,
+            "symbol": symbol,
+            "asset_type": asset_type,
+            "transaction_type": "sell",
+            "quantity": quantity,
+            "price": current_price,
+            "timestamp": timestamp
+        }
+        self.state["transaction_history"].append(transaction)
+
+        return AppLogEntry(
+            timestamp=timestamp,
+            app_name=self.app_name,
+            api_name="SellStock",
+            request={"symbol": symbol, "quantity": quantity, "asset_type": asset_type},
+            response={
+                "success": True,
+                "transaction": transaction,
+                "new_cash_balance": round(self.state["cash_balance"], 2),
+                "remaining_holding": remaining_holding
+            }
+        )
+
+    def _get_current_price(self, symbol: str, asset_type: str) -> float:
+        """Get simulated current price for a symbol."""
+        base_prices = {
+            "AAPL": 175, "GOOGL": 140, "MSFT": 380, "TSLA": 250, "NVDA": 450,
+            "AMZN": 180, "META": 350, "BTC": 45000, "ETH": 2500, "DOGE": 0.08,
+            "SOL": 100, "XRP": 0.55
+        }
+        base = base_prices.get(symbol, 100 if asset_type == "stock" else 50)
+        # Add some random variation
+        return round(base * random.uniform(0.95, 1.05), 2)
+
+    def _extract_symbol(self, description: str) -> str:
+        """Extract stock/crypto symbol from description."""
         import re
-        # Try to extract from quotes
+        # Look for uppercase symbols
+        match = re.search(r'\b([A-Z]{1,5})\b', description)
+        if match and match.group(1) not in ["A", "I", "THE", "AND", "FOR"]:
+            return match.group(1)
+        
+        # Check for crypto names
+        desc_lower = description.lower()
+        if "bitcoin" in desc_lower:
+            return "BTC"
+        elif "ethereum" in desc_lower:
+            return "ETH"
+        elif "apple" in desc_lower:
+            return "AAPL"
+        elif "google" in desc_lower:
+            return "GOOGL"
+        elif "tesla" in desc_lower:
+            return "TSLA"
+        
+        return random.choice(["AAPL", "GOOGL", "TSLA", "BTC"])
+
+    def _extract_quantity(self, description: str) -> float:
+        """Extract quantity from description."""
+        import re
+        match = re.search(r'(\d+(?:\.\d+)?)\s*(?:shares?|units?|coins?)?', description, re.IGNORECASE)
+        if match:
+            return float(match.group(1))
+        return random.uniform(1, 10)
+
+    def _extract_asset_type(self, description: str, symbol: str) -> str:
+        """Extract or infer asset type."""
+        crypto_symbols = ["BTC", "ETH", "DOGE", "SOL", "XRP", "ADA", "DOT"]
+        if symbol in crypto_symbols:
+            return "crypto"
+        if "crypto" in description.lower():
+            return "crypto"
+        return "stock"
+
+    def _extract_search_query(self, description: str) -> str:
+        """Extract search query from description."""
+        import re
         quoted = re.findall(r"'([^']*)'|\"([^\"]*)\"", description)
         if quoted:
             return quoted[0][0] or quoted[0][1]
-        # Use description as is
+        return "stock"
+
+    def _generate_search_results(self, query: str) -> List[Dict]:
+        """Generate search results for stocks/crypto."""
+        results = []
+        # Some common mappings
+        stock_map = {
+            "apple": ("AAPL", "Apple Inc."),
+            "google": ("GOOGL", "Alphabet Inc."),
+            "tesla": ("TSLA", "Tesla Inc."),
+            "microsoft": ("MSFT", "Microsoft Corp."),
+            "amazon": ("AMZN", "Amazon.com Inc."),
+            "bitcoin": ("BTC", "Bitcoin"),
+            "ethereum": ("ETH", "Ethereum"),
+        }
+        
+        query_lower = query.lower()
+        for key, (symbol, name) in stock_map.items():
+            if key in query_lower or symbol.lower() in query_lower:
+                results.append({
+                    "symbol": symbol,
+                    "name": name,
+                    "current_price": self._get_current_price(symbol, "crypto" if symbol in ["BTC", "ETH"] else "stock")
+                })
+        
+        if not results:
+            # Return some default results
+            results = [
+                {"symbol": "AAPL", "name": "Apple Inc.", "current_price": self._get_current_price("AAPL", "stock")},
+                {"symbol": "GOOGL", "name": "Alphabet Inc.", "current_price": self._get_current_price("GOOGL", "stock")},
+            ]
+        
+        return results
+
+
+class GmailApp(BaseApp):
+    """Gmail email app based on app_catalog.py definitions."""
+
+    def __init__(self, user_id: str):
+        super().__init__("Gmail", user_id)
+
+    def _initialize_state(self) -> None:
+        """Initialize Gmail state based on GmailState model."""
+        email_address = f"{self.user_id}@gmail.com"
+        self.state = {
+            "user_id": self.user_id,
+            "email_address": email_address,
+            "inbox": self._generate_initial_inbox(),
+            "sent_emails": []
+        }
+
+    def _generate_initial_inbox(self) -> List[Dict]:
+        """Generate initial inbox emails."""
+        senders = [
+            "newsletter@company.com", "support@service.com", "friend@email.com",
+            "boss@work.com", "noreply@social.com", "updates@platform.com"
+        ]
+        subjects = [
+            "Weekly Newsletter", "Your recent inquiry", "Hey, catching up!",
+            "Project Update Required", "New notification", "Important Update"
+        ]
+        
+        emails = []
+        base_date = datetime.now()
+        for i in range(6):
+            email_id = f"EMAIL{uuid.uuid4().hex[:8].upper()}"
+            timestamp = (base_date - timedelta(hours=i*4)).strftime("%Y-%m-%d %H:%M:%S")
+            emails.append({
+                "email_id": email_id,
+                "from_address": senders[i],
+                "to_address": self.state.get("email_address", "user@gmail.com") if hasattr(self, 'state') else "user@gmail.com",
+                "subject": subjects[i],
+                "body": f"This is the content of email about {subjects[i].lower()}...",
+                "timestamp": timestamp,
+                "is_read": i > 2,
+                "labels": ["inbox"]
+            })
+        return emails
+
+    def call_api(
+        self,
+        api_name: str,
+        timestamp: str,
+        description: str,
+        context: Dict[str, Any]
+    ) -> AppLogEntry:
+        """Call Gmail API based on app_catalog.py definitions."""
+        self.ensure_initialized()
+
+        if api_name == "GetInbox":
+            return self._get_inbox(timestamp, description, context)
+        elif api_name == "ReadEmail":
+            return self._read_email(timestamp, description, context)
+        elif api_name == "SendEmail":
+            return self._send_email(timestamp, description, context)
+        elif api_name == "ReplyEmail":
+            return self._reply_email(timestamp, description, context)
+        else:
+            raise ValueError(f"Unknown Gmail API: {api_name}")
+
+    def _get_inbox(self, timestamp: str, description: str, context: Dict[str, Any]) -> AppLogEntry:
+        """Retrieve current inbox emails with previews and metadata."""
+        limit = self._extract_limit(description)
+        unread_only = "unread" in description.lower()
+
+        if unread_only:
+            emails = [e for e in self.state["inbox"] if not e.get("is_read")]
+        else:
+            emails = self.state["inbox"]
+
+        emails = emails[:limit]
+        unread_count = sum(1 for e in self.state["inbox"] if not e.get("is_read"))
+
+        # Create preview format
+        email_previews = []
+        for email in emails:
+            email_previews.append({
+                "email_id": email["email_id"],
+                "from": email["from_address"],
+                "subject": email["subject"],
+                "snippet": email["body"][:50] + "..." if len(email["body"]) > 50 else email["body"],
+                "timestamp": email["timestamp"],
+                "is_read": email.get("is_read", False)
+            })
+
+        return AppLogEntry(
+            timestamp=timestamp,
+            app_name=self.app_name,
+            api_name="GetInbox",
+            request={"limit": limit, "unread_only": unread_only},
+            response={
+                "emails": email_previews,
+                "unread_count": unread_count
+            }
+        )
+
+    def _read_email(self, timestamp: str, description: str, context: Dict[str, Any]) -> AppLogEntry:
+        """Open and read a specific email."""
+        email_id = self._extract_email_id(description)
+
+        # Find email
+        email = None
+        for e in self.state["inbox"]:
+            if e["email_id"] == email_id:
+                email = e
+                e["is_read"] = True
+                break
+
+        if not email:
+            # Return most recent if not found
+            email = self.state["inbox"][0] if self.state["inbox"] else {
+                "email_id": email_id,
+                "from_address": "unknown@email.com",
+                "to_address": self.state["email_address"],
+                "subject": "Email",
+                "body": "Email content not found.",
+            "timestamp": timestamp,
+                "is_read": True,
+                "labels": []
+        }
+
+        return AppLogEntry(
+            timestamp=timestamp,
+            app_name=self.app_name,
+            api_name="ReadEmail",
+            request={"email_id": email_id},
+            response={
+                "email": email
+            }
+        )
+
+    def _send_email(self, timestamp: str, description: str, context: Dict[str, Any]) -> AppLogEntry:
+        """Compose and send a new email."""
+        to_address = self._extract_recipient(description)
+        subject = self._extract_subject(description)
+        body = self._extract_body(description)
+
+        email_id = f"EMAIL{uuid.uuid4().hex[:8].upper()}"
+        email = {
+            "email_id": email_id,
+            "from_address": self.state["email_address"],
+            "to_address": to_address,
+            "subject": subject,
+            "body": body,
+            "timestamp": timestamp,
+            "is_read": True,
+            "labels": ["sent"]
+        }
+        self.state["sent_emails"].append(email)
+
+        return AppLogEntry(
+            timestamp=timestamp,
+            app_name=self.app_name,
+            api_name="SendEmail",
+            request={"to": to_address, "subject": subject, "body": body},
+            response={
+                "email": email,
+                "sent_timestamp": timestamp
+            }
+        )
+
+    def _reply_email(self, timestamp: str, description: str, context: Dict[str, Any]) -> AppLogEntry:
+        """Reply to a received email."""
+        email_id = self._extract_email_id(description)
+        body = self._extract_body(description)
+
+        # Find original email
+        original_email = None
+        for e in self.state["inbox"]:
+            if e["email_id"] == email_id:
+                original_email = e
+                break
+
+        if not original_email and self.state["inbox"]:
+            original_email = self.state["inbox"][0]
+
+        reply_id = f"EMAIL{uuid.uuid4().hex[:8].upper()}"
+        to_address = original_email["from_address"] if original_email else "unknown@email.com"
+        subject = f"Re: {original_email['subject']}" if original_email else "Re: Your email"
+
+        reply_email = {
+            "email_id": reply_id,
+            "from_address": self.state["email_address"],
+            "to_address": to_address,
+            "subject": subject,
+            "body": body,
+            "timestamp": timestamp,
+            "is_read": True,
+            "labels": ["sent"]
+        }
+        self.state["sent_emails"].append(reply_email)
+
+        return AppLogEntry(
+            timestamp=timestamp,
+            app_name=self.app_name,
+            api_name="ReplyEmail",
+            request={"email_id": email_id, "body": body},
+            response={
+                "email": reply_email,
+                "sent_timestamp": timestamp
+            }
+        )
+
+    def _extract_limit(self, description: str) -> int:
+        """Extract limit from description."""
+        import re
+        match = re.search(r'(\d+)\s*(?:emails?|messages?)', description, re.IGNORECASE)
+        if match:
+            return int(match.group(1))
+        return 50
+
+    def _extract_email_id(self, description: str) -> str:
+        """Extract email ID from description."""
+        import re
+        match = re.search(r'EMAIL[A-Z0-9]+', description)
+        if match:
+            return match.group(0)
+        return f"EMAIL{random.randint(10000, 99999)}"
+
+    def _extract_recipient(self, description: str) -> str:
+        """Extract recipient email from description."""
+        import re
+        # Try to find email pattern
+        match = re.search(r'[\w\.-]+@[\w\.-]+\.\w+', description)
+        if match:
+            return match.group(0)
+        
+        # Try quoted name
+        quoted = re.findall(r"'([^']*)'|\"([^\"]*)\"", description)
+        if quoted:
+            name = quoted[0][0] or quoted[0][1]
+            return f"{name.lower().replace(' ', '.')}@email.com"
+        
+        return "recipient@email.com"
+
+    def _extract_subject(self, description: str) -> str:
+        """Extract email subject from description."""
+        import re
+        # Look for "subject:" pattern
+        match = re.search(r'subject[:\s]+["\']?([^"\']+)["\']?', description, re.IGNORECASE)
+        if match:
+            return match.group(1).strip()
+        
+        # Try quoted text as subject
+        quoted = re.findall(r"'([^']*)'|\"([^\"]*)\"", description)
+        if quoted:
+            return quoted[0][0] or quoted[0][1]
+        
+        return "Message"
+
+    def _extract_body(self, description: str) -> str:
+        """Extract email body from description."""
+        import re
+        quoted = re.findall(r"'([^']*)'|\"([^\"]*)\"", description)
+        if len(quoted) > 1:
+            return quoted[1][0] or quoted[1][1]
+        elif quoted:
+            return quoted[0][0] or quoted[0][1]
+        return description[:200]
+
+
+class LLMAssistantApp(BaseApp):
+    """LLM Assistant app based on app_catalog.py definitions."""
+
+    def __init__(self, user_id: str):
+        super().__init__("LLM Assistant", user_id)
+
+    def _initialize_state(self) -> None:
+        """Initialize LLM state based on LLMState model."""
+        self.state = {
+            "user_id": self.user_id,
+            "conversations": []
+        }
+        self._current_conversation_id: Optional[str] = None
+
+    def call_api(
+        self,
+        api_name: str,
+        timestamp: str,
+        description: str,
+        context: Dict[str, Any]
+    ) -> AppLogEntry:
+        """Call LLM Assistant API based on app_catalog.py definitions."""
+        self.ensure_initialized()
+
+        if api_name == "CreateConversation":
+            return self._create_conversation(timestamp, description, context)
+        elif api_name == "ContinueConversation":
+            return self._continue_conversation(timestamp, description, context)
+        else:
+            raise ValueError(f"Unknown LLM Assistant API: {api_name}")
+
+    def _create_conversation(self, timestamp: str, description: str, context: Dict[str, Any]) -> AppLogEntry:
+        """Start a new conversation thread with the AI assistant."""
+        initial_message = self._extract_message(description)
+        
+        conversation_id = f"CONV{uuid.uuid4().hex[:8].upper()}"
+        conversation = {
+            "conversation_id": conversation_id,
+            "messages": [],
+            "created_at": timestamp
+        }
+        
+        self.state["conversations"].append(conversation)
+        self._current_conversation_id = conversation_id
+
+        return AppLogEntry(
+            timestamp=timestamp,
+            app_name=self.app_name,
+            api_name="CreateConversation",
+            request={"initial_message": initial_message},
+            response={
+                "conversation_id": conversation_id,
+                "created_at": timestamp
+            }
+        )
+
+    def _continue_conversation(self, timestamp: str, description: str, context: Dict[str, Any]) -> AppLogEntry:
+        """Send a message in an existing conversation thread."""
+        conversation_id = self._extract_conversation_id(description)
+        user_message = self._extract_message(description)
+
+        # Find conversation or use most recent
+        conversation = None
+        for conv in self.state["conversations"]:
+            if conv["conversation_id"] == conversation_id:
+                conversation = conv
+                break
+        
+        if not conversation and self.state["conversations"]:
+            conversation = self.state["conversations"][-1]
+            conversation_id = conversation["conversation_id"]
+        elif not conversation:
+            # Create a new conversation if none exists
+            conversation_id = f"CONV{uuid.uuid4().hex[:8].upper()}"
+            conversation = {
+                "conversation_id": conversation_id,
+                "messages": [],
+                "created_at": timestamp
+            }
+            self.state["conversations"].append(conversation)
+
+        # Create user message
+        user_msg_id = f"MSG{uuid.uuid4().hex[:8].upper()}"
+        user_msg = {
+            "message_id": user_msg_id,
+            "role": "user",
+            "content": user_message,
+            "timestamp": timestamp
+        }
+        conversation["messages"].append(user_msg)
+
+        # Generate AI response
+        ai_response = self._generate_ai_response(user_message, conversation, context)
+        
+        assistant_msg_id = f"MSG{uuid.uuid4().hex[:8].upper()}"
+        assistant_msg = {
+            "message_id": assistant_msg_id,
+            "role": "assistant",
+            "content": ai_response,
+            "timestamp": timestamp
+        }
+        conversation["messages"].append(assistant_msg)
+
+        return AppLogEntry(
+            timestamp=timestamp,
+            app_name=self.app_name,
+            api_name="ContinueConversation",
+            request={"conversation_id": conversation_id, "message": user_message},
+            response={
+                "conversation_id": conversation_id,
+                "user_message": user_msg,
+                "assistant_response": assistant_msg
+            }
+        )
+
+    def _extract_message(self, description: str) -> str:
+        """Extract message from description."""
+        import re
+        quoted = re.findall(r"'([^']*)'|\"([^\"]*)\"", description)
+        if quoted:
+            return quoted[0][0] or quoted[0][1]
         return description
 
-    def _generate_ai_response(self, user_message: str, description: str, context: Dict[str, Any]) -> str:
-        """Generate a plausible AI response using LLM data generator."""
+    def _extract_conversation_id(self, description: str) -> str:
+        """Extract conversation ID from description."""
+        import re
+        match = re.search(r'CONV[A-Z0-9]+', description)
+        if match:
+            return match.group(0)
+        return self._current_conversation_id or f"CONV{random.randint(10000, 99999)}"
+
+    def _generate_ai_response(self, user_message: str, conversation: Dict, context: Dict[str, Any]) -> str:
+        """Generate a plausible AI response."""
         # Use LLM data generator for chat responses
         data_gen = get_data_generator()
         user_profile = context.get("user_profile", {})
 
+        # Convert conversation messages to history format
+        history = [
+            {"user_message": msg["content"], "ai_response": ""}
+            for msg in conversation.get("messages", [])
+            if msg["role"] == "user"
+        ]
+
         response = data_gen.generate_llm_chat_response(
             user_message=user_message,
-            conversation_history=self.state["conversation_history"],
+            conversation_history=history,
             user_profile=user_profile
         )
 
         return response
 
-    def _generate_conversation_description(self, user_message: str, ai_response: str) -> str:
-        """Generate a brief description of the conversation."""
-        # Extract key topic from user message
-        user_msg_short = user_message[:50] + "..." if len(user_message) > 50 else user_message
-        ai_resp_short = ai_response[:50] + "..." if len(ai_response) > 50 else ai_response
 
-        return f"User asked about: {user_msg_short}. Assistant provided: {ai_resp_short}"
+class LinkedInApp(BaseApp):
+    """LinkedIn professional networking app based on app_catalog.py definitions."""
+
+    def __init__(self, user_id: str):
+        super().__init__("LinkedIn", user_id)
+
+    def _initialize_state(self) -> None:
+        """Initialize LinkedIn state based on LinkedInState model."""
+        self.state = {
+            "user_id": self.user_id,
+            "headline": "Professional",
+            "summary": "",
+            "experiences": [],
+            "skills": ["Communication", "Problem Solving", "Teamwork"],
+            "connections": [],
+            "posts": []
+        }
+
+    def call_api(
+        self,
+        api_name: str,
+        timestamp: str,
+        description: str,
+        context: Dict[str, Any]
+    ) -> AppLogEntry:
+        """Call LinkedIn API based on app_catalog.py definitions."""
+        self.ensure_initialized()
+
+        api_handlers = {
+            "UpdateProfile": self._update_profile,
+            "AddExperience": self._add_experience,
+            "AddSkill": self._add_skill,
+            "PostUpdate": self._post_update,
+            "GetFeed": self._get_feed,
+            "LikePost": self._like_post,
+            "CommentOnPost": self._comment_on_post,
+            "SearchJobs": self._search_jobs,
+            "ApplyJob": self._apply_job,
+            "SendConnectionRequest": self._send_connection_request,
+        }
+        
+        handler = api_handlers.get(api_name)
+        if handler:
+            return handler(timestamp, description, context)
+        raise ValueError(f"Unknown LinkedIn API: {api_name}")
+
+    def _update_profile(self, timestamp: str, description: str, context: Dict[str, Any]) -> AppLogEntry:
+        headline = self._extract_quoted(description) or self.state["headline"]
+        summary = description if "summary" in description.lower() else self.state["summary"]
+        
+        updated_fields = {}
+        if headline != self.state["headline"]:
+            self.state["headline"] = headline
+            updated_fields["headline"] = headline
+        if summary != self.state["summary"]:
+            self.state["summary"] = summary
+            updated_fields["summary"] = summary
+
+        return AppLogEntry(timestamp=timestamp, app_name=self.app_name, api_name="UpdateProfile",
+            request={"headline": headline, "summary": summary},
+            response={"success": True, "updated_fields": updated_fields})
+
+    def _add_experience(self, timestamp: str, description: str, context: Dict[str, Any]) -> AppLogEntry:
+        company = self._extract_quoted(description) or "Company"
+        title = "Position"
+        experience = {"company": company, "title": title, "start_date": timestamp.split()[0][:7], "end_date": None}
+        self.state["experiences"].append(experience)
+        return AppLogEntry(timestamp=timestamp, app_name=self.app_name, api_name="AddExperience",
+            request={"company": company, "title": title, "start_date": experience["start_date"]},
+            response={"experience": experience, "total_experiences": len(self.state["experiences"])})
+
+    def _add_skill(self, timestamp: str, description: str, context: Dict[str, Any]) -> AppLogEntry:
+        skill = self._extract_quoted(description) or "New Skill"
+        if skill not in self.state["skills"]:
+            self.state["skills"].append(skill)
+        return AppLogEntry(timestamp=timestamp, app_name=self.app_name, api_name="AddSkill",
+            request={"skill": skill}, response={"success": True, "skills": self.state["skills"]})
+
+    def _post_update(self, timestamp: str, description: str, context: Dict[str, Any]) -> AppLogEntry:
+        content = self._extract_quoted(description) or description[:200]
+        post_id = f"POST{uuid.uuid4().hex[:8].upper()}"
+        post = {"post_id": post_id, "author": self.user_id, "content": content, "timestamp": timestamp, "likes_count": 0}
+        self.state["posts"].append(post)
+        return AppLogEntry(timestamp=timestamp, app_name=self.app_name, api_name="PostUpdate",
+            request={"content": content}, response={"post": post})
+
+    def _get_feed(self, timestamp: str, description: str, context: Dict[str, Any]) -> AppLogEntry:
+        limit = 20
+        posts = self.state["posts"][-limit:] if self.state["posts"] else self._generate_feed_posts()
+        return AppLogEntry(timestamp=timestamp, app_name=self.app_name, api_name="GetFeed",
+            request={"limit": limit}, response={"posts": posts})
+
+    def _like_post(self, timestamp: str, description: str, context: Dict[str, Any]) -> AppLogEntry:
+        post_id = self._extract_post_id(description)
+        new_likes = random.randint(10, 100)
+        return AppLogEntry(timestamp=timestamp, app_name=self.app_name, api_name="LikePost",
+            request={"post_id": post_id}, response={"success": True, "post_id": post_id, "new_likes_count": new_likes})
+
+    def _comment_on_post(self, timestamp: str, description: str, context: Dict[str, Any]) -> AppLogEntry:
+        post_id = self._extract_post_id(description)
+        comment = self._extract_quoted(description) or "Great post!"
+        return AppLogEntry(timestamp=timestamp, app_name=self.app_name, api_name="CommentOnPost",
+            request={"post_id": post_id, "comment": comment},
+            response={"success": True, "post_id": post_id, "comment_timestamp": timestamp})
+
+    def _search_jobs(self, timestamp: str, description: str, context: Dict[str, Any]) -> AppLogEntry:
+        query = self._extract_quoted(description) or "software engineer"
+        jobs = [{"job_id": f"JOB{i}", "title": f"{query.title()} Position", "company": f"Company {chr(65+i)}", "location": "Remote"} for i in range(5)]
+        return AppLogEntry(timestamp=timestamp, app_name=self.app_name, api_name="SearchJobs",
+            request={"query": query}, response={"jobs": jobs})
+
+    def _apply_job(self, timestamp: str, description: str, context: Dict[str, Any]) -> AppLogEntry:
+        job_id = f"JOB{random.randint(1000, 9999)}"
+        return AppLogEntry(timestamp=timestamp, app_name=self.app_name, api_name="ApplyJob",
+            request={"job_id": job_id}, response={"success": True, "job_id": job_id, "applied_at": timestamp})
+
+    def _send_connection_request(self, timestamp: str, description: str, context: Dict[str, Any]) -> AppLogEntry:
+        user_id = f"USER{random.randint(1000, 9999)}"
+        message = self._extract_quoted(description)
+        return AppLogEntry(timestamp=timestamp, app_name=self.app_name, api_name="SendConnectionRequest",
+            request={"user_id": user_id, "message": message},
+            response={"success": True, "user_id": user_id, "sent_at": timestamp})
+
+    def _extract_quoted(self, description: str) -> Optional[str]:
+        import re
+        quoted = re.findall(r"'([^']*)'|\"([^\"]*)\"", description)
+        return (quoted[0][0] or quoted[0][1]) if quoted else None
+
+    def _extract_post_id(self, description: str) -> str:
+        import re
+        match = re.search(r'POST[A-Z0-9]+', description)
+        return match.group(0) if match else f"POST{random.randint(1000, 9999)}"
+
+    def _generate_feed_posts(self) -> List[Dict]:
+        return [{"post_id": f"POST{i}", "author": f"User{i}", "content": f"Post content {i}", "timestamp": datetime.now().isoformat(), "likes_count": random.randint(0, 100)} for i in range(5)]
+
+
+class NotionApp(BaseApp):
+    """Notion knowledge management & productivity app based on app_catalog.py definitions."""
+
+    def __init__(self, user_id: str):
+        super().__init__("Notion", user_id)
+
+    def _initialize_state(self) -> None:
+        """Initialize Notion state based on NotionState model."""
+        self.state = {
+            "user_id": self.user_id,
+            "pages": [],
+            "database_entries": []
+        }
+
+    def call_api(self, api_name: str, timestamp: str, description: str, context: Dict[str, Any]) -> AppLogEntry:
+        self.ensure_initialized()
+        handlers = {
+            "GetPages": self._get_pages,
+            "CreatePage": self._create_page,
+            "UpdatePage": self._update_page,
+            "SearchContent": self._search_content,
+            "CreateDatabaseEntry": self._create_database_entry,
+        }
+        handler = handlers.get(api_name)
+        if handler:
+            return handler(timestamp, description, context)
+        raise ValueError(f"Unknown Notion API: {api_name}")
+
+    def _get_pages(self, timestamp: str, description: str, context: Dict[str, Any]) -> AppLogEntry:
+        pages = [{"page_id": p["page_id"], "title": p["title"], "created_at": p["created_at"], "updated_at": p["updated_at"]} for p in self.state["pages"][:50]]
+        return AppLogEntry(timestamp=timestamp, app_name=self.app_name, api_name="GetPages",
+            request={"limit": 50}, response={"pages": pages})
+
+    def _create_page(self, timestamp: str, description: str, context: Dict[str, Any]) -> AppLogEntry:
+        import re
+        quoted = re.findall(r"'([^']*)'|\"([^\"]*)\"", description)
+        title = (quoted[0][0] or quoted[0][1]) if quoted else "New Page"
+        content = description[:500]
+        page_id = f"PAGE{uuid.uuid4().hex[:8].upper()}"
+        page = {"page_id": page_id, "title": title, "content": content, "created_at": timestamp, "updated_at": timestamp}
+        self.state["pages"].append(page)
+        return AppLogEntry(timestamp=timestamp, app_name=self.app_name, api_name="CreatePage",
+            request={"title": title, "content": content}, response={"page": page})
+
+    def _update_page(self, timestamp: str, description: str, context: Dict[str, Any]) -> AppLogEntry:
+        import re
+        match = re.search(r'PAGE[A-Z0-9]+', description)
+        page_id = match.group(0) if match else (self.state["pages"][-1]["page_id"] if self.state["pages"] else f"PAGE{random.randint(1000, 9999)}")
+        page = next((p for p in self.state["pages"] if p["page_id"] == page_id), None)
+        if page:
+            page["updated_at"] = timestamp
+            page["content"] = description[:500]
+        else:
+            page = {"page_id": page_id, "title": "Updated Page", "content": description[:500], "created_at": timestamp, "updated_at": timestamp}
+            self.state["pages"].append(page)
+        return AppLogEntry(timestamp=timestamp, app_name=self.app_name, api_name="UpdatePage",
+            request={"page_id": page_id}, response={"page": page})
+
+    def _search_content(self, timestamp: str, description: str, context: Dict[str, Any]) -> AppLogEntry:
+        import re
+        quoted = re.findall(r"'([^']*)'|\"([^\"]*)\"", description)
+        query = (quoted[0][0] or quoted[0][1]) if quoted else "search"
+        results = [{"page_id": p["page_id"], "title": p["title"], "snippet": p["content"][:50]} for p in self.state["pages"] if query.lower() in p["title"].lower() or query.lower() in p["content"].lower()]
+        return AppLogEntry(timestamp=timestamp, app_name=self.app_name, api_name="SearchContent",
+            request={"query": query}, response={"results": results})
+
+    def _create_database_entry(self, timestamp: str, description: str, context: Dict[str, Any]) -> AppLogEntry:
+        database_name = "tasks" if "task" in description.lower() else "projects" if "project" in description.lower() else "habits"
+        entry_id = f"ENTRY{uuid.uuid4().hex[:8].upper()}"
+        properties = {"name": description[:50], "status": "active"}
+        entry = {"entry_id": entry_id, "database_name": database_name, "properties": properties, "created_at": timestamp}
+        self.state["database_entries"].append(entry)
+        return AppLogEntry(timestamp=timestamp, app_name=self.app_name, api_name="CreateDatabaseEntry",
+            request={"database_name": database_name, "properties": properties}, response={"entry": entry})
+
+
+class NetflixApp(BaseApp):
+    """Netflix video streaming app based on app_catalog.py definitions."""
+
+    def __init__(self, user_id: str):
+        super().__init__("Netflix", user_id)
+
+    def _initialize_state(self) -> None:
+        self.state = {
+            "user_id": self.user_id,
+            "subscription_plan": random.choice(["Basic", "Standard", "Premium"]),
+            "my_list": [],
+            "watch_history": []
+        }
+        self._title_cache: Dict[str, Dict] = {}
+
+    def call_api(self, api_name: str, timestamp: str, description: str, context: Dict[str, Any]) -> AppLogEntry:
+        self.ensure_initialized()
+        handlers = {
+            "SearchContent": self._search_content,
+            "ShowTitle": self._show_title,
+            "PlayContent": self._play_content,
+            "AddToMyList": self._add_to_my_list,
+            "RateContent": self._rate_content,
+        }
+        handler = handlers.get(api_name)
+        if handler:
+            return handler(timestamp, description, context)
+        raise ValueError(f"Unknown Netflix API: {api_name}")
+
+    def _search_content(self, timestamp: str, description: str, context: Dict[str, Any]) -> AppLogEntry:
+        import re
+        quoted = re.findall(r"'([^']*)'|\"([^\"]*)\"", description)
+        query = (quoted[0][0] or quoted[0][1]) if quoted else "movie"
+        titles = self._generate_titles(query)
+        return AppLogEntry(timestamp=timestamp, app_name=self.app_name, api_name="SearchContent",
+            request={"query": query}, response={"titles": titles})
+
+    def _show_title(self, timestamp: str, description: str, context: Dict[str, Any]) -> AppLogEntry:
+        title_id = self._extract_title_id(description)
+        title = self._get_or_create_title(title_id, description)
+        in_my_list = title_id in self.state["my_list"]
+        return AppLogEntry(timestamp=timestamp, app_name=self.app_name, api_name="ShowTitle",
+            request={"title_id": title_id},
+            response={"title": title, "description": f"A {title['genre']} {title['content_type']}", "rating": round(random.uniform(3.5, 5.0), 1), "in_my_list": in_my_list})
+
+    def _play_content(self, timestamp: str, description: str, context: Dict[str, Any]) -> AppLogEntry:
+        title_id = self._extract_title_id(description)
+        title = self._get_or_create_title(title_id, description)
+        watch_record = {"title_id": title_id, "watched_at": timestamp, "duration_watched": random.randint(30, 120), "completed": random.choice([True, False])}
+        self.state["watch_history"].append(watch_record)
+        return AppLogEntry(timestamp=timestamp, app_name=self.app_name, api_name="PlayContent",
+            request={"title_id": title_id},
+            response={"title": title, "playing_status": "playing", "subscription_plan": self.state["subscription_plan"], "play_started_at": timestamp})
+
+    def _add_to_my_list(self, timestamp: str, description: str, context: Dict[str, Any]) -> AppLogEntry:
+        title_id = self._extract_title_id(description)
+        if title_id not in self.state["my_list"]:
+            self.state["my_list"].append(title_id)
+        return AppLogEntry(timestamp=timestamp, app_name=self.app_name, api_name="AddToMyList",
+            request={"title_id": title_id}, response={"success": True, "my_list": self.state["my_list"]})
+
+    def _rate_content(self, timestamp: str, description: str, context: Dict[str, Any]) -> AppLogEntry:
+        title_id = self._extract_title_id(description)
+        rating = 1 if "up" in description.lower() or "good" in description.lower() else 0
+        return AppLogEntry(timestamp=timestamp, app_name=self.app_name, api_name="RateContent",
+            request={"title_id": title_id, "rating": rating}, response={"success": True, "title_id": title_id, "rating": rating})
+
+    def _extract_title_id(self, description: str) -> str:
+        import re
+        match = re.search(r'TITLE[A-Z0-9]+', description)
+        return match.group(0) if match else f"TITLE{random.randint(1000, 9999)}"
+
+    def _generate_titles(self, query: str) -> List[Dict]:
+        genres = ["Drama", "Comedy", "Action", "Thriller", "Documentary", "Sci-Fi"]
+        titles = []
+        for i in range(5):
+            title_id = f"TITLE{abs(hash(query + str(i))) % 10000:04d}"
+            title = {"title_id": title_id, "name": f"{query.title()} {i+1}", "content_type": random.choice(["movie", "series"]), "genre": random.choice(genres)}
+            titles.append(title)
+            self._title_cache[title_id] = title
+        return titles
+
+    def _get_or_create_title(self, title_id: str, description: str) -> Dict:
+        if title_id in self._title_cache:
+            return self._title_cache[title_id]
+        import re
+        quoted = re.findall(r"'([^']*)'|\"([^\"]*)\"", description)
+        name = (quoted[0][0] or quoted[0][1]) if quoted else f"Title {title_id}"
+        title = {"title_id": title_id, "name": name, "content_type": "movie", "genre": "Drama"}
+        self._title_cache[title_id] = title
+        return title
+
+
+class GoodreadsApp(BaseApp):
+    """Goodreads book tracking & reviews app based on app_catalog.py definitions."""
+
+    def __init__(self, user_id: str):
+        super().__init__("Goodreads", user_id)
+
+    def _initialize_state(self) -> None:
+        self.state = {"user_id": self.user_id, "shelves": [], "reviews": []}
+        self._book_cache: Dict[str, Dict] = {}
+
+    def call_api(self, api_name: str, timestamp: str, description: str, context: Dict[str, Any]) -> AppLogEntry:
+        self.ensure_initialized()
+        handlers = {
+            "SearchBooks": self._search_books,
+            "ShowBook": self._show_book,
+            "AddToShelf": self._add_to_shelf,
+            "RateBook": self._rate_book,
+            "WriteReview": self._write_review,
+        }
+        handler = handlers.get(api_name)
+        if handler:
+            return handler(timestamp, description, context)
+        raise ValueError(f"Unknown Goodreads API: {api_name}")
+
+    def _search_books(self, timestamp: str, description: str, context: Dict[str, Any]) -> AppLogEntry:
+        import re
+        quoted = re.findall(r"'([^']*)'|\"([^\"]*)\"", description)
+        query = (quoted[0][0] or quoted[0][1]) if quoted else "book"
+        books = self._generate_books(query)
+        return AppLogEntry(timestamp=timestamp, app_name=self.app_name, api_name="SearchBooks",
+            request={"query": query}, response={"books": books})
+
+    def _show_book(self, timestamp: str, description: str, context: Dict[str, Any]) -> AppLogEntry:
+        book_id = self._extract_book_id(description)
+        book = self._get_or_create_book(book_id, description)
+        on_shelf = next((s["shelf"] for s in self.state["shelves"] if s["book_id"] == book_id), None)
+        return AppLogEntry(timestamp=timestamp, app_name=self.app_name, api_name="ShowBook",
+            request={"book_id": book_id},
+            response={"book": book, "description": f"A {book['genre']} book", "average_rating": round(random.uniform(3.5, 4.5), 2), "on_shelf": on_shelf})
+
+    def _add_to_shelf(self, timestamp: str, description: str, context: Dict[str, Any]) -> AppLogEntry:
+        book_id = self._extract_book_id(description)
+        shelf = "want-to-read" if "want" in description.lower() else "currently-reading" if "current" in description.lower() else "read"
+        shelf_entry = {"book_id": book_id, "shelf": shelf, "added_at": timestamp}
+        self.state["shelves"] = [s for s in self.state["shelves"] if s["book_id"] != book_id]
+        self.state["shelves"].append(shelf_entry)
+        return AppLogEntry(timestamp=timestamp, app_name=self.app_name, api_name="AddToShelf",
+            request={"book_id": book_id, "shelf": shelf}, response={"success": True, "shelf_entry": shelf_entry})
+
+    def _rate_book(self, timestamp: str, description: str, context: Dict[str, Any]) -> AppLogEntry:
+        book_id = self._extract_book_id(description)
+        import re
+        match = re.search(r'(\d)', description)
+        rating = int(match.group(1)) if match else random.randint(3, 5)
+        rating = max(1, min(5, rating))
+        return AppLogEntry(timestamp=timestamp, app_name=self.app_name, api_name="RateBook",
+            request={"book_id": book_id, "rating": rating}, response={"success": True, "rating": rating, "rated_at": timestamp})
+
+    def _write_review(self, timestamp: str, description: str, context: Dict[str, Any]) -> AppLogEntry:
+        book_id = self._extract_book_id(description)
+        import re
+        quoted = re.findall(r"'([^']*)'|\"([^\"]*)\"", description)
+        review_text = (quoted[0][0] or quoted[0][1]) if quoted else "Great book!"
+        review = {"book_id": book_id, "rating": random.randint(3, 5), "review_text": review_text, "reviewed_at": timestamp}
+        self.state["reviews"].append(review)
+        return AppLogEntry(timestamp=timestamp, app_name=self.app_name, api_name="WriteReview",
+            request={"book_id": book_id, "review_text": review_text}, response={"review": review})
+
+    def _extract_book_id(self, description: str) -> str:
+        import re
+        match = re.search(r'BOOK[A-Z0-9]+', description)
+        return match.group(0) if match else f"BOOK{random.randint(1000, 9999)}"
+
+    def _generate_books(self, query: str) -> List[Dict]:
+        genres = ["Fiction", "Non-Fiction", "Mystery", "Science Fiction", "Biography", "Self-Help"]
+        books = []
+        for i in range(5):
+            book_id = f"BOOK{abs(hash(query + str(i))) % 10000:04d}"
+            book = {"book_id": book_id, "title": f"{query.title()} Book {i+1}", "author": f"Author {chr(65+i)}", "genre": random.choice(genres)}
+            books.append(book)
+            self._book_cache[book_id] = book
+        return books
+
+    def _get_or_create_book(self, book_id: str, description: str) -> Dict:
+        if book_id in self._book_cache:
+            return self._book_cache[book_id]
+        import re
+        quoted = re.findall(r"'([^']*)'|\"([^\"]*)\"", description)
+        title = (quoted[0][0] or quoted[0][1]) if quoted else f"Book {book_id}"
+        book = {"book_id": book_id, "title": title, "author": "Unknown Author", "genre": "Fiction"}
+        self._book_cache[book_id] = book
+        return book
+
+
+class InstagramApp(BaseApp):
+    """Instagram social media & photo sharing app based on app_catalog.py definitions."""
+
+    def __init__(self, user_id: str):
+        super().__init__("Instagram", user_id)
+
+    def _initialize_state(self) -> None:
+        self.state = {
+            "user_id": self.user_id,
+            "followers": [f"user{i}" for i in range(random.randint(50, 500))],
+            "following": [f"user{i}" for i in range(random.randint(100, 300))],
+            "posts": []
+        }
+
+    def call_api(self, api_name: str, timestamp: str, description: str, context: Dict[str, Any]) -> AppLogEntry:
+        self.ensure_initialized()
+        handlers = {
+            "PostStory": self._post_story,
+            "LikePost": self._like_post,
+            "CommentOnPost": self._comment_on_post,
+            "SendDirectMessage": self._send_direct_message,
+            "FollowUser": self._follow_user,
+            "UnfollowUser": self._unfollow_user,
+            "GetFollowing": self._get_following,
+        }
+        handler = handlers.get(api_name)
+        if handler:
+            return handler(timestamp, description, context)
+        raise ValueError(f"Unknown Instagram API: {api_name}")
+
+    def _post_story(self, timestamp: str, description: str, context: Dict[str, Any]) -> AppLogEntry:
+        content_type = "video" if "video" in description.lower() else "photo"
+        import re
+        quoted = re.findall(r"'([^']*)'|\"([^\"]*)\"", description)
+        caption = (quoted[0][0] or quoted[0][1]) if quoted else None
+        post_id = f"POST{uuid.uuid4().hex[:8].upper()}"
+        post = {"post_id": post_id, "author": self.user_id, "content_type": "story", "caption": caption or "", "timestamp": timestamp, "likes_count": 0}
+        self.state["posts"].append(post)
+        return AppLogEntry(timestamp=timestamp, app_name=self.app_name, api_name="PostStory",
+            request={"content_type": content_type, "caption": caption}, response={"post": post})
+
+    def _like_post(self, timestamp: str, description: str, context: Dict[str, Any]) -> AppLogEntry:
+        import re
+        match = re.search(r'POST[A-Z0-9]+', description)
+        post_id = match.group(0) if match else f"POST{random.randint(1000, 9999)}"
+        new_likes = random.randint(10, 1000)
+        return AppLogEntry(timestamp=timestamp, app_name=self.app_name, api_name="LikePost",
+            request={"post_id": post_id}, response={"success": True, "post_id": post_id, "new_likes_count": new_likes})
+
+    def _comment_on_post(self, timestamp: str, description: str, context: Dict[str, Any]) -> AppLogEntry:
+        import re
+        match = re.search(r'POST[A-Z0-9]+', description)
+        post_id = match.group(0) if match else f"POST{random.randint(1000, 9999)}"
+        quoted = re.findall(r"'([^']*)'|\"([^\"]*)\"", description)
+        comment = (quoted[0][0] or quoted[0][1]) if quoted else "Nice!"
+        return AppLogEntry(timestamp=timestamp, app_name=self.app_name, api_name="CommentOnPost",
+            request={"post_id": post_id, "comment": comment},
+            response={"success": True, "post_id": post_id, "comment_timestamp": timestamp})
+
+    def _send_direct_message(self, timestamp: str, description: str, context: Dict[str, Any]) -> AppLogEntry:
+        import re
+        quoted = re.findall(r"'([^']*)'|\"([^\"]*)\"", description)
+        message = (quoted[0][0] or quoted[0][1]) if quoted else "Hey!"
+        to_user_id = f"user{random.randint(1, 1000)}"
+        message_id = f"DM{uuid.uuid4().hex[:8].upper()}"
+        return AppLogEntry(timestamp=timestamp, app_name=self.app_name, api_name="SendDirectMessage",
+            request={"to_user_id": to_user_id, "message": message},
+            response={"message_id": message_id, "sent_timestamp": timestamp})
+
+    def _follow_user(self, timestamp: str, description: str, context: Dict[str, Any]) -> AppLogEntry:
+        user_id = f"user{random.randint(1, 10000)}"
+        if user_id not in self.state["following"]:
+            self.state["following"].append(user_id)
+        return AppLogEntry(timestamp=timestamp, app_name=self.app_name, api_name="FollowUser",
+            request={"user_id": user_id}, response={"success": True, "following": self.state["following"][-10:]})
+
+    def _unfollow_user(self, timestamp: str, description: str, context: Dict[str, Any]) -> AppLogEntry:
+        user_id = self.state["following"][-1] if self.state["following"] else f"user{random.randint(1, 1000)}"
+        if user_id in self.state["following"]:
+            self.state["following"].remove(user_id)
+        return AppLogEntry(timestamp=timestamp, app_name=self.app_name, api_name="UnfollowUser",
+            request={"user_id": user_id}, response={"success": True, "following": self.state["following"][-10:]})
+
+    def _get_following(self, timestamp: str, description: str, context: Dict[str, Any]) -> AppLogEntry:
+        return AppLogEntry(timestamp=timestamp, app_name=self.app_name, api_name="GetFollowing",
+            request={}, response={"following": self.state["following"][-50:], "following_count": len(self.state["following"])})
 
 
 class AppRegistry:
@@ -3242,37 +3162,55 @@ class AppRegistry:
 
     Maintains one instance per (app_name, user_id) to ensure state consistency
     across all domains and time windows.
+
+    Apps based on app_catalog.py definitions:
+    - Amazon: E-commerce
+    - Spotify: Music Streaming
+    - Fitbit: Health & Fitness Tracking
+    - Chase: Banking & Financial Management
+    - Robinhood: Investment & Trading
+    - WhatsApp: Instant Messaging
+    - Gmail: Email
+    - LinkedIn: Professional Networking
+    - Notion: Knowledge Management & Productivity
+    - Netflix: Video Streaming
+    - Goodreads: Book Tracking & Reviews
+    - Instagram: Social Media & Photo Sharing
+    - Google: Search Engine
+    - LLM Assistant: AI Assistant
     """
 
+    # Mapping of app names to their corresponding classes
+    APP_CLASSES: Dict[str, type] = {
+        "Amazon": AmazonApp,
+        "Spotify": SpotifyApp,
+        "Fitbit": FitbitApp,
+        "Chase": ChaseApp,
+        "Robinhood": RobinhoodApp,
+        "WhatsApp": WhatsAppApp,
+        "Gmail": GmailApp,
+        "LinkedIn": LinkedInApp,
+        "Notion": NotionApp,
+        "Netflix": NetflixApp,
+        "Goodreads": GoodreadsApp,
+        "Instagram": InstagramApp,
+        "Google": GoogleApp,
+        "LLM Assistant": LLMAssistantApp,
+    }
+
     def __init__(self):
-        self.apps: Dict[tuple[str, str], BaseApp] = {}
+        self.apps: Dict[Tuple[str, str], BaseApp] = {}
 
     def get_app(self, app_name: str, user_id: str) -> BaseApp:
         """Get or create an app instance for this user."""
         key = (app_name, user_id)
 
         if key not in self.apps:
-            # Create new app instance
-            if app_name == "Amazon":
-                self.apps[key] = AmazonApp(user_id)
-            elif app_name == "Google":
-                self.apps[key] = GoogleApp(user_id)
-            elif app_name == "Spotify":
-                self.apps[key] = SpotifyApp(user_id)
-            elif app_name == "SimpleNote":
-                self.apps[key] = SimpleNoteApp(user_id)
-            elif app_name == "LLM":
-                self.apps[key] = LLMApp(user_id)
-            elif app_name == "Message":
-                self.apps[key] = MessageApp(user_id)
-            elif app_name == "Fitness":
-                self.apps[key] = FitnessApp(user_id)
-            elif app_name == "Calendar":
-                self.apps[key] = CalendarApp(user_id)
-            elif app_name == "Finance":
-                self.apps[key] = FinanceApp(user_id)
+            app_class = self.APP_CLASSES.get(app_name)
+            if app_class:
+                self.apps[key] = app_class(user_id)
             else:
-                raise ValueError(f"Unknown app: {app_name}")
+                raise ValueError(f"Unknown app: {app_name}. Available apps: {list(self.APP_CLASSES.keys())}")
 
         return self.apps[key]
 
@@ -3292,3 +3230,8 @@ class AppRegistry:
         """
         app = self.get_app(app_name, user_id)
         return app.call_api(api_name, timestamp, description, context)
+
+    @classmethod
+    def get_available_apps(cls) -> List[str]:
+        """Return list of all available app names."""
+        return list(cls.APP_CLASSES.keys())

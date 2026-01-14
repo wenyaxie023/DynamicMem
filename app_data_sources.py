@@ -142,6 +142,14 @@ class SpotifyDatabase:
             return random.sample(matching, min(limit, len(matching)))
         return random.sample(cls.SONGS_DB, min(limit, len(cls.SONGS_DB)))
 
+    @classmethod
+    def get_songs_by_artist(cls, artist: str, limit: int = 5) -> List[Dict]:
+        """Get songs by artist."""
+        matching = [s for s in cls.SONGS_DB if s["artist"].lower() == artist.lower()]
+        if matching:
+            return random.sample(matching, min(limit, len(matching)))
+        return []
+
 
 # =============================================================================
 # LLM-Powered Generators
