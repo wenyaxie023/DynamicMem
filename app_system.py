@@ -50,6 +50,10 @@ from mem_bench.behavior_and_conversation.app_models import (
     LLMState, LLMConversation, LLMMessage,
     # Google
     GoogleState, GoogleSearchHistory, GoogleSearchResult,
+    # Enums
+    AssetType, TransactionType, ChaseTransactionType, ChaseAccountType, ChaseCategory,
+    MessageType, MediaType, ContentType, InstagramContentType, NetflixPlan, BookShelf,
+    ChatRole, PlayingStatus, WorkoutIntensity, FitbitGoalType, ThumbsRating,
 )
 
 
@@ -290,8 +294,8 @@ def _build_api_schemas() -> Dict[str, Dict[str, Dict[str, Any]]]:
             "output": _model_to_schema(app_models.UpdatePageOutput),
         },
         "SearchContent": {
-            "input": _model_to_schema(app_models.SearchContentInput),
-            "output": _model_to_schema(app_models.SearchContentOutput),
+            "input": _model_to_schema(app_models.NotionSearchContentInput),
+            "output": _model_to_schema(app_models.NotionSearchContentOutput),
         },
         "CreateDatabaseEntry": {
             "input": _model_to_schema(app_models.CreateDatabaseEntryInput),
@@ -459,7 +463,7 @@ def get_api_input_output_models(app_name: str, api_name: str):
         ("Notion", "GetPages"): (app_models.GetPagesInput, app_models.GetPagesOutput),
         ("Notion", "CreatePage"): (app_models.CreatePageInput, app_models.CreatePageOutput),
         ("Notion", "UpdatePage"): (app_models.UpdatePageInput, app_models.UpdatePageOutput),
-        ("Notion", "SearchContent"): (app_models.SearchContentInput, app_models.SearchContentOutput),
+        ("Notion", "SearchContent"): (app_models.NotionSearchContentInput, app_models.NotionSearchContentOutput),
         ("Notion", "CreateDatabaseEntry"): (app_models.CreateDatabaseEntryInput, app_models.CreateDatabaseEntryOutput),
         ("Netflix", "ShowTitle"): (app_models.ShowTitleInput, app_models.ShowTitleOutput),
         ("Netflix", "PlayContent"): (app_models.PlayContentInput, app_models.PlayContentOutput),
@@ -598,12 +602,14 @@ class AmazonApp(BaseApp):
         product = self._get_or_create_product(product_id, description, context)
         reviews = self._generate_reviews(product["name"], product["rating"])
 
-        # Track viewed product
-        if product_id not in self.state["viewed_products"]:
-            self.state["viewed_products"].append(product_id)
+        # Track viewed product (store full product object)
+        viewed_ids = [p.get("product_id") for p in self.state["viewed_products"]]
+        if product_id not in viewed_ids:
+            self.state["viewed_products"].append(product)
 
         in_cart = any(item.get("product_id") == product_id for item in self.state["cart"])
-        in_wishlist = product_id in self.state["wishlist"]
+        wishlist_ids = [p.get("product_id") for p in self.state["wishlist"]]
+        in_wishlist = product_id in wishlist_ids
 
         return AppLogEntry(
             timestamp=timestamp,
@@ -645,7 +651,6 @@ class AmazonApp(BaseApp):
             api_name="AddToCart",
             request={"product_id": product_id, "quantity": quantity},
             response={
-                "success": True,
                 "cart": self.state["cart"],
                 "cart_total": round(cart_total, 2)
             }
@@ -679,17 +684,12 @@ class AmazonApp(BaseApp):
     def _show_wishlist(self, timestamp: str, description: str, context: Dict[str, Any]) -> AppLogEntry:
         """View all items saved in the wishlist."""
         wishlist_items = []
-        for product_id in self.state["wishlist"]:
-            product = self._product_cache.get(product_id, {
-                "product_id": product_id,
-                "name": f"Product {product_id}",
-                "price": round(random.uniform(19.99, 199.99), 2)
-            })
+        for product in self.state["wishlist"]:
             wishlist_items.append({
-                "product_id": product_id,
+                "product_id": product.get("product_id"),
                 "name": product.get("name"),
                 "price": product.get("price"),
-                "added_date": timestamp.split()[0]
+                "added_at": timestamp  # Now using datetime format
             })
 
         return AppLogEntry(
@@ -1067,7 +1067,7 @@ class SpotifyApp(BaseApp):
         play_record = {
             "song_id": song_id,
             "played_at": timestamp,
-            "duration_played": song.get("duration_seconds", random.randint(180, 300))
+            "duration_played_minutes": song.get("duration_minutes", random.randint(3, 5))
         }
         self.state["play_history"].append(play_record)
 
@@ -1081,7 +1081,7 @@ class SpotifyApp(BaseApp):
             request={"song_id": song_id},
             response={
                 "song": song,
-                "playing_status": "playing",
+                "playing_status": PlayingStatus.PLAYING.value,
                 "premium": self.state["premium"],
                 "play_started_at": timestamp
             }
@@ -1117,7 +1117,6 @@ class SpotifyApp(BaseApp):
             api_name="AddToPlaylist",
             request={"playlist_id": playlist["playlist_id"], "song_id": song_id},
             response={
-                "success": True,
                 "playlist": playlist
             }
         )
@@ -1135,7 +1134,6 @@ class SpotifyApp(BaseApp):
             api_name="FollowArtist",
             request={"artist_id": artist_id, "artist_name": artist_name},
             response={
-                "success": True,
                 "followed_artists": self.state["followed_artists"]
             }
         )
@@ -1192,8 +1190,8 @@ class SpotifyApp(BaseApp):
         for song in songs:
             if "song_id" not in song:
                 song["song_id"] = f"SONG{random.randint(10000, 99999)}"
-            if "duration_seconds" not in song:
-                song["duration_seconds"] = random.randint(180, 300)
+            if "duration_minutes" not in song:
+                song["duration_minutes"] = random.randint(3, 5)
             self._song_cache[song["song_id"]] = song
         return songs
 
@@ -1226,7 +1224,7 @@ class SpotifyApp(BaseApp):
             "title": title,
             "artist": artist,
             "genre": random.choice(self.state.get("favorite_genres", ["Pop"])),
-            "duration_seconds": random.randint(180, 300)
+            "duration_minutes": random.randint(3, 5)
         }
         self._song_cache[song_id] = song
         return song
@@ -1317,7 +1315,7 @@ class FitbitApp(BaseApp):
 
         # Generate sync data
         sync_data = {
-            "date": date,
+            "sync_date": date,
             "steps": random.randint(3000, 15000),
             "active_minutes": random.randint(15, 90),
             "calories_burned": random.randint(1500, 2500),
@@ -1516,7 +1514,7 @@ class WhatsAppApp(BaseApp):
             "message_id": message_id,
             "from_user": self.user_id,
             "to_user": to_user,
-            "message_type": "text",
+            "message_type": MessageType.TEXT.value,
             "content": message_content,
             "timestamp": timestamp
         }
@@ -1544,7 +1542,7 @@ class WhatsAppApp(BaseApp):
             "message_id": message_id,
             "from_user": self.user_id,
             "to_user": to_user,
-            "message_type": "media",
+            "message_type": MessageType.MEDIA.value,
             "content": f"[{media_type}]" + (f": {caption}" if caption else ""),
             "timestamp": timestamp
         }
@@ -1633,7 +1631,11 @@ class ChaseApp(BaseApp):
     def _generate_initial_transactions(self) -> List[Dict]:
         """Generate some initial transaction history."""
         merchants = ["Amazon", "Whole Foods", "Starbucks", "Shell Gas", "Netflix", "Uber", "Target"]
-        categories = ["shopping", "groceries", "dining", "transportation", "entertainment", "transportation", "shopping"]
+        categories = [
+            ChaseCategory.SHOPPING.value, ChaseCategory.GROCERIES.value, ChaseCategory.DINING.value,
+            ChaseCategory.TRANSPORTATION.value, ChaseCategory.ENTERTAINMENT.value,
+            ChaseCategory.TRANSPORTATION.value, ChaseCategory.SHOPPING.value
+        ]
         transactions = []
         base_date = datetime.now()
         
@@ -1641,10 +1643,10 @@ class ChaseApp(BaseApp):
             date = (base_date - timedelta(days=i)).strftime("%Y-%m-%d")
             transactions.append({
                 "transaction_id": f"TXN{uuid.uuid4().hex[:8].upper()}",
-                "date": date,
+                "transaction_date": date,
                 "merchant": merchants[i % len(merchants)],
                 "amount": round(random.uniform(5, 150), 2),
-                "transaction_type": "debit",
+                "transaction_type": ChaseTransactionType.DEBIT.value,
                 "category": categories[i % len(categories)]
             })
         return transactions
@@ -1773,7 +1775,6 @@ class ChaseApp(BaseApp):
                 "amount": amount
             },
             response={
-                "success": True,
                 "transaction_id": transaction_id,
                 "from_account_new_balance": round(from_account["balance"], 2) if from_account else 0,
                 "to_account_new_balance": round(to_account["balance"], 2) if to_account else 0,
@@ -1800,11 +1801,11 @@ class ChaseApp(BaseApp):
         # Record transaction
         transaction = {
             "transaction_id": f"BILL{uuid.uuid4().hex[:8].upper()}",
-            "date": timestamp.split()[0],
+            "transaction_date": timestamp.split()[0],
             "merchant": biller_name,
             "amount": amount,
-            "transaction_type": "debit",
-            "category": "bills"
+            "transaction_type": ChaseTransactionType.DEBIT.value,
+            "category": ChaseCategory.BILLS.value
         }
         self.state["transaction_history"].append(transaction)
 
@@ -1818,7 +1819,6 @@ class ChaseApp(BaseApp):
                 "from_account_id": from_account_id
             },
             response={
-                "success": True,
                 "transaction_id": transaction["transaction_id"],
                 "new_balance": round(account["balance"], 2) if account else 0,
                 "timestamp": timestamp
@@ -2083,7 +2083,7 @@ class RobinhoodApp(BaseApp):
             "transaction_id": transaction_id,
             "symbol": symbol,
             "asset_type": asset_type,
-            "transaction_type": "buy",
+            "transaction_type": TransactionType.BUY.value,
             "quantity": quantity,
             "price": current_price,
             "timestamp": timestamp
@@ -2096,7 +2096,6 @@ class RobinhoodApp(BaseApp):
             api_name="BuyStock",
             request={"symbol": symbol, "quantity": quantity, "asset_type": asset_type},
             response={
-                "success": True,
                 "transaction": transaction,
                 "new_cash_balance": round(self.state["cash_balance"], 2),
                 "new_holding": new_holding
@@ -2137,7 +2136,7 @@ class RobinhoodApp(BaseApp):
             "transaction_id": transaction_id,
             "symbol": symbol,
             "asset_type": asset_type,
-            "transaction_type": "sell",
+            "transaction_type": TransactionType.SELL.value,
             "quantity": quantity,
             "price": current_price,
             "timestamp": timestamp
@@ -2150,7 +2149,6 @@ class RobinhoodApp(BaseApp):
             api_name="SellStock",
             request={"symbol": symbol, "quantity": quantity, "asset_type": asset_type},
             response={
-                "success": True,
                 "transaction": transaction,
                 "new_cash_balance": round(self.state["cash_balance"], 2),
                 "remaining_holding": remaining_holding
@@ -2728,7 +2726,7 @@ class LinkedInApp(BaseApp):
 
         return AppLogEntry(timestamp=timestamp, app_name=self.app_name, api_name="UpdateProfile",
             request={"headline": headline, "summary": summary},
-            response={"success": True, "updated_fields": updated_fields})
+            response={"updated_fields": updated_fields})
 
     def _add_experience(self, timestamp: str, description: str, context: Dict[str, Any]) -> AppLogEntry:
         company = self._extract_quoted(description) or "Company"
@@ -2744,7 +2742,7 @@ class LinkedInApp(BaseApp):
         if skill not in self.state["skills"]:
             self.state["skills"].append(skill)
         return AppLogEntry(timestamp=timestamp, app_name=self.app_name, api_name="AddSkill",
-            request={"skill": skill}, response={"success": True, "skills": self.state["skills"]})
+            request={"skill": skill}, response={"skills": self.state["skills"]})
 
     def _post_update(self, timestamp: str, description: str, context: Dict[str, Any]) -> AppLogEntry:
         content = self._extract_quoted(description) or description[:200]
@@ -2764,14 +2762,14 @@ class LinkedInApp(BaseApp):
         post_id = self._extract_post_id(description)
         new_likes = random.randint(10, 100)
         return AppLogEntry(timestamp=timestamp, app_name=self.app_name, api_name="LikePost",
-            request={"post_id": post_id}, response={"success": True, "post_id": post_id, "new_likes_count": new_likes})
+            request={"post_id": post_id}, response={"post_id": post_id, "new_likes_count": new_likes})
 
     def _comment_on_post(self, timestamp: str, description: str, context: Dict[str, Any]) -> AppLogEntry:
         post_id = self._extract_post_id(description)
         comment = self._extract_quoted(description) or "Great post!"
         return AppLogEntry(timestamp=timestamp, app_name=self.app_name, api_name="CommentOnPost",
             request={"post_id": post_id, "comment": comment},
-            response={"success": True, "post_id": post_id, "comment_timestamp": timestamp})
+            response={"post_id": post_id, "comment_timestamp": timestamp})
 
     def _search_jobs(self, timestamp: str, description: str, context: Dict[str, Any]) -> AppLogEntry:
         query = self._extract_quoted(description) or "software engineer"
@@ -2782,14 +2780,14 @@ class LinkedInApp(BaseApp):
     def _apply_job(self, timestamp: str, description: str, context: Dict[str, Any]) -> AppLogEntry:
         job_id = f"JOB{random.randint(1000, 9999)}"
         return AppLogEntry(timestamp=timestamp, app_name=self.app_name, api_name="ApplyJob",
-            request={"job_id": job_id}, response={"success": True, "job_id": job_id, "applied_at": timestamp})
+            request={"job_id": job_id}, response={"job_id": job_id, "applied_at": timestamp})
 
     def _send_connection_request(self, timestamp: str, description: str, context: Dict[str, Any]) -> AppLogEntry:
         user_id = f"USER{random.randint(1000, 9999)}"
         message = self._extract_quoted(description)
         return AppLogEntry(timestamp=timestamp, app_name=self.app_name, api_name="SendConnectionRequest",
             request={"user_id": user_id, "message": message},
-            response={"success": True, "user_id": user_id, "sent_at": timestamp})
+            response={"user_id": user_id, "sent_at": timestamp})
 
     def _extract_quoted(self, description: str) -> Optional[str]:
         import re
@@ -2933,20 +2931,20 @@ class NetflixApp(BaseApp):
         self.state["watch_history"].append(watch_record)
         return AppLogEntry(timestamp=timestamp, app_name=self.app_name, api_name="PlayContent",
             request={"title_id": title_id},
-            response={"title": title, "playing_status": "playing", "subscription_plan": self.state["subscription_plan"], "play_started_at": timestamp})
+            response={"title": title, "playing_status": PlayingStatus.PLAYING.value, "subscription_plan": self.state["subscription_plan"], "play_started_at": timestamp})
 
     def _add_to_my_list(self, timestamp: str, description: str, context: Dict[str, Any]) -> AppLogEntry:
         title_id = self._extract_title_id(description)
         if title_id not in self.state["my_list"]:
             self.state["my_list"].append(title_id)
         return AppLogEntry(timestamp=timestamp, app_name=self.app_name, api_name="AddToMyList",
-            request={"title_id": title_id}, response={"success": True, "my_list": self.state["my_list"]})
+            request={"title_id": title_id}, response={"my_list": self.state["my_list"]})
 
     def _rate_content(self, timestamp: str, description: str, context: Dict[str, Any]) -> AppLogEntry:
         title_id = self._extract_title_id(description)
         rating = 1 if "up" in description.lower() or "good" in description.lower() else 0
         return AppLogEntry(timestamp=timestamp, app_name=self.app_name, api_name="RateContent",
-            request={"title_id": title_id, "rating": rating}, response={"success": True, "title_id": title_id, "rating": rating})
+            request={"title_id": title_id, "rating": rating}, response={"title_id": title_id, "rating": rating})
 
     def _extract_title_id(self, description: str) -> str:
         import re
@@ -3021,7 +3019,7 @@ class GoodreadsApp(BaseApp):
         self.state["shelves"] = [s for s in self.state["shelves"] if s["book_id"] != book_id]
         self.state["shelves"].append(shelf_entry)
         return AppLogEntry(timestamp=timestamp, app_name=self.app_name, api_name="AddToShelf",
-            request={"book_id": book_id, "shelf": shelf}, response={"success": True, "shelf_entry": shelf_entry})
+            request={"book_id": book_id, "shelf": shelf}, response={"shelf_entry": shelf_entry})
 
     def _rate_book(self, timestamp: str, description: str, context: Dict[str, Any]) -> AppLogEntry:
         book_id = self._extract_book_id(description)
@@ -3030,7 +3028,7 @@ class GoodreadsApp(BaseApp):
         rating = int(match.group(1)) if match else random.randint(3, 5)
         rating = max(1, min(5, rating))
         return AppLogEntry(timestamp=timestamp, app_name=self.app_name, api_name="RateBook",
-            request={"book_id": book_id, "rating": rating}, response={"success": True, "rating": rating, "rated_at": timestamp})
+            request={"book_id": book_id, "rating": rating}, response={"rating": rating, "rated_at": timestamp})
 
     def _write_review(self, timestamp: str, description: str, context: Dict[str, Any]) -> AppLogEntry:
         book_id = self._extract_book_id(description)
@@ -3115,7 +3113,7 @@ class InstagramApp(BaseApp):
         post_id = match.group(0) if match else f"POST{random.randint(1000, 9999)}"
         new_likes = random.randint(10, 1000)
         return AppLogEntry(timestamp=timestamp, app_name=self.app_name, api_name="LikePost",
-            request={"post_id": post_id}, response={"success": True, "post_id": post_id, "new_likes_count": new_likes})
+            request={"post_id": post_id}, response={"post_id": post_id, "new_likes_count": new_likes})
 
     def _comment_on_post(self, timestamp: str, description: str, context: Dict[str, Any]) -> AppLogEntry:
         import re
@@ -3125,7 +3123,7 @@ class InstagramApp(BaseApp):
         comment = (quoted[0][0] or quoted[0][1]) if quoted else "Nice!"
         return AppLogEntry(timestamp=timestamp, app_name=self.app_name, api_name="CommentOnPost",
             request={"post_id": post_id, "comment": comment},
-            response={"success": True, "post_id": post_id, "comment_timestamp": timestamp})
+            response={"post_id": post_id, "comment_timestamp": timestamp})
 
     def _send_direct_message(self, timestamp: str, description: str, context: Dict[str, Any]) -> AppLogEntry:
         import re
@@ -3142,7 +3140,7 @@ class InstagramApp(BaseApp):
         if user_id not in self.state["following"]:
             self.state["following"].append(user_id)
         return AppLogEntry(timestamp=timestamp, app_name=self.app_name, api_name="FollowUser",
-            request={"user_id": user_id}, response={"success": True, "following": self.state["following"][-10:]})
+            request={"user_id": user_id}, response={"following": self.state["following"][-10:]})
 
     def _unfollow_user(self, timestamp: str, description: str, context: Dict[str, Any]) -> AppLogEntry:
         user_id = self.state["following"][-1] if self.state["following"] else f"user{random.randint(1, 1000)}"

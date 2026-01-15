@@ -369,11 +369,7 @@ from mem_bench.behavior_and_conversation.llm_client import (
 # ]
 # """)
 
-events_chain_template = Template("""# Event Chain Generation Prompt
-
-## 1. Overview & Objective
-
-You are an expert at generating realistic event chains that demonstrate user behaviors based on their dynamic profile state.
+events_chain_template = Template("""You are an expert at generating realistic event chains that demonstrate user behaviors based on their dynamic profile state.
 
 ### Your Task
 Given a user's state for a specific time window, generate a sequence of realistic events that would naturally occur based on their attributes, habits, and preferences. Each event must specify which app and API it uses, along with the user intent.
@@ -389,10 +385,11 @@ Given a user's state for a specific time window, generate a sequence of realisti
    - What specific content would they create or consume?
    - What would trigger this action at this moment?
 
-3. **Intent Transparency**: Each event's `user_intent` must clearly explain:
-   - WHY this action happens (motivation)
-   - HOW it connects to the state item (observable link)
-   - WHAT it reveals about the user (insight)
+3. **Intent as Generation Context**: Each event's `user_intent` serves two purposes:
+   - **Motivation**: Why the user is performing this action (the trigger or need)
+   - **Content Direction**: Provides sufficient context for downstream generation of concrete inputs (e.g., what query to type in Google Search, what message to send in WhatsApp, what question to ask the LLM)
+   
+   The `user_intent` should be detailed enough that someone could generate realistic, specific content for that app/API based on it.
 
 4. **Process + Outcome**: For any state change, show BOTH:
    - The process that led to the change (causation events)
@@ -402,10 +399,13 @@ Given a user's state for a specific time window, generate a sequence of realisti
 
 ---
 
-Context Information You Will Receive:
+## 1. Context Information You Will Receive
 
-**Life Context:**
+**Life Context:** Provides a global context of the user's life (time-spatially global).
 {{ user_life_context }}
+
+**World Background:** Provides a detailed description of the world background in this window.
+{{ world_background }}
 
 **User Basic Profile:** Contains demographic information, personality traits, and stable characteristics.
 {{ user_basic_profile }}
@@ -419,7 +419,7 @@ Context Information You Will Receive:
 **Current Window Description (Current Domain):** Provides an overview of this window's themes and major developments.
 {{ user_this_window_description }}
 
-**Domain Window State (Current Window):**
+**Domain Window State (Current Window):** Contains the state items you need to convert into events.
 {{ domain_window_state }}
 
 ---
@@ -471,16 +471,29 @@ The good example captures:
 
 ### 2.3 User Intent Composition
 
-Every `user_intent` should follow this structure:
+`user_intent` should provide enough context for downstream content generation. A good user_intent typically includes:
 
-```
-[Action Context]: [Specific Action] + [Motivation/Trigger] + [Decision Criteria/Constraints]
-```
+1. **What the user wants to do** (the goal/action)
+2. **Why they want to do it** (motivation/trigger/context)
+3. **Any specific constraints or criteria** (optional, but helpful for realistic generation)
 
 **Examples:**
-- "Habit execution: logging 45-minute morning run (5.2km at 5:45/km pace) before 7am standup; tracking pace improvement from last week's 6:10/km average"
-- "Preference demonstration: selecting 'lofi hip hop radio' playlist over 'Top 50 Global' for deep work session; avoiding lyrics that compete with code reading"
-- "Change reason awareness: reading HackerNews thread about AI coding assistants after colleague mentioned 3x productivity gains; skeptical but curious about claims"
+
+- "Searching for noise canceling headphones for programming after experiencing concentration difficulties in open office; prioritizing comfort for 8+ hour daily wear over audio quality"
+  → Enables generating search query: "noise canceling headphones comfortable long wear programming"
+
+- "Asking Claude to help build a simple hierarchical FSM step by step after 2 weeks of documentation reading produced more confusion than clarity"
+  → Enables generating LLM prompt about FSM implementation with step-by-step guidance request
+
+- "Messaging senior colleague about their real-world experience with GitHub Copilot on firmware codebases; specifically asking about false positive rate and learning curve"
+  → Enables generating WhatsApp message asking specific questions about Copilot
+
+- "Logging 45-minute morning run (5.2km at 5:45/km pace) before 7am standup; tracking pace improvement from last week's 6:10/km average"
+  → Enables generating Fitbit workout log with specific metrics
+
+Note: In the following examples, the `user_intent` includes a prefix label (e.g., "Initial research:", "Catalyst moment:") 
+to indicate the event's narrative role in the chain. This helps maintain coherent storytelling while 
+the rest of the intent provides context for downstream content generation.
 
 ---
 
@@ -524,9 +537,8 @@ Every `user_intent` should follow this structure:
   "name": "habit_name",
   "current_value": {
     "schedule": {
-      "frequency_type": "daily | weekly | biweekly",
-      "days_of_week": [0-6],
-      "start_date": "YYYY-MM-DD"
+      "frequency_type": "daily | weekly | biweekly | monthly_by_date | monthly_nth_weekday",
+      "...": "required fields based on frequency_type"
     },
     "timing": {
       "start_time": "HH:MM",
@@ -576,11 +588,14 @@ Every `user_intent` should follow this structure:
   "time_range": ["YYYY-MM-DD", "YYYY-MM-DD"],
   "event_chains": [
     {
-      "related_state_items": [
+      "converted_state_items": [
         {
           "state_category": "user_attributes_state | habits_state | preferences_state",
-          "state_name": "exact_name_from_state",
-          "operation": "add | modify | acquire | adjust | drop | shift | refine | stable"
+          "state_name": "exact name from input state",
+          "change_type": "the operation type from input (add | modify | stable | acquire | adjust | refine | shift)",
+          "current_value": "copy the full current_value from input state",
+          "previous_value": "copy the full previous_value from input state if exists, otherwise null",
+          "change_reason": "copy the change_reason from input state if exists, otherwise null"
         }
       ],
       "events": [
@@ -592,8 +607,12 @@ Every `user_intent` should follow this structure:
             "end_time": "HH:MM:SS",
             "note": "optional explanation for repeated events"
           },
-          "app_name": "from available apps",
-          "api_name": "from available APIs",
+          "app_name": "from available apps (for single-variation events)",
+          "api_name": "from available APIs (for single-variation events)",
+          "app_api_variations": [
+            {"app_name": "App1", "api_name": "API1"},
+            {"app_name": "App2", "api_name": "API2"}
+          ],
           "user_intent": "detailed explanation following the composition structure"
         }
       ]
@@ -625,6 +644,66 @@ Every `user_intent` should follow this structure:
 ```
 
 **Rule 4: All dates must fall within the window `time_range`**
+
+### 4.3 App/API Specification Rules
+
+There are two ways to specify which app and API an event uses:
+
+#### Option A: Single App/API (for uniform events)
+Use when the event always uses the same app and API on every occurrence:
+```json
+{
+  "app_name": "Fitbit",
+  "api_name": "SyncDevice",
+  "user_intent": "..."
+}
+```
+
+#### Option B: App/API Variations Set (for events with natural variation)
+Use when the habit/behavior naturally manifests through different apps/APIs on different occasions. Provide a SET of valid app-api combinations that represent how this event can occur:
+
+```json
+{
+  "app_api_variations": [
+    {"app_name": "LinkedIn", "api_name": "GetFeed"},
+    {"app_name": "Google", "api_name": "Search"}
+  ],
+  "user_intent": "..."
+}
+```
+
+**Important Rules:**
+1. Use EITHER `app_name`+`api_name` OR `app_api_variations`, never both
+2. `app_api_variations` is a SET (unique combinations only, no duplicates)
+3. Each dict in `app_api_variations` must have a valid app-api pairing (the api must belong to that app)
+4. The downstream code will sample from this set to assign specific app/api to each `schedule_dates` entry
+5. The `user_intent` should explain how different app/api combinations serve the habit's purpose
+
+### 4.4 Realistic Habit Variation Guidelines
+
+**Real humans don't perform habits identically every time.** A habit like "industry tech reading" might manifest as:
+- Some days: scrolling LinkedIn feed for industry updates
+- Other days: searching Google for specific technical content
+- Occasionally: reading a book on Goodreads about the topic
+
+**When to use `app_api_variations` vs single `app_name`/`api_name`:**
+
+| Use Single App/API | Use `app_api_variations` |
+|--------------------|--------------------------|
+| Daily step sync to Fitbit (truly uniform) | News/industry reading (multiple sources) |
+| Checking bank balance (specific need) | Learning new skills (different modalities) |
+| Posting to specific platform | Social connection maintenance (multi-platform) |
+| Single purchase event | Financial monitoring (checking different accounts) |
+
+**Common variation patterns for habits:**
+
+| Habit Type | Realistic Variations |
+|------------|---------------------|
+| News/Industry reading | `[{LinkedIn, GetFeed}, {Google, Search}]` |
+| Learning/Skill development | `[{LLM Assistant, ContinueConversation}, {Google, Search}, {Goodreads, SearchBooks}]` |
+| Social connection maintenance | `[{WhatsApp, SendMessage}, {Instagram, LikePost}, {LinkedIn, CommentOnPost}]` |
+| Financial monitoring | `[{Chase, GetBalance}, {Chase, GetTransactions}, {Robinhood, GetPortfolio}]` |
+| Content consumption | `[{Netflix, PlayContent}, {Spotify, PlaySong}]` |
 
 ---
 
@@ -702,9 +781,10 @@ Different users have different acquisition styles. Match to user personality:
    - How did user structure the habit?
    - Observable through: calendar/reminder setup, tracker creation, goal setting
 
-3. **Execution Events** (single event with multiple dates)
+3. **Execution Events** (single event with multiple dates AND realistic variation)
    - The recurring execution of the habit
    - Use `schedule_dates` array with `start_time` and `end_time`
+   - **Use `app_api_variations` to define the set of ways this habit can manifest**
    - Include `note` describing evolution: early phase (struggle/learning) → mid phase (stabilizing) → late phase (automatic/optimizing)
 
 **Critical:** Establishment events must occur BEFORE the first `schedule_dates` entry.
@@ -721,12 +801,19 @@ Different users have different acquisition styles. Match to user personality:
 
 #### Operation: `stable`
 
-**Goal:** Show consistent but human execution.
+**Goal:** Show consistent but human execution with natural variation.
 
 **Requirements:**
 - Single event with `schedule_dates` covering all occurrences
-- `user_intent` should describe what happens during execution with enough detail to understand the habit's nature
-- Optional `note` can describe natural evolution even within stable habits
+- **Use `app_api_variations` when the habit naturally involves different tools/methods**
+- `user_intent` should describe what happens during execution with enough detail to understand the habit's nature AND explain why different apps/apis serve different aspects
+- `note` should describe any natural evolution within the stable habit
+
+**CRITICAL for stable habits:** Do NOT generate robotic, identical repetitions. Real humans:
+- Read news from different sources on different days
+- Exercise with different activities within a fitness routine
+- Check finances through different apps depending on what they need to know
+- Learn through different modalities (reading, watching, doing, discussing)
 
 ### 6.3 Preferences Generation
 
@@ -794,24 +881,28 @@ Merge ONLY when:
 
 ### Example 1: Attribute Add — Full Acquisition Journey
 
-**State Item:**
+**Input State Item:**
 ```json
 {
   "name": "ai_coding_assistant_subscription",
   "current_value": "GitHub Copilot Business subscription, integrated with VS Code and JetBrains IDEs",
   "op": "add",
-  "change_reason": "Team lead mandated AI tool adoption after Q4 productivity review showed 20% lag behind industry benchmarks"
+  "change_reason": "Team lead mandated AI tool adoption after Q4 productivity review showed 20% lag behind industry benchmarks",
+  "previous_value": null
 }
 ```
 
 **Generated Event Chain:**
 ```json
 {
-  "related_state_items": [
+  "converted_state_items": [
     {
       "state_category": "user_attributes_state",
       "state_name": "ai_coding_assistant_subscription",
-      "operation": "add"
+      "change_type": "add",
+      "current_value": "GitHub Copilot Business subscription, integrated with VS Code and JetBrains IDEs",
+      "previous_value": null,
+      "change_reason": "Team lead mandated AI tool adoption after Q4 productivity review showed 20% lag behind industry benchmarks"
     }
   ],
   "events": [
@@ -919,48 +1010,148 @@ Merge ONLY when:
 ```
 
 **Why This Example Demonstrates Lossless Conversion:**
+- `converted_state_items` contains full context (current_value, change_reason, previous_value)
 - Change reason is explicitly observable (email about Q4 review)
 - Research phase shows realistic skepticism and specific concerns (legacy codebase, offline)
 - Social validation matches user seeking peer experience
 - Acquisition process is concrete (IT request email)
 - Usage evolution shows learning curve (cautious → competent → confident)
-- Integration into workflow is demonstrated (documentation, sharing intent)
 
 ---
 
-### Example 2: Habit Acquire — From Motivation to Establishment
+### Example 2: Stable Habit with Realistic Variation using `app_api_variations`
 
-**State Item:**
+**Input State Item:**
 ```json
 {
-  "name": "weekly_ai_experimentation",
+  "name": "industry_tech_reading",
   "current_value": {
     "schedule": {
       "frequency_type": "weekly",
-      "days_of_week": [4],
-      "start_date": "2024-01-05"
+      "days_of_week": [1, 3]
     },
     "timing": {
-      "start_time": "15:00",
-      "end_time": "17:00"
+      "start_time": "20:30",
+      "end_time": "21:30"
     },
-    "location": "home office",
+    "location": "home living room",
     "priority": "medium",
-    "schedule_dates": ["2024-01-05", "2024-01-12", "2024-01-19", "2024-01-26", "2024-02-02", "2024-02-09", "2024-02-16", "2024-02-23", "2024-03-01", "2024-03-08", "2024-03-15", "2024-03-22", "2024-03-29"]
+    "schedule_dates": ["2024-01-02", "2024-01-04", "2024-01-09", "2024-01-11", "2024-01-16", "2024-01-18", "2024-01-23", "2024-01-25", "2024-01-30", "2024-02-01", "2024-02-06", "2024-02-08", "2024-02-13", "2024-02-15", "2024-02-20", "2024-02-22", "2024-02-27", "2024-02-29", "2024-03-05", "2024-03-07", "2024-03-12", "2024-03-14", "2024-03-19", "2024-03-21", "2024-03-26", "2024-03-28"]
   },
-  "op": "acquire",
-  "change_reason": "Recognized need to systematically evaluate AI tools rather than ad-hoc exploration after seeing inconsistent results from sporadic attempts"
+  "op": "stable",
+  "change_reason": null,
+  "previous_value": null
 }
 ```
 
 **Generated Event Chain:**
 ```json
 {
-  "related_state_items": [
+  "converted_state_items": [
     {
       "state_category": "habits_state",
-      "state_name": "weekly_ai_experimentation",
-      "operation": "acquire"
+      "state_name": "industry_tech_reading",
+      "change_type": "stable",
+      "current_value": {
+        "schedule": {
+          "frequency_type": "weekly",
+          "days_of_week": [1, 3]
+        },
+        "timing": {
+          "start_time": "20:30",
+          "end_time": "21:30"
+        },
+        "location": "home living room",
+        "priority": "medium",
+        "schedule_dates": ["2024-01-02", "2024-01-04", "2024-01-09", "2024-01-11", "2024-01-16", "2024-01-18", "2024-01-23", "2024-01-25", "2024-01-30", "2024-02-01", "2024-02-06", "2024-02-08", "2024-02-13", "2024-02-15", "2024-02-20", "2024-02-22", "2024-02-27", "2024-02-29", "2024-03-05", "2024-03-07", "2024-03-12", "2024-03-14", "2024-03-19", "2024-03-21", "2024-03-26", "2024-03-28"]
+      },
+      "previous_value": null,
+      "change_reason": null
+    }
+  ],
+  "events": [
+    {
+      "time_specification": {
+        "schedule_dates": [
+          "2024-01-02", "2024-01-04", "2024-01-09", "2024-01-11", 
+          "2024-01-16", "2024-01-18", "2024-01-23", "2024-01-25", 
+          "2024-01-30", "2024-02-01", "2024-02-06", "2024-02-08", 
+          "2024-02-13", "2024-02-15", "2024-02-20", "2024-02-22", 
+          "2024-02-27", "2024-02-29", "2024-03-05", "2024-03-07", 
+          "2024-03-12", "2024-03-14", "2024-03-19", "2024-03-21", 
+          "2024-03-26", "2024-03-28"
+        ],
+        "start_time": "20:30:00",
+        "end_time": "21:30:00",
+        "note": "Bi-weekly evening tech reading ritual from the living room. Sessions alternate organically between LinkedIn for industry pulse and peer updates versus Google for deeper technical searches on specific topics like whitepapers and documentation."
+      },
+      "app_api_variations": [
+        {"app_name": "LinkedIn", "api_name": "GetFeed"},
+        {"app_name": "Google", "api_name": "Search"}
+      ],
+      "user_intent": "Habit execution: bi-weekly evening technical reading sessions from the living room couch. LinkedIn sessions focus on industry pulse—scrolling through posts from embedded systems engineers at ASML, NXP, and other High Tech Campus companies; catching announcements about Zephyr RTOS updates, new EtherCAT implementations, and industrial automation trends. Google sessions pivot to deep technical content—searching for specific topics like 'ARM Cortex-M7 cache optimization techniques', 'FreeRTOS vs Zephyr power consumption comparison 2024', or 'CANopen FD migration guide'; reading through technical blog posts, whitepapers, and official documentation. The mix depends on whether the mood is 'what's happening in my field' (LinkedIn) vs 'I want to learn something specific' (Google)."
+    }
+  ]
+}
+```
+
+**Why This Example Demonstrates Realistic Variation:**
+- Uses `app_api_variations` as a set of valid app-api combinations
+- LinkedIn serves "social/industry pulse" needs
+- Google serves "specific technical knowledge" needs
+- The `user_intent` explains WHY different variations exist and what each serves
+- The downstream code will sample from this set for each schedule_date
+
+---
+
+### Example 3: Habit Acquire with Establishment Journey and Variation
+
+**Input State Item:**
+```json
+{
+  "name": "ai_tool_experimentation",
+  "current_value": {
+    "schedule": {
+      "frequency_type": "weekly",
+      "days_of_week": [4]
+    },
+    "timing": {
+      "start_time": "15:00",
+      "end_time": "16:30"
+    },
+    "location": "home office",
+    "priority": "low",
+    "schedule_dates": ["2024-01-05", "2024-01-12", "2024-01-19", "2024-01-26", "2024-02-02", "2024-02-09", "2024-02-16", "2024-02-23", "2024-03-01", "2024-03-08", "2024-03-15", "2024-03-22", "2024-03-29"]
+  },
+  "op": "acquire",
+  "change_reason": "Setting aside dedicated time on Friday afternoons to evaluate how AI tools handle legacy C++ codebases.",
+  "previous_value": null
+}
+```
+
+**Generated Event Chain:**
+```json
+{
+  "converted_state_items": [
+    {
+      "state_category": "habits_state",
+      "state_name": "ai_tool_experimentation",
+      "change_type": "acquire",
+      "current_value": {
+        "schedule": {
+          "frequency_type": "weekly",
+          "days_of_week": [4]
+        },
+        "timing": {
+          "start_time": "15:00",
+          "end_time": "16:30"
+        },
+        "location": "home office",
+        "priority": "low",
+        "schedule_dates": ["2024-01-05", "2024-01-12", "2024-01-19", "2024-01-26", "2024-02-02", "2024-02-09", "2024-02-16", "2024-02-23", "2024-03-01", "2024-03-08", "2024-03-15", "2024-03-22", "2024-03-29"]
+      },
+      "previous_value": null,
+      "change_reason": "Setting aside dedicated time on Friday afternoons to evaluate how AI tools handle legacy C++ codebases."
     }
   ],
   "events": [
@@ -1002,23 +1193,21 @@ Merge ONLY when:
     },
     {
       "time_specification": {
-        "schedule_dates": ["2024-01-04"],
-        "time": "19:55:00"
-      },
-      "app_name": "Notion",
-      "api_name": "CreatePage",
-      "user_intent": "Habit protocol documentation: writing evaluation criteria document specifying test tasks (unit test generation, code refactoring, documentation writing, bug fixing) and scoring rubric (accuracy, time saved, learning curve)"
-    },
-    {
-      "time_specification": {
-        "schedule_dates": ["2024-01-05", "2024-01-12", "2024-01-19", "2024-01-26", "2024-02-02", "2024-02-09", "2024-02-16", "2024-02-23", "2024-03-01", "2024-03-08", "2024-03-15", "2024-03-22", "2024-03-29"],
+        "schedule_dates": [
+          "2024-01-05", "2024-01-12", "2024-01-19", "2024-01-26",
+          "2024-02-02", "2024-02-09", "2024-02-16", "2024-02-23",
+          "2024-03-01", "2024-03-08", "2024-03-15", "2024-03-22", "2024-03-29"
+        ],
         "start_time": "15:00:00",
-        "end_time": "17:00:00",
-        "note": "Weekly Friday AI experimentation sessions. Weeks 1-4 (January): Focus on GitHub Copilot—testing basic code completion (week 1), unit test generation (week 2), refactoring suggestions (week 3), documentation generation (week 4). Weeks 5-8 (February): Shift to ChatGPT/Claude comparison—same four task categories to enable direct comparison. Weeks 9-13 (March): Advanced scenarios—testing on actual legacy codebase modules with complex dependencies, timing-critical sections, and hardware abstraction layers. By late March, sessions feel routine and user has developed clear preferences for which tool suits which task type."
+        "end_time": "16:30:00",
+        "note": "Weekly Friday AI experimentation sessions. Sessions involve a mix of interactive AI testing (LLM conversations), targeted research (Google searches for specific comparisons), and documentation (Notion updates). The balance shifts over time as the habit matures."
       },
-      "app_name": "LLM Assistant",
-      "api_name": "ContinueConversation",
-      "user_intent": "Habit execution: dedicated Friday afternoon AI tool evaluation sessions following established protocol; each session focuses on specific tool-task combination, documents findings in Notion tracker, and iteratively refines understanding of AI capabilities for embedded systems development workflow"
+      "app_api_variations": [
+        {"app_name": "LLM Assistant", "api_name": "ContinueConversation"},
+        {"app_name": "Google", "api_name": "Search"},
+        {"app_name": "Notion", "api_name": "UpdatePage"}
+      ],
+      "user_intent": "Habit execution: dedicated Friday afternoon AI tool evaluation sessions. LLM Assistant sessions involve interactive testing—feeding legacy C++ code to different AI tools, asking Claude to explain suggestions, debugging AI-generated code together. Google sessions address specific questions that emerge—'Copilot C++20 coroutines support', 'ChatGPT vs Claude embedded systems coding comparison', 'AI code generation accuracy benchmarks'. Notion sessions document findings—updating the evaluation tracker with results, recording which tool works best for which task type, preparing to share learnings with team."
     },
     {
       "time_specification": {
@@ -1033,28 +1222,37 @@ Merge ONLY when:
 }
 ```
 
-**Why This Example Demonstrates Lossless Conversion:**
-- Change reason explicitly shown (reflecting on past scattered attempts)
-- Habit design process is observable (research, AI-assisted planning)
-- Infrastructure setup is concrete (Notion database, protocol document)
-- Recurring execution uses `note` to show realistic evolution across 13 weeks
-- Mid-habit adjustment shows living, adaptive behavior (not robotic execution)
+**Why This Example Works:**
+- Shows full acquisition journey (motivation → design → infrastructure → execution)
+- Execution events use `app_api_variations` with three valid options representing different aspects of the experimentation habit
+- The `note` and `user_intent` explain what each variation serves
+- Separate mid-habit reflection event shows the habit is alive and evolving
 
 ---
 
-### Example 3: Preference Shift — From Old to New Through Catalyst
+### Example 4: Preference Shift — From Old to New Through Catalyst
 
-**State Item:**
+**Input State Item:**
 ```json
 {
-  "name": "learning_approach",
+  "name": "learning_style",
   "current_value": {
-    "statement": "Strongly prefers hands-on project-based learning with AI assistance over traditional documentation reading; believes building something reveals gaps faster than reading about concepts"
+    "statement": "Strongly prefers hands-on project-based learning, now specifically favoring interactive AI-pair programming as a primary exploration method for new technologies",
+    "signals": [
+      "Used GitHub Copilot to refactor a complex state machine implementation this month",
+      "Prompt-engineered a test script using ChatGPT instead of searching StackOverflow",
+      "Built a small 'toy' project to test AI code generation limits on ARM assembly"
+    ]
   },
-  "op": "shift",
-  "change_reason": "After struggling for 3 weeks to understand a complex state machine from documentation alone, completed equivalent learning in 2 days by building a simplified version with AI pair programming",
+  "op": "refine",
+  "change_reason": "Discovered that AI-assisted coding significantly accelerates the 'doing' phase of project-based learning.",
   "previous_value": {
-    "statement": "Prefers comprehensive documentation reading before attempting implementation; believes thorough understanding prevents costly mistakes"
+    "statement": "Prefers hands-on, hardware-in-the-loop experimentation over purely theoretical documentation or video-based tutorials",
+    "signals": [
+      "Purchased a development board specifically to test a new RTOS feature mentioned in a manual",
+      "Spent three hours debugging a sensor interface manually rather than reading the full spec first",
+      "Configured a local test-bench to replicate a production bug instead of using a simulator"
+    ]
   }
 }
 ```
@@ -1062,11 +1260,28 @@ Merge ONLY when:
 **Generated Event Chain:**
 ```json
 {
-  "related_state_items": [
+  "converted_state_items": [
     {
       "state_category": "preferences_state",
-      "state_name": "learning_approach",
-      "operation": "shift"
+      "state_name": "learning_style",
+      "change_type": "refine",
+      "current_value": {
+        "statement": "Strongly prefers hands-on project-based learning, now specifically favoring interactive AI-pair programming as a primary exploration method for new technologies",
+        "signals": [
+          "Used GitHub Copilot to refactor a complex state machine implementation this month",
+          "Prompt-engineered a test script using ChatGPT instead of searching StackOverflow",
+          "Built a small 'toy' project to test AI code generation limits on ARM assembly"
+        ]
+      },
+      "previous_value": {
+        "statement": "Prefers hands-on, hardware-in-the-loop experimentation over purely theoretical documentation or video-based tutorials",
+        "signals": [
+          "Purchased a development board specifically to test a new RTOS feature mentioned in a manual",
+          "Spent three hours debugging a sensor interface manually rather than reading the full spec first",
+          "Configured a local test-bench to replicate a production bug instead of using a simulator"
+        ]
+      },
+      "change_reason": "Discovered that AI-assisted coding significantly accelerates the 'doing' phase of project-based learning."
     }
   ],
   "events": [
@@ -1077,16 +1292,7 @@ Merge ONLY when:
       },
       "app_name": "Google",
       "api_name": "Search",
-      "user_intent": "Old preference demonstration: searching 'finite state machine design patterns embedded systems PDF' to find comprehensive documentation before implementing motor control FSM; following established pattern of thorough reading before coding"
-    },
-    {
-      "time_specification": {
-        "schedule_dates": ["2024-01-10"],
-        "time": "21:30:00"
-      },
-      "app_name": "Goodreads",
-      "api_name": "SearchBooks",
-      "user_intent": "Old preference demonstration: searching for books on state machine design after online documentation proved insufficient; believing a comprehensive textbook will provide the deep understanding needed"
+      "user_intent": "Old preference demonstration: searching 'finite state machine design patterns embedded systems PDF' to find comprehensive documentation before implementing motor control FSM; following established pattern of hands-on learning but still relying on documentation as primary resource"
     },
     {
       "time_specification": {
@@ -1095,7 +1301,7 @@ Merge ONLY when:
       },
       "app_name": "Notion",
       "api_name": "CreatePage",
-      "user_intent": "Frustration documentation: creating note titled 'FSM Learning Struggle' after two weeks of documentation reading still leaves confusion about hierarchical state handling; beginning to question whether reading-first approach is working for this topic"
+      "user_intent": "Frustration documentation: creating note titled 'FSM Learning Struggle' after one week of documentation reading still leaves confusion about hierarchical state handling; beginning to question whether documentation-then-build approach is working for this topic"
     },
     {
       "time_specification": {
@@ -1104,7 +1310,7 @@ Merge ONLY when:
       },
       "app_name": "LLM Assistant",
       "api_name": "ContinueConversation",
-      "user_intent": "Catalyst moment: desperately asking Claude 'can you help me build a simple hierarchical FSM step by step?' after 3 weeks of documentation produced more confusion than clarity; abandoning reading-first approach out of frustration"
+      "user_intent": "Catalyst moment: desperately asking Claude 'can you help me build a simple hierarchical FSM step by step?' after 2 weeks of documentation produced more confusion than clarity; pivoting from read-then-build to build-with-AI approach out of frustration"
     },
     {
       "time_specification": {
@@ -1113,7 +1319,7 @@ Merge ONLY when:
       },
       "app_name": "LLM Assistant",
       "api_name": "ContinueConversation",
-      "user_intent": "Revelation experience: continuing AI pair programming session, now on third iteration of FSM implementation; suddenly understanding hierarchical state transitions through building rather than reading—what took 3 weeks to NOT understand is becoming clear in hours"
+      "user_intent": "Revelation experience: continuing AI pair programming session, now on third iteration of FSM implementation; suddenly understanding hierarchical state transitions through building rather than reading—what took 2 weeks to NOT understand is becoming clear in hours"
     },
     {
       "time_specification": {
@@ -1122,7 +1328,7 @@ Merge ONLY when:
       },
       "app_name": "LLM Assistant",
       "api_name": "ContinueConversation",
-      "user_intent": "Preference consolidation: asking Claude to extend yesterday's FSM with edge cases; completing what would have been weeks of documentation study in second day of hands-on building; explicitly recognizing this as better learning approach"
+      "user_intent": "Preference consolidation: asking Claude to extend yesterday's FSM with edge cases; completing what would have been weeks of documentation study in second day of hands-on building; explicitly recognizing AI-assisted building as superior learning approach"
     },
     {
       "time_specification": {
@@ -1131,7 +1337,7 @@ Merge ONLY when:
       },
       "app_name": "Notion",
       "api_name": "UpdatePage",
-      "user_intent": "Preference articulation: updating 'FSM Learning Struggle' note with breakthrough summary; explicitly writing 'building reveals gaps faster than reading'—the exact principle that now guides learning approach"
+      "user_intent": "Preference articulation: updating 'FSM Learning Struggle' note with breakthrough summary; explicitly writing 'AI-assisted coding significantly accelerates the doing phase'—the exact principle that now guides learning approach"
     },
     {
       "time_specification": {
@@ -1140,7 +1346,7 @@ Merge ONLY when:
       },
       "app_name": "LLM Assistant",
       "api_name": "ContinueConversation",
-      "user_intent": "New preference application: starting to learn CAN bus protocol by asking Claude to help build a simple message parser instead of reading protocol specification; deliberately applying hands-on-first approach validated by FSM experience"
+      "user_intent": "New preference application: starting to learn CAN bus protocol by asking Claude to help build a simple message parser instead of reading protocol specification; deliberately applying AI-pair-programming-first approach validated by FSM experience"
     },
     {
       "time_specification": {
@@ -1149,7 +1355,7 @@ Merge ONLY when:
       },
       "app_name": "LLM Assistant",
       "api_name": "ContinueConversation",
-      "user_intent": "New preference reinforcement: learning I2C driver implementation through iterative building with AI assistance; skipping the 50-page specification document entirely in favor of 'build and discover gaps' approach"
+      "user_intent": "New preference reinforcement: learning I2C driver implementation through iterative building with AI assistance; skipping the 50-page specification document entirely in favor of 'build with AI and discover gaps' approach"
     },
     {
       "time_specification": {
@@ -1158,160 +1364,19 @@ Merge ONLY when:
       },
       "app_name": "WhatsApp",
       "api_name": "SendMessage",
-      "user_intent": "New preference evangelism: advising junior colleague struggling with SPI protocol to 'just start building with ChatGPT instead of reading the spec—you'll learn 10x faster'; confidently sharing shifted learning philosophy"
+      "user_intent": "New preference evangelism: advising junior colleague struggling with SPI protocol to 'just start building with ChatGPT instead of reading the spec—you'll learn 10x faster'; confidently sharing refined learning philosophy"
     }
   ]
 }
 ```
 
-**Why This Example Demonstrates Lossless Conversion:**
-- Old preference is demonstrated through concrete actions (documentation search, book search)
-- Struggle period is observable (frustration note after 2 weeks)
+**Why This Example Works:**
+- `converted_state_items` contains both current_value AND previous_value with full detail including signals
+- Old preference is demonstrated through concrete actions (documentation search)
+- Struggle period is observable (frustration note)
 - Catalyst moment is precise (the desperate pivot to AI pair programming)
-- Revelation is captured (understanding in hours what didn't click in weeks)
-- New preference is applied to multiple subsequent contexts (CAN bus, I2C)
-- Preference strength shown through social sharing (advising colleague)
-
----
-
-### Example 4: Merged Chain — Attribute + Preference Naturally Intertwined
-
-**State Items:**
-```json
-{
-  "name": "noise_canceling_headphones",
-  "current_value": "Sony WH-1000XM5, used daily for focused coding sessions",
-  "op": "add",
-  "change_reason": "Open office environment making deep work impossible; needed isolation solution"
-}
-```
-```json
-{
-  "name": "work_music_preference",
-  "current_value": {
-    "statement": "Strongly prefers instrumental lofi/ambient over lyrical music during coding; finds lyrics compete with internal verbalization of code logic"
-  },
-  "op": "stable"
-}
-```
-
-**Generated Event Chain:**
-```json
-{
-  "related_state_items": [
-    {
-      "state_category": "user_attributes_state",
-      "state_name": "noise_canceling_headphones",
-      "operation": "add"
-    },
-    {
-      "state_category": "preferences_state",
-      "state_name": "work_music_preference",
-      "operation": "stable"
-    }
-  ],
-  "events": [
-    {
-      "time_specification": {
-        "schedule_dates": ["2024-01-08"],
-        "time": "11:30:00"
-      },
-      "app_name": "LLM Assistant",
-      "api_name": "ContinueConversation",
-      "user_intent": "Attribute change reason: venting to Claude about open office concentration problems after third interrupted deep work session this week; asking for solutions to focus in noisy environment"
-    },
-    {
-      "time_specification": {
-        "schedule_dates": ["2024-01-08"],
-        "time": "20:15:00"
-      },
-      "app_name": "Google",
-      "api_name": "Search",
-      "user_intent": "Attribute research: searching 'best noise canceling headphones for programming 2024' with specific focus on comfort for all-day wear and ANC effectiveness against office chatter"
-    },
-    {
-      "time_specification": {
-        "schedule_dates": ["2024-01-09"],
-        "time": "12:45:00"
-      },
-      "app_name": "Amazon",
-      "api_name": "SearchProducts",
-      "user_intent": "Attribute comparison: searching 'Sony WH-1000XM5' after multiple recommendations in research; prioritizing ANC quality over audiophile sound since primary use is blocking noise, not music appreciation"
-    },
-    {
-      "time_specification": {
-        "schedule_dates": ["2024-01-09"],
-        "time": "12:52:00"
-      },
-      "app_name": "Amazon",
-      "api_name": "ShowProduct",
-      "user_intent": "Attribute evaluation: reading detailed reviews focusing on comments about comfort during long coding sessions and ANC effectiveness in office environments; noting reviewer who mentioned 8-hour daily use without fatigue"
-    },
-    {
-      "time_specification": {
-        "schedule_dates": ["2024-01-09"],
-        "time": "13:10:00"
-      },
-      "app_name": "Amazon",
-      "api_name": "Checkout",
-      "user_intent": "Attribute acquisition: purchasing Sony WH-1000XM5 with expedited shipping; justifying $350 expense as investment in productivity given daily usage expectation"
-    },
-    {
-      "time_specification": {
-        "schedule_dates": ["2024-01-12"],
-        "time": "09:00:00"
-      },
-      "app_name": "Spotify",
-      "api_name": "SearchSongs",
-      "user_intent": "Combined first use: searching 'lofi coding beats instrumental' to test new headphones with preferred focus music; preference for instrumental immediately relevant as testing whether lyrics remain distracting even with ANC"
-    },
-    {
-      "time_specification": {
-        "schedule_dates": ["2024-01-12"],
-        "time": "09:05:00"
-      },
-      "app_name": "Spotify",
-      "api_name": "PlaySong",
-      "user_intent": "Combined preference validation: playing 'lofi hip hop radio - beats to code/relax to' through new headphones; confirming that instrumental-only preference still holds—ANC blocks external noise but internal lyric processing would still compete with code thinking"
-    },
-    {
-      "time_specification": {
-        "schedule_dates": ["2024-01-12", "2024-01-15", "2024-01-16", "2024-01-17", "2024-01-18", "2024-01-19", "2024-01-22", "2024-01-23", "2024-01-24", "2024-01-25", "2024-01-26"],
-        "start_time": "09:00:00",
-        "end_time": "11:30:00",
-        "note": "Daily morning deep work sessions combining attribute (headphones) with preference (instrumental music). Early sessions (Jan 12-15) involve experimenting with ANC levels and playlist selection. Mid-sessions (Jan 16-22) establish routine: ANC on max, lofi playlist on shuffle, 2.5 hour focus block. Later sessions (Jan 23-26) become automatic ritual."
-      },
-      "app_name": "Spotify",
-      "api_name": "PlaySong",
-      "user_intent": "Combined habitual usage: daily morning focus ritual using noise-canceling headphones with carefully curated instrumental lofi playlist; headphones enable isolation while instrumental preference ensures music aids rather than competes with coding cognition"
-    },
-    {
-      "time_specification": {
-        "schedule_dates": ["2024-01-19"],
-        "time": "14:30:00"
-      },
-      "app_name": "Spotify",
-      "api_name": "AddToPlaylist",
-      "user_intent": "Preference curation: adding newly discovered ambient electronic track to 'Deep Work' playlist after it maintained flow state for full pomodoro; excluding similar track with subtle vocals that broke concentration—demonstrating preference precision"
-    },
-    {
-      "time_specification": {
-        "schedule_dates": ["2024-02-05"],
-        "time": "10:15:00"
-      },
-      "app_name": "WhatsApp",
-      "api_name": "SendMessage",
-      "user_intent": "Combined evangelism: responding to colleague's complaint about open office noise with enthusiastic recommendation of Sony headphones + instrumental music combination; specifically warning against lyrical playlists for coding based on personal experience"
-    }
-  ]
-}
-```
-
-**Why This Merge Works:**
-- The headphones exist primarily to enable focused music listening during work
-- The music preference directly shapes how the headphones are used
-- Every usage event naturally involves BOTH the attribute AND the preference
-- Separating them would create artificial, redundant events
+- New preference is applied to multiple subsequent contexts (CAN bus, I2C, advising colleague)
+- The change_reason becomes observable through the Notion update
 
 ---
 
@@ -1324,6 +1389,12 @@ Before finalizing output, verify:
 - [ ] Every `habits_state` item appears in at least one chain
 - [ ] Every `preferences_state` item appears in at least one chain
 
+### Converted State Items Validation
+- [ ] Each `converted_state_items` entry contains: state_category, state_name, change_type, current_value, previous_value, change_reason
+- [ ] `current_value` is copied exactly from input state
+- [ ] `previous_value` is copied exactly from input state (or null if not present)
+- [ ] `change_reason` is copied exactly from input state (or null if not present)
+
 ### Lossless Conversion Validation
 For EACH state item, confirm:
 - [ ] Could someone reconstruct the state item from ONLY the events?
@@ -1331,6 +1402,19 @@ For EACH state item, confirm:
 - [ ] For `add/acquire`: Are both process AND outcome events present?
 - [ ] For `stable`: Is the state demonstrated across multiple contexts?
 - [ ] For preferences: Are CHOICES shown (A over B), not just usage of A?
+
+### Habit Variation Validation (CRITICAL)
+- [ ] Stable/recurring habits with natural variation use `app_api_variations`
+- [ ] Each entry in `app_api_variations` is a valid {app_name, api_name} pair
+- [ ] No duplicate entries in `app_api_variations` (it's a set)
+- [ ] The `user_intent` explains what each variation serves
+- [ ] Truly uniform habits (same action every time) use single `app_name`/`api_name`
+
+### App/API Specification Validation
+- [ ] Each event uses EITHER (`app_name` + `api_name`) OR `app_api_variations`, never both
+- [ ] All `app_name` values match available apps
+- [ ] All `api_name` values match available APIs for their corresponding app
+- [ ] In `app_api_variations`, each api_name belongs to its paired app_name
 
 ### Event Quality Validation
 - [ ] Each `user_intent` follows the composition structure: [Context]: [Action] + [Motivation] + [Criteria]
@@ -1345,22 +1429,22 @@ For EACH state item, confirm:
 
 ### Format Validation
 - [ ] Valid JSON with no syntax errors
-- [ ] All `app_name` values match available apps
-- [ ] All `api_name` values match available APIs for their app
-- [ ] No forbidden fields (e.g., event-level `description`)
+- [ ] No forbidden field combinations (e.g., both app_name and app_api_variations in same event)
 
 ---
 
 ## 10. Final Instructions
 
-1. **Read the input state carefully** — understand each item's full meaning
+1. **Read the input state carefully** — understand each item's full meaning including current_value, previous_value, and change_reason
 2. **Plan the conversion** — for each state item, what events would make it observable?
-3. **Generate detailed events** — each event should pass the "executable" test
-4. **Verify lossless conversion** — could someone reconstruct state from events alone?
-5. **Check coverage** — every state item must be represented
-6. **Output ONLY the JSON** — no markdown fences, no commentary
+3. **For habits: determine if variation exists** — does this habit naturally manifest through different apps/apis? If yes, use `app_api_variations`
+4. **Generate detailed events** — each event should pass the "executable" test
+5. **Populate converted_state_items fully** — include all fields from the input state
+6. **Verify lossless conversion** — could someone reconstruct state from events alone?
+7. **Check coverage** — every state item must be represented
+8. **Output ONLY the JSON** — no markdown fences, no commentary
 
-**Remember:** Your goal is to create a behavioral trace so realistic and detailed that the original state items become fully observable through the events. Information should flow FROM state TO events with zero loss.
+**Remember:** Your goal is to create a behavioral trace so realistic and detailed that the original state items become fully observable through the events. Information should flow FROM state TO events with zero loss. Habits should show realistic human variation through `app_api_variations` when natural variation exists.
 """)
 
 @dataclass
@@ -1388,12 +1472,6 @@ def render_events_chain_prompt(request: EventsChainRequest) -> str:
         world_background=request.world_background,
     )
 
-
-def generate_events_chain(
-    llm_client: GeminiJSONClient, request: EventsChainRequest
-) -> LLMResult:
-    prompt = render_events_chain_prompt(request)
-    return llm_client.generate_json(prompt)
 
 # OLD TEMPLATE CONTENT BELOW - TO BE REMOVED
 # """
@@ -1720,30 +1798,6 @@ def generate_events_chain(
 # - If any answer is "no", keep items separate.
 
 # """)
-@dataclass
-class EventsChainRequest:
-    user_basic_profile: str
-    domain_name: str
-    domain_window_state: str
-    user_life_context: str
-    user_previous_window_summary: str
-    user_domain_previous_window_summary: str
-    user_this_window_description: str
-    world_background: str
-
-
-def render_events_chain_prompt(request: EventsChainRequest) -> str:
-    return events_chain_template.render(
-        user_basic_profile=request.user_basic_profile,
-        domain_name=request.domain_name,
-        user_life_context=request.user_life_context,
-        user_previous_window_summary=request.user_previous_window_summary,
-        user_domain_previous_window_summary=request.user_domain_previous_window_summary,
-        user_this_window_description=request.user_this_window_description,
-        world_background=request.world_background,
-        domain_window_state=request.domain_window_state,
-    )
-
 
 def generate_events_chain(
     llm_client: GeminiJSONClient, request: EventsChainRequest

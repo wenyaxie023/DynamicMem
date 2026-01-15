@@ -4,7 +4,7 @@ import json
 import re
 from copy import deepcopy
 from dataclasses import asdict, dataclass
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, time, timedelta
 from collections import Counter
 from pathlib import Path
 import random
@@ -40,7 +40,7 @@ from mem_bench.behavior_and_conversation.events_chain_generator import (
 from mem_bench.behavior_and_conversation.app_log_generator import (
     AppLogGenerator,
 )
-from mem_bench.behavior_and_conversation.app_system import APP_API_SCHEMAS
+from mem_bench.behavior_and_conversation.app_system import APP_API_SCHEMAS, get_api_input_output_models
 from mem_bench.behavior_and_conversation.app_data_sources import (
     set_llm_client_for_data_generation,
 )
@@ -60,7 +60,7 @@ from mem_bench.behavior_and_conversation.prompt_templates import (
     rule4_short_term_followup_prompt,
     rule5_time_conflict_prompt,
 )
-
+from mem_bench.behavior_and_conversation.app_catalog import APP_CATALOG
 # Individual rule-specific prompts for targeted fixes
 # Rule order (from structural to semantic to temporal):
 # Rule 1: Required fields (structural integrity)
@@ -7511,11 +7511,11 @@ class GenerationPipeline:
             time_spec = event.get("time_specification") or {}
             if not isinstance(time_spec, dict):
                 time_spec = {}
-            resolved_date = event.get("resolved_date")
+            event_date = event.get("event_date")
             schedule_dates = time_spec.get("schedule_dates") or []
             date_candidates: List[str] = []
-            if isinstance(resolved_date, str) and resolved_date:
-                date_candidates.append(resolved_date)
+            if isinstance(event_date, str) and event_date:
+                date_candidates.append(event_date)
             if isinstance(schedule_dates, list):
                 date_candidates.extend(
                     [d for d in schedule_dates if isinstance(d, str) and d]
@@ -7713,68 +7713,68 @@ class GenerationPipeline:
     #     events_chain_windows: List[Dict],
     #     usage: Dict | None = None,
     # ) -> tuple[List[Dict], Dict]:
-        """
-        Generate atomic events for a domain based on existing latent state and events chain.
+        # """
+        # Generate atomic events for a domain based on existing latent state and events chain.
         
-        Args:
-            spec: domain specification
-            dynamic_profile_data: The latent state data
-            events_chain_windows: List of events chain entries for each window
-            usage: Optional existing usage dict to update
+        # Args:
+        #     spec: domain specification
+        #     dynamic_profile_data: The latent state data
+        #     events_chain_windows: List of events chain entries for each window
+        #     usage: Optional existing usage dict to update
             
-        Returns:
-            Tuple of (atomic_events_windows_list, updated_usage_dict)
-        """
-        if usage is None:
-            usage = {"atomic_events": {}}
-        elif "atomic_events" not in usage:
-            usage["atomic_events"] = {}
+        # Returns:
+        #     Tuple of (atomic_events_windows_list, updated_usage_dict)
+        # """
+        # if usage is None:
+        #     usage = {"atomic_events": {}}
+        # elif "atomic_events" not in usage:
+        #     usage["atomic_events"] = {}
 
-        slug = _slugify(domain.domain_name)
-        atomic_windows: List[Dict] = []
+        # slug = _slugify(domain.domain_name)
+        # atomic_windows: List[Dict] = []
 
-        # Create a mapping from window_id to resolved window state and semantic events
-        window_states = {
-            w.get("window_id"): w for w in _resolve_window_states(dynamic_profile_data)
-        }
-        # import pdb; pdb.set_trace()
-        for events_chain_data in events_chain_windows:
-            window_id = events_chain_data.get("window_id")
-            if not window_id:
-                continue
+        # # Create a mapping from window_id to resolved window state and semantic events
+        # window_states = {
+        #     w.get("window_id"): w for w in _resolve_window_states(dynamic_profile_data)
+        # }
+        # # import pdb; pdb.set_trace()
+        # for events_chain_data in events_chain_windows:
+        #     window_id = events_chain_data.get("window_id")
+        #     if not window_id:
+        #         continue
 
-            window_state = window_states.get(window_id)
-            if not window_state:
-                continue
+        #     window_state = window_states.get(window_id)
+        #     if not window_state:
+        #         continue
 
-            events_payload = (
-                events_chain_data.get("events_chain")
-                or events_chain_data.get("events_chain")
-                or events_chain_data
-            )
+        #     events_payload = (
+        #         events_chain_data.get("events_chain")
+        #         or events_chain_data.get("events_chain")
+        #         or events_chain_data
+        #     )
 
-            atomic_result = generate_atomic_events(
-                self.llm_client,
-                AtomicEventsRequest(
-                    domain_name=domain.domain_name,
-                    window_id=window_id,
-                    window_time_range=_format_window_range(window_state),
-                    current_window_state=window_state,
-                    events_chain=events_payload,
-                    min_atomic_per_semantic=self.atomic_config.min_per_semantic,
-                    max_atomic_per_semantic=self.atomic_config.max_per_semantic,
-                ),
-            )
-            atomic_windows.append(atomic_result.data)
-            usage["atomic_events"][window_id] = atomic_result.usage
+        #     atomic_result = generate_atomic_events(
+        #         self.llm_client,
+        #         AtomicEventsRequest(
+        #             domain_name=domain.domain_name,
+        #             window_id=window_id,
+        #             window_time_range=_format_window_range(window_state),
+        #             current_window_state=window_state,
+        #             events_chain=events_payload,
+        #             min_atomic_per_semantic=self.atomic_config.min_per_semantic,
+        #             max_atomic_per_semantic=self.atomic_config.max_per_semantic,
+        #         ),
+        #     )
+        #     atomic_windows.append(atomic_result.data)
+        #     usage["atomic_events"][window_id] = atomic_result.usage
 
-        atomic_path = self.output_dir / f"{slug}_atomic_events.json"
-        _write_json(
-            atomic_path,
-            {"domain": domain.domain_name, "windows": atomic_windows},
-        )
+        # atomic_path = self.output_dir / f"{slug}_atomic_events.json"
+        # _write_json(
+        #     atomic_path,
+        #     {"domain": domain.domain_name, "windows": atomic_windows},
+        # )
 
-        return atomic_windows, usage
+        # return atomic_windows, usage
 
     def generate_real_data_for_domain(
         self,
@@ -8326,13 +8326,13 @@ def debug_generate_events_chain() -> None:
     # domain_name = "Leisure & Media Consumption"
     # domain_scope_definition="Encompasses users' physical and mental well-being, including health conditions, lifestyle habits, and self-care practices such as exercise, diet, sleep, and healthcare-seeking behavior. It describes how users manage and optimize their health over time."
     # domain_scope_definition="Captures users' recreational activities and content preferences, including entertainment, hobbies, travel, and consumption of digital media such as videos, music, games, and books. It reflects how users spend discretionary time and pursue enjoyment."
-    domain_name = "Health & Self-care"
-    domain_scope_definition = "Encompasses users' physical and mental well-being, including health conditions, lifestyle habits, and self-care practices such as exercise, diet, sleep, and healthcare-seeking behavior. It describes how users manage and optimize their health over time."
+    # domain_name = "Health & Self-care"
+    # domain_scope_definition = "Encompasses users' physical and mental well-being, including health conditions, lifestyle habits, and self-care practices such as exercise, diet, sleep, and healthcare-seeking behavior. It describes how users manage and optimize their health over time."
 
     # domain_name = "Family & Close Relationships"
     # domain_scope_definition="Describes users' family structure and intimate relationships, such as partnerships, parenting roles, and household responsibilities. It captures close interpersonal bonds that shape daily routines, obligations, and life decisions."
-    # domain_name = "Work & Education"    
-    # domain_scope_definition="Covers users' professional roles, career development, and learning activities, including employment status, occupational goals, skill acquisition, and educational pursuits. It reflects how users engage in productive activities and long-term capability building through work- and study-related behaviors."
+    domain_name = "Work & Education"    
+    domain_scope_definition="Covers users' professional roles, career development, and learning activities, including employment status, occupational goals, skill acquisition, and educational pursuits. It reflects how users engage in productive activities and long-term capability building through work- and study-related behaviors."
     domain = Domain(domain_name=domain_name, domain_scope_definition=domain_scope_definition)
  
     # NOTE: generate_events_chain_for_domain expects the full multi-domain dynamic_profiles dict.
@@ -8361,18 +8361,49 @@ def debug_generate_real_data() -> None:
         ) from exc
 
     class AppCallPayload(BaseModel):
+        """Generic payload for API calls when specific models aren't available."""
         input: Dict[str, Any] = Field(description="API input payload.")
         output: Dict[str, Any] = Field(description="API output payload.")
 
     def _pydantic_validate(model: type[BaseModel], payload: Dict[str, Any]) -> BaseModel:
+        """Validate payload against a Pydantic model."""
         if hasattr(model, "model_validate"):
             return model.model_validate(payload)
         return model.parse_obj(payload)
 
     def _pydantic_dump(model_obj: BaseModel) -> Dict[str, Any]:
+        """Dump a Pydantic model to dict."""
         if hasattr(model_obj, "model_dump"):
             return model_obj.model_dump()
         return model_obj.dict()
+
+    def _validate_with_api_models(
+        app_name: str, 
+        api_name: str, 
+        input_data: Dict[str, Any], 
+        output_data: Dict[str, Any]
+    ) -> Tuple[Dict[str, Any], Dict[str, Any]]:
+        """Validate input/output using specific API Pydantic models if available."""
+        input_model, output_model = get_api_input_output_models(app_name, api_name)
+        
+        validated_input = input_data
+        validated_output = output_data
+        
+        if input_model:
+            try:
+                validated_input = _pydantic_dump(_pydantic_validate(input_model, input_data))
+            except ValidationError as e:
+                print(f"  Warning: Input validation failed for {app_name}.{api_name}: {e}")
+                validated_input = input_data
+        
+        if output_model:
+            try:
+                validated_output = _pydantic_dump(_pydantic_validate(output_model, output_data))
+            except ValidationError as e:
+                print(f"  Warning: Output validation failed for {app_name}.{api_name}: {e}")
+                validated_output = output_data
+        
+        return validated_input, validated_output
 
     def _spec_to_json_schema(spec: Any) -> Dict[str, Any]:
         if isinstance(spec, dict):
@@ -8409,9 +8440,21 @@ def debug_generate_real_data() -> None:
             return {"type": "string", "description": spec}
         return {"type": "string"}
 
+    def _json_safe(value: Any) -> Any:
+        """Convert non-JSON types (e.g., datetime) into JSON-serializable values."""
+        if isinstance(value, dict):
+            return {key: _json_safe(val) for key, val in value.items()}
+        if isinstance(value, list):
+            return [_json_safe(item) for item in value]
+        if isinstance(value, tuple):
+            return [_json_safe(item) for item in value]
+        if isinstance(value, (datetime, date, time)):
+            return value.isoformat()
+        return value
 
-    events_files = sorted(output_dir.glob("*_events_chain.json"))
-    import pdb; pdb.set_trace()
+
+    # events_files = sorted(output_dir.glob("*_events_chain.json"))
+    events_files = sorted(output_dir.glob("work_education_events_chain.json"))
     if not events_files:
         print("No events chain files found. Aborting app log generation.")
         return
@@ -8431,15 +8474,33 @@ def debug_generate_real_data() -> None:
         return f"{date_value} {_normalize_time(time_value)}"
 
     def _expand_event_instances(event: Dict[str, Any]) -> List[Dict[str, Any]]:
+        """Expand an event with multiple schedule_dates into individual instances.
+        
+        If the event has `app_api_variations`, randomly sample one app/api pair
+        for each schedule_date instance to simulate realistic habit variation.
+        """
+        import random
+        
         time_spec = event.get("time_specification") or {}
         schedule_dates = time_spec.get("schedule_dates") or []
+        app_api_variations = event.get("app_api_variations") or []
+        
         if schedule_dates:
             time_value = time_spec.get("time") or time_spec.get("start_time")
             instances = []
             for date_value in schedule_dates:
                 payload = dict(event)
                 payload["timestamp"] = _build_timestamp(date_value, time_value)
-                payload["resolved_date"] = date_value
+                payload["event_date"] = date_value
+                
+                # If app_api_variations exists, sample one for this instance
+                if app_api_variations:
+                    sampled_variation = random.choice(app_api_variations)
+                    payload["app_name"] = sampled_variation.get("app_name")
+                    payload["api_name"] = sampled_variation.get("api_name")
+                    # Store the original variations for context
+                    payload["original_app_api_variations"] = app_api_variations
+                
                 instances.append(payload)
             return instances
         timestamp = event.get("timestamp")
@@ -8447,7 +8508,61 @@ def debug_generate_real_data() -> None:
             return [dict(event)]
         return []
 
-    def _collect_events(domain_data: Dict[str, Any], fallback_domain: str) -> List[Dict[str, Any]]:
+    def _chain_has_preference(chain: Dict[str, Any]) -> bool:
+        for item in chain.get("related_state_items", []):
+            if not isinstance(item, dict):
+                continue
+            state_category = (item.get("state_category") or "").lower()
+            if state_category in {"preference", "preferences_state", "preferences"}:
+                return True
+        return False
+
+    def _select_preference_chains(
+        domain_data: Dict[str, Any],
+        fallback_domain: str,
+        limit: int = 2,
+    ) -> List[Dict[str, Any]]:
+        selected: List[Dict[str, Any]] = []
+        windows_by_id = domain_data.get("windows_by_id")
+        if isinstance(windows_by_id, dict):
+            windows = [windows_by_id[k] for k in sorted(windows_by_id.keys())]
+        elif isinstance(windows_by_id, list):
+            windows = windows_by_id
+        else:
+            windows = domain_data.get("windows", [])
+
+        for window_data in windows:
+            if not isinstance(window_data, dict):
+                continue
+            domain_name = (
+                window_data.get("domain_name")
+                or domain_data.get("domain")
+                or fallback_domain
+            )
+            window_id = window_data.get("window_id", "")
+            for chain_idx, chain in enumerate(window_data.get("event_chains", [])):
+                if not isinstance(chain, dict):
+                    continue
+                if not _chain_has_preference(chain):
+                    continue
+                chain_id = chain.get("chain_id") or f"{window_id}_chain_{chain_idx+1:02d}"
+                selected.append(
+                    {
+                        "domain_name": domain_name,
+                        "window_id": window_id,
+                        "chain_idx": chain_idx,
+                        "chain_id": chain_id,
+                    }
+                )
+                if len(selected) >= limit:
+                    return selected
+        return selected
+
+    def _collect_events(
+        domain_data: Dict[str, Any],
+        fallback_domain: str,
+        selected_chain_keys: Optional[set[Tuple[str, int]]] = None,
+    ) -> List[Dict[str, Any]]:
         events: List[Dict[str, Any]] = []
         windows_by_id = domain_data.get("windows_by_id")
         if isinstance(windows_by_id, dict):
@@ -8467,11 +8582,14 @@ def debug_generate_real_data() -> None:
             )
             window_id = window_data.get("window_id", "")
             time_range = window_data.get("time_range", [])
-            for chain in window_data.get("event_chains", []):
+            for chain_idx, chain in enumerate(window_data.get("event_chains", [])):
                 if not isinstance(chain, dict):
                     continue
-                chain_id = chain.get("chain_id", "")
-                related_state_items = chain.get("related_state_items", [])
+                if selected_chain_keys is not None:
+                    if (window_id, chain_idx) not in selected_chain_keys:
+                        continue
+                chain_id = chain.get("chain_id") or f"{window_id}_chain_{chain_idx+1:02d}"
+                simulated_state_items = chain.get("simulated_state_items", [])
                 for event in chain.get("events", []):
                     if not isinstance(event, dict):
                         continue
@@ -8479,8 +8597,10 @@ def debug_generate_real_data() -> None:
                         payload["domain_name"] = domain_name
                         payload["window_id"] = window_id
                         payload["time_range"] = time_range
+                        payload["simulated_state_items"] = simulated_state_items
+                        # Add chain identification for tracking previous logs within same chain
                         payload["chain_id"] = chain_id
-                        payload["related_state_items"] = related_state_items
+                        payload["chain_idx"] = chain_idx
                         events.append(payload)
         return events
 
@@ -8489,7 +8609,19 @@ def debug_generate_real_data() -> None:
         with open(events_file, "r") as f:
             domain_data = json.load(f)
         fallback_domain = domain_data.get("domain") or "Unknown"
-        all_events.extend(_collect_events(domain_data, fallback_domain))
+        # import pdb; pdb.set_trace()
+        selected_chains = _select_preference_chains(domain_data, fallback_domain, limit=2)
+        import pdb; pdb.set_trace()
+        if not selected_chains:
+            print(f"No preference chains found in {events_file}.")
+            continue
+        print(f"Selected {len(selected_chains)} chains from {events_file}:")
+        for entry in selected_chains:
+            print(
+                f"  - {entry['domain_name']} {entry['window_id']} {entry['chain_id']}"
+            )
+        selected_keys = {(entry["window_id"], entry["chain_idx"]) for entry in selected_chains}
+        all_events.extend(_collect_events(domain_data, fallback_domain, selected_keys))
 
     
     if not all_events:
@@ -8576,6 +8708,35 @@ def debug_generate_real_data() -> None:
     for domain_name, count in sorted(domain_event_counts.items()):
         print(f"  - {domain_name}: {count}")
 
+    app_call_counts: Dict[str, int] = {}
+    api_call_counts: Dict[str, int] = {}
+    for event in all_events:
+        app_name = event.get("app_name")
+        api_name = event.get("api_name")
+        if not app_name and not api_name:
+            continue
+        app_label = app_name or "Unknown"
+        api_label = api_name or "Unknown"
+        app_call_counts[app_label] = app_call_counts.get(app_label, 0) + 1
+        api_key = f"{app_label}.{api_label}"
+        api_call_counts[api_key] = api_call_counts.get(api_key, 0) + 1
+
+    if app_call_counts:
+        print("\nApp call counts:")
+        for app_name, count in sorted(
+            app_call_counts.items(), key=lambda item: (-item[1], item[0])
+        ):
+            print(f"  - {app_name}: {count}")
+
+    if api_call_counts:
+        print("\nAPI call counts:")
+        for api_key, count in sorted(
+            api_call_counts.items(), key=lambda item: (-item[1], item[0])
+        ):
+            print(f"  - {api_key}: {count}")
+
+    import pdb; pdb.set_trace()
+
     # Set up LLM client for app log generation
     client = GeminiJSONClient(model_name=model_name)
 
@@ -8589,36 +8750,6 @@ def debug_generate_real_data() -> None:
     if profile_file.exists():
         with open(profile_file, "r") as f:
             user_profile = json.load(f)
-
-#     app_log_prompt = Template("""Your task is to convert the event into an API call for an app, simulating the input and output.
-
-# API schema for this call:
-# {{ api_schema }}
-
-# Return JSON ONLY with this structure:
-# {
-#   "input": { ... }, // the input object of the API call
-#   "output": { ... } // the output object of the API call
-# }
-
-# Context:
-# User profile (basic + domain context):
-# {{ user_profile }}
-
-# Current app state for this app (before call):
-# {{ app_state }}
-
-# Event payload:
-# {{ event_payload }}
-
-# Rules:
-# - Respect app_name/api_name exactly as given.
-# - Use the user intent, user profile context, and current app state to shape input/output.
-# - Keep input/output consistent with the user's intent and schema.
-# - Include all keys specified in the schema.
-# - If you create new IDs or records, include them in output.
-# - Use only the event timestamp; do not invent other dates.
-# """)
 
     def _record_app_call_state(
         state: Dict[str, Any],
@@ -8651,13 +8782,19 @@ def debug_generate_real_data() -> None:
 
     for idx, event in enumerate(all_events, 1):
         event["event_id"] = f"e{idx:04d}"
-    for event in all_events[:20]:
-        import pdb; pdb.set_trace()
+    
+    # Track generated app logs by chain for consistency
+    chain_logs_history: Dict[str, List[Dict[str, Any]]] = {}
+    
+    def _generate_app_log_for_event(
+        event: Dict[str, Any],
+        app_log_gen: AppLogGenerator,
+        target_dir: Path,
+        chain_logs_history: Dict[str, List[Dict[str, Any]]],
+    ) -> Optional[Dict[str, Any]]:
         if any(field not in event for field in required_fields):
-            print(
-                f"Skipping event with missing fields"
-            )
-            continue
+            print("Skipping event with missing fields")
+            return None
         app_name = event.get("app_name", "")
         api_name = event.get("api_name", "")
         event_description = event.get("user_intent") or event.get("description") or ""
@@ -8670,10 +8807,11 @@ def debug_generate_real_data() -> None:
         api_schema = APP_API_SCHEMAS.get(app_name, {}).get(api_name)
         if api_schema is None:
             raise ValueError(f"Missing API schema for {app_name}.{api_name}")
-        
 
         domain_name = event.get("domain_name", "")
         window_id = event.get("window_id", "")
+        chain_id = event.get("chain_id", "")
+        
         domain_context = _build_domain_context(
             domain_name=domain_name,
             window_id=window_id,
@@ -8684,67 +8822,137 @@ def debug_generate_real_data() -> None:
             "domain_context": domain_context,
         }
 
+        # Build event payload with additional metadata for habits with variations
         event_payload = {
             "event": {
-                # "event_id": event.get("event_id"),
-                "timestamp": event.get("timestamp"),
                 "user_intent": event_description,
                 "time_specification": event.get("time_specification", {}),
-                "resolved_date": event.get("resolved_date"),
+                "event_date": event.get("event_date"),
                 "app": {
                     "app_name": app_name,
                     "api_name": api_name,
                 },
             },
             "chain": {
-                "chain_id": event.get("chain_id", ""),
-                "related_state_items": event.get("related_state_items", []),
+                "chain_id": chain_id,
+                "simulated_state_items": event.get("simulated_state_items", []),
             },
         }
+        
+        # Include original app_api_variations if this event was sampled from variations
+        if event.get("original_app_api_variations"):
+            event_payload["event"]["original_app_api_variations"] = event.get("original_app_api_variations")
+            event_payload["event"]["note"] = "This event was sampled from multiple possible app/api variations for a recurring habit. The current call uses the sampled app/api shown above."
+        
+        # Get previous logs from the same chain for consistency
+        previous_chain_logs = chain_logs_history.get(chain_id, [])
+        # Format previous logs for prompt (simplified view)
+        previous_logs_formatted = [
+            {
+                "event_id": log.get("event_id"),
+                "timestamp": log.get("timestamp"),
+                "app_name": log.get("app_name"),
+                "api_name": log.get("api_name"),
+                "request": log.get("request"),
+                "response": log.get("response"),
+            }
+            for log in previous_chain_logs
+        ]
 
         prompt = app_log_prompt.render(
             api_schema=json.dumps(api_schema, indent=2, ensure_ascii=False),
             user_profile=json.dumps(user_profile_payload, indent=2, ensure_ascii=False),
-            app_state=json.dumps(app_state_snapshot, indent=2, ensure_ascii=False),
+            app_state=json.dumps(_json_safe(app_state_snapshot), indent=2, ensure_ascii=False),
             event_payload=json.dumps(event_payload, indent=2, ensure_ascii=False),
+            previous_chain_logs=json.dumps(_json_safe(previous_logs_formatted), indent=2, ensure_ascii=False),
         )
 
-        ## save the prompt to a file
-        with open(output_dir / f"app_log_prompt_{event.get('event_id')}.txt", "w") as f:
+        target_dir.mkdir(parents=True, exist_ok=True)
+        with open(target_dir / f"app_log_prompt_{event.get('event_id')}.txt", "w") as f:
             f.write(prompt)
 
-        # import pdb; pdb.set_trace()
-
+        llm_raw = None
+        payload = None
+        raw_input = None
+        raw_output = None
+        response_schema = None
         try:
+            # Build response schema from API schema (using Pydantic model schemas)
+            input_schema = api_schema.get("input", {})
+            output_schema = api_schema.get("output", {})
+
+            # If schema has Pydantic's $defs, use it directly; otherwise convert
+            if "$defs" in input_schema or "properties" in input_schema:
+                # Already a proper JSON schema from Pydantic
+                input_json_schema = input_schema
+            else:
+                input_json_schema = _spec_to_json_schema(input_schema)
+
+            if "$defs" in output_schema or "properties" in output_schema:
+                output_json_schema = output_schema
+            else:
+                output_json_schema = _spec_to_json_schema(output_schema)
+
             response_schema = {
                 "type": "object",
                 "properties": {
-                    "input": _spec_to_json_schema(api_schema.get("input", {})),
-                    "output": _spec_to_json_schema(api_schema.get("output", {})),
+                    "input": input_json_schema,
+                    "output": output_json_schema,
                 },
                 "required": ["input", "output"],
                 "additionalProperties": False,
             }
+
+            # Call LLM with structured output schema
             llm_result = client.generate_json(prompt, response_schema=response_schema)
+            llm_raw = llm_result.data
+
+            # First validate with generic AppCallPayload to ensure structure
             payload_model = _pydantic_validate(AppCallPayload, llm_result.data or {})
-            import pdb; pdb.set_trace()
+            payload = _pydantic_dump(payload_model)
+
+            raw_input = payload.get("input") or {}
+            raw_output = payload.get("output") or {}
+
+            # Then validate with specific API models if available
+            request_payload, response_payload = _validate_with_api_models(
+                app_name, api_name, raw_input, raw_output
+            )
+
         except ValidationError as exc:
+            debug_payload = {
+                "event_id": event.get("event_id"),
+                "timestamp": event.get("timestamp"),
+                "app_name": app_name,
+                "api_name": api_name,
+                "validation_error": str(exc),
+                "llm_response": _json_safe(llm_raw),
+                "response_schema": response_schema,
+            }
+            if payload is not None:
+                debug_payload["parsed_payload"] = _json_safe(payload)
+            if raw_input is not None:
+                debug_payload["parsed_input"] = _json_safe(raw_input)
+            if raw_output is not None:
+                debug_payload["parsed_output"] = _json_safe(raw_output)
+            with open(
+                target_dir
+                / f"app_log_raw_{event.get('event_id')}_{event.get('app_name')}_{event.get('api_name')}.json",
+                "w",
+            ) as f:
+                json.dump(_json_safe(debug_payload), f, indent=2, ensure_ascii=False)
             print(
                 f"Warning: Failed to validate app log for event {event.get('event_id')}: {exc}"
             )
-            continue
+            return None
         except Exception as exc:
             print(
                 f"Warning: Failed to generate app log for event {event.get('event_id')}: {exc}"
             )
-            continue
-
-        payload = _pydantic_dump(payload_model)
-        request_payload = payload.get("input") or {}
-        response_payload = payload.get("output") or {}
+            return None
         target_state = app.state
         _record_app_call_state(target_state, event, request_payload, response_payload)
-        
+
         log = {
             "event_id": event.get("event_id"),
             "timestamp": event.get("timestamp"),
@@ -8756,16 +8964,49 @@ def debug_generate_real_data() -> None:
                 "user_intent": event_description,
                 "domain": event.get("domain_name", ""),
                 "window_id": event.get("window_id", ""),
-                "chain_id": event.get("chain_id", ""),
+                "chain_id": chain_id,
                 "related_state_items": event.get("related_state_items", []),
                 "llm_usage": llm_result.usage,
             },
         }
-        app_logs.append(log)
-        ## record the log to a file
-        with open(output_dir / f"app_log_{event.get('event_id')}_{event.get('app_name')}_{event.get('api_name')}.json", "w") as f:
-            json.dump(log, f, indent=2, ensure_ascii=False)
-        # import pdb; pdb.set_trace()
+
+        with open(
+            target_dir
+            / f"app_log_{event.get('event_id')}_{event.get('app_name')}_{event.get('api_name')}.json",
+            "w",
+        ) as f:
+            json.dump(_json_safe(log), f, indent=2, ensure_ascii=False)
+        
+        # Record log in chain history for future events in the same chain
+        if chain_id:
+            if chain_id not in chain_logs_history:
+                chain_logs_history[chain_id] = []
+            chain_logs_history[chain_id].append(log)
+
+        return log
+
+    # target_app_name = "Gmail"
+    ## if no target app name is provided, use all.
+    # target_app_name = "LLM Assistant"
+    target_app_name = None
+    
+    if target_app_name:
+        target_app_name_lower = target_app_name.lower()
+        target_app_events = [
+            event
+            for event in all_events
+            if (event.get("app_name") or "").lower() == target_app_name_lower
+        ]
+    else:
+        target_app_events = all_events
+    app_specific_dir = output_dir / f"debug_app_{_slugify(target_app_name or 'all')}"
+    for event in target_app_events[:10]:
+        log = _generate_app_log_for_event(event, app_log_gen, app_specific_dir, chain_logs_history)
+        if log:
+            app_logs.append(log)
+
+    if not target_app_events:
+        print(f"\nNo events found for app: {target_app_name}")
 
     app_logs.sort(key=lambda log: log.get("timestamp") or "9999-12-31 23:59:59")
 
@@ -8777,17 +9018,20 @@ def debug_generate_real_data() -> None:
         print("\nGenerated 0 app logs")
 
     # Save results
-    output_file = output_dir / "debug_app_logs_merged.json"
+    output_file = app_specific_dir / "debug_app_logs_merged.json"
     output_data = {
         "user_id": user_id,
-        "total_events": total_events,
+        "app_name": target_app_name,
+        "total_events": len(target_app_events),
         "total_app_logs": len(app_logs),
-        "domains": sorted(domain_event_counts.keys()),
+        "domains": sorted(
+            {event.get("domain_name") for event in target_app_events if event.get("domain_name")}
+        ),
         "app_logs": app_logs
     }
 
     with open(output_file, "w") as f:
-        json.dump(output_data, f, indent=2, ensure_ascii=False)
+        json.dump(_json_safe(output_data), f, indent=2, ensure_ascii=False)
 
     print(f"\nResults saved to: {output_file}")
 
