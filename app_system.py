@@ -856,7 +856,7 @@ class AmazonApp(BaseApp):
             reviews.append({
                 "rating": review_rating,
                 "text": random.choice(review_templates),
-                "author": random.choice(["Alex", "Jamie", "Taylor", "Morgan", "Riley"])
+                "reviewer_name": random.choice(["Alex", "Jamie", "Taylor", "Morgan", "Riley"])
             })
         return reviews
 
@@ -1490,7 +1490,7 @@ class WhatsAppApp(BaseApp):
         # Filter messages for this contact
         messages = [
             msg for msg in self.state["message_history"]
-            if msg.get("to_user") == contact_id or msg.get("from_user") == contact_id
+            if msg.get("recipient_id") == contact_id or msg.get("sender_id") == contact_id
         ][-limit:]
 
         return AppLogEntry(
@@ -1512,8 +1512,8 @@ class WhatsAppApp(BaseApp):
         message_id = f"MSG{uuid.uuid4().hex[:8].upper()}"
         message = {
             "message_id": message_id,
-            "from_user": self.user_id,
-            "to_user": to_user,
+            "sender_id": self.user_id,
+            "recipient_id": to_user,
             "message_type": MessageType.TEXT.value,
             "content": message_content,
             "timestamp": timestamp
@@ -1540,8 +1540,8 @@ class WhatsAppApp(BaseApp):
         message_id = f"MSG{uuid.uuid4().hex[:8].upper()}"
         message = {
             "message_id": message_id,
-            "from_user": self.user_id,
-            "to_user": to_user,
+            "sender_id": self.user_id,
+            "recipient_id": to_user,
             "message_type": MessageType.MEDIA.value,
             "content": f"[{media_type}]" + (f": {caption}" if caption else ""),
             "timestamp": timestamp
@@ -2747,7 +2747,7 @@ class LinkedInApp(BaseApp):
     def _post_update(self, timestamp: str, description: str, context: Dict[str, Any]) -> AppLogEntry:
         content = self._extract_quoted(description) or description[:200]
         post_id = f"POST{uuid.uuid4().hex[:8].upper()}"
-        post = {"post_id": post_id, "author": self.user_id, "content": content, "timestamp": timestamp, "likes_count": 0}
+        post = {"post_id": post_id, "author_id": self.user_id, "content": content, "timestamp": timestamp, "likes_count": 0}
         self.state["posts"].append(post)
         return AppLogEntry(timestamp=timestamp, app_name=self.app_name, api_name="PostUpdate",
             request={"content": content}, response={"post": post})
@@ -2800,7 +2800,7 @@ class LinkedInApp(BaseApp):
         return match.group(0) if match else f"POST{random.randint(1000, 9999)}"
 
     def _generate_feed_posts(self) -> List[Dict]:
-        return [{"post_id": f"POST{i}", "author": f"User{i}", "content": f"Post content {i}", "timestamp": datetime.now().isoformat(), "likes_count": random.randint(0, 100)} for i in range(5)]
+        return [{"post_id": f"POST{i}", "author_id": f"User{i}", "content": f"Post content {i}", "timestamp": datetime.now().isoformat(), "likes_count": random.randint(0, 100)} for i in range(5)]
 
 
 class NotionApp(BaseApp):
@@ -3102,7 +3102,7 @@ class InstagramApp(BaseApp):
         quoted = re.findall(r"'([^']*)'|\"([^\"]*)\"", description)
         caption = (quoted[0][0] or quoted[0][1]) if quoted else None
         post_id = f"POST{uuid.uuid4().hex[:8].upper()}"
-        post = {"post_id": post_id, "author": self.user_id, "content_type": "story", "caption": caption or "", "timestamp": timestamp, "likes_count": 0}
+        post = {"post_id": post_id, "author_id": self.user_id, "content_type": "story", "caption": caption or "", "timestamp": timestamp, "likes_count": 0}
         self.state["posts"].append(post)
         return AppLogEntry(timestamp=timestamp, app_name=self.app_name, api_name="PostStory",
             request={"content_type": content_type, "caption": caption}, response={"post": post})

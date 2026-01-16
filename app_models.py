@@ -5,6 +5,7 @@ Pydantic models for app state and API schemas.
 from __future__ import annotations
 
 from datetime import datetime, date
+from decimal import Decimal
 from enum import Enum
 from typing import Any, Dict, List, Optional
 
@@ -114,7 +115,7 @@ class CartItem(BaseModel):
     """Item in shopping cart"""
     product_id: str
     name: str
-    price: float = Field(description="Price in USD")
+    price: Decimal = Field(description="Price in USD")
     quantity: int = Field(ge=1, description="Number of items")
 
 
@@ -122,7 +123,7 @@ class WishlistItem(BaseModel):
     """Item in wishlist"""
     product_id: str
     name: str
-    price: float = Field(description="Price in USD")
+    price: Decimal = Field(description="Price in USD")
     added_at: datetime = Field(description="When the item was added to wishlist")
 
 
@@ -130,7 +131,7 @@ class OrderItem(BaseModel):
     """Item in an order"""
     product_id: str
     name: str
-    price: float = Field(description="Price in USD")
+    price: Decimal = Field(description="Price in USD")
     quantity: int = Field(ge=1, description="Number of items")
 
 
@@ -138,13 +139,13 @@ class ProductReview(BaseModel):
     """Product review"""
     rating: int = Field(ge=1, le=5, description="Rating from 1 (worst) to 5 (best)")
     text: str = Field(description="Review content")
-    author: str = Field(description="Reviewer's display name")
+    reviewer_name: str = Field(description="Reviewer's display name")
 
 
 class WatchlistItem(BaseModel):
     """Stock/crypto in watchlist"""
     symbol: str = Field(description="Stock ticker or crypto symbol (e.g., AAPL, BTC)")
-    current_price: float = Field(description="Current market price in USD")
+    current_price: Decimal = Field(description="Current market price in USD")
     change_percent: float = Field(description="Price change percentage from previous close")
 
 
@@ -152,7 +153,7 @@ class StockSearchResult(BaseModel):
     """Stock search result"""
     symbol: str = Field(description="Stock ticker or crypto symbol")
     name: str = Field(description="Company or cryptocurrency name")
-    current_price: float = Field(description="Current market price in USD")
+    current_price: Decimal = Field(description="Current market price in USD")
 
 
 class EmailPreview(BaseModel):
@@ -192,7 +193,7 @@ class NotionSearchResult(BaseModel):
 class AmazonProduct(BaseModel):
     product_id: str
     name: str
-    price: float = Field(description="Price in USD")
+    price: Decimal = Field(description="Price in USD")
     category: str
     rating: float = Field(ge=1.0, le=5.0, description="Average rating from 1.0 to 5.0")
     
@@ -201,7 +202,7 @@ class AmazonOrder(BaseModel):
     product_id: str
     product_name: str
     quantity: int = Field(ge=1)
-    total_price: float = Field(description="Total price in USD")
+    total_price: Decimal = Field(description="Total price in USD")
     order_date: datetime
     
 class AmazonState(BaseModel):
@@ -271,14 +272,14 @@ class ChaseTransaction(BaseModel):
     transaction_id: str
     transaction_date: date = Field(description="Date of the transaction")
     merchant: str
-    amount: float = Field(description="Transaction amount in USD")
+    amount: Decimal = Field(description="Transaction amount in USD")
     transaction_type: ChaseTransactionType
     category: ChaseCategory
     
 class ChaseAccount(BaseModel):
     account_id: str
     account_type: ChaseAccountType
-    balance: float = Field(description="Current balance in USD")
+    balance: Decimal = Field(description="Current balance in USD")
     
 class ChaseState(BaseModel):
     user_id: str
@@ -290,7 +291,7 @@ class RobinhoodHolding(BaseModel):
     symbol: str = Field(description="Stock ticker or crypto symbol")
     asset_type: AssetType
     quantity: float = Field(ge=0, description="Number of shares or units held")
-    average_buy_price: float = Field(description="Average purchase price in USD")
+    average_buy_price: Decimal = Field(description="Average purchase price in USD")
     
 class RobinhoodTransaction(BaseModel):
     transaction_id: str
@@ -298,12 +299,12 @@ class RobinhoodTransaction(BaseModel):
     asset_type: AssetType
     transaction_type: TransactionType
     quantity: float = Field(ge=0)
-    price: float = Field(description="Price per share/unit in USD")
+    price: Decimal = Field(description="Price per share/unit in USD")
     timestamp: datetime
     
 class RobinhoodState(BaseModel):
     user_id: str
-    cash_balance: float = Field(description="Available cash in USD")
+    cash_balance: Decimal = Field(description="Available cash in USD")
     holdings: List[RobinhoodHolding] = Field(default_factory=list)
     watchlist: List[str] = Field(default_factory=list, description="List of stock/crypto symbols being watched")
     transaction_history: List[RobinhoodTransaction] = Field(default_factory=list)
@@ -311,8 +312,8 @@ class RobinhoodState(BaseModel):
 # ==================== WhatsApp ====================
 class WhatsAppMessage(BaseModel):
     message_id: str
-    from_user: str = Field(description="Sender's user ID or phone number")
-    to_user: str = Field(description="Recipient's user ID, phone number, or group ID")
+    sender_id: str = Field(description="Sender's user ID or phone number")
+    recipient_id: str = Field(description="Recipient's user ID, phone number, or group ID")
     message_type: MessageType
     content: str
     timestamp: datetime
@@ -343,12 +344,12 @@ class GmailState(BaseModel):
 class LinkedInExperience(BaseModel):
     company: str
     title: str
-    start_date: str = Field(description="Start date in YYYY-MM format")
-    end_date: Optional[str] = Field(default=None, description="End date in YYYY-MM format, None if current position")
+    start_date: date
+    end_date: Optional[date] = None
     
 class LinkedInPost(BaseModel):
     post_id: str
-    author: str = Field(description="Author's user ID or name")
+    author_id: str = Field(description="Author's user ID or name")
     content: str
     timestamp: datetime
     likes_count: int = Field(default=0, ge=0)
@@ -426,7 +427,7 @@ class GoodreadsState(BaseModel):
 # ==================== Instagram ====================
 class InstagramPost(BaseModel):
     post_id: str
-    author: str
+    author_id: str
     content_type: InstagramContentType
     caption: str
     timestamp: datetime
@@ -495,14 +496,14 @@ class AddToCartInput(BaseModel):
     
 class AddToCartOutput(BaseModel):
     cart: List[CartItem]
-    cart_total: float = Field(description="Total cart value in USD")
+    cart_total: Decimal = Field(description="Total cart value in USD")
     
 class ShowCartInput(BaseModel):
     pass
     
 class ShowCartOutput(BaseModel):
     cart_items: List[CartItem]
-    cart_total: float = Field(description="Total cart value in USD")
+    cart_total: Decimal = Field(description="Total cart value in USD")
     prime_member: bool
     
 class ShowWishlistInput(BaseModel):
@@ -517,7 +518,7 @@ class CheckoutInput(BaseModel):
 class CheckoutOutput(BaseModel):
     order_id: str
     order_items: List[OrderItem]
-    total_price: float = Field(description="Total order price in USD")
+    total_price: Decimal = Field(description="Total order price in USD")
     order_date: datetime
     estimated_delivery: date = Field(description="Estimated delivery date")
     prime_member: bool
@@ -584,7 +585,7 @@ class GetBalanceInput(BaseModel):
     
 class GetBalanceOutput(BaseModel):
     accounts: List[ChaseAccount]
-    total_balance: float = Field(description="Total balance across all accounts in USD")
+    total_balance: Decimal = Field(description="Total balance across all accounts in USD")
     last_updated: datetime
     
 class GetTransactionsInput(BaseModel):
@@ -594,7 +595,7 @@ class GetTransactionsInput(BaseModel):
     
 class GetTransactionsOutput(BaseModel):
     transactions: List[ChaseTransaction]
-    account_balance: float
+    account_balance: Decimal
     
 class SearchTransactionsInput(BaseModel):
     query: str = Field(description="Search by merchant name or category")
@@ -605,22 +606,22 @@ class SearchTransactionsOutput(BaseModel):
 class TransferMoneyInput(BaseModel):
     from_account_id: str
     to_account_id: str
-    amount: float = Field(gt=0, description="Amount to transfer in USD")
+    amount: Decimal = Field(gt=0, description="Amount to transfer in USD")
     
 class TransferMoneyOutput(BaseModel):
     transaction_id: str
-    from_account_new_balance: float
-    to_account_new_balance: float
+    from_account_new_balance: Decimal
+    to_account_new_balance: Decimal
     timestamp: datetime
     
 class PayBillInput(BaseModel):
     biller_name: str
-    amount: float = Field(gt=0, description="Bill amount in USD")
+    amount: Decimal = Field(gt=0, description="Bill amount in USD")
     from_account_id: str
     
 class PayBillOutput(BaseModel):
     transaction_id: str
-    new_balance: float = Field(description="New account balance after payment")
+    new_balance: Decimal = Field(description="New account balance after payment")
     timestamp: datetime
 
 # ==================== Robinhood APIs ====================
@@ -628,9 +629,9 @@ class GetPortfolioInput(BaseModel):
     pass
     
 class GetPortfolioOutput(BaseModel):
-    cash_balance: float
+    cash_balance: Decimal
     holdings: List[RobinhoodHolding]
-    total_portfolio_value: float = Field(description="Total value of holdings + cash in USD")
+    total_portfolio_value: Decimal = Field(description="Total value of holdings + cash in USD")
     
 class GetWatchlistInput(BaseModel):
     pass
@@ -649,7 +650,7 @@ class GetStockQuoteInput(BaseModel):
     
 class GetStockQuoteOutput(BaseModel):
     symbol: str
-    current_price: float
+    current_price: Decimal
     change_percent: float = Field(description="Price change percentage from previous close")
     timestamp: datetime
     in_watchlist: bool
@@ -661,7 +662,7 @@ class BuyStockInput(BaseModel):
     
 class BuyStockOutput(BaseModel):
     transaction: RobinhoodTransaction
-    new_cash_balance: float
+    new_cash_balance: Decimal
     new_holding: RobinhoodHolding
     
 class SellStockInput(BaseModel):
@@ -671,7 +672,7 @@ class SellStockInput(BaseModel):
     
 class SellStockOutput(BaseModel):
     transaction: RobinhoodTransaction
-    new_cash_balance: float
+    new_cash_balance: Decimal
     remaining_holding: Optional[RobinhoodHolding] = Field(description="Remaining holding after sale, None if fully sold")
 
 # ==================== WhatsApp APIs ====================
@@ -741,8 +742,8 @@ class UpdateProfileOutput(BaseModel):
 class AddExperienceInput(BaseModel):
     company: str
     title: str
-    start_date: str = Field(description="Start date in YYYY-MM format")
-    end_date: Optional[str] = Field(default=None, description="End date in YYYY-MM format, None if current position")
+    start_date: str = Field(pattern=r"^\d{4}-\d{2}$", description="Start date in YYYY-MM format")
+    end_date: Optional[str] = Field(default=None, pattern=r"^\d{4}-\d{2}$", description="End date in YYYY-MM format, None if current position")
     
 class AddExperienceOutput(BaseModel):
     experience: LinkedInExperience
