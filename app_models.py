@@ -565,7 +565,8 @@ class LogWorkoutOutput(BaseModel):
     today_total_active_minutes: int
     
 class SyncDeviceInput(BaseModel):
-    device_name: str = Field(default="Fitbit Device", description="Name of the Fitbit device")
+    """No input required - syncs the connected Fitbit device."""
+    pass
     
 class SyncDeviceOutput(BaseModel):
     sync_data: FitbitDailySync

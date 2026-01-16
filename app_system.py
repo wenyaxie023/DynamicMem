@@ -57,6 +57,8 @@ from mem_bench.behavior_and_conversation.app_models import (
 )
 
 
+# Maximum number of history entries to keep per list to avoid state explosion
+MAX_HISTORY_LENGTH = 20
 @dataclass
 class AppLogEntry:
     """A single app log entry."""
@@ -513,6 +515,32 @@ class BaseApp(ABC):
             self._initialize_state()
             self.initialized = True
 
+    def _append_to_history(self, key: str, item: Any, max_length: int = MAX_HISTORY_LENGTH) -> None:
+        """
+        Append an item to a history list in state, keeping only the most recent entries.
+        
+        Args:
+            key: The state key for the history list
+            item: The item to append
+            max_length: Maximum number of entries to keep (default: MAX_HISTORY_LENGTH)
+        """
+        history = self.state.setdefault(key, [])
+        history.append(item)
+        if len(history) > max_length:
+            self.state[key] = history[-max_length:]
+
+    def _trim_history(self, key: str, max_length: int = MAX_HISTORY_LENGTH) -> None:
+        """
+        Trim a history list in state to the most recent entries.
+        
+        Args:
+            key: The state key for the history list  
+            max_length: Maximum number of entries to keep (default: MAX_HISTORY_LENGTH)
+        """
+        if key in self.state and isinstance(self.state[key], list):
+            if len(self.state[key]) > max_length:
+                self.state[key] = self.state[key][-max_length:]
+
     @abstractmethod
     def call_api(
         self,
@@ -582,8 +610,8 @@ class AmazonApp(BaseApp):
         query = self._extract_search_query(description)
         products = self._generate_search_results(query, context)
 
-        # Update search history
-        self.state["search_history"].append(query)
+        # Update search history (bounded)
+        self._append_to_history("search_history", query)
 
         return AppLogEntry(
             timestamp=timestamp,
@@ -602,10 +630,10 @@ class AmazonApp(BaseApp):
         product = self._get_or_create_product(product_id, description, context)
         reviews = self._generate_reviews(product["name"], product["rating"])
 
-        # Track viewed product (store full product object)
+        # Track viewed product (store full product object, bounded)
         viewed_ids = [p.get("product_id") for p in self.state["viewed_products"]]
         if product_id not in viewed_ids:
-            self.state["viewed_products"].append(product)
+            self._append_to_history("viewed_products", product)
 
         in_cart = any(item.get("product_id") == product_id for item in self.state["cart"])
         wishlist_ids = [p.get("product_id") for p in self.state["wishlist"]]
@@ -733,14 +761,14 @@ class AmazonApp(BaseApp):
         delivery_days = random.randint(1, 2) if self.state["prime_member"] else random.randint(3, 5)
         estimated_delivery = (order_date + timedelta(days=delivery_days)).strftime("%Y-%m-%d")
 
-        # Record order in history
+        # Record order in history (bounded)
         order = {
             "order_id": order_id,
             "items": order_items,
             "total_price": round(total_price, 2),
             "order_date": timestamp
         }
-        self.state["order_history"].append(order)
+        self._append_to_history("order_history", order)
 
         # Clear cart
         self.state["cart"] = []
@@ -900,14 +928,14 @@ class GoogleApp(BaseApp):
         # Store in cache for ClickResult
         self._results_cache[query] = results
 
-        # Record search history
+        # Record search history (bounded)
         search_record = {
             "query": query,
             "results": results,
             "searched_at": timestamp,
             "clicked_result_id": None
         }
-        self.state["search_history"].append(search_record)
+        self._append_to_history("search_history", search_record)
 
         return AppLogEntry(
             timestamp=timestamp,
@@ -1063,16 +1091,13 @@ class SpotifyApp(BaseApp):
         song_id = self._extract_song_id(description)
         song = self._get_or_create_song(song_id, description, context)
 
-        # Record play history
+        # Record play history (bounded)
         play_record = {
             "song_id": song_id,
             "played_at": timestamp,
             "duration_played_minutes": song.get("duration_minutes", random.randint(3, 5))
         }
-        self.state["play_history"].append(play_record)
-
-        # Keep only last 100 plays
-        self.state["play_history"] = self.state["play_history"][-100:]
+        self._append_to_history("play_history", play_record)
 
         return AppLogEntry(
             timestamp=timestamp,
@@ -1126,7 +1151,7 @@ class SpotifyApp(BaseApp):
         artist_id, artist_name = self._extract_artist_info(description)
 
         if artist_id not in self.state["followed_artists"]:
-            self.state["followed_artists"].append(artist_id)
+            self._append_to_history("followed_artists", artist_id)
 
         return AppLogEntry(
             timestamp=timestamp,
@@ -1283,7 +1308,7 @@ class FitbitApp(BaseApp):
             "calories_burned": calories_burned,
             "timestamp": timestamp
         }
-        self.state["workout_history"].append(workout)
+        self._append_to_history("workout_history", workout)
 
         # Calculate today's total active minutes
         date = timestamp.split()[0]
@@ -1310,7 +1335,6 @@ class FitbitApp(BaseApp):
 
     def _sync_device(self, timestamp: str, description: str, context: Dict[str, Any]) -> AppLogEntry:
         """Sync wearable device data including steps, heart rate, sleep patterns."""
-        device_name = self._extract_device_name(description)
         date = timestamp.split()[0]
 
         # Generate sync data
@@ -1323,14 +1347,14 @@ class FitbitApp(BaseApp):
             "avg_heart_rate": random.randint(60, 85)
         }
 
-        # Store sync data
-        self.state["daily_syncs"].append(sync_data)
+        # Store sync data (bounded)
+        self._append_to_history("daily_syncs", sync_data)
 
         return AppLogEntry(
             timestamp=timestamp,
             app_name=self.app_name,
             api_name="SyncDevice",
-            request={"device_name": device_name},
+            request={},
             response={
                 "sync_data": sync_data,
                 "sync_timestamp": timestamp
@@ -1399,14 +1423,6 @@ class FitbitApp(BaseApp):
         elif any(w in desc_lower for w in ["easy", "light", "gentle", "low"]):
             return "low"
         return "medium"
-
-    def _extract_device_name(self, description: str) -> str:
-        """Extract device name from description."""
-        import re
-        quoted = re.findall(r"'([^']*)'|\"([^\"]*)\"", description)
-        if quoted:
-            return quoted[0][0] or quoted[0][1]
-        return "Fitbit Device"
 
     def _extract_goals(self, description: str) -> List[Dict]:
         """Extract goals from description."""
@@ -1518,7 +1534,7 @@ class WhatsAppApp(BaseApp):
             "content": message_content,
             "timestamp": timestamp
         }
-        self.state["message_history"].append(message)
+        self._append_to_history("message_history", message)
 
         return AppLogEntry(
             timestamp=timestamp,
@@ -1546,7 +1562,7 @@ class WhatsAppApp(BaseApp):
             "content": f"[{media_type}]" + (f": {caption}" if caption else ""),
             "timestamp": timestamp
         }
-        self.state["message_history"].append(message)
+        self._append_to_history("message_history", message)
 
         return AppLogEntry(
             timestamp=timestamp,
@@ -1798,7 +1814,7 @@ class ChaseApp(BaseApp):
         if account:
             account["balance"] -= amount
 
-        # Record transaction
+        # Record transaction (bounded)
         transaction = {
             "transaction_id": f"BILL{uuid.uuid4().hex[:8].upper()}",
             "transaction_date": timestamp.split()[0],
@@ -1807,7 +1823,7 @@ class ChaseApp(BaseApp):
             "transaction_type": ChaseTransactionType.DEBIT.value,
             "category": ChaseCategory.BILLS.value
         }
-        self.state["transaction_history"].append(transaction)
+        self._append_to_history("transaction_history", transaction)
 
         return AppLogEntry(
             timestamp=timestamp,
@@ -2077,7 +2093,7 @@ class RobinhoodApp(BaseApp):
             }
             self.state["holdings"].append(new_holding)
 
-        # Record transaction
+        # Record transaction (bounded)
         transaction_id = f"TXN{uuid.uuid4().hex[:8].upper()}"
         transaction = {
             "transaction_id": transaction_id,
@@ -2088,7 +2104,7 @@ class RobinhoodApp(BaseApp):
             "price": current_price,
             "timestamp": timestamp
         }
-        self.state["transaction_history"].append(transaction)
+        self._append_to_history("transaction_history", transaction)
 
         return AppLogEntry(
             timestamp=timestamp,
@@ -2130,7 +2146,7 @@ class RobinhoodApp(BaseApp):
             # Add cash
             self.state["cash_balance"] += quantity * current_price
 
-        # Record transaction
+        # Record transaction (bounded)
         transaction_id = f"TXN{uuid.uuid4().hex[:8].upper()}"
         transaction = {
             "transaction_id": transaction_id,
@@ -2141,7 +2157,7 @@ class RobinhoodApp(BaseApp):
             "price": current_price,
             "timestamp": timestamp
         }
-        self.state["transaction_history"].append(transaction)
+        self._append_to_history("transaction_history", transaction)
 
         return AppLogEntry(
             timestamp=timestamp,
@@ -2400,7 +2416,7 @@ class GmailApp(BaseApp):
             "is_read": True,
             "labels": ["sent"]
         }
-        self.state["sent_emails"].append(email)
+        self._append_to_history("sent_emails", email)
 
         return AppLogEntry(
             timestamp=timestamp,
@@ -2442,7 +2458,7 @@ class GmailApp(BaseApp):
             "is_read": True,
             "labels": ["sent"]
         }
-        self.state["sent_emails"].append(reply_email)
+        self._append_to_history("sent_emails", reply_email)
 
         return AppLogEntry(
             timestamp=timestamp,
@@ -2555,7 +2571,7 @@ class LLMAssistantApp(BaseApp):
             "created_at": timestamp
         }
         
-        self.state["conversations"].append(conversation)
+        self._append_to_history("conversations", conversation)
         self._current_conversation_id = conversation_id
 
         return AppLogEntry(
@@ -2592,7 +2608,7 @@ class LLMAssistantApp(BaseApp):
                 "messages": [],
                 "created_at": timestamp
             }
-            self.state["conversations"].append(conversation)
+            self._append_to_history("conversations", conversation)
 
         # Create user message
         user_msg_id = f"MSG{uuid.uuid4().hex[:8].upper()}"
@@ -2732,7 +2748,7 @@ class LinkedInApp(BaseApp):
         company = self._extract_quoted(description) or "Company"
         title = "Position"
         experience = {"company": company, "title": title, "start_date": timestamp.split()[0][:7], "end_date": None}
-        self.state["experiences"].append(experience)
+        self._append_to_history("experiences", experience)
         return AppLogEntry(timestamp=timestamp, app_name=self.app_name, api_name="AddExperience",
             request={"company": company, "title": title, "start_date": experience["start_date"]},
             response={"experience": experience, "total_experiences": len(self.state["experiences"])})
@@ -2740,7 +2756,7 @@ class LinkedInApp(BaseApp):
     def _add_skill(self, timestamp: str, description: str, context: Dict[str, Any]) -> AppLogEntry:
         skill = self._extract_quoted(description) or "New Skill"
         if skill not in self.state["skills"]:
-            self.state["skills"].append(skill)
+            self._append_to_history("skills", skill)
         return AppLogEntry(timestamp=timestamp, app_name=self.app_name, api_name="AddSkill",
             request={"skill": skill}, response={"skills": self.state["skills"]})
 
@@ -2748,7 +2764,7 @@ class LinkedInApp(BaseApp):
         content = self._extract_quoted(description) or description[:200]
         post_id = f"POST{uuid.uuid4().hex[:8].upper()}"
         post = {"post_id": post_id, "author": self.user_id, "content": content, "timestamp": timestamp, "likes_count": 0}
-        self.state["posts"].append(post)
+        self._append_to_history("posts", post)
         return AppLogEntry(timestamp=timestamp, app_name=self.app_name, api_name="PostUpdate",
             request={"content": content}, response={"post": post})
 
@@ -2843,7 +2859,7 @@ class NotionApp(BaseApp):
         content = description[:500]
         page_id = f"PAGE{uuid.uuid4().hex[:8].upper()}"
         page = {"page_id": page_id, "title": title, "content": content, "created_at": timestamp, "updated_at": timestamp}
-        self.state["pages"].append(page)
+        self._append_to_history("pages", page)
         return AppLogEntry(timestamp=timestamp, app_name=self.app_name, api_name="CreatePage",
             request={"title": title, "content": content}, response={"page": page})
 
@@ -2857,7 +2873,7 @@ class NotionApp(BaseApp):
             page["content"] = description[:500]
         else:
             page = {"page_id": page_id, "title": "Updated Page", "content": description[:500], "created_at": timestamp, "updated_at": timestamp}
-            self.state["pages"].append(page)
+            self._append_to_history("pages", page)
         return AppLogEntry(timestamp=timestamp, app_name=self.app_name, api_name="UpdatePage",
             request={"page_id": page_id}, response={"page": page})
 
@@ -2874,7 +2890,7 @@ class NotionApp(BaseApp):
         entry_id = f"ENTRY{uuid.uuid4().hex[:8].upper()}"
         properties = {"name": description[:50], "status": "active"}
         entry = {"entry_id": entry_id, "database_name": database_name, "properties": properties, "created_at": timestamp}
-        self.state["database_entries"].append(entry)
+        self._append_to_history("database_entries", entry)
         return AppLogEntry(timestamp=timestamp, app_name=self.app_name, api_name="CreateDatabaseEntry",
             request={"database_name": database_name, "properties": properties}, response={"entry": entry})
 
@@ -2928,7 +2944,7 @@ class NetflixApp(BaseApp):
         title_id = self._extract_title_id(description)
         title = self._get_or_create_title(title_id, description)
         watch_record = {"title_id": title_id, "watched_at": timestamp, "duration_watched": random.randint(30, 120), "completed": random.choice([True, False])}
-        self.state["watch_history"].append(watch_record)
+        self._append_to_history("watch_history", watch_record)
         return AppLogEntry(timestamp=timestamp, app_name=self.app_name, api_name="PlayContent",
             request={"title_id": title_id},
             response={"title": title, "playing_status": PlayingStatus.PLAYING.value, "subscription_plan": self.state["subscription_plan"], "play_started_at": timestamp})
@@ -2936,7 +2952,7 @@ class NetflixApp(BaseApp):
     def _add_to_my_list(self, timestamp: str, description: str, context: Dict[str, Any]) -> AppLogEntry:
         title_id = self._extract_title_id(description)
         if title_id not in self.state["my_list"]:
-            self.state["my_list"].append(title_id)
+            self._append_to_history("my_list", title_id)
         return AppLogEntry(timestamp=timestamp, app_name=self.app_name, api_name="AddToMyList",
             request={"title_id": title_id}, response={"my_list": self.state["my_list"]})
 
@@ -3017,7 +3033,7 @@ class GoodreadsApp(BaseApp):
         shelf = "want-to-read" if "want" in description.lower() else "currently-reading" if "current" in description.lower() else "read"
         shelf_entry = {"book_id": book_id, "shelf": shelf, "added_at": timestamp}
         self.state["shelves"] = [s for s in self.state["shelves"] if s["book_id"] != book_id]
-        self.state["shelves"].append(shelf_entry)
+        self._append_to_history("shelves", shelf_entry)
         return AppLogEntry(timestamp=timestamp, app_name=self.app_name, api_name="AddToShelf",
             request={"book_id": book_id, "shelf": shelf}, response={"shelf_entry": shelf_entry})
 
@@ -3036,7 +3052,7 @@ class GoodreadsApp(BaseApp):
         quoted = re.findall(r"'([^']*)'|\"([^\"]*)\"", description)
         review_text = (quoted[0][0] or quoted[0][1]) if quoted else "Great book!"
         review = {"book_id": book_id, "rating": random.randint(3, 5), "review_text": review_text, "reviewed_at": timestamp}
-        self.state["reviews"].append(review)
+        self._append_to_history("reviews", review)
         return AppLogEntry(timestamp=timestamp, app_name=self.app_name, api_name="WriteReview",
             request={"book_id": book_id, "review_text": review_text}, response={"review": review})
 
@@ -3103,7 +3119,7 @@ class InstagramApp(BaseApp):
         caption = (quoted[0][0] or quoted[0][1]) if quoted else None
         post_id = f"POST{uuid.uuid4().hex[:8].upper()}"
         post = {"post_id": post_id, "author": self.user_id, "content_type": "story", "caption": caption or "", "timestamp": timestamp, "likes_count": 0}
-        self.state["posts"].append(post)
+        self._append_to_history("posts", post)
         return AppLogEntry(timestamp=timestamp, app_name=self.app_name, api_name="PostStory",
             request={"content_type": content_type, "caption": caption}, response={"post": post})
 
@@ -3138,7 +3154,7 @@ class InstagramApp(BaseApp):
     def _follow_user(self, timestamp: str, description: str, context: Dict[str, Any]) -> AppLogEntry:
         user_id = f"user{random.randint(1, 10000)}"
         if user_id not in self.state["following"]:
-            self.state["following"].append(user_id)
+            self._append_to_history("following", user_id)
         return AppLogEntry(timestamp=timestamp, app_name=self.app_name, api_name="FollowUser",
             request={"user_id": user_id}, response={"following": self.state["following"][-10:]})
 

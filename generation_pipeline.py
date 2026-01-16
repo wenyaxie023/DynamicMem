@@ -8,11 +8,11 @@ from datetime import date, datetime, time, timedelta
 from collections import Counter
 from pathlib import Path
 import random
-from typing import Any, Dict, List, Optional, Sequence, Tuple
+from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 import dotenv
 dotenv.load_dotenv()
 import os
-
+from tqdm import tqdm
 from mem_bench.behavior_and_conversation.atomic_events_generator import (
     AtomicEventsRequest,
     generate_atomic_events,
@@ -7647,7 +7647,7 @@ class GenerationPipeline:
                 window_id, "No world background available for this window."
             )
             user_basic_profile_str = json.dumps(user_basic_profile, indent=2, ensure_ascii=False)
-            import pdb; pdb.set_trace()
+            # import pdb; pdb.set_trace()
             
             events_chains_result = generate_events_chain(
                 self.llm_client,
@@ -8331,8 +8331,15 @@ def debug_generate_events_chain() -> None:
 
     # domain_name = "Family & Close Relationships"
     # domain_scope_definition="Describes users' family structure and intimate relationships, such as partnerships, parenting roles, and household responsibilities. It captures close interpersonal bonds that shape daily routines, obligations, and life decisions."
-    domain_name = "Work & Education"    
-    domain_scope_definition="Covers users' professional roles, career development, and learning activities, including employment status, occupational goals, skill acquisition, and educational pursuits. It reflects how users engage in productive activities and long-term capability building through work- and study-related behaviors."
+    
+    # domain_name = "Social & Community"
+    # domain_scope_definition="Represents users' social networks and community involvement beyond the core family, including friendships, group participation, and civic activities. It reflects how users interact with broader social contexts and maintain social connectedness."
+   
+    domain_name = "Finances & Material Living"
+    domain_scope_definition="Covers users' financial situations and material conditions, including income level, spending patterns, housing, and access to material resources. It reflects how users allocate economic resources and maintain living standards."
+
+    # domain_name = "Work & Education"
+    # domain_scope_definition="Covers users' professional roles, career development, and learning activities, including employment status, occupational goals, skill acquisition, and educational pursuits. It reflects how users engage in productive activities and long-term capability building through work- and study-related behaviors."
     domain = Domain(domain_name=domain_name, domain_scope_definition=domain_scope_definition)
  
     # NOTE: generate_events_chain_for_domain expects the full multi-domain dynamic_profiles dict.
@@ -8347,11 +8354,31 @@ def debug_generate_events_chain() -> None:
     )
     print(events_chain_windows)
 
-def debug_generate_real_data() -> None:
-    """Generate app logs by consuming events in chronological order using an LLM."""
+def debug_generate_real_data(cutoff_date: Optional[str] = None) -> None:
+    """Generate app logs by consuming events in chronological order using an LLM.
+    
+    Args:
+        cutoff_date: Optional cutoff date in "YYYY-MM-DD" or "MM.DD" format.
+                     If provided, only events up to (and including) this date will be processed.
+                     For example: "2024-03-31" or "3.31" will only generate data from 2024-01-01 to 2024-03-31.
+    """
     base_dir = Path(__file__).resolve().parent
     model_name = "gemini-3-flash-preview"
     output_dir = base_dir / "generated_outputs_debug_v14" / _slugify(model_name)
+    
+    # Parse cutoff_date if provided
+    parsed_cutoff_date: Optional[str] = None
+    if cutoff_date:
+        # Handle MM.DD format (e.g., "3.31" -> "2024-03-31")
+        if "." in cutoff_date and "-" not in cutoff_date:
+            parts = cutoff_date.split(".")
+            if len(parts) == 2:
+                month, day = parts
+                parsed_cutoff_date = f"2024-{int(month):02d}-{int(day):02d}"
+        else:
+            # Assume YYYY-MM-DD format
+            parsed_cutoff_date = cutoff_date
+        print(f"Cutoff date set to: {parsed_cutoff_date}")
 
     try:
         from pydantic import BaseModel, Field, ValidationError
@@ -8453,8 +8480,8 @@ def debug_generate_real_data() -> None:
         return value
 
 
-    # events_files = sorted(output_dir.glob("*_events_chain.json"))
-    events_files = sorted(output_dir.glob("work_education_events_chain.json"))
+    events_files = sorted(output_dir.glob("*_events_chain.json"))
+    # events_files = sorted(output_dir.glob("work_education_events_chain.json"))
     if not events_files:
         print("No events chain files found. Aborting app log generation.")
         return
@@ -8508,42 +8535,71 @@ def debug_generate_real_data() -> None:
             return [dict(event)]
         return []
 
-    def _chain_has_preference(chain: Dict[str, Any]) -> bool:
-        for item in chain.get("related_state_items", []):
+    def _get_windows_from_domain_data(domain_data: Any) -> List[Dict[str, Any]]:
+        """Extract windows list from domain data, handling different formats."""
+        # If domain_data is already a list of windows (new format)
+        if isinstance(domain_data, list):
+            return domain_data
+        if not isinstance(domain_data, dict):
+            return []
+        # Try windows_by_id (dict format)
+        windows_by_id = domain_data.get("windows_by_id")
+        if isinstance(windows_by_id, dict):
+            return [windows_by_id[k] for k in sorted(windows_by_id.keys())]
+        # Try windows_by_id (list format)
+        if isinstance(windows_by_id, list):
+            return windows_by_id
+        # Fallback to windows key
+        return domain_data.get("windows", [])
+
+    def _chain_has_state_category(chain: Dict[str, Any], target_categories: set[str]) -> bool:
+        """Check if chain contains state items matching target categories."""
+        # Try both key names: related_state_items (merged format) and converted_state_items (legacy)
+        state_items = chain.get("related_state_items") or chain.get("converted_state_items") or []
+        for item in state_items:
             if not isinstance(item, dict):
                 continue
             state_category = (item.get("state_category") or "").lower()
-            if state_category in {"preference", "preferences_state", "preferences"}:
+            if state_category in target_categories:
                 return True
         return False
 
-    def _select_preference_chains(
-        domain_data: Dict[str, Any],
+    def _chain_has_preference(chain: Dict[str, Any]) -> bool:
+        """Check if chain contains preference-related state items."""
+        return _chain_has_state_category(
+            chain, {"preference", "preferences_state", "preferences"}
+        )
+
+    def _chain_has_habit(chain: Dict[str, Any]) -> bool:
+        """Check if chain contains habit-related state items."""
+        return _chain_has_state_category(
+            chain, {"habit", "habits_state", "habits"}
+        )
+
+    def _select_chains_by_filter(
+        domain_data: Any,
         fallback_domain: str,
-        limit: int = 2,
+        chain_filter: Callable[[Dict[str, Any]], bool],
+        limit: Optional[int] = 2,
     ) -> List[Dict[str, Any]]:
+        """Select chains matching a filter function."""
         selected: List[Dict[str, Any]] = []
-        windows_by_id = domain_data.get("windows_by_id")
-        if isinstance(windows_by_id, dict):
-            windows = [windows_by_id[k] for k in sorted(windows_by_id.keys())]
-        elif isinstance(windows_by_id, list):
-            windows = windows_by_id
-        else:
-            windows = domain_data.get("windows", [])
+        windows = _get_windows_from_domain_data(domain_data)
+        # import pdb; pdb.set_trace()
 
         for window_data in windows:
             if not isinstance(window_data, dict):
                 continue
             domain_name = (
                 window_data.get("domain_name")
-                or domain_data.get("domain")
+                or (domain_data.get("domain") if isinstance(domain_data, dict) else None)
                 or fallback_domain
             )
             window_id = window_data.get("window_id", "")
             for chain_idx, chain in enumerate(window_data.get("event_chains", [])):
                 if not isinstance(chain, dict):
                     continue
-                if not _chain_has_preference(chain):
+                if not chain_filter(chain):
                     continue
                 chain_id = chain.get("chain_id") or f"{window_id}_chain_{chain_idx+1:02d}"
                 selected.append(
@@ -8554,30 +8610,53 @@ def debug_generate_real_data() -> None:
                         "chain_id": chain_id,
                     }
                 )
-                if len(selected) >= limit:
+                if limit is not None and limit > 0 and len(selected) >= limit:
                     return selected
         return selected
 
+    def _select_preference_chains(
+        domain_data: Any,
+        fallback_domain: str,
+        limit: int = 2,
+    ) -> List[Dict[str, Any]]:
+        """Select chains that contain preference-related state items."""
+        return _select_chains_by_filter(
+            domain_data, fallback_domain, _chain_has_preference, limit
+        )
+
+    def _select_habit_chains(
+        domain_data: Any,
+        fallback_domain: str,
+        limit: int = 2,
+    ) -> List[Dict[str, Any]]:
+        """Select chains that contain habit-related state items."""
+        return _select_chains_by_filter(
+            domain_data, fallback_domain, _chain_has_habit, limit
+        )
+
+    def _select_all_chains(
+        domain_data: Any,
+        fallback_domain: str,
+    ) -> List[Dict[str, Any]]:
+        """Select all chains without any filter."""
+        return _select_chains_by_filter(
+            domain_data, fallback_domain, lambda _: True, limit=None
+        )
+
     def _collect_events(
-        domain_data: Dict[str, Any],
+        domain_data: Any,
         fallback_domain: str,
         selected_chain_keys: Optional[set[Tuple[str, int]]] = None,
     ) -> List[Dict[str, Any]]:
         events: List[Dict[str, Any]] = []
-        windows_by_id = domain_data.get("windows_by_id")
-        if isinstance(windows_by_id, dict):
-            windows = [windows_by_id[k] for k in sorted(windows_by_id.keys())]
-        elif isinstance(windows_by_id, list):
-            windows = windows_by_id
-        else:
-            windows = domain_data.get("windows", [])
+        windows = _get_windows_from_domain_data(domain_data)
 
         for window_data in windows:
             if not isinstance(window_data, dict):
                 continue
             domain_name = (
                 window_data.get("domain_name")
-                or domain_data.get("domain")
+                or (domain_data.get("domain") if isinstance(domain_data, dict) else None)
                 or fallback_domain
             )
             window_id = window_data.get("window_id", "")
@@ -8589,7 +8668,8 @@ def debug_generate_real_data() -> None:
                     if (window_id, chain_idx) not in selected_chain_keys:
                         continue
                 chain_id = chain.get("chain_id") or f"{window_id}_chain_{chain_idx+1:02d}"
-                simulated_state_items = chain.get("simulated_state_items", [])
+                # Use related_state_items (merged format), converted_state_items, or simulated_state_items (legacy)
+                related_state_items = chain.get("related_state_items") or chain.get("converted_state_items") or chain.get("simulated_state_items") or []
                 for event in chain.get("events", []):
                     if not isinstance(event, dict):
                         continue
@@ -8597,7 +8677,7 @@ def debug_generate_real_data() -> None:
                         payload["domain_name"] = domain_name
                         payload["window_id"] = window_id
                         payload["time_range"] = time_range
-                        payload["simulated_state_items"] = simulated_state_items
+                        payload["related_state_items"] = related_state_items
                         # Add chain identification for tracking previous logs within same chain
                         payload["chain_id"] = chain_id
                         payload["chain_idx"] = chain_idx
@@ -8605,15 +8685,20 @@ def debug_generate_real_data() -> None:
         return events
 
     all_events: List[Dict[str, Any]] = []
+    # import pdb; pdb.set_trace()
     for events_file in events_files:
         with open(events_file, "r") as f:
             domain_data = json.load(f)
-        fallback_domain = domain_data.get("domain") or "Unknown"
-        # import pdb; pdb.set_trace()
-        selected_chains = _select_preference_chains(domain_data, fallback_domain, limit=2)
-        import pdb; pdb.set_trace()
+        # Extract fallback domain from filename or data
+        fallback_domain = (
+            (domain_data.get("domain") if isinstance(domain_data, dict) else None)
+            or events_file.stem.replace("_events_chain_w", "_w").split("_w")[0].replace("_", " ").title()
+            or "Unknown"
+        )
+        # Select all chains within cutoff
+        selected_chains = _select_all_chains(domain_data, fallback_domain)
         if not selected_chains:
-            print(f"No preference chains found in {events_file}.")
+            print(f"No chains found in {events_file}.")
             continue
         print(f"Selected {len(selected_chains)} chains from {events_file}:")
         for entry in selected_chains:
@@ -8693,6 +8778,19 @@ def debug_generate_real_data() -> None:
 
     all_events.sort(key=_event_sort_key)
 
+    # Filter events by cutoff_date if provided
+    if parsed_cutoff_date:
+        original_count = len(all_events)
+        filtered_events = []
+        for event in all_events:
+            timestamp = event.get("timestamp", "")
+            # Extract date portion from timestamp (format: "YYYY-MM-DD HH:MM:SS")
+            event_date = timestamp.split(" ")[0] if timestamp else ""
+            if event_date and event_date <= parsed_cutoff_date:
+                filtered_events.append(event)
+        all_events = filtered_events
+        print(f"Filtered events by cutoff date {parsed_cutoff_date}: {original_count} -> {len(all_events)} events")
+
     domain_event_counts: Dict[str, int] = {}
     for event in all_events:
         domain_name = event.get("domain_name", "Unknown")
@@ -8751,6 +8849,14 @@ def debug_generate_real_data() -> None:
         with open(profile_file, "r") as f:
             user_profile = json.load(f)
 
+    # Maximum number of API call history entries to keep per app
+    MAX_API_CALL_HISTORY = 20
+    
+    # Maximum history length for different field types (smaller for large objects)
+    # MAX_HISTORY_SMALL = 10  # For complex objects (emails, transactions, orders)
+    # MAX_HISTORY_MEDIUM = 15  # For medium objects (posts, songs, products)
+    MAX_HISTORY_LARGE = 20  # For simple items (strings, IDs)
+    
     def _record_app_call_state(
         state: Dict[str, Any],
         event: Dict[str, Any],
@@ -8767,12 +8873,294 @@ def debug_generate_real_data() -> None:
                 "response": response_payload,
             }
         )
-        state["last_api_call"] = history[-1]
+        # Keep only the most recent entries to avoid state explosion
+        if len(history) > MAX_API_CALL_HISTORY:
+            state["api_call_history"] = history[-MAX_API_CALL_HISTORY:]
+        state["last_api_call"] = state["api_call_history"][-1]
         for key in ("session_id", "conversation_id", "device_id", "account_id", "order_id"):
             if key in response_payload and not state.get(key):
                 state[key] = response_payload[key]
             if key in request_payload and not state.get(key):
                 state[key] = request_payload[key]
+        
+        # Update app-specific state fields based on the API call
+        app_name = event.get("app_name", "")
+        api_name = event.get("api_name", "")
+        timestamp = event.get("timestamp", "")
+        
+        def _append_to_state_history(key: str, item: Any, max_length: int = MAX_HISTORY_MEDIUM) -> None:
+            """Helper to append to a state history list with bounded size."""
+            state_history = state.setdefault(key, [])
+            state_history.append(item)
+            if len(state_history) > max_length:
+                state[key] = state_history[-max_length:]
+        
+        def _trim_state_history(key: str, max_length: int) -> None:
+            """Trim an existing state history list to bounded size."""
+            if key in state and isinstance(state[key], list) and len(state[key]) > max_length:
+                state[key] = state[key][-max_length:]
+        
+        # ==================== Google ====================
+        if app_name == "Google":
+            if api_name == "Search":
+                query = request_payload.get("query", "")
+                results = response_payload.get("results", [])
+                search_record = {
+                    "query": query,
+                    "results": results[:3],  # Keep only top 3 results to save space
+                    "searched_at": timestamp,
+                    "clicked_result_id": None
+                }
+                _append_to_state_history("search_history", search_record, MAX_HISTORY_SMALL)
+            elif api_name == "ClickResult":
+                result_id = request_payload.get("result_id", "")
+                search_query = request_payload.get("search_query", "")
+                for record in reversed(state.get("search_history", [])):
+                    if record.get("query") == search_query:
+                        record["clicked_result_id"] = result_id
+                        break
+        
+        # ==================== Amazon ====================
+        elif app_name == "Amazon":
+            if api_name == "SearchProducts":
+                query = request_payload.get("query", "")
+                _append_to_state_history("search_history", query, MAX_HISTORY_LARGE)
+            elif api_name == "ShowProduct":
+                product = response_payload.get("product", {})
+                if product:
+                    viewed_ids = [p.get("product_id") for p in state.get("viewed_products", [])]
+                    if product.get("product_id") not in viewed_ids:
+                        _append_to_state_history("viewed_products", product, MAX_HISTORY_MEDIUM)
+            elif api_name == "AddToCart":
+                product_id = request_payload.get("product_id", "")
+                quantity = request_payload.get("quantity", 1)
+                cart = state.setdefault("cart", [])
+                found = False
+                for item in cart:
+                    if item.get("product_id") == product_id:
+                        item["quantity"] = item.get("quantity", 1) + quantity
+                        found = True
+                        break
+                if not found:
+                    cart.append({"product_id": product_id, "quantity": quantity})
+                _trim_state_history("cart", MAX_HISTORY_SMALL)
+            elif api_name == "AddToWishlist":
+                product_id = request_payload.get("product_id", "")
+                wishlist = state.setdefault("wishlist", [])
+                if product_id not in [p.get("product_id") for p in wishlist]:
+                    _append_to_state_history("wishlist", {"product_id": product_id}, MAX_HISTORY_MEDIUM)
+            elif api_name == "Checkout":
+                order = response_payload.get("order", {})
+                if order:
+                    _append_to_state_history("order_history", order, MAX_HISTORY_SMALL)
+                state["cart"] = []
+        
+        # ==================== Spotify ====================
+        elif app_name == "Spotify":
+            if api_name == "PlaySong":
+                song = response_payload.get("song", {})
+                if song:
+                    play_record = {
+                        "song_id": song.get("song_id", ""),
+                        "played_at": timestamp,
+                        "duration_played_minutes": song.get("duration_minutes", 3)
+                    }
+                    _append_to_state_history("play_history", play_record, MAX_HISTORY_MEDIUM)
+            elif api_name == "FollowArtist":
+                artist_id = request_payload.get("artist_id", "")
+                if artist_id:
+                    followed = state.setdefault("followed_artists", [])
+                    if artist_id not in followed:
+                        _append_to_state_history("followed_artists", artist_id, MAX_HISTORY_LARGE)
+            elif api_name == "AddToPlaylist":
+                # Limit playlists size
+                _trim_state_history("playlists", MAX_HISTORY_SMALL)
+        
+        # ==================== Fitbit ====================
+        elif app_name == "Fitbit":
+            if api_name == "LogWorkout":
+                workout = response_payload.get("workout", {})
+                if workout:
+                    _append_to_state_history("workout_history", workout, MAX_HISTORY_MEDIUM)
+            elif api_name == "SyncDevice":
+                sync_data = response_payload.get("sync_data", {})
+                if sync_data:
+                    _append_to_state_history("daily_syncs", sync_data, MAX_HISTORY_SMALL)
+            elif api_name == "SetGoals":
+                # Goals are typically small, keep limited
+                _trim_state_history("goals", MAX_HISTORY_SMALL)
+        
+        # ==================== WhatsApp ====================
+        elif app_name == "WhatsApp":
+            if api_name in ("SendMessage", "SendMedia"):
+                message = response_payload.get("message", {})
+                if message:
+                    _append_to_state_history("message_history", message, MAX_HISTORY_MEDIUM)
+            elif api_name == "GetMessages":
+                # Trim message history on read
+                _trim_state_history("message_history", MAX_HISTORY_MEDIUM)
+        
+        # ==================== Chase ====================
+        elif app_name == "Chase":
+            if api_name == "PayBill":
+                transaction = {
+                    "transaction_id": response_payload.get("transaction_id", ""),
+                    "transaction_date": timestamp.split()[0] if timestamp else "",
+                    "merchant": request_payload.get("biller_name", ""),
+                    "amount": request_payload.get("amount", 0),
+                    "transaction_type": "debit",
+                    "category": "bills"
+                }
+                _append_to_state_history("transaction_history", transaction, MAX_HISTORY_SMALL)
+            elif api_name == "TransferMoney":
+                transaction = {
+                    "transaction_id": response_payload.get("transaction_id", ""),
+                    "transaction_date": timestamp.split()[0] if timestamp else "",
+                    "amount": request_payload.get("amount", 0),
+                    "transaction_type": "transfer",
+                    "from_account": request_payload.get("from_account_id", ""),
+                    "to_account": request_payload.get("to_account_id", "")
+                }
+                _append_to_state_history("transaction_history", transaction, MAX_HISTORY_SMALL)
+        
+        # ==================== Robinhood ====================
+        elif app_name == "Robinhood":
+            if api_name in ("BuyStock", "SellStock"):
+                transaction = response_payload.get("transaction", {})
+                if transaction:
+                    _append_to_state_history("transaction_history", transaction, MAX_HISTORY_SMALL)
+            # Trim watchlist
+            _trim_state_history("watchlist", MAX_HISTORY_LARGE)
+        
+        # ==================== Gmail ====================
+        elif app_name == "Gmail":
+            if api_name == "SendEmail":
+                email = response_payload.get("email", {})
+                if email:
+                    _append_to_state_history("sent_emails", email, MAX_HISTORY_SMALL)
+            elif api_name == "ReplyEmail":
+                email = response_payload.get("email", {})
+                if email:
+                    _append_to_state_history("sent_emails", email, MAX_HISTORY_SMALL)
+            # Trim inbox
+            _trim_state_history("inbox", MAX_HISTORY_SMALL)
+        
+        # ==================== LinkedIn ====================
+        elif app_name == "LinkedIn":
+            if api_name == "PostUpdate":
+                post = response_payload.get("post", {})
+                if post:
+                    _append_to_state_history("posts", post, MAX_HISTORY_MEDIUM)
+            elif api_name == "AddExperience":
+                experience = response_payload.get("experience", {})
+                if experience:
+                    _append_to_state_history("experiences", experience, MAX_HISTORY_SMALL)
+            elif api_name == "AddSkill":
+                skill = request_payload.get("skill", "")
+                if skill:
+                    skills = state.setdefault("skills", [])
+                    if skill not in skills:
+                        _append_to_state_history("skills", skill, MAX_HISTORY_LARGE)
+            elif api_name == "SendConnectionRequest":
+                user_id = request_payload.get("user_id", "")
+                if user_id:
+                    _append_to_state_history("connections", user_id, MAX_HISTORY_LARGE)
+        
+        # ==================== Notion ====================
+        elif app_name == "Notion":
+            if api_name == "CreatePage":
+                page = response_payload.get("page", {})
+                if page:
+                    _append_to_state_history("pages", page, MAX_HISTORY_SMALL)
+            elif api_name == "UpdatePage":
+                page = response_payload.get("page", {})
+                if page:
+                    # Update existing or add new
+                    pages = state.get("pages", [])
+                    updated = False
+                    for i, p in enumerate(pages):
+                        if p.get("page_id") == page.get("page_id"):
+                            pages[i] = page
+                            updated = True
+                            break
+                    if not updated:
+                        _append_to_state_history("pages", page, MAX_HISTORY_SMALL)
+            elif api_name == "CreateDatabaseEntry":
+                entry = response_payload.get("entry", {})
+                if entry:
+                    _append_to_state_history("database_entries", entry, MAX_HISTORY_SMALL)
+        
+        # ==================== Netflix ====================
+        elif app_name == "Netflix":
+            if api_name == "PlayContent":
+                watch_record = {
+                    "title_id": request_payload.get("title_id", ""),
+                    "watched_at": timestamp
+                }
+                _append_to_state_history("watch_history", watch_record, MAX_HISTORY_MEDIUM)
+            elif api_name == "AddToMyList":
+                title_id = request_payload.get("title_id", "")
+                my_list = state.setdefault("my_list", [])
+                if title_id and title_id not in my_list:
+                    _append_to_state_history("my_list", title_id, MAX_HISTORY_LARGE)
+        
+        # ==================== Goodreads ====================
+        elif app_name == "Goodreads":
+            if api_name == "AddToShelf":
+                shelf_entry = response_payload.get("shelf_entry", {})
+                if shelf_entry:
+                    _append_to_state_history("shelves", shelf_entry, MAX_HISTORY_MEDIUM)
+            elif api_name == "WriteReview":
+                review = response_payload.get("review", {})
+                if review:
+                    _append_to_state_history("reviews", review, MAX_HISTORY_SMALL)
+        
+        # ==================== Instagram ====================
+        elif app_name == "Instagram":
+            if api_name == "PostStory":
+                post = response_payload.get("post", {})
+                if post:
+                    _append_to_state_history("posts", post, MAX_HISTORY_MEDIUM)
+            elif api_name == "FollowUser":
+                user_id = request_payload.get("user_id", "")
+                following = state.setdefault("following", [])
+                if user_id and user_id not in following:
+                    _append_to_state_history("following", user_id, MAX_HISTORY_LARGE)
+            elif api_name == "UnfollowUser":
+                user_id = request_payload.get("user_id", "")
+                following = state.get("following", [])
+                if user_id in following:
+                    following.remove(user_id)
+            # Trim followers list (it's typically large)
+            _trim_state_history("followers", MAX_HISTORY_LARGE)
+        
+        # ==================== LLM Assistant ====================
+        elif app_name == "LLM Assistant":
+            if api_name == "CreateConversation":
+                conv_id = response_payload.get("conversation_id", "")
+                if conv_id:
+                    conversation = {
+                        "conversation_id": conv_id,
+                        "messages": [],
+                        "created_at": timestamp
+                    }
+                    _append_to_state_history("conversations", conversation, MAX_HISTORY_SMALL)
+            elif api_name == "ContinueConversation":
+                conv_id = request_payload.get("conversation_id", "")
+                user_msg = response_payload.get("user_message", {})
+                assistant_msg = response_payload.get("assistant_response", {})
+                # Find and update conversation
+                for conv in state.get("conversations", []):
+                    if conv.get("conversation_id") == conv_id:
+                        messages = conv.setdefault("messages", [])
+                        if user_msg:
+                            messages.append(user_msg)
+                        if assistant_msg:
+                            messages.append(assistant_msg)
+                        # Limit messages per conversation
+                        if len(messages) > MAX_HISTORY_SMALL * 2:
+                            conv["messages"] = messages[-(MAX_HISTORY_SMALL * 2):]
+                        break
 
     # Convert events to app logs in chronological order
     print("\nGenerating app logs from events...")
@@ -8835,7 +9223,7 @@ def debug_generate_real_data() -> None:
             },
             "chain": {
                 "chain_id": chain_id,
-                "simulated_state_items": event.get("simulated_state_items", []),
+                "related_state_items": event.get("related_state_items", []),
             },
         }
         
@@ -8845,12 +9233,15 @@ def debug_generate_real_data() -> None:
             event_payload["event"]["note"] = "This event was sampled from multiple possible app/api variations for a recurring habit. The current call uses the sampled app/api shown above."
         
         # Get previous logs from the same chain for consistency
+        # Limit to most recent 20 entries to keep prompt size manageable
+        MAX_PREVIOUS_CHAIN_LOGS = 20
         previous_chain_logs = chain_logs_history.get(chain_id, [])
+        previous_chain_logs = previous_chain_logs[-MAX_PREVIOUS_CHAIN_LOGS:]
         # Format previous logs for prompt (simplified view)
         previous_logs_formatted = [
             {
-                "event_id": log.get("event_id"),
-                "timestamp": log.get("timestamp"),
+                # "event_id": log.get("event_id"),
+                # "timestamp": log.get("timestamp"),
                 "app_name": log.get("app_name"),
                 "api_name": log.get("api_name"),
                 "request": log.get("request"),
@@ -8907,8 +9298,33 @@ def debug_generate_real_data() -> None:
             llm_result = client.generate_json(prompt, response_schema=response_schema)
             llm_raw = llm_result.data
 
+            # Normalize LLM output: handle common key name variations
+            # LLM sometimes uses request/response instead of input/output
+            def _normalize_app_log_payload(data: Dict[str, Any]) -> Dict[str, Any]:
+                """Convert request/response keys to input/output if needed."""
+                if data is None:
+                    return {}
+                normalized = dict(data)
+                # Map request -> input if input is missing
+                if "input" not in normalized and "request" in normalized:
+                    req = normalized.pop("request")
+                    # Handle nested {"request": {"input": {...}}} case
+                    if isinstance(req, dict) and "input" in req:
+                        normalized["input"] = req["input"]
+                    else:
+                        normalized["input"] = req
+                # Map response -> output if output is missing
+                if "output" not in normalized and "response" in normalized:
+                    normalized["output"] = normalized.pop("response")
+                # Remove extraneous top-level fields that shouldn't be in the payload
+                for extra_key in ["event_id", "timestamp", "app_name", "api_name"]:
+                    normalized.pop(extra_key, None)
+                return normalized
+
+            normalized_data = _normalize_app_log_payload(llm_result.data or {})
+
             # First validate with generic AppCallPayload to ensure structure
-            payload_model = _pydantic_validate(AppCallPayload, llm_result.data or {})
+            payload_model = _pydantic_validate(AppCallPayload, normalized_data)
             payload = _pydantic_dump(payload_model)
 
             raw_input = payload.get("input") or {}
@@ -8999,9 +9415,15 @@ def debug_generate_real_data() -> None:
         ]
     else:
         target_app_events = all_events
-    app_specific_dir = output_dir / f"debug_app_{_slugify(target_app_name or 'all')}"
-    for event in target_app_events[:10]:
+    app_specific_dir = output_dir / f"debug_v5_app_{_slugify(target_app_name or 'all')}"
+    print(f"Generating app logs for {len(target_app_events)} events")
+    # import pdb; pdb.set_trace()
+
+    for i, event in tqdm(enumerate(target_app_events)):
         log = _generate_app_log_for_event(event, app_log_gen, app_specific_dir, chain_logs_history)
+        ## every 100 events, import pdb; pdb.set_trace()
+        # if i % 100 == 0:
+        #     import pdb; pdb.set_trace()
         if log:
             app_logs.append(log)
 
@@ -9062,6 +9484,51 @@ def debug_cross_domain_conflict_resolution_temporal() -> None:
     resolved_profiles = _apply_conflict_resolution_to_profiles(dynamic_profiles, data)
     _write_json(output_dir / "dynamic_profiles_conflict_resolved_claude.json", resolved_profiles)
 
+def merge_first_n_app_logs(
+    app_log_dir: Path,
+    n: int,
+    output_path: Optional[Path] = None,
+    pattern: str = "app_log_*.json",
+) -> Path:
+    """Merge the first N app log files in a directory into a single JSON file."""
+    if n <= 0:
+        raise ValueError("n must be a positive integer")
+
+    app_log_dir = Path(app_log_dir)
+    files = list(app_log_dir.glob(pattern))
+    if not files:
+        raise FileNotFoundError(f"No app log files found in {app_log_dir} with pattern {pattern}")
+
+    def _sort_key(path: Path) -> Tuple[int, str]:
+        match = re.search(r"app_log_e(\d+)", path.name)
+        if match:
+            return (int(match.group(1)), path.name)
+        return (10**12, path.name)
+
+    files = sorted(files, key=_sort_key)
+    selected_files = files[:n]
+
+    app_logs: List[Dict[str, Any]] = []
+    for path in selected_files:
+        with open(path, "r") as f:
+            app_logs.append(json.load(f))
+
+    if output_path is None:
+        output_path = app_log_dir / f"app_log_{n}.json"
+
+    output_data = {
+        "source_dir": str(app_log_dir),
+        "pattern": pattern,
+        "total_available": len(files),
+        "total_merged": len(app_logs),
+        "app_logs": app_logs,
+    }
+
+    with open(output_path, "w") as f:
+        json.dump(output_data, f, indent=2, ensure_ascii=False)
+
+    return output_path
+
 if __name__ == "__main__":
     # debug_cross_domain_conflict_resolution_temporal()
     # example_usage()
@@ -9085,7 +9552,9 @@ if __name__ == "__main__":
     # ===== prepare context for semantic events generation =====
     # debug_prepare_context_for_events_chain_generation()
     # debug_generate_events_chain()
+    # debug_generate_real_data(cutoff_date="2024-07-01")
     debug_generate_real_data()
+    # debug_generate_real_data(cutoff_date="2024-12-31")
     # debug_generate_real_data()
     # ===== prepare context for semantic events generation =====
 
