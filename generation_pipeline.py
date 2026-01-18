@@ -4928,6 +4928,8 @@ def _resolve_window_states(dynamic_profile_data: Dict) -> List[Dict]:
       - top-level "initial_state"
       - per-window *_delta sections with {op, *_name, delta, reason}
     Preserves change information (previous_value, change_reason, op) for each state item.
+
+    Now includes w0 (initial window) representing 2023 Q4 with all initial states marked as "acquire".
     """
     resolved: List[Dict] = []
     # Build initial snapshots from the top-level initial_state
@@ -4938,6 +4940,55 @@ def _resolve_window_states(dynamic_profile_data: Dict) -> List[Dict]:
     )
     current_preferences = _init_generic_state(
         initial_state.get("preferences_state")
+    )
+
+    # Create w0 (initial window) for 2023 Q4 with all initial states as "acquire"
+    w0_attributes_changes: Dict[tuple[str, str], Dict[str, object]] = {}
+    for attr_type in ("singular", "collections"):
+        entries = current_attributes.get(attr_type) or {}
+        for name, value in entries.items():
+            w0_attributes_changes[(attr_type, name)] = {
+                "op": "acquire",
+                "previous_value": None,
+                "change_reason": "Initial state at the start of tracking period.",
+            }
+
+    w0_habits_changes: Dict[str, Dict[str, object]] = {}
+    for name, entry in current_habits.items():
+        w0_habits_changes[name] = {
+            "op": "acquire",
+            "previous_value": None,
+            "change_reason": "Initial habit at the start of tracking period.",
+        }
+
+    w0_preferences_changes: Dict[str, Dict[str, object]] = {}
+    for name, entry in current_preferences.items():
+        w0_preferences_changes[name] = {
+            "op": "acquire",
+            "previous_value": None,
+            "change_reason": "Initial preference at the start of tracking period.",
+        }
+
+    # Get time_range from initial_state if available, otherwise default to 2023 Q4
+    w0_time_range = initial_state.get("time_range") or ["2023-10-01", "2023-12-31"]
+    w0_description = initial_state.get("summary") or "Initial state window representing the last quarter of 2023."
+
+    resolved.append(
+        {
+            "window_id": "w0",
+            "time_range": w0_time_range,
+            "window_description": w0_description,
+            "summary": w0_description,
+            "user_attributes_state": _user_attributes_state_to_list(
+                current_attributes, changes=w0_attributes_changes
+            ),
+            "habits_state": _state_dict_to_list(
+                current_habits, changes=w0_habits_changes
+            ),
+            "preferences_state": _state_dict_to_list(
+                current_preferences, changes=w0_preferences_changes
+            ),
+        }
     )
 
     for window in dynamic_profile_data.get("time_windows", []):
@@ -7243,6 +7294,169 @@ class GenerationPipeline:
             except TypeError:
                 return str(value)
 
+        # Keys to skip entirely from required_observable_fields
+        SKIP_OBSERVABLE_KEYS = {"schedule_dates", "priority", "signals"}
+        # Keys to treat as atomic (don't recurse into sub-fields)
+        ATOMIC_OBSERVABLE_KEYS = {"timing", "schedule"}
+
+        def _extract_observable_field_paths(
+            value: object,
+            prefix: str = "",
+            max_depth: int = 4,
+        ) -> List[str]:
+            """
+            Extract all leaf field paths from a nested dict/list structure.
+            Returns paths like "current_value.schedule", "current_value.location", etc.
+
+            - Skips: schedule_dates (derived), priority, signals
+            - Treats as atomic: timing, schedule (no sub-field splitting)
+            """
+            paths: List[str] = []
+            if max_depth <= 0:
+                if prefix:
+                    paths.append(prefix)
+                return paths
+
+            if isinstance(value, dict):
+                for key, val in value.items():
+                    # Skip keys that should not be in required_observable_fields
+                    if key in SKIP_OBSERVABLE_KEYS:
+                        continue
+
+                    new_prefix = f"{prefix}.{key}" if prefix else key
+
+                    # Treat certain keys as atomic (don't recurse into sub-fields)
+                    if key in ATOMIC_OBSERVABLE_KEYS:
+                        paths.append(new_prefix)
+                        continue
+
+                    # For nested dicts, recurse
+                    if isinstance(val, dict):
+                        paths.extend(_extract_observable_field_paths(val, new_prefix, max_depth - 1))
+                    elif isinstance(val, list):
+                        # For lists, just add the path to the list itself (not individual items)
+                        paths.append(new_prefix)
+                    else:
+                        # Leaf value
+                        paths.append(new_prefix)
+            elif isinstance(value, list):
+                if prefix:
+                    paths.append(prefix)
+            else:
+                if prefix:
+                    paths.append(prefix)
+
+            return paths
+
+        def _find_changed_fields(
+            current: object,
+            previous: object,
+            prefix: str = "current_value",
+        ) -> List[str]:
+            """
+            Find fields that differ between current and previous values.
+            Returns paths to changed fields only.
+            """
+            changed: List[str] = []
+
+            # If previous is None, all current fields are "new"
+            if previous is None:
+                return _extract_observable_field_paths(current, prefix)
+
+            # If types differ, the whole thing changed
+            if type(current) != type(previous):
+                if prefix:
+                    return [prefix]
+                return _extract_observable_field_paths(current, prefix)
+
+            if isinstance(current, dict) and isinstance(previous, dict):
+                all_keys = set(current.keys()) | set(previous.keys())
+                for key in all_keys:
+                    # Skip keys that should not be in required_observable_fields
+                    if key in SKIP_OBSERVABLE_KEYS:
+                        continue
+
+                    new_prefix = f"{prefix}.{key}" if prefix else key
+                    curr_val = current.get(key)
+                    prev_val = previous.get(key)
+
+                    # If key only in one, it changed
+                    if key not in current or key not in previous:
+                        changed.append(new_prefix)
+                        continue
+
+                    # Treat certain keys as atomic
+                    if key in ATOMIC_OBSERVABLE_KEYS:
+                        if curr_val != prev_val:
+                            changed.append(new_prefix)
+                        continue
+
+                    # Recurse for nested dicts
+                    if isinstance(curr_val, dict) and isinstance(prev_val, dict):
+                        changed.extend(_find_changed_fields(curr_val, prev_val, new_prefix))
+                    elif curr_val != prev_val:
+                        changed.append(new_prefix)
+            elif current != previous:
+                # Non-dict values that differ
+                if prefix:
+                    changed.append(prefix)
+
+            return changed
+
+        def _build_required_observable_fields(entry: Dict[str, object]) -> List[str]:
+            """
+            Build the required_observable_fields list for a state item entry.
+
+            - For 'unchanged', 'acquire', 'add': include all fields from current_value
+            - For change operations (adjust, modify, etc.): only include changed fields
+            - Always include change_reason if present
+            """
+            fields: List[str] = []
+
+            current_value = entry.get("current_value")
+            previous_value = entry.get("previous_value")
+            change_type = (entry.get("change_type") or entry.get("op") or "").lower()
+
+            # Operations that should show all fields
+            show_all_fields_ops = {"unchanged", "stable", "acquire", "add", "drop", "remove", ""}
+
+            if change_type in show_all_fields_ops or previous_value is None:
+                # Show all fields from current_value
+                if current_value is not None:
+                    current_paths = _extract_observable_field_paths(current_value, "current_value")
+                    fields.extend(current_paths)
+            else:
+                # For change operations (adjust, modify, etc.), only show changed fields
+                changed_paths = _find_changed_fields(current_value, previous_value, "current_value")
+                fields.extend(changed_paths)
+
+            # Add change_reason if present
+            if entry.get("change_reason"):
+                fields.append("change_reason")
+
+            return fields
+
+        def _strip_signals_from_value(value: object) -> object:
+            """
+            Remove 'signals' key from preference values (dict or list of dicts).
+            Returns a deep copy with signals removed.
+            """
+            if isinstance(value, dict):
+                result = deepcopy(value)
+                result.pop("signals", None)
+                return result
+            elif isinstance(value, list):
+                result = []
+                for item in value:
+                    if isinstance(item, dict):
+                        item_copy = deepcopy(item)
+                        item_copy.pop("signals", None)
+                        result.append(item_copy)
+                    else:
+                        result.append(item)
+                return result
+            return value
+
         def _init_state_tracker() -> Dict[str, Dict[str, Dict[str, Dict[str, object]]]]:
             # Track what has already been surfaced in events_chain across windows.
             tracker: Dict[str, Dict[str, Dict[str, Dict[str, object]]]] = {
@@ -7300,7 +7514,7 @@ class GenerationPipeline:
                             {
                                 "name": name,
                                 "current_value": entry["value"],
-                                "op": "stable",
+                                "change_type": "unchanged",
                                 "metadata": deepcopy(entry["metadata"]),
                             }
                         )
@@ -7361,8 +7575,10 @@ class GenerationPipeline:
         def _select_conversion_targets_for_window(
             *,
             window_state: Dict,
+            next_window_state: Dict | None = None,
         ) -> tuple[Dict[str, List[Dict[str, object]]], Dict[str, List[tuple[str, str]]]]:
             # Select changes + sampled stable items for this window and update tracker state.
+            # If next_window_state is provided, force convert items that will change in the next window.
             conversion_targets: Dict[str, List[Dict[str, object]]] = {
                 "user_attributes_state": [],
                 "habits_state": [],
@@ -7373,6 +7589,20 @@ class GenerationPipeline:
                 "habits_state": [],
                 "preferences_state": [],
             }
+
+            # Build a set of (state_type, name) pairs that will change in the next window
+            # so we can force convert them in the current window.
+            next_window_changing_items: set[tuple[str, str]] = set()
+            if next_window_state:
+                for state_type in ["user_attributes_state", "habits_state", "preferences_state"]:
+                    next_items = next_window_state.get(state_type) or []
+                    for item in next_items:
+                        name = item.get("name")
+                        item_op = (item.get("op") or "").lower()
+                        # If the item has an operation in the next window, it means it will change
+                        if name and item_op and item_op not in {"", "stable"}:
+                            next_window_changing_items.add((state_type, name))
+
             # import pdb; pdb.set_trace()
             for state_type in ["user_attributes_state", "habits_state", "preferences_state"]:
                 window_items = window_state.get(state_type) or []
@@ -7407,13 +7637,15 @@ class GenerationPipeline:
                         change_entry: Dict[str, object] = {
                             "name": name,
                             "current_value": current_value,
-                            "op": item_op,
+                            "change_type": item_op,
                             "metadata": metadata,
                         }
                         if change_reason:
                             change_entry["change_reason"] = change_reason
                         if previous_value is not None:
                             change_entry["previous_value"] = previous_value
+                        # Add required_observable_fields
+                        change_entry["required_observable_fields"] = _build_required_observable_fields(change_entry)
                         conversion_targets[state_type].append(change_entry)
 
                     values = (
@@ -7428,6 +7660,9 @@ class GenerationPipeline:
                             val_for_prompt = _expand_habit_schedule_dates(
                                 val, window_state.get("time_range")
                             )
+                        elif state_type == "preferences_state":
+                            # Strip signals from preferences
+                            val_for_prompt = _strip_signals_from_value(val)
                         key = _make_item_key(val)
                         tracker_entries = state_tracker[state_type].setdefault(name, {})
                         existing_entry = tracker_entries.get(key)
@@ -7441,11 +7676,15 @@ class GenerationPipeline:
                         reason = change_reason if updated_this_window else None
 
                         # Convert always for habits; otherwise for changes or sampled stable.
+                        # Also force convert if this item will change in the next window.
+                        will_change_next_window = (state_type, name) in next_window_changing_items
                         should_convert = False
                         if state_type == "habits_state":
                             should_convert = True  # Habits are always converted each window (no sampling).
                         elif freshness:
                             should_convert = True
+                        elif will_change_next_window:
+                            should_convert = True  # Force convert items that will change in the next window.
                         elif not already_converted and rng.random() < stale_sample_probability:
                             should_convert = True
 
@@ -7464,7 +7703,7 @@ class GenerationPipeline:
                             entry: Dict[str, object] = {
                                 "name": name,
                                 "current_value": val_for_prompt,
-                                "op": item_op if freshness and item_op else "stable",
+                                "change_type": item_op if freshness and item_op else "unchanged",
                                 "metadata": metadata,
                             }
                             if updated_this_window and change_reason:
@@ -7478,8 +7717,13 @@ class GenerationPipeline:
                                         prev_value = _expand_habit_schedule_dates(
                                             previous_value, window_state.get("time_range")
                                         )
+                                    elif state_type == "preferences_state":
+                                        # Strip signals from previous_value for preferences
+                                        prev_value = _strip_signals_from_value(previous_value)
                                     entry["previous_value"] = prev_value
 
+                            # Add required_observable_fields
+                            entry["required_observable_fields"] = _build_required_observable_fields(entry)
                             conversion_targets[state_type].append(entry)
                             selected_tracker_keys[state_type].append((name, key))
 
@@ -7494,51 +7738,11 @@ class GenerationPipeline:
 
             return conversion_targets, selected_tracker_keys
 
-        def _normalize_time_value(time_value: str | None) -> str:
-            if not isinstance(time_value, str) or not time_value:
-                return "00:00:00"
-            if len(time_value) == 5:
-                return f"{time_value}:00"
-            return time_value
-
-        def _event_sort_timestamp(event: Dict[str, object], window_time_range: List[str] | None) -> str:
-            timestamp = event.get("timestamp")
-            if isinstance(timestamp, str) and timestamp.strip():
-                if len(timestamp) == 10:
-                    return f"{timestamp} 00:00:00"
-                return timestamp
-
-            time_spec = event.get("time_specification") or {}
-            if not isinstance(time_spec, dict):
-                time_spec = {}
-            event_date = event.get("event_date")
-            schedule_dates = time_spec.get("schedule_dates") or []
-            date_candidates: List[str] = []
-            if isinstance(event_date, str) and event_date:
-                date_candidates.append(event_date)
-            if isinstance(schedule_dates, list):
-                date_candidates.extend(
-                    [d for d in schedule_dates if isinstance(d, str) and d]
-                )
-
-            if date_candidates:
-                date_value = min(date_candidates)
-                time_value = (
-                    time_spec.get("time")
-                    or time_spec.get("start_time")
-                    or time_spec.get("end_time")
-                )
-                return f"{date_value} {_normalize_time_value(time_value)}"
-
-            if window_time_range:
-                start_date = window_time_range[0] if window_time_range else None
-                if start_date:
-                    return f"{start_date} 00:00:00"
-
-            return "9999-12-31 23:59:59"
-
-        def _assign_event_ids_for_window(window_payload: Dict[str, object]) -> None:
-            if not isinstance(window_payload, dict):
+        def _assign_event_ids_for_window(
+            window_payload: Dict[str, object],
+            domain_name: str,
+        ) -> None:
+            if not isinstance(window_payload, dict) or not domain_name:
                 return
             event_chains = window_payload.get("event_chains")
             if event_chains is None:
@@ -7548,24 +7752,18 @@ class GenerationPipeline:
 
             window_id = window_payload.get("window_id") or "window"
             window_id_str = str(window_id)
-            window_time_range = window_payload.get("time_range") or []
-            flattened: List[tuple[str, int, int, Dict[str, object]]] = []
-
-            for chain_idx, chain in enumerate(event_chains):
+            for chain_idx, chain in enumerate(event_chains, 1):
                 if not isinstance(chain, dict):
                     continue
                 events = chain.get("events") or []
                 if not isinstance(events, list):
                     continue
-                for event_idx, event in enumerate(events):
+                for event_idx, event in enumerate(events, 1):
                     if not isinstance(event, dict):
                         continue
-                    sort_ts = _event_sort_timestamp(event, window_time_range)
-                    flattened.append((sort_ts, chain_idx, event_idx, event))
-
-            flattened.sort(key=lambda item: (item[0], item[1], item[2]))
-            for idx, (_, _, _, event) in enumerate(flattened, 1):
-                event["event_id"] = f"{window_id_str}_e{idx:03d}"
+                    event["event_id"] = (
+                        f"{domain_name}_{window_id_str}_{chain_idx}_{event_idx}"
+                    )
 
         # Emit initial baseline snapshot (debug/inspection).
         initial_state_table_payload = {
@@ -7600,9 +7798,15 @@ class GenerationPipeline:
 
             resolved_window_state = resolved_window_map.get(window_id, {})
 
+            # Get the next window state to know which items will change
+            next_window_state = None
+            if idx + 1 < len(resolved_windows):
+                next_window_state = resolved_windows[idx + 1]
+
             # Build the per-window payload by selecting changes + sampled stable items.
             conversion_targets, selected_tracker_keys = _select_conversion_targets_for_window(
-                window_state=window_state
+                window_state=window_state,
+                next_window_state=next_window_state,
             )
 
             domain_window_state_payload = {
@@ -7612,6 +7816,7 @@ class GenerationPipeline:
             }
             # Do not leak internal metadata into the prompt.
             domain_window_state_payload_for_prompt = deepcopy(domain_window_state_payload)
+            
             for state_type in ["user_attributes_state", "habits_state", "preferences_state"]:
                 entries = domain_window_state_payload_for_prompt["state_table"].get(state_type) or []
                 for entry in entries:
@@ -7632,12 +7837,6 @@ class GenerationPipeline:
                                 scrubbed_prev.append(item)
                             entry["previous_value"] = scrubbed_prev
 
-            # Prompt input assembly + debug outputs.
-            domain_window_state = (
-                f"<user detailed state in {domain.domain_name}>\n"
-                f"{json.dumps(domain_window_state_payload_for_prompt, indent=2, ensure_ascii=False)}\n"
-                f"</user detailed state in {domain.domain_name}>"
-            )
             ## save domain_window_state_payload
             domain_window_state_payload_path = self.output_dir / f"{slug}_domain_window_state_payload_{window_id}.json"
             _write_json(domain_window_state_payload_path, domain_window_state_payload)
@@ -7647,14 +7846,14 @@ class GenerationPipeline:
                 window_id, "No world background available for this window."
             )
             user_basic_profile_str = json.dumps(user_basic_profile, indent=2, ensure_ascii=False)
-            # import pdb; pdb.set_trace()
+            import pdb; pdb.set_trace()
+            # continue
             
             events_chains_result = generate_events_chain(
                 self.llm_client,
                 EventsChainRequest(
                     domain_name=domain.domain_name,
                     user_basic_profile=user_basic_profile_str,
-                    user_life_context=life_context_prompt_str,
                     user_previous_window_summary=user_previous_window_summary,
                     user_domain_previous_window_summary=user_domain_previous_window_summary,
                     user_this_window_description=user_this_window_description,
@@ -7668,7 +7867,7 @@ class GenerationPipeline:
                 events_chain_payload.setdefault(
                     "time_range", window_state.get("time_range")
                 )
-                _assign_event_ids_for_window(events_chain_payload)
+                _assign_event_ids_for_window(events_chain_payload, domain.domain_name)
             events_chain_windows.append(events_chain_payload)
             usage["events_chain"][window_id] = events_chains_result.usage
 
@@ -7688,7 +7887,7 @@ class GenerationPipeline:
                     if meta_entry:
                         meta_entry["metadata"]["already_converted_to_events_chain"] = True
                         meta_entry["metadata"]["should_convert_to_events_chain"] = False
-
+        import pdb; pdb.set_trace()
         windows_by_id = {
             entry.get("window_id"): entry
             for entry in events_chain_windows
@@ -8853,8 +9052,8 @@ def debug_generate_real_data(cutoff_date: Optional[str] = None) -> None:
     MAX_API_CALL_HISTORY = 20
     
     # Maximum history length for different field types (smaller for large objects)
-    # MAX_HISTORY_SMALL = 10  # For complex objects (emails, transactions, orders)
-    # MAX_HISTORY_MEDIUM = 15  # For medium objects (posts, songs, products)
+    MAX_HISTORY_SMALL = 10  # For complex objects (emails, transactions, orders)
+    MAX_HISTORY_MEDIUM = 15  # For medium objects (posts, songs, products)
     MAX_HISTORY_LARGE = 20  # For simple items (strings, IDs)
     
     def _record_app_call_state(
@@ -8982,6 +9181,10 @@ def debug_generate_real_data(cutoff_date: Optional[str] = None) -> None:
                 workout = response_payload.get("workout", {})
                 if workout:
                     _append_to_state_history("workout_history", workout, MAX_HISTORY_MEDIUM)
+            elif api_name == "RecordActivity":
+                activity = response_payload.get("activity", {})
+                if activity:
+                    _append_to_state_history("activity_history", activity, MAX_HISTORY_MEDIUM)
             elif api_name == "SyncDevice":
                 sync_data = response_payload.get("sync_data", {})
                 if sync_data:
@@ -9117,7 +9320,11 @@ def debug_generate_real_data(cutoff_date: Optional[str] = None) -> None:
         
         # ==================== Instagram ====================
         elif app_name == "Instagram":
-            if api_name == "PostStory":
+            if api_name == "CreatePost":
+                post = response_payload.get("post", {})
+                if post:
+                    _append_to_state_history("posts", post, MAX_HISTORY_MEDIUM)
+            elif api_name == "PostStory":
                 post = response_payload.get("post", {})
                 if post:
                     _append_to_state_history("posts", post, MAX_HISTORY_MEDIUM)
@@ -9161,6 +9368,56 @@ def debug_generate_real_data(cutoff_date: Optional[str] = None) -> None:
                         if len(messages) > MAX_HISTORY_SMALL * 2:
                             conv["messages"] = messages[-(MAX_HISTORY_SMALL * 2):]
                         break
+        
+        # ==================== Google Maps ====================
+        elif app_name == "Google Maps":
+            if api_name == "ShareLocation":
+                shared_location = response_payload.get("shared_location", {})
+                if shared_location:
+                    _append_to_state_history("shared_locations", shared_location, MAX_HISTORY_MEDIUM)
+            elif api_name == "CheckIn":
+                checkin = response_payload.get("checkin", {})
+                if checkin:
+                    _append_to_state_history("checkin_history", checkin, MAX_HISTORY_MEDIUM)
+            elif api_name == "GetDirections":
+                directions = response_payload.get("directions", {})
+                if directions:
+                    _append_to_state_history("directions_history", directions, MAX_HISTORY_MEDIUM)
+            elif api_name == "SearchPlaces":
+                # Store search query for reference
+                query = request_payload.get("query", "")
+                if query:
+                    search_record = {
+                        "query": query,
+                        "category": request_payload.get("category"),
+                        "searched_at": timestamp
+                    }
+                    _append_to_state_history("place_search_history", search_record, MAX_HISTORY_SMALL)
+        
+        # ==================== UberEats ====================
+        elif app_name == "UberEats":
+            if api_name == "SearchRestaurants":
+                # Store search for reference
+                query = request_payload.get("query")
+                cuisine_type = request_payload.get("cuisine_type")
+                if query or cuisine_type:
+                    search_record = {
+                        "query": query,
+                        "cuisine_type": cuisine_type,
+                        "searched_at": timestamp
+                    }
+                    _append_to_state_history("restaurant_search_history", search_record, MAX_HISTORY_SMALL)
+            elif api_name == "PlaceOrder":
+                order = response_payload.get("order", {})
+                if order:
+                    _append_to_state_history("order_history", order, MAX_HISTORY_MEDIUM)
+            elif api_name == "GetMenu":
+                # Optionally track viewed restaurants
+                restaurant_id = request_payload.get("restaurant_id", "")
+                if restaurant_id:
+                    viewed = state.setdefault("viewed_restaurants", [])
+                    if restaurant_id not in viewed:
+                        _append_to_state_history("viewed_restaurants", restaurant_id, MAX_HISTORY_MEDIUM)
 
     # Convert events to app logs in chronological order
     print("\nGenerating app logs from events...")
@@ -9551,9 +9808,9 @@ if __name__ == "__main__":
 
     # ===== prepare context for semantic events generation =====
     # debug_prepare_context_for_events_chain_generation()
-    # debug_generate_events_chain()
+    debug_generate_events_chain()
     # debug_generate_real_data(cutoff_date="2024-07-01")
-    debug_generate_real_data()
+    # debug_generate_real_data()
     # debug_generate_real_data(cutoff_date="2024-12-31")
     # debug_generate_real_data()
     # ===== prepare context for semantic events generation =====

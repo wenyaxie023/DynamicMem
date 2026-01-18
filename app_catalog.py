@@ -13,7 +13,7 @@ APP_CATALOG = {
                 {
                     "api_name": "SearchProducts",
                     "description": "Search for products on Amazon using keywords",
-                    "user_insights": [
+                    "selection_hint": [
                         "Shopping needs and product interests",
                         "Price sensitivity through search filters",
                         "Product category preferences",
@@ -26,7 +26,7 @@ APP_CATALOG = {
                         "View detailed information about a specific product including price, "
                         "ratings, reviews, and description"
                     ),
-                    "user_insights": [
+                    "selection_hint": [
                         "Purchase decision-making process",
                         "Comparison shopping behavior",
                         "Quality consciousness through review reading",
@@ -36,7 +36,7 @@ APP_CATALOG = {
                 {
                     "api_name": "AddToCart",
                     "description": "Add a product to the shopping cart",
-                    "user_insights": [
+                    "selection_hint": [
                         "Purchase intent and immediacy",
                         "Impulsive vs. planned buying behavior",
                         "Shopping cart abandonment patterns",
@@ -46,7 +46,7 @@ APP_CATALOG = {
                 {
                     "api_name": "ShowCart",
                     "description": "View all items currently in the shopping cart",
-                    "user_insights": [
+                    "selection_hint": [
                         "Short-term purchase intentions",
                         "Cart management habits",
                         "Price threshold for checkout",
@@ -59,7 +59,7 @@ APP_CATALOG = {
                     "description": (
                         "View all items saved in the wishlist for future consideration"
                     ),
-                    "user_insights": [
+                    "selection_hint": [
                         "Long-term purchase aspirations",
                         "Price monitoring behavior",
                         "Gift planning and special occasion preparation",
@@ -69,7 +69,7 @@ APP_CATALOG = {
                 {
                     "api_name": "Checkout",
                     "description": "Complete the purchase of items in the cart",
-                    "user_insights": [
+                    "selection_hint": [
                         "Actual purchasing power and spending",
                         "Buying frequency and volume",
                         "Prime membership utilization",
@@ -86,7 +86,7 @@ APP_CATALOG = {
                 {
                     "api_name": "SearchSongs",
                     "description": "Search for songs, artists, or albums",
-                    "user_insights": [
+                    "selection_hint": [
                         "Music discovery behavior",
                         "Genre preferences and diversity",
                         "Openness to new artists",
@@ -96,7 +96,7 @@ APP_CATALOG = {
                 {
                     "api_name": "PlaySong",
                     "description": "Play a specific song and track listening duration",
-                    "user_insights": [
+                    "selection_hint": [
                         "Core music preferences and listening patterns",
                         "Daily routine and activity timing (workout music, commute, sleep)",
                         "Mood and emotional states",
@@ -107,7 +107,7 @@ APP_CATALOG = {
                 {
                     "api_name": "AddToPlaylist",
                     "description": "Add a song to a specific playlist",
-                    "user_insights": [
+                    "selection_hint": [
                         "Music curation and organization skills",
                         "Long-term music preferences",
                         "Playlist themes and life contexts (workout, study, party)",
@@ -119,7 +119,7 @@ APP_CATALOG = {
                     "description": (
                         "Follow an artist to receive updates and recommendations"
                     ),
-                    "user_insights": [
+                    "selection_hint": [
                         "Artist loyalty and fandom intensity",
                         "Music taste identity and expression",
                         "Social signaling through artist choices",
@@ -136,13 +136,27 @@ APP_CATALOG = {
                 {
                     "api_name": "LogWorkout",
                     "description": (
-                        "Manually log a workout session with type, duration, and intensity"
+                        "Manually log a workout session with type, duration, intensity, and location"
                     ),
-                    "user_insights": [
+                    "selection_hint": [
                         "Active fitness engagement and discipline",
                         "Preferred exercise types and variety",
                         "Workout intensity preferences",
+                        "Workout locations (gym, home, park, etc.)",
                         "Self-tracking motivation and consistency",
+                    ],
+                },
+                {
+                    "api_name": "RecordActivity",
+                    "description": (
+                        "Record an outdoor activity with route and location tracking "
+                        "(e.g., walking, hiking, outdoor run)"
+                    ),
+                    "selection_hint": [
+                        "Outdoor activity preferences and habits",
+                        "Favorite routes and locations for exercise",
+                        "Distance and endurance patterns",
+                        "Location-based activity patterns",
                     ],
                 },
                 {
@@ -151,7 +165,7 @@ APP_CATALOG = {
                         "Sync wearable device data including steps, heart rate, sleep patterns, "
                         "and passive activity"
                     ),
-                    "user_insights": [
+                    "selection_hint": [
                         "Daily activity levels and sedentary behavior",
                         "Sleep quality and schedule regularity",
                         "Cardiovascular health awareness",
@@ -164,7 +178,7 @@ APP_CATALOG = {
                         "Set or update fitness goals such as daily steps, active minutes, "
                         "or weight targets"
                     ),
-                    "user_insights": [
+                    "selection_hint": [
                         "Health ambitions and self-expectations",
                         "Goal-setting realism vs. optimism",
                         "Commitment to lifestyle changes",
@@ -181,7 +195,7 @@ APP_CATALOG = {
                 {
                     "api_name": "GetBalance",
                     "description": "Check current account balance",
-                    "user_insights": [
+                    "selection_hint": [
                         "Financial awareness and monitoring frequency",
                         "Money anxiety or security levels",
                         "Account checking habits as stress indicator",
@@ -195,7 +209,7 @@ APP_CATALOG = {
                         "View recent transaction history with merchant details, amounts, "
                         "and categories"
                     ),
-                    "user_insights": [
+                    "selection_hint": [
                         "Spending patterns across categories (dining, shopping, transportation)",
                         "Financial responsibility and tracking behavior",
                         "Lifestyle spending priorities",
@@ -208,7 +222,7 @@ APP_CATALOG = {
                     "description": (
                         "Search for specific transactions by merchant, amount, or date range"
                     ),
-                    "user_insights": [
+                    "selection_hint": [
                         "Active financial management and recordkeeping",
                         "Expense dispute or verification needs",
                         "Tax preparation or budgeting diligence",
@@ -219,7 +233,7 @@ APP_CATALOG = {
                 {
                     "api_name": "TransferMoney",
                     "description": "Transfer funds between accounts or to other people",
-                    "user_insights": [
+                    "selection_hint": [
                         "Liquidity management strategies",
                         "Savings discipline and allocation",
                         "Financial support relationships (family, friends)",
@@ -229,7 +243,7 @@ APP_CATALOG = {
                 {
                     "api_name": "PayBill",
                     "description": "Pay bills such as utilities, credit cards, or subscriptions",
-                    "user_insights": [
+                    "selection_hint": [
                         "Financial responsibility and payment timeliness",
                         "Recurring expense patterns",
                         "Bill management automation preferences",
@@ -248,7 +262,7 @@ APP_CATALOG = {
                     "description": (
                         "View current investment holdings, positions, and portfolio value"
                     ),
-                    "user_insights": [
+                    "selection_hint": [
                         "Investment style (aggressive vs. conservative)",
                         "Asset diversification sophistication",
                         "Portfolio monitoring frequency and anxiety",
@@ -260,7 +274,7 @@ APP_CATALOG = {
                     "description": (
                         "View list of stocks or crypto being monitored for potential investment"
                     ),
-                    "user_insights": [
+                    "selection_hint": [
                         "Investment research and planning behavior",
                         "Market sector interests",
                         "Risk appetite indicators through watchlist choices",
@@ -272,7 +286,7 @@ APP_CATALOG = {
                     "description": (
                         "Search for stocks or crypto by symbol or company name"
                     ),
-                    "user_insights": [
+                    "selection_hint": [
                         "Active investment research intensity",
                         "Market opportunity exploration",
                         "Financial curiosity and learning engagement",
@@ -284,7 +298,7 @@ APP_CATALOG = {
                     "description": (
                         "View current price, change, and details for a specific stock or crypto"
                     ),
-                    "user_insights": [
+                    "selection_hint": [
                         "Market monitoring habits and timing",
                         "Price sensitivity and entry point strategy",
                         "Information-seeking before decisions",
@@ -294,7 +308,7 @@ APP_CATALOG = {
                 {
                     "api_name": "BuyStock",
                     "description": "Execute a purchase of stocks or crypto",
-                    "user_insights": [
+                    "selection_hint": [
                         "Investment decision-making confidence",
                         "Capital deployment aggressiveness",
                         "Market timing beliefs and behavior",
@@ -304,7 +318,7 @@ APP_CATALOG = {
                 {
                     "api_name": "SellStock",
                     "description": "Execute a sale of stocks or crypto",
-                    "user_insights": [
+                    "selection_hint": [
                         "Profit-taking vs. loss-cutting discipline",
                         "Emotional response to market volatility",
                         "Exit strategy sophistication",
@@ -326,7 +340,7 @@ APP_CATALOG = {
                     "description": (
                         "Retrieve message history from a specific contact or group"
                     ),
-                    "user_insights": [
+                    "selection_hint": [
                         "Communication frequency with different relationships",
                         "Relationship intimacy and depth through message volume",
                         "Conversation review and reminiscence behavior",
@@ -336,7 +350,7 @@ APP_CATALOG = {
                 {
                     "api_name": "SendMessage",
                     "description": "Send a text message to a contact or group",
-                    "user_insights": [
+                    "selection_hint": [
                         "Communication initiation patterns",
                         "Message length and conversation depth preferences",
                         "Response speed and availability signals",
@@ -346,7 +360,7 @@ APP_CATALOG = {
                 {
                     "api_name": "SendMedia",
                     "description": "Send photos, videos, or voice messages",
-                    "user_insights": [
+                    "selection_hint": [
                         "Rich communication preferences",
                         "Life moment sharing behavior",
                         "Visual vs. text communication style",
@@ -365,7 +379,7 @@ APP_CATALOG = {
                     "description": (
                         "Retrieve current inbox emails with previews and metadata"
                     ),
-                    "user_insights": [
+                    "selection_hint": [
                         "Email volume as work intensity indicator",
                         "Inbox management style (inbox zero vs. accumulator)",
                         "Information overload levels",
@@ -376,7 +390,7 @@ APP_CATALOG = {
                 {
                     "api_name": "ReadEmail",
                     "description": "Open and read a specific email",
-                    "user_insights": [
+                    "selection_hint": [
                         "Email prioritization and triage decisions",
                         "Information processing speed",
                         "Attention allocation to different senders",
@@ -386,7 +400,7 @@ APP_CATALOG = {
                 {
                     "api_name": "SendEmail",
                     "description": "Compose and send a new email",
-                    "user_insights": [
+                    "selection_hint": [
                         "Proactive communication and initiative",
                         "Professional relationship building",
                         "Email formality and communication style",
@@ -396,7 +410,7 @@ APP_CATALOG = {
                 {
                     "api_name": "ReplyEmail",
                     "description": "Reply to a received email",
-                    "user_insights": [
+                    "selection_hint": [
                         "Responsiveness and reliability",
                         "Communication reciprocity patterns",
                         "Reply speed by sender relationship",
@@ -415,7 +429,7 @@ APP_CATALOG = {
                     "description": (
                         "Update profile information such as headline, summary, or photo"
                     ),
-                    "user_insights": [
+                    "selection_hint": [
                         "Personal branding awareness and effort",
                         "Career positioning and messaging",
                         "Professional identity evolution",
@@ -425,7 +439,7 @@ APP_CATALOG = {
                 {
                     "api_name": "AddExperience",
                     "description": "Add or update work experience entries",
-                    "user_insights": [
+                    "selection_hint": [
                         "Career progression and mobility",
                         "Achievement documentation habits",
                         "Professional milestone celebration",
@@ -435,7 +449,7 @@ APP_CATALOG = {
                 {
                     "api_name": "AddSkill",
                     "description": "Add new skills to profile",
-                    "user_insights": [
+                    "selection_hint": [
                         "Skill development and learning focus areas",
                         "Career development strategy",
                         "Professional growth mindset",
@@ -445,7 +459,7 @@ APP_CATALOG = {
                 {
                     "api_name": "PostUpdate",
                     "description": "Share a post, article, or thought on LinkedIn feed",
-                    "user_insights": [
+                    "selection_hint": [
                         "Thought leadership aspirations",
                         "Professional content creation and sharing",
                         "Industry engagement and visibility efforts",
@@ -457,7 +471,7 @@ APP_CATALOG = {
                     "description": (
                         "View LinkedIn feed with posts from connections and followed pages"
                     ),
-                    "user_insights": [
+                    "selection_hint": [
                         "Professional content consumption habits",
                         "Industry news and trend awareness",
                         "Learning and development engagement",
@@ -467,7 +481,7 @@ APP_CATALOG = {
                 {
                     "api_name": "LikePost",
                     "description": "Like a post in the feed",
-                    "user_insights": [
+                    "selection_hint": [
                         "Content preference signals",
                         "Network engagement and support behavior",
                         "Professional relationship nurturing",
@@ -479,7 +493,7 @@ APP_CATALOG = {
                     "description": (
                         "Comment on a post to share thoughts or engage in discussion"
                     ),
-                    "user_insights": [
+                    "selection_hint": [
                         "Deep engagement with professional content",
                         "Thought leadership and expertise demonstration",
                         "Network relationship deepening efforts",
@@ -491,7 +505,7 @@ APP_CATALOG = {
                     "description": (
                         "Search for job openings by keywords, location, or company"
                     ),
-                    "user_insights": [
+                    "selection_hint": [
                         "Active job seeking status and intensity",
                         "Career change considerations",
                         "Job market exploration and dissatisfaction signals",
@@ -501,7 +515,7 @@ APP_CATALOG = {
                 {
                     "api_name": "ApplyJob",
                     "description": "Submit application for a job posting",
-                    "user_insights": [
+                    "selection_hint": [
                         "Serious job transition intent",
                         "Job application volume and selectivity",
                         "Career change readiness",
@@ -513,7 +527,7 @@ APP_CATALOG = {
                     "description": (
                         "Send a connection request to another LinkedIn user"
                     ),
-                    "user_insights": [
+                    "selection_hint": [
                         "Networking proactivity and strategy",
                         "Professional relationship building efforts",
                         "Career network expansion goals",
@@ -530,7 +544,7 @@ APP_CATALOG = {
                 {
                     "api_name": "GetPages",
                     "description": "Retrieve list of pages and notebooks in workspace",
-                    "user_insights": [
+                    "selection_hint": [
                         "Knowledge management system scope",
                         "Organization complexity and structure",
                         "Content creation volume and diversity",
@@ -540,7 +554,7 @@ APP_CATALOG = {
                 {
                     "api_name": "CreatePage",
                     "description": "Create a new page or note",
-                    "user_insights": [
+                    "selection_hint": [
                         "Knowledge production and documentation habits",
                         "Note-taking frequency and triggers",
                         "Thinking and learning process externalization",
@@ -550,7 +564,7 @@ APP_CATALOG = {
                 {
                     "api_name": "UpdatePage",
                     "description": "Edit and update existing page content",
-                    "user_insights": [
+                    "selection_hint": [
                         "Iterative thinking and refinement behavior",
                         "Content maintenance and quality standards",
                         "Knowledge evolution and updates tracking",
@@ -560,7 +574,7 @@ APP_CATALOG = {
                 {
                     "api_name": "SearchContent",
                     "description": "Search across all pages and databases",
-                    "user_insights": [
+                    "selection_hint": [
                         "Information retrieval efficiency needs",
                         "Knowledge reuse and reference behavior",
                         "Memory reliance vs. search dependence",
@@ -572,7 +586,7 @@ APP_CATALOG = {
                     "description": (
                         "Add entry to a database (task, project, habit tracker, etc.)"
                     ),
-                    "user_insights": [
+                    "selection_hint": [
                         "Structured productivity and tracking systems",
                         "Task and project management discipline",
                         "Quantified self and habit tracking behavior",
@@ -589,7 +603,7 @@ APP_CATALOG = {
                 {
                     "api_name": "SearchContent",
                     "description": "Search for movies, TV shows, or documentaries",
-                    "user_insights": [
+                    "selection_hint": [
                         "Active content discovery preferences",
                         "Genre and topic interests",
                         "Specific viewing intent vs. browsing",
@@ -603,7 +617,7 @@ APP_CATALOG = {
                         "View detailed information about a specific title including description, "
                         "cast, and ratings"
                     ),
-                    "user_insights": [
+                    "selection_hint": [
                         "Content evaluation thoroughness",
                         "Decision-making deliberation for viewing",
                         "Quality consciousness and selectivity",
@@ -613,7 +627,7 @@ APP_CATALOG = {
                 {
                     "api_name": "PlayContent",
                     "description": "Start playing a movie or TV show episode",
-                    "user_insights": [
+                    "selection_hint": [
                         "Viewing frequency and binge-watching patterns",
                         "Content preferences and genre tastes",
                         "Viewing time distribution (weekday vs. weekend, time of day)",
@@ -624,7 +638,7 @@ APP_CATALOG = {
                 {
                     "api_name": "AddToMyList",
                     "description": "Add a title to personal watchlist",
-                    "user_insights": [
+                    "selection_hint": [
                         "Content curation and planning behavior",
                         "Delayed viewing intentions",
                         "Aspiration vs. actual viewing gap",
@@ -634,7 +648,7 @@ APP_CATALOG = {
                 {
                     "api_name": "RateContent",
                     "description": "Rate a watched title with thumbs up or down",
-                    "user_insights": [
+                    "selection_hint": [
                         "Feedback and opinion expression willingness",
                         "Algorithm training engagement",
                         "Content evaluation standards and taste clarity",
@@ -654,7 +668,7 @@ APP_CATALOG = {
                 {
                     "api_name": "SearchBooks",
                     "description": "Search for books by title, author, or keywords",
-                    "user_insights": [
+                    "selection_hint": [
                         "Reading interests and topic preferences",
                         "Book discovery methods (recommendations vs. direct search)",
                         "Genre preferences and reading diversity",
@@ -667,7 +681,7 @@ APP_CATALOG = {
                         "View detailed information about a specific book including synopsis, "
                         "ratings, and reviews"
                     ),
-                    "user_insights": [
+                    "selection_hint": [
                         "Reading decision-making thoroughness",
                         "Book selection criteria and standards",
                         "Review reliance and opinion-seeking",
@@ -679,7 +693,7 @@ APP_CATALOG = {
                     "description": (
                         "Add a book to a specific shelf (want-to-read, currently-reading, read)"
                     ),
-                    "user_insights": [
+                    "selection_hint": [
                         "Reading planning and intention setting",
                         "Book collection curation behavior",
                         "Reading progress tracking discipline",
@@ -689,7 +703,7 @@ APP_CATALOG = {
                 {
                     "api_name": "RateBook",
                     "description": "Rate a book on a 1-5 star scale",
-                    "user_insights": [
+                    "selection_hint": [
                         "Reading engagement and completion",
                         "Critical thinking and evaluation skills",
                         "Rating standards and generosity",
@@ -700,7 +714,7 @@ APP_CATALOG = {
                 {
                     "api_name": "WriteReview",
                     "description": "Write a text review for a book",
-                    "user_insights": [
+                    "selection_hint": [
                         "Deep reflection on reading experience",
                         "Written expression and articulation skills",
                         "Willingness to share opinions publicly",
@@ -719,21 +733,35 @@ APP_CATALOG = {
             ],
             "apis": [
                 {
+                    "api_name": "CreatePost",
+                    "description": (
+                        "Create a new photo or video post with caption and optional location tag"
+                    ),
+                    "selection_hint": [
+                        "Content creation frequency and style",
+                        "Location sharing behavior and privacy preferences",
+                        "Life moments and experiences worth sharing",
+                        "Personal branding and social identity expression",
+                    ],
+                },
+                {
                     "api_name": "PostStory",
                     "description": (
-                        "Post a photo or video to Instagram Stories (24-hour temporary content)"
+                        "Post a photo or video to Instagram Stories (24-hour temporary content) "
+                        "with optional location tag"
                     ),
-                    "user_insights": [
+                    "selection_hint": [
                         "Daily life sharing frequency and openness",
                         "Casual vs. curated content preferences",
                         "Social presence maintenance",
                         "Ephemeral vs. permanent sharing comfort",
+                        "Location sharing in real-time",
                     ],
                 },
                 {
                     "api_name": "LikePost",
                     "description": "Like a post in the feed",
-                    "user_insights": [
+                    "selection_hint": [
                         "Social engagement levels and generosity",
                         "Content consumption patterns and interests",
                         "Relationship acknowledgment behavior",
@@ -743,7 +771,7 @@ APP_CATALOG = {
                 {
                     "api_name": "CommentOnPost",
                     "description": "Comment on a post",
-                    "user_insights": [
+                    "selection_hint": [
                         "Deep social engagement willingness",
                         "Relationship investment and maintenance",
                         "Public communication comfort",
@@ -755,7 +783,7 @@ APP_CATALOG = {
                     "description": (
                         "Send a private message to another user"
                     ),
-                    "user_insights": [
+                    "selection_hint": [
                         "Private communication preferences",
                         "Content sharing behavior (memes, posts, personal messages)",
                         "Close friendship maintenance",
@@ -765,7 +793,7 @@ APP_CATALOG = {
                 {
                     "api_name": "FollowUser",
                     "description": "Follow another user's account",
-                    "user_insights": [
+                    "selection_hint": [
                         "Social network expansion behavior",
                         "Interest-based following vs. social obligation",
                         "Content curation preferences",
@@ -775,7 +803,7 @@ APP_CATALOG = {
                 {
                     "api_name": "UnfollowUser",
                     "description": "Unfollow a user's account",
-                    "user_insights": [
+                    "selection_hint": [
                         "Social network curation and pruning",
                         "Relationship ending or distancing",
                         "Content quality standards enforcement",
@@ -785,7 +813,7 @@ APP_CATALOG = {
                 {
                     "api_name": "GetFollowing",
                     "description": "View list of accounts currently followed",
-                    "user_insights": [
+                    "selection_hint": [
                         "Social network size and composition review",
                         "Following audit and cleanup consideration",
                         "Social comparison behavior",
@@ -802,7 +830,7 @@ APP_CATALOG = {
                 {
                     "api_name": "Search",
                     "description": "Perform a web search and receive list of results",
-                    "user_insights": [
+                    "selection_hint": [
                         "Information needs and curiosity areas",
                         "Search query formulation sophistication",
                         "Problem-solving approach (search vs. ask AI)",
@@ -814,7 +842,7 @@ APP_CATALOG = {
                     "description": (
                         "Click on a specific search result to view the webpage"
                     ),
-                    "user_insights": [
+                    "selection_hint": [
                         "Result evaluation and selection criteria",
                         "Source trustworthiness judgment",
                         "Information gathering depth",
@@ -831,7 +859,7 @@ APP_CATALOG = {
                 {
                     "api_name": "CreateConversation",
                     "description": "Start a new conversation thread with the AI assistant",
-                    "user_insights": [
+                    "selection_hint": [
                         "Task switching and compartmentalization",
                         "New problem or topic initiation",
                         "AI usage frequency and dependency",
@@ -843,13 +871,131 @@ APP_CATALOG = {
                     "description": (
                         "Send a message in an existing conversation thread"
                     ),
-                    "user_insights": [
+                    "selection_hint": [
                         "Conversation continuity and depth",
                         "Complex task breakdown and iteration",
                         "Clarification and refinement patterns",
                         "Multi-turn interaction engagement",
                         "Query types and domains (work, learning, creative, personal)",
                         "Problem-solving approach and follow-through",
+                    ],
+                },
+            ],
+        },
+        {
+            "app_name": "Google Maps",
+            "app_category": "Navigation & Location Services",
+            "relevant_life_domains": [
+                "Social & Community",
+                "Leisure & Media Consumption",
+                "Health & Self-care",
+            ],
+            "apis": [
+                {
+                    "api_name": "ShareLocation",
+                    "description": (
+                        "Share current location with another person for a specified duration"
+                    ),
+                    "selection_hint": [
+                        "Trust and relationship closeness indicators",
+                        "Safety consciousness and coordination habits",
+                        "Privacy comfort levels with location sharing",
+                        "Social coordination patterns",
+                    ],
+                },
+                {
+                    "api_name": "CheckIn",
+                    "description": (
+                        "Check in at a specific location to record presence"
+                    ),
+                    "selection_hint": [
+                        "Places visited and lifestyle patterns",
+                        "Social activity and venue preferences",
+                        "Location-based habits and routines",
+                        "Experience documentation behavior",
+                    ],
+                },
+                {
+                    "api_name": "GetDirections",
+                    "description": (
+                        "Get directions between two locations with travel mode options"
+                    ),
+                    "selection_hint": [
+                        "Transportation preferences and habits",
+                        "Commute patterns and frequently visited places",
+                        "Travel planning behavior",
+                        "Environmental consciousness through travel mode choices",
+                    ],
+                },
+                {
+                    "api_name": "SearchPlaces",
+                    "description": (
+                        "Search for nearby places by category or keyword"
+                    ),
+                    "selection_hint": [
+                        "Local exploration and discovery behavior",
+                        "Venue preferences and interests",
+                        "Spontaneous vs. planned activity patterns",
+                        "Location-based decision making",
+                    ],
+                },
+            ],
+        },
+        {
+            "app_name": "UberEats",
+            "app_category": "Food Delivery",
+            "relevant_life_domains": [
+                "Finances & Material Living",
+                "Health & Self-care",
+            ],
+            "apis": [
+                {
+                    "api_name": "SearchRestaurants",
+                    "description": (
+                        "Search for restaurants by name, cuisine type, or category"
+                    ),
+                    "selection_hint": [
+                        "Food preferences and dietary habits",
+                        "Cuisine diversity and exploration",
+                        "Restaurant discovery behavior",
+                        "Local dining knowledge",
+                    ],
+                },
+                {
+                    "api_name": "GetMenu",
+                    "description": (
+                        "View menu items and prices for a specific restaurant"
+                    ),
+                    "selection_hint": [
+                        "Menu browsing and selection behavior",
+                        "Price sensitivity for food delivery",
+                        "Dietary restrictions and preferences",
+                        "Decision-making process for food orders",
+                    ],
+                },
+                {
+                    "api_name": "PlaceOrder",
+                    "description": (
+                        "Place a food delivery order with items and delivery address"
+                    ),
+                    "selection_hint": [
+                        "Food delivery frequency and spending",
+                        "Meal ordering patterns (solo vs. group, meal types)",
+                        "Tipping behavior and generosity",
+                        "Delivery address reveals home/work locations",
+                        "Cooking vs. ordering out balance",
+                    ],
+                },
+                {
+                    "api_name": "GetOrderHistory",
+                    "description": (
+                        "View past food delivery orders"
+                    ),
+                    "selection_hint": [
+                        "Favorite restaurants and repeat orders",
+                        "Order frequency patterns",
+                        "Spending tracking behavior",
+                        "Dietary consistency or variety",
                     ],
                 },
             ],

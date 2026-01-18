@@ -251,6 +251,21 @@ class FitbitWorkout(BaseModel):
     intensity: WorkoutIntensity
     calories_burned: int = Field(ge=0)
     timestamp: datetime
+    location: Optional[str] = Field(default=None, description="Location where workout was performed (e.g., gym name, park, home)")
+    location_address: Optional[str] = Field(default=None, description="Full address of the workout location")
+
+
+class FitbitActivity(BaseModel):
+    """A recorded activity with location tracking"""
+    activity_id: str
+    activity_type: str = Field(description="Type of activity (e.g., walking, hiking, outdoor_run)")
+    duration_minutes: int = Field(ge=0)
+    distance_km: Optional[float] = Field(default=None, ge=0, description="Distance covered in kilometers")
+    calories_burned: int = Field(ge=0)
+    timestamp: datetime
+    start_location: Optional[str] = Field(default=None, description="Starting location name")
+    end_location: Optional[str] = Field(default=None, description="Ending location name")
+    route_description: Optional[str] = Field(default=None, description="Description of the route taken")
     
 class FitbitDailySync(BaseModel):
     sync_date: date = Field(description="Date of the sync data")
@@ -264,6 +279,7 @@ class FitbitState(BaseModel):
     user_id: str
     goals: List[FitbitGoal] = Field(default_factory=list)
     workout_history: List[FitbitWorkout] = Field(default_factory=list)
+    activity_history: List[FitbitActivity] = Field(default_factory=list)
     daily_syncs: List[FitbitDailySync] = Field(default_factory=list)
     
 # ==================== Chase ====================
@@ -431,6 +447,8 @@ class InstagramPost(BaseModel):
     caption: str
     timestamp: datetime
     likes_count: int = Field(default=0, ge=0)
+    location: Optional[str] = Field(default=None, description="Location tag for the post (e.g., place name)")
+    location_address: Optional[str] = Field(default=None, description="Full address of the tagged location")
     
 class InstagramState(BaseModel):
     user_id: str
@@ -469,6 +487,122 @@ class GoogleSearchHistory(BaseModel):
 class GoogleState(BaseModel):
     user_id: str
     search_history: List[GoogleSearchHistory] = Field(default_factory=list)
+
+
+# ==================== Google Maps ====================
+class Location(BaseModel):
+    """Geographic location with coordinates and address"""
+    latitude: float = Field(description="Latitude coordinate")
+    longitude: float = Field(description="Longitude coordinate")
+    address: Optional[str] = Field(default=None, description="Human-readable address")
+    place_name: Optional[str] = Field(default=None, description="Name of the place (e.g., restaurant, park)")
+    city: Optional[str] = Field(default=None, description="City name")
+    country: Optional[str] = Field(default=None, description="Country name")
+
+
+class GoogleMapsPlace(BaseModel):
+    """A place from Google Maps search"""
+    place_id: str
+    name: str
+    address: str
+    category: str = Field(description="Category like restaurant, gym, park, etc.")
+    rating: Optional[float] = Field(default=None, ge=0, le=5, description="Average rating")
+    location: Location
+
+
+class GoogleMapsCheckIn(BaseModel):
+    """A check-in at a location"""
+    checkin_id: str
+    location: Location
+    timestamp: datetime
+    note: Optional[str] = None
+
+
+class GoogleMapsSharedLocation(BaseModel):
+    """Shared location with another user"""
+    share_id: str
+    shared_with: str = Field(description="User ID or name of the person shared with")
+    location: Location
+    shared_at: datetime
+    expires_at: Optional[datetime] = None
+
+
+class GoogleMapsDirections(BaseModel):
+    """Directions between two locations"""
+    directions_id: str
+    origin: Location
+    destination: Location
+    travel_mode: str = Field(description="Mode of travel: driving, walking, transit, bicycling")
+    distance_km: float
+    duration_minutes: int
+    searched_at: datetime
+
+
+class GoogleMapsState(BaseModel):
+    user_id: str
+    home_location: Optional[Location] = None
+    work_location: Optional[Location] = None
+    saved_places: List[GoogleMapsPlace] = Field(default_factory=list)
+    checkin_history: List[GoogleMapsCheckIn] = Field(default_factory=list)
+    shared_locations: List[GoogleMapsSharedLocation] = Field(default_factory=list)
+    directions_history: List[GoogleMapsDirections] = Field(default_factory=list)
+
+
+# ==================== UberEats ====================
+class UberEatsRestaurant(BaseModel):
+    """A restaurant on UberEats"""
+    restaurant_id: str
+    name: str
+    cuisine_type: str = Field(description="Type of cuisine (e.g., Italian, Chinese, Mexican)")
+    rating: float = Field(ge=0, le=5, description="Average rating")
+    delivery_time_minutes: int = Field(description="Estimated delivery time in minutes")
+    delivery_fee: float = Field(description="Delivery fee in USD")
+    address: str
+    location: Optional[Location] = None
+
+
+class UberEatsMenuItem(BaseModel):
+    """An item from a restaurant menu"""
+    item_id: str
+    name: str
+    description: str
+    price: float = Field(description="Price in USD")
+    category: str = Field(description="Menu category like appetizers, mains, desserts")
+
+
+class UberEatsOrderItem(BaseModel):
+    """An item in an order"""
+    item_id: str
+    name: str
+    quantity: int = Field(ge=1)
+    price: float
+    special_instructions: Optional[str] = None
+
+
+class UberEatsOrder(BaseModel):
+    """A food delivery order"""
+    order_id: str
+    restaurant_id: str
+    restaurant_name: str
+    items: List[UberEatsOrderItem]
+    subtotal: float
+    delivery_fee: float
+    tip: float
+    total: float
+    delivery_address: str
+    delivery_location: Optional[Location] = None
+    order_time: datetime
+    estimated_delivery: datetime
+    status: str = Field(description="Order status: placed, preparing, on_the_way, delivered")
+
+
+class UberEatsState(BaseModel):
+    user_id: str
+    delivery_addresses: List[str] = Field(default_factory=list)
+    default_address: Optional[str] = None
+    default_location: Optional[Location] = None
+    favorite_restaurants: List[str] = Field(default_factory=list, description="List of restaurant IDs")
+    order_history: List[UberEatsOrder] = Field(default_factory=list)
 
 
 
@@ -558,6 +692,8 @@ class LogWorkoutInput(BaseModel):
     activity_type: str = Field(description="Type of activity (e.g., running, cycling, swimming)")
     duration_minutes: int = Field(ge=1, description="Workout duration in minutes")
     intensity: WorkoutIntensity
+    location: Optional[str] = Field(default=None, description="Location where workout was performed (e.g., gym name, park, home)")
+    location_address: Optional[str] = Field(default=None, description="Full address of the workout location")
     
 class LogWorkoutOutput(BaseModel):
     workout: FitbitWorkout
@@ -925,6 +1061,8 @@ class WriteReviewOutput(BaseModel):
 class PostStoryInput(BaseModel):
     content_type: MediaType = Field(description="Type of story content (photo or video, voice not applicable)")
     caption: Optional[str] = None
+    location: Optional[str] = Field(default=None, description="Location tag for the story")
+    location_address: Optional[str] = Field(default=None, description="Full address of the tagged location")
     
 class PostStoryOutput(BaseModel):
     post: InstagramPost
@@ -1003,3 +1141,94 @@ class ClickResultInput(BaseModel):
 class ClickResultOutput(BaseModel):
     result: GoogleSearchResult
     clicked_at: datetime
+
+
+# ==================== Google Maps APIs ====================
+class ShareLocationInput(BaseModel):
+    shared_with: str = Field(description="User ID or name of the person to share location with")
+    duration_minutes: Optional[int] = Field(default=None, description="How long to share location (None for indefinite)")
+    
+class ShareLocationOutput(BaseModel):
+    share_id: str
+    shared_location: GoogleMapsSharedLocation
+    
+class CheckInInput(BaseModel):
+    place_name: str = Field(description="Name of the place to check in at")
+    address: Optional[str] = Field(default=None, description="Address of the location")
+    note: Optional[str] = Field(default=None, description="Optional note about the check-in")
+    
+class CheckInOutput(BaseModel):
+    checkin: GoogleMapsCheckIn
+    
+class GetDirectionsInput(BaseModel):
+    origin: str = Field(description="Starting location (address or place name)")
+    destination: str = Field(description="Destination location (address or place name)")
+    travel_mode: str = Field(default="driving", description="Mode: driving, walking, transit, bicycling")
+    
+class GetDirectionsOutput(BaseModel):
+    directions: GoogleMapsDirections
+    
+class SearchPlacesInput(BaseModel):
+    query: str = Field(description="Search query for places (e.g., 'coffee shop near me')")
+    category: Optional[str] = Field(default=None, description="Category filter like restaurant, gym, park")
+    
+class SearchPlacesOutput(BaseModel):
+    places: List[GoogleMapsPlace]
+    search_timestamp: datetime
+
+
+# ==================== Fitbit RecordActivity API ====================
+class RecordActivityInput(BaseModel):
+    activity_type: str = Field(description="Type of activity (e.g., walking, hiking, outdoor_run)")
+    duration_minutes: int = Field(ge=1, description="Activity duration in minutes")
+    distance_km: Optional[float] = Field(default=None, ge=0, description="Distance covered in kilometers")
+    start_location: Optional[str] = Field(default=None, description="Starting location name")
+    end_location: Optional[str] = Field(default=None, description="Ending location name")
+    route_description: Optional[str] = Field(default=None, description="Description of the route taken")
+    
+class RecordActivityOutput(BaseModel):
+    activity: FitbitActivity
+    calories_burned: int
+    today_total_active_minutes: int
+
+
+# ==================== Instagram CreatePost API ====================
+class CreatePostInput(BaseModel):
+    content_type: InstagramContentType = Field(description="Type of post content: photo, video")
+    caption: str = Field(description="Post caption text")
+    location: Optional[str] = Field(default=None, description="Location tag for the post")
+    location_address: Optional[str] = Field(default=None, description="Full address of the tagged location")
+    
+class CreatePostOutput(BaseModel):
+    post: InstagramPost
+
+
+# ==================== UberEats APIs ====================
+class SearchRestaurantsInput(BaseModel):
+    query: Optional[str] = Field(default=None, description="Search query for restaurant name or cuisine type")
+    cuisine_type: Optional[str] = Field(default=None, description="Filter by cuisine type")
+    
+class SearchRestaurantsOutput(BaseModel):
+    restaurants: List[UberEatsRestaurant]
+    
+class GetMenuInput(BaseModel):
+    restaurant_id: str
+    
+class GetMenuOutput(BaseModel):
+    restaurant: UberEatsRestaurant
+    menu_items: List[UberEatsMenuItem]
+    
+class PlaceOrderInput(BaseModel):
+    restaurant_id: str
+    items: List[Dict[str, Any]] = Field(description="List of items with item_id, quantity, and optional special_instructions")
+    delivery_address: str
+    tip_amount: Optional[float] = Field(default=0.0, ge=0, description="Tip amount in USD")
+    
+class PlaceOrderOutput(BaseModel):
+    order: UberEatsOrder
+    
+class GetOrderHistoryInput(BaseModel):
+    limit: int = Field(default=10, ge=1, le=50, description="Number of recent orders to retrieve")
+    
+class GetOrderHistoryOutput(BaseModel):
+    orders: List[UberEatsOrder]

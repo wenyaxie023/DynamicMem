@@ -9,366 +9,6 @@ from mem_bench.behavior_and_conversation.llm_client import (
     LLMResult,
 )
 
-# 
-# events_chain_template = Template("""You are generating **semantic events** for ONE domain within ONE time window.
-
-# 所有具体事件都必须能被映射到dialogue事件或者是app事件
-# semantic events主要能够交代整个事情的因果 以及 可能同一个目标下的多个事件 比如 一个user attribute 显示用户增加了一个新的设备，那么一个semantic event交代了一个完整的故事链 例如说 用户先在dialogue中提起想要 看了一个 (app 事件1),
-# A **semantic event** is:
-# > A semantically meaningful unit of user activity that provides observable evidence for the current window’s user_attributes_state, habits_state, or preferences_state.
-# > Each semantic event can later be expanded into multiple concrete logs (app data, dialogue).
-
-# ### Domain
-# {{ domain_name }}
-
-# ### Time window state
-# Below is the state for this domain in this time window (piecewise-stable):
-
-# {{ window_state_json }}
-
-# ### Definitions
-
-# - **User Attribute semantic event**:
-#   - Reveals that some object/resource is acquired, upgraded, maintained, or abandoned.
-#   - Evidence for user_attributes_state.
-# - **Habit semantic event**:
-#   - Shows a recurring routine or typical context consistent with the habits_state.
-#   - Evidence for habits_state.
-# - **Preference semantic event**:
-#   - Gives explicit or strong implicit evidence about what the user prefers within this domain.
-#   - Evidence for preferences_state.
-
-# ### Requirements
-
-# 1. Generate semantic events for this (domain, window).
-# 2. All events must:
-#    - Be consistent with the given user_attributes_state, habits_state, and preferences_state.
-#    - Be plausible given the world background for this window.
-#    - Not change the latent state themselves; they are **evidence** of the current state.
-# 3. Each semantic event must:
-#    - Have a unique ID within this window.
-#    - Have a short, precise description.
-#    - Label its **event_type** ∈ {"user_attribute", "habit", "preference"}.
-#    - Indicate which parts of user_attributes_state, habits_state, and preferences_state it supports (as short strings).
-
-# Return **valid JSON only**, with this schema:
-
-# {
-#   "domain": "{{ domain_name }}",
-#   "window_id": "{{ window_id }}",
-#   "events_chain": [
-#     {
-#       "semantic_event_id": "se_01",
-#       "event_type": "user_attribute",  // or "habit" or "preference"
-#       "description": "<one-sentence description>",
-#       "evidence_for": {
-#         "user_attributes_state": "<which user attributes this supports, or empty string>",
-#         "habits_state": "<which habits this supports, or empty>",
-#         "preferences_state": "<which preference dimensions this supports, or empty>"
-#       }
-#     },
-#     ...
-#   ]
-# }
-
-# Examples:
-
-# """
-# )
-# events_chain_template = Template("""
-# You are a User Behavior Simulator responsible for constructing a timeline of "Semantic Events" for one user in one time window.
-
-# 1. Inputs
-
-# - Time window: {{ window_state_json['time_range'][0] }} to {{ window_state_json['time_range'][1] }}
-# - Window description: {{ window_state_json['window_description'] }}
-# - Life domain: {{ domain_name }}
-# - Full user profile state in this window (attributes, habits, preferences, including any fields with "op"): 
-# {{ window_state_json }}
-
-# 2. Task
-
-# A "Semantic Event" is a high-level, human-interpretable episode, such as:
-# - "Researching new laptops for travel"
-# - "Weekly grocery run"
-# - "Revising budget after discovering new sports streaming services"
-
-# You will output a list of such events that will later be turned into detailed app logs and dialogues.
-
-# 3. Requirements
-
-# 3.1 Transition coverage (fields with "op")
-
-# - In the input JSON, some profile entries contain an "op" field (for example: "modify", "acquire", "adjust", "drop", "shift", "amplify", "attenuate").
-# - For EVERY profile entry that has an "op" field, you MUST create at least one event of type "TRANSITION" that explicitly explains or demonstrates this change.
-# - The event’s "related_profile_fields" must include the exact "name" of each changed field that the event explains.
-# - It is allowed for one TRANSITION event to involve multiple related_profile_fields when the changes are causally related.
-# - The narrative must show a clear cause → action → outcome that makes the change realistic.
-
-# Example:
-# - Data: user_monthly_tech_gadget_budget has "op": "modify" with change_reason about major summer sporting events and tech purchases.
-# - Event: the user learns about streaming options and new viewing equipment for the Olympics, reviews their monthly budget, and decides to increase the tech gadget budget.
-
-# 3.2 Routine coverage (stable state)
-
-# - For profile entries without an "op" field (or for the new post-change state of entries that do have "op"), generate events of type "ROUTINE" that show the user’s typical behavior in this window.
-# - Use the frequencies implied by habits_state. For example, if the user "Shops online 3–4 times per week", there should be multiple shopping-related events spread across the window.
-# - Ensure all events are consistent with:
-#   - The occupation (for example, Software Engineer),
-#   - The income level (for example, mid-to-high income),
-#   - The time window and its description (for example, major summer sporting events, peak summer, impulse purchases, etc.).
-
-# 3.3 Time and diversity
-
-# - "approx_date" must be an ISO date string "YYYY-MM-DD".
-# - "approx_date" MUST fall between {{ window_state_json['time_range'][0] }} and {{ window_state_json['time_range'][1] }} (inclusive).
-# - Distribute events across the whole window; avoid putting all events on the same day unless this is clearly justified by the narrative.
-# - Avoid redundant or almost-duplicate events. Each event should add new information or context about the user.
-
-# 3.4 Grounding plan
-
-# For each event, specify how it would be observed in downstream data:
-
-# - "primary_evidence" MUST be one of: "App Logs", "Dialogue", or "Both".
-#   - Use "App Logs" for behaviors mainly reflected in app / service activity (e-commerce, banking, streaming, fitness, etc.).
-#   - Use "Dialogue" for things mainly expressed in natural language conversations.
-#   - Use "Both" when both are natural and informative.
-# - "supporting_evidence" is a short free-text note, such as:
-#   - "Chat with friend about budget increase"
-#   - "Mention in casual conversation about watching the Olympics"
-#   - "None"
-
-# 4. Output format (STRICT)
-
-# Return ONLY a JSON array of objects, with no additional explanation, comments, or markdown.
-
-# Each event object MUST follow this schema:
-
-# [
-#   {
-#     "event_id": "evt_{{ window_state_json['window_id'] }}_001",   // unique within this window
-#     "type": "TRANSITION" or "ROUTINE",
-#     "related_profile_fields": ["field_name_1", "field_name_2"], // list of profile 'name' strings
-#     "approx_date": "YYYY-MM-DD",
-#     "summary": "Short one-line description of the event",
-#     "narrative": "A detailed, coherent mini-story that explains the event (cause → action → result) and is consistent with the profile and window description.",
-#     "grounding_plan": {
-#       "primary_evidence": "App Logs" or "Dialogue" or "Both",
-#       "supporting_evidence": "Short note or 'None'"
-#     }
-#   }
-
-#   // ... more events
-# ]
-
-# 5. Event count
-
-# Generate exactly {{ num_events }} events.
-
-# - First, ensure that every profile entry with an "op" field is covered by at least one TRANSITION event. You may cover multiple related fields in a single TRANSITION event by listing them all in "related_profile_fields".
-# - After all "op" changes are covered, use the remaining events for ROUTINE behavior that reflects:
-#   - the stable parts of the profile,
-#   - the habits frequencies,
-#   - and the time-window description (for example, peak summer, major sporting events, impulse purchases).
-# """)
-
-
-# events_chain_template = Template("""You are a model that converts ONE user profile dimension timeline into a list of semantic events.
-
-# ## Task
-
-# You receive a request with the following fields:
-
-# - domain_name: a string describing the business / product domain. You MAY use it for style or minor assumptions, but you MUST NOT hard-code domain-specific logic.
-# - user_profile_dimension_category: one of
-#   - "user_attributes_state"
-#   - "habits_state"
-#   - "preferences_state"
-
-# - user_profile_dimension_name: a string key for this dimension, e.g.:
-#   - "user_income"
-#   - "user_investment_portfolio"
-#   - "user_budget_tracking"
-#   - "technology_spending"
-#   etc.
-
-# - user_profile_dimension_data: an object that ALWAYS contains a `timeline` field.
-
-# The shape of `user_profile_dimension_data` is:
-
-# {
-#   "timeline": [
-#     {
-#       "time_range": ["YYYY-MM-DD", "YYYY-MM-DD"],
-#       "current_value": <ANY JSON value describing the state in this period>,
-#       "op": "add" | "modify" | "adjust" | "shift" | "drop" | "acquire" | "none" (optional),
-#       "previous_value": <ANY JSON value> (optional),
-#       "change_reason": "<string>" (optional)
-#     },
-#     ...
-#   ]
-# }
-
-# The `timeline` is time-ordered and describes how this ONE profile dimension evolved over time.
-
-# Your job is to:
-
-# - Summarize this evolution as a small list of high-quality semantic events.
-# - Capture both:
-#   - meaningful CHANGES (e.g. weekly → daily tracking, tech → AI ETFs, habit dropped, preference shifted)
-#   - important STABLE patterns (e.g. income unchanged all year, long-term absence of a habit, stable preference).
-
-# You MUST only consider the ONE dimension described by:
-# - user_profile_dimension_category
-# - user_profile_dimension_name
-# - user_profile_dimension_data.timeline
-
-
-# ## Output format
-
-# You MUST output ONLY a JSON array (no comments, no explanations), where each element has the structure:
-
-# {
-#   "semantic_event_type": "habit_change" | "preference_change" | "user_attribute_change" | "stable_user_attribute_revealed" | "stable_habit_revealed" | "stable_preference_revealed",
-#   "semantic_event_id": "<string, unique within this output>",
-#   "user_profile_dimension_category": "<copy from input>",
-#   "user_profile_dimension_name": "<copy from input>",
-#   "value": {
-#     "previous_value": <JSON or null>,
-#     "new_value": <JSON or string summarizing the new state>,
-#     "change_reason": "<string summary; use input change_reason if available, otherwise infer a concise reason or put null>"
-#   },
-#   "semantic_event_time": {
-#     "from_when": "YYYY-MM-DD or null",
-#     "to_when": "YYYY-MM-DD or null"
-#   },
-#   "semantic_event_narrative": "<short natural language description of what this event means about the user>",
-#   "grounding_plan": [
-#     {
-#       "from_when": "YYYY-MM-DD",
-#       "to_when": "YYYY-MM-DD or null",
-#       "source_from": "app_log" | "dialogue" | "both",
-#       "narrative": "<how this event is grounded in observed data for this period>"
-#     }
-#   ]
-# }
-
-# ### Rules for `semantic_event_type`
-
-# 1. If `user_profile_dimension_category` == "habits_state":
-#    - Use `habit_change` for meaningful habit changes:
-#      - start / stop a habit
-#      - change in frequency (daily / weekly / monthly)
-#      - change in timing or context (e.g. before bed, weekends only)
-#    - Use `stable_habit_revealed` for long-term stable habits or stable absence of a habit.
-
-# 2. If `user_profile_dimension_category` == "preferences_state":
-#    - Use `preference_change` for shifts in preferences:
-#      - e.g. gadgets → workstation performance → energy efficiency.
-#    - Use `stable_preference_revealed` when a preference clearly holds across long time windows.
-
-# 3. If `user_profile_dimension_category` == "user_attributes_state":
-#    - Use `user_attribute_change` for changes in user attributes:
-#      - income, savings rate, investment portfolio composition, residence type, etc.
-#    - Use `stable_user_attribute_revealed` when the attribute remains effectively unchanged across all timeline entries (or across a long period that is clearly stable).
-
-
-# ## Rules for event selection
-
-# - Do NOT create one semantic event per timeline entry by default.
-# - Focus on SEMANTIC events:
-#   - significant changes
-#   - long-lived stable states that matter for understanding the user.
-
-# - If the dimension stays effectively the same across all time windows:
-#   - Create exactly ONE `stable_*_revealed` event summarizing this stability.
-
-# - If there are explicit change operations (entries with `op` + `previous_value`):
-#   - Create at least one `*_change` event per meaningful change.
-#   - Use `previous_value`, `current_value`, and `change_reason` as primary evidence.
-
-# - If there are long stretches of time with the same `current_value` and no `op`:
-#   - You MAY summarize them with a `stable_*_revealed` event
-#     (e.g. long-term absence of budget tracking, stable investment theme, stable preference).
-
-# - Prefer a small number of high-information semantic events over many noisy ones.
-
-
-# ## Rules for time handling
-
-# - Use `time_range` from each timeline entry as your main temporal information.
-# - For each semantic event:
-#   - `semantic_event_time.from_when` should align with the start date of the first relevant `time_range`.
-#   - `semantic_event_time.to_when` should align with the end date of the last relevant `time_range`,
-#     or be null if the pattern is ongoing / open-ended.
-
-# - For `grounding_plan`:
-#   - Include one or more entries with `from_when` / `to_when` taken from relevant `time_range` intervals.
-#   - `source_from`:
-#     - use `"app_log"` when it is natural that the evidence comes from app activity
-#       (e.g. repeated logs, tracking events, portfolio changes).
-#     - use `"dialogue"` when it is more natural that this comes from conversation.
-#     - use `"both"` when both are plausible sources.
-#   - The `narrative` should describe observable facts in that time range
-#     (e.g. "Daily expense logs recorded in budgeting app", "User mentioned tax-loss harvesting at year end").
-
-
-# ## Rules for narratives
-
-# - `semantic_event_narrative`:
-#   - Short, high-level, human-readable.
-#   - Explain what the event reveals about the user (discipline, burnout, risk appetite, tax awareness, etc.).
-
-# - `grounding_plan[n].narrative`:
-#   - Describe what was actually observed in that period, not an abstract conclusion.
-
-
-# ## Output constraints
-
-# - You MUST output valid JSON.
-# - You MUST output a JSON array (e.g. `[...]`).
-# - You MUST NOT include any text outside the JSON (no explanations, no comments).
-# - The number of events should be modest and focused. Avoid over-fragmentation.
-
-
-# ## Example (shape only; your actual content may differ)
-
-# Input (conceptual):
-
-# - user_profile_dimension_category: "habits_state"
-# - user_profile_dimension_name: "user_budget_tracking"
-# - user_profile_dimension_data.timeline: [ ... ]
-
-# Output style:
-
-# [
-#   {
-#     "semantic_event_type": "habit_change",
-#     "semantic_event_id": "budget_tracking_intensified_2024Q1",
-#     "user_profile_dimension_category": "habits_state",
-#     "user_profile_dimension_name": "user_budget_tracking",
-#     "value": {
-#       "previous_value": {...},
-#       "new_value": {...},
-#       "change_reason": "..."
-#     },
-#     "semantic_event_time": {
-#       "from_when": "2024-01-01",
-#       "to_when": "2024-03-31"
-#     },
-#     "semantic_event_narrative": "...",
-#     "grounding_plan": [
-#       {
-#         "from_when": "2024-01-01",
-#         "to_when": "2024-03-31",
-#         "source_from": "app_log",
-#         "narrative": "..."
-#       }
-#     ]
-#   }
-# ]
-# """)
-
 events_chain_template = Template("""You are an expert at generating realistic event chains that demonstrate user behaviors based on their dynamic profile state.
 
 ### Your Task
@@ -400,9 +40,6 @@ Given a user's state for a specific time window, generate a sequence of realisti
 ---
 
 ## 1. Context Information You Will Receive
-
-**Life Context:** Provides a global context of the user's life (time-spatially global).
-{{ user_life_context }}
 
 **World Background:** Provides a detailed description of the world background in this window.
 {{ world_background }}
@@ -520,16 +157,17 @@ the rest of the intent provides context for downstream content generation.
 {
   "name": "attribute_name",
   "current_value": "description",
-  "op": "add | modify | stable",
-  "change_reason": "why this changed (if op is add/modify)",
-  "previous_value": "old value (if op is modify)"
+  "change_type": "add | modify | unchanged",
+  "change_reason": "why this changed (if change_type is add/modify)",
+  "previous_value": "old value (if change_type is modify)",
+  "required_observable_fields": ["field1", "field2"]
 }
 ```
 
-**Conversion Requirements by Operation:**
+**Conversion Requirements by Change Type:**
 - `add`: Must show acquisition journey (research → decision → acquisition) + multiple usage instances
 - `modify`: Must show old value usage → transition trigger → new value usage
-- `stable`: Must show ongoing usage across different contexts within the window
+- `unchanged`: Must show ongoing usage across different contexts within the window
 
 #### Habits State
 ```json
@@ -548,16 +186,18 @@ the rest of the intent provides context for downstream content generation.
     "priority": "high | medium | low",
     "schedule_dates": ["YYYY-MM-DD", ...]
   },
-  "op": "acquire | adjust | stable",
-  "change_reason": "why this changed (if op is acquire/adjust)",
-  "previous_value": {...}
+  "change_type": "acquire | adjust | drop | unchanged",
+  "change_reason": "why this changed (if change_type is acquire/adjust/drop)",
+  "previous_value": {...},
+  "required_observable_fields": ["field1", "field2"]
 }
 ```
 
-**Conversion Requirements by Operation:**
+**Conversion Requirements by Change Type:**
 - `acquire`: Must show motivation discovery → habit design → initial struggles → stabilization
 - `adjust`: Must show dissatisfaction with old pattern → adjustment reasoning → new pattern execution
-- `stable`: Must show consistent execution with natural variation (not robotic repetition)
+- `drop`: Must show discontinuation trigger → no more pattern execution
+- `unchanged`: Must show consistent execution with natural variation (not robotic repetition)
 
 #### Preferences State
 ```json
@@ -566,22 +206,22 @@ the rest of the intent provides context for downstream content generation.
   "current_value": {
     "statement": "description of the preference"
   },
-  "op": "refine | shift | stable",
-  "change_reason": "why this changed (if op is refine/shift)",
-  "previous_value": {...}
+  "change_type": "refine | shift | unchanged",
+  "change_reason": "why this changed (if change_type is refine/shift)",
+  "previous_value": {...},
+  "required_observable_fields": ["field1", "field2"]
 }
 ```
 
-**Conversion Requirements by Operation:**
+**Conversion Requirements by Change Type:**
 - `refine/shift`: Must show old preference in action → catalyst event → experimentation → new preference dominance
-- `stable`: Must show preference through CHOICES (selecting A over B), not just using A
+- `unchanged`: Must show preference through CHOICES (selecting A over B), not just using A
 
 ---
 
 ## 4. Output Schema
 
 ### 4.1 Event Chain JSON Structure
-
 ```json
 {
   "window_id": "copy from input",
@@ -592,10 +232,11 @@ the rest of the intent provides context for downstream content generation.
         {
           "state_category": "user_attributes_state | habits_state | preferences_state",
           "state_name": "exact name from input state",
-          "change_type": "the operation type from input (add | modify | stable | acquire | adjust | refine | shift)",
+          "change_type": "the operation type from input (add | modify | unchanged | acquire | adjust | drop | refine | shift)",
           "current_value": "copy the full current_value from input state",
           "previous_value": "copy the full previous_value from input state if exists, otherwise null",
-          "change_reason": "copy the change_reason from input state if exists, otherwise null"
+          "change_reason": "copy the change_reason from input state if exists, otherwise null",
+          "required_observable_fields": ["list of fields that MUST be evidenced by events"]
         }
       ],
       "events": [
@@ -613,7 +254,13 @@ the rest of the intent provides context for downstream content generation.
             {"app_name": "App1", "api_name": "API1"},
             {"app_name": "App2", "api_name": "API2"}
           ],
-          "user_intent": "detailed explanation following the composition structure"
+          "user_intent": "detailed explanation following the composition structure",
+          "evidence_for_states": [
+            {
+              "state_name": "name of the state this event supports",
+              "evidenced_fields": ["field1", "field2"]
+            }
+          ]
         }
       ]
     }
@@ -707,6 +354,199 @@ Use when the habit/behavior naturally manifests through different apps/APIs on d
 
 ---
 
+### 4.5 Required Observable Fields
+
+The input `domain_window_state` already contains `required_observable_fields` for each state item. Your task is to ensure that **every field listed in `required_observable_fields` is evidenced by at least one event**.
+
+#### 4.5.1 Field Reference Format
+
+Fields use dot notation to reference nested structures in the state item:
+
+| Field Reference | What It Points To | Example Value |
+|-----------------|-------------------|---------------|
+| `current_value` | The entire current_value (for simple string values) | `"GitHub Copilot Business subscription..."` |
+| `current_value.timing` | The timing object in a habit | `{"start_time": "13:00", "end_time": "14:30"}` |
+| `current_value.schedule` | The schedule object in a habit | `{"frequency_type": "weekly", "days_of_week": [0]}` |
+| `current_value.location` | The location field in a habit | `"home office desk"` |
+| `current_value.statement` | The statement field in a preference | `"Prefers a balanced approach..."` |
+| `previous_value` | The entire previous_value (for simple values) | `"9 months of essential living expenses"` |
+| `previous_value.timing` | The previous timing (for habit adjustments) | `{"start_time": "20:00", "end_time": "21:30"}` |
+| `previous_value.statement` | The previous preference statement | `"Prefers purchasing high-quality..."` |
+| `change_reason` | Why this state changed | `"Rescheduled to resolve scheduling conflicts..."` |
+
+#### 4.5.2 Interpreting Required Fields by State Category
+
+**User Attributes State:**
+```json
+{
+  "name": "financial_buffer_status",
+  "current_value": "Liquid cash reserves increased from 9 to 12 months...",
+  "change_type": "modify",
+  "change_reason": "Deliberately increased liquidity to mitigate potential market volatility...",
+  "previous_value": "ING Savings account holding approximately 9 months...",
+  "required_observable_fields": ["current_value", "change_reason"]
+}
+```
+→ Events must show: (1) the new 12-month buffer in action, (2) the trigger related to market volatility concerns
+
+**Habits State:**
+```json
+{
+  "name": "financial_reconciliation",
+  "current_value": {
+    "schedule": {"frequency_type": "monthly_nth_weekday", "week_of_month": 1, "day_of_week": 0},
+    "timing": {"start_time": "13:00", "end_time": "14:30"},
+    "location": "home office desk",
+    "priority": "high",
+    "schedule_dates": ["2024-10-07", "2024-11-04", "2024-12-02"]
+  },
+  "change_type": "adjust",
+  "change_reason": "Rescheduled to the first Monday of the month (13:00-14:30) to resolve scheduling conflicts...",
+  "previous_value": {
+    "timing": {"start_time": "20:00", "end_time": "21:30"},
+    ...
+  },
+  "required_observable_fields": ["current_value.timing", "current_value.schedule", "change_reason"]
+}
+```
+→ Events must show: (1) the new 13:00-14:30 timing, (2) the first-Monday-of-month schedule pattern, (3) why the schedule was changed
+
+**Preferences State:**
+```json
+{
+  "name": "spending_logic",
+  "current_value": {
+    "statement": "Prefers a balanced approach between high-quality material acquisitions and intentional charitable giving..."
+  },
+  "change_type": "shift",
+  "change_reason": "A year of significant global events and the symbolic reopening of Notre Dame shifted his perspective...",
+  "previous_value": {
+    "statement": "Prefers purchasing high-quality, durable electronics and appliances..."
+  },
+  "required_observable_fields": ["current_value.statement", "change_reason"]
+}
+```
+→ Events must show: (1) choices demonstrating the new balanced approach (material + charitable), (2) the catalyst related to global events/Notre Dame
+
+#### 4.5.3 Copy Required Fields to Output
+
+When generating `converted_state_items`, copy the `required_observable_fields` exactly from the input:
+```json
+{
+  "converted_state_items": [
+    {
+      "state_category": "habits_state",
+      "state_name": "financial_reconciliation",
+      "change_type": "adjust",
+      "current_value": { ... },
+      "previous_value": { ... },
+      "change_reason": "Rescheduled to the first Monday...",
+      "required_observable_fields": ["current_value.timing", "current_value.schedule", "change_reason"]
+    }
+  ]
+}
+```
+
+### 4.6 Evidence Annotation Rules
+
+Each event must specify which state(s) and which fields it provides evidence for via the `evidence_for_states` array.
+
+#### 4.6.1 Structure
+```json
+"evidence_for_states": [
+  {
+    "state_name": "exact state name from converted_state_items",
+    "evidenced_fields": ["field1", "field2", ...]
+  }
+]
+```
+
+#### 4.6.2 Rules
+
+1. **Every event must have at least one entry** in `evidence_for_states`
+2. **Field names must exactly match** those in `required_observable_fields`
+3. **An event can evidence multiple fields** from the same state
+4. **An event can evidence fields from multiple states** (in merged chains)
+5. **All `required_observable_fields` must be covered** by at least one event
+
+#### 4.6.3 Field Evidence Guidelines
+
+| Field Type | How to Evidence | Example App/API |
+|------------|-----------------|-----------------|
+| `change_reason` | Event showing the trigger or catalyst | Gmail:ReadEmail, Google:Search, LLM Assistant:ContinueConversation |
+| `current_value` (attribute) | Event demonstrating possession/usage | Any app showing the attribute in use |
+| `current_value.timing` | Event occurring at the specified time | Fitbit:LogWorkout, Notion:CreateDatabaseEntry, Chase:GetTransactions |
+| `current_value.schedule` | Events on the correct schedule_dates pattern | Repeated execution events matching frequency |
+| `current_value.location` | Event with location context | Fitbit:LogWorkout, Fitbit:RecordActivity, Google Maps:CheckIn, Instagram:CreatePost, UberEats:PlaceOrder |
+| `current_value.statement` (preference) | Event showing choice of A over B | Any event where alternative existed but wasn't chosen |
+| `previous_value` (any) | Event showing old behavior BEFORE the change | Events early in window demonstrating old pattern |
+| `previous_value.timing` | Event at the OLD time (for habit adjustments) | Early window events at previous schedule |
+| `previous_value.statement` | Event showing old preference in action | Early window choices aligned with old preference |
+
+#### 4.6.4 Location Evidence Apps
+
+When you need to evidence a `location` field, use these app/api combinations:
+
+| Scenario | App | API | Example user_intent |
+|----------|-----|-----|---------------------|
+| Workout location | Fitbit | LogWorkout | "Logging 30-min strength training session at Basic-Fit Eindhoven Strijp" |
+| Outdoor activity route | Fitbit | RecordActivity | "Recording 5km morning run through Vondelpark, Amsterdam" |
+| General check-in | Google Maps | CheckIn | "Checking in at WeWork Metropool coworking space" |
+| Photo with location | Instagram | CreatePost | "Posting gym selfie at Virgin Active with location tag" |
+| Food delivery | UberEats | PlaceOrder | "Ordering lunch to home office at [address]" |
+| Navigation arrival | Google Maps | GetDirections | "Getting directions from home to office gym for lunch workout" |
+
+#### 4.6.5 Examples
+
+**Single state, single field:**
+```json
+{
+  "app_name": "Gmail",
+  "api_name": "ReadEmail",
+  "user_intent": "Trigger: reading doctor's email recommending cardio exercise after annual checkup showed elevated resting heart rate",
+  "evidence_for_states": [
+    {
+      "state_name": "morning_run_habit",
+      "evidenced_fields": ["change_reason"]
+    }
+  ]
+}
+```
+
+**Single state, multiple fields:**
+```json
+{
+  "app_name": "Fitbit",
+  "api_name": "LogWorkout",
+  "user_intent": "Habit execution: logging 30-minute morning run (5.2km) at Vondelpark before 7am standup",
+  "evidence_for_states": [
+    {
+      "state_name": "morning_run_habit",
+      "evidenced_fields": ["current_value.schedule.timing", "current_value.location"]
+    }
+  ]
+}
+```
+
+**Multiple states (merged chain):**
+```json
+{
+  "app_name": "LLM Assistant",
+  "api_name": "CreateConversation",
+  "user_intent": "Catalyst moment: starting interactive session to refactor state machine, choosing to 'build with AI' rather than reading legacy documentation",
+  "evidence_for_states": [
+    {
+      "state_name": "technical_skills_inventory",
+      "evidenced_fields": ["current_value"]
+    },
+    {
+      "state_name": "learning_style",
+      "evidenced_fields": ["change_reason", "current_value.statement"]
+    }
+  ]
+}
+```
+
 ## 5. Available Apps & APIs
 
 {{ app_catalog_json }}
@@ -717,7 +557,7 @@ Use when the habit/behavior naturally manifests through different apps/APIs on d
 
 ### 6.1 User Attributes Generation
 
-#### Operation: `add`
+#### Change Type: `add`
 
 **Goal:** Demonstrate the complete acquisition journey and subsequent integration into user's life.
 
@@ -746,7 +586,7 @@ Different users have different acquisition styles. Match to user personality:
 - Social users: friend consultation before decision
 - Cautious users: trial period before commitment
 
-#### Operation: `modify`
+#### Change Type: `modify`
 
 **Goal:** Show the transition narrative from old to new value.
 
@@ -756,7 +596,7 @@ Different users have different acquisition styles. Match to user personality:
 3. Transition process (1-2 events)
 4. New value in use (2-3 events)
 
-#### Operation: `stable`
+#### Change Type: `unchanged`
 
 **Goal:** Demonstrate ongoing presence through varied usage contexts.
 
@@ -767,7 +607,7 @@ Different users have different acquisition styles. Match to user personality:
 
 ### 6.2 Habits Generation
 
-#### Operation: `acquire`
+#### Change Type: `acquire`
 
 **Goal:** Show how the habit was born and became established.
 
@@ -789,7 +629,7 @@ Different users have different acquisition styles. Match to user personality:
 
 **Critical:** Establishment events must occur BEFORE the first `schedule_dates` entry.
 
-#### Operation: `adjust`
+#### Change Type: `adjust`
 
 **Goal:** Show why and how the habit pattern changed.
 
@@ -799,7 +639,15 @@ Different users have different acquisition styles. Match to user personality:
 3. Modification action (updating schedule/approach)
 4. New pattern execution (later dates showing adjusted pattern)
 
-#### Operation: `stable`
+#### Change Type: `drop`
+
+**Goal:** Show the habit being discontinued.
+
+**Required Event Phases:**
+1. Discontinuation trigger (what prompted the change)
+2. Discontinuation action (stopping the habit)
+
+#### Change Type: `unchanged`
 
 **Goal:** Show consistent but human execution with natural variation.
 
@@ -807,9 +655,9 @@ Different users have different acquisition styles. Match to user personality:
 - Single event with `schedule_dates` covering all occurrences
 - **Use `app_api_variations` when the habit naturally involves different tools/methods**
 - `user_intent` should describe what happens during execution with enough detail to understand the habit's nature AND explain why different apps/apis serve different aspects
-- `note` should describe any natural evolution within the stable habit
+- `note` should describe any natural evolution within the unchanged habit
 
-**CRITICAL for stable habits:** Do NOT generate robotic, identical repetitions. Real humans:
+**CRITICAL for unchanged habits:** Do NOT generate robotic, identical repetitions. Real humans:
 - Read news from different sources on different days
 - Exercise with different activities within a fitness routine
 - Check finances through different apps depending on what they need to know
@@ -817,7 +665,7 @@ Different users have different acquisition styles. Match to user personality:
 
 ### 6.3 Preferences Generation
 
-#### Operation: `refine` or `shift`
+#### Change Type: `refine` or `shift`
 
 **Goal:** Make the preference evolution visible through changing choices.
 
@@ -837,7 +685,7 @@ Different users have different acquisition styles. Match to user personality:
    - Consistent choices aligned with new preference
    - Show preference in multiple contexts
 
-#### Operation: `stable`
+#### Change Type: `unchanged`
 
 **Goal:** Demonstrate preference through observable choice patterns.
 
@@ -875,11 +723,31 @@ Merge ONLY when:
 - Thematically related but not behaviorally intertwined
 - More than 2 items involved
 
+### 7.3 Evidence Coverage for Merged Chains
+
+When merging multiple state items into one chain:
+
+1. **Each state's `required_observable_fields` must be fully covered**
+2. **One event can evidence fields from multiple states** — use multiple entries in `evidence_for_states`
+3. **Verify coverage separately for each state** — merging doesn't reduce evidence requirements
+
+Example validation for a merged chain with 2 states:
+```
+State A required_observable_fields: [field1, field2, field3]
+State B required_observable_fields: [fieldX, fieldY]
+
+Event 1: evidences A.field1, B.fieldX
+Event 2: evidences A.field2
+Event 3: evidences A.field3, B.fieldY
+
+✓ State A fully covered: field1 ✓, field2 ✓, field3 ✓
+✓ State B fully covered: fieldX ✓, fieldY ✓
+```
+
 ---
 
 ## 8. Comprehensive Examples
-
-### Example 1: Attribute Add — Full Acquisition Journey
+### Example 1: Attribute Add — Full Acquisition Journey with Evidence Annotation
 
 **Input State Item:**
 ```json
@@ -902,7 +770,8 @@ Merge ONLY when:
       "change_type": "add",
       "current_value": "GitHub Copilot Business subscription, integrated with VS Code and JetBrains IDEs",
       "previous_value": null,
-      "change_reason": "Team lead mandated AI tool adoption after Q4 productivity review showed 20% lag behind industry benchmarks"
+      "change_reason": "Team lead mandated AI tool adoption after Q4 productivity review showed 20% lag behind industry benchmarks",
+      "required_observable_fields": ["current_value", "change_reason"]
     }
   ],
   "events": [
@@ -913,7 +782,13 @@ Merge ONLY when:
       },
       "app_name": "Gmail",
       "api_name": "ReadEmail",
-      "user_intent": "Change reason trigger: reading team lead's email summarizing Q4 productivity review results; noting the 20% lag statistic and mandatory AI tool adoption directive effective Q1"
+      "user_intent": "Change reason trigger: reading team lead's email summarizing Q4 productivity review results; noting the 20% lag statistic and mandatory AI tool adoption directive effective Q1",
+      "evidence_for_states": [
+        {
+          "state_name": "ai_coding_assistant_subscription",
+          "evidenced_fields": ["change_reason"]
+        }
+      ]
     },
     {
       "time_specification": {
@@ -922,7 +797,13 @@ Merge ONLY when:
       },
       "app_name": "Google",
       "api_name": "Search",
-      "user_intent": "Initial research: searching 'best AI coding assistants 2024 comparison' to understand landscape before team discussion; skeptical about productivity claims but recognizing need to comply with directive"
+      "user_intent": "Initial research: searching 'best AI coding assistants 2024 comparison' to understand landscape before team discussion; skeptical about productivity claims but recognizing need to comply with directive",
+      "evidence_for_states": [
+        {
+          "state_name": "ai_coding_assistant_subscription",
+          "evidenced_fields": ["current_value"]
+        }
+      ]
     },
     {
       "time_specification": {
@@ -931,7 +812,13 @@ Merge ONLY when:
       },
       "app_name": "LLM Assistant",
       "api_name": "ContinueConversation",
-      "user_intent": "Deep evaluation: asking Claude to compare GitHub Copilot vs Cursor vs Amazon CodeWhisperer specifically for C++ embedded systems development; concerned about legacy codebase compatibility and offline functionality for secure environments"
+      "user_intent": "Deep evaluation: asking Claude to compare GitHub Copilot vs Cursor vs Amazon CodeWhisperer specifically for C++ embedded systems development; concerned about legacy codebase compatibility and offline functionality for secure environments",
+      "evidence_for_states": [
+        {
+          "state_name": "ai_coding_assistant_subscription",
+          "evidenced_fields": ["current_value"]
+        }
+      ]
     },
     {
       "time_specification": {
@@ -940,25 +827,13 @@ Merge ONLY when:
       },
       "app_name": "WhatsApp",
       "api_name": "SendMessage",
-      "user_intent": "Social validation: messaging senior colleague who adopted Copilot last quarter asking about real-world experience with firmware codebases; specifically asking about false positive rate in suggestions and learning curve"
-    },
-    {
-      "time_specification": {
-        "schedule_dates": ["2024-01-05"],
-        "time": "10:30:00"
-      },
-      "app_name": "WhatsApp",
-      "api_name": "GetMessages",
-      "user_intent": "Gathering peer input: reading colleague's detailed response about Copilot experience; noting their recommendation to start with simple boilerplate generation before trusting complex suggestions"
-    },
-    {
-      "time_specification": {
-        "schedule_dates": ["2024-01-08"],
-        "time": "09:15:00"
-      },
-      "app_name": "Google",
-      "api_name": "Search",
-      "user_intent": "Acquisition preparation: searching 'GitHub Copilot Business setup JetBrains CLion' to understand integration process before requesting license from IT"
+      "user_intent": "Social validation: messaging senior colleague who adopted Copilot last quarter asking about real-world experience with firmware codebases; specifically asking about false positive rate in suggestions and learning curve",
+      "evidence_for_states": [
+        {
+          "state_name": "ai_coding_assistant_subscription",
+          "evidenced_fields": ["current_value"]
+        }
+      ]
     },
     {
       "time_specification": {
@@ -967,16 +842,13 @@ Merge ONLY when:
       },
       "app_name": "Gmail",
       "api_name": "SendEmail",
-      "user_intent": "Acquisition action: emailing IT department to request GitHub Copilot Business license activation; cc'ing team lead to document compliance with Q1 directive"
-    },
-    {
-      "time_specification": {
-        "schedule_dates": ["2024-01-10"],
-        "time": "14:30:00"
-      },
-      "app_name": "LLM Assistant",
-      "api_name": "ContinueConversation",
-      "user_intent": "Initial integration usage: testing Copilot on low-stakes task—asking Claude how to write effective Copilot prompts for generating unit test boilerplate for existing sensor calibration module"
+      "user_intent": "Acquisition action: emailing IT department to request GitHub Copilot Business license activation; cc'ing team lead to document compliance with Q1 directive",
+      "evidence_for_states": [
+        {
+          "state_name": "ai_coding_assistant_subscription",
+          "evidenced_fields": ["current_value"]
+        }
+      ]
     },
     {
       "time_specification": {
@@ -985,16 +857,13 @@ Merge ONLY when:
       },
       "app_name": "LLM Assistant",
       "api_name": "ContinueConversation",
-      "user_intent": "Growing competence usage: using AI assistant to debug a Copilot-generated state machine that had subtle race condition; learning to verify AI suggestions rather than blindly accepting"
-    },
-    {
-      "time_specification": {
-        "schedule_dates": ["2024-01-22"],
-        "time": "15:45:00"
-      },
-      "app_name": "Notion",
-      "api_name": "CreatePage",
-      "user_intent": "Integration reflection: documenting personal 'Copilot best practices' learned over two weeks—noting that it excels at boilerplate but requires careful review for timing-critical code; planning to share with team"
+      "user_intent": "Integration usage: using AI assistant to debug a Copilot-generated state machine that had subtle race condition; learning to verify AI suggestions rather than blindly accepting",
+      "evidence_for_states": [
+        {
+          "state_name": "ai_coding_assistant_subscription",
+          "evidenced_fields": ["current_value"]
+        }
+      ]
     },
     {
       "time_specification": {
@@ -1003,23 +872,189 @@ Merge ONLY when:
       },
       "app_name": "LLM Assistant",
       "api_name": "ContinueConversation",
-      "user_intent": "Mature usage: confidently using AI to generate complete test harness for new motor control module; has developed intuition for when to trust vs verify suggestions based on code complexity"
+      "user_intent": "Mature usage: confidently using AI to generate complete test harness for new motor control module; has developed intuition for when to trust vs verify suggestions based on code complexity",
+      "evidence_for_states": [
+        {
+          "state_name": "ai_coding_assistant_subscription",
+          "evidenced_fields": ["current_value"]
+        }
+      ]
     }
   ]
 }
 ```
 
-**Why This Example Demonstrates Lossless Conversion:**
-- `converted_state_items` contains full context (current_value, change_reason, previous_value)
-- Change reason is explicitly observable (email about Q4 review)
-- Research phase shows realistic skepticism and specific concerns (legacy codebase, offline)
-- Social validation matches user seeking peer experience
-- Acquisition process is concrete (IT request email)
-- Usage evolution shows learning curve (cautious → competent → confident)
+**Evidence Coverage Verification:**
+| Required Field | Evidenced By |
+|----------------|--------------|
+| `change_reason` | w1_e001 ✓ |
+| `current_value` | w1_e002, w1_e003, w1_e004, w1_e005, w1_e006, w1_e007 ✓ |
 
 ---
 
-### Example 2: Stable Habit with Realistic Variation using `app_api_variations`
+### Example 2: Habit Adjust — Schedule Change with Timing and Reason Evidence
+
+**Input State Item:**
+```json
+{
+  "name": "financial_reconciliation",
+  "current_value": {
+    "schedule": {
+      "frequency_type": "monthly_nth_weekday",
+      "week_of_month": 1,
+      "day_of_week": 0
+    },
+    "timing": {
+      "start_time": "13:00",
+      "end_time": "14:30"
+    },
+    "location": "home office desk",
+    "priority": "high",
+    "schedule_dates": ["2024-10-07", "2024-11-04", "2024-12-02"]
+  },
+  "change_type": "adjust",
+  "change_reason": "Rescheduled the monthly financial reconciliation to the first Monday of the month (13:00-14:30) to resolve scheduling conflicts with evening leisure, professional reading, and family traditions.",
+  "previous_value": {
+    "schedule": {
+      "frequency_type": "monthly_by_date",
+      "days_of_month": [1]
+    },
+    "timing": {
+      "start_time": "20:00",
+      "end_time": "21:30"
+    },
+    "location": "home office desk",
+    "priority": "high",
+    "schedule_dates": ["2024-10-01", "2024-11-01", "2024-12-01"]
+  },
+  "required_observable_fields": ["current_value.timing", "current_value.schedule", "change_reason"]
+}
+```
+
+**Generated Event Chain:**
+```json
+{
+  "converted_state_items": [
+    {
+      "state_category": "habits_state",
+      "state_name": "financial_reconciliation",
+      "change_type": "adjust",
+      "current_value": {
+        "schedule": {
+          "frequency_type": "monthly_nth_weekday",
+          "week_of_month": 1,
+          "day_of_week": 0
+        },
+        "timing": {
+          "start_time": "13:00",
+          "end_time": "14:30"
+        },
+        "location": "home office desk",
+        "priority": "high",
+        "schedule_dates": ["2024-10-07", "2024-11-04", "2024-12-02"]
+      },
+      "previous_value": {
+        "schedule": {
+          "frequency_type": "monthly_by_date",
+          "days_of_month": [1]
+        },
+        "timing": {
+          "start_time": "20:00",
+          "end_time": "21:30"
+        },
+        "location": "home office desk",
+        "priority": "high",
+        "schedule_dates": ["2024-10-01", "2024-11-01", "2024-12-01"]
+      },
+      "change_reason": "Rescheduled the monthly financial reconciliation to the first Monday of the month (13:00-14:30) to resolve scheduling conflicts with evening leisure, professional reading, and family traditions.",
+      "required_observable_fields": ["current_value.timing", "current_value.schedule", "change_reason"]
+    }
+  ],
+  "events": [
+    {
+      "time_specification": {
+        "schedule_dates": ["2024-10-01"],
+        "time": "19:45:00"
+      },
+      "app_name": "Notion",
+      "api_name": "UpdatePage",
+      "user_intent": "Schedule conflict trigger: attempting to start monthly financial reconciliation at 20:00 but realizing tonight conflicts with the season premiere of a show planned with partner; noting this is the third month in a row where the 1st-of-month evening slot created friction with personal plans.",
+      "evidence_for_states": [
+        {
+          "state_name": "financial_reconciliation",
+          "evidenced_fields": ["change_reason"]
+        }
+      ]
+    },
+    {
+      "time_specification": {
+        "schedule_dates": ["2024-10-02"],
+        "time": "12:30:00"
+      },
+      "app_name": "LLM Assistant",
+      "api_name": "ContinueConversation",
+      "user_intent": "Schedule optimization: asking Claude to help find a better recurring time slot for monthly financial review that avoids evening leisure time, professional reading habits, and potential holiday conflicts; considering moving to a weekend afternoon or weekday lunch break.",
+      "evidence_for_states": [
+        {
+          "state_name": "financial_reconciliation",
+          "evidenced_fields": ["change_reason"]
+        }
+      ]
+    },
+    {
+      "time_specification": {
+        "schedule_dates": ["2024-10-07", "2024-11-04", "2024-12-02"],
+        "start_time": "13:00:00",
+        "end_time": "14:30:00",
+        "note": "New schedule: first Monday of each month, 13:00-14:30. October session focuses on setting up the new routine; November and December sessions run smoothly with no conflicts."
+      },
+      "app_name": "Chase",
+      "api_name": "GetTransactions",
+      "user_intent": "Habit execution with new schedule: performing monthly financial reconciliation during Monday lunch break (13:00-14:30) at home office desk; reviewing Chase transactions, categorizing expenses, and updating budget tracker in Notion. The new daytime slot eliminates evening conflicts and allows uninterrupted focus.",
+      "evidence_for_states": [
+        {
+          "state_name": "financial_reconciliation",
+          "evidenced_fields": ["current_value.timing", "current_value.schedule"]
+        }
+      ]
+    },
+    {
+      "time_specification": {
+        "schedule_dates": ["2024-10-07", "2024-11-04", "2024-12-02"],
+        "start_time": "13:30:00",
+        "end_time": "14:30:00",
+        "note": "Part of the reconciliation session - updating records after reviewing transactions"
+      },
+      "app_name": "Notion",
+      "api_name": "UpdatePage",
+      "user_intent": "Reconciliation documentation: updating monthly budget tracker with categorized expenses from Chase review; comparing actual spending against budget allocations and noting any variances for next month's planning.",
+      "evidence_for_states": [
+        {
+          "state_name": "financial_reconciliation",
+          "evidenced_fields": ["current_value.timing", "current_value.schedule"]
+        }
+      ]
+    }
+  ]
+}
+```
+
+**Evidence Coverage Verification:**
+| Required Field | Evidenced By |
+|----------------|--------------|
+| `current_value.timing` | w4_e003 (13:00-14:30), w4_e004 (13:30-14:30) ✓ |
+| `current_value.schedule` | w4_e003, w4_e004 (first Monday pattern: Oct 7, Nov 4, Dec 2) ✓ |
+| `change_reason` | w4_e001 (conflict trigger), w4_e002 (optimization discussion) ✓ |
+
+**Why This Example Works:**
+- Shows the OLD pattern conflict (w4_e001: attempting at 20:00 on the 1st)
+- Shows the reasoning process (w4_e002: asking for help finding better slot)
+- Shows the NEW pattern execution (w4_e003, w4_e004: 13:00-14:30 on first Monday)
+- `change_reason` explicitly mentions evening conflicts → w4_e001 demonstrates this
+
+---
+
+### Example 3: Unchanged Habit with Realistic Variation using `app_api_variations`
 
 **Input State Item:**
 ```json
@@ -1036,9 +1071,9 @@ Merge ONLY when:
     },
     "location": "home living room",
     "priority": "medium",
-    "schedule_dates": ["2024-01-02", "2024-01-04", "2024-01-09", "2024-01-11", "2024-01-16", "2024-01-18", "2024-01-23", "2024-01-25", "2024-01-30", "2024-02-01", "2024-02-06", "2024-02-08", "2024-02-13", "2024-02-15", "2024-02-20", "2024-02-22", "2024-02-27", "2024-02-29", "2024-03-05", "2024-03-07", "2024-03-12", "2024-03-14", "2024-03-19", "2024-03-21", "2024-03-26", "2024-03-28"]
+    "schedule_dates": ["2024-01-02", "2024-01-04", "2024-01-09", "2024-01-11", "2024-01-16", "2024-01-18", "2024-01-23", "2024-01-25", "2024-01-30"]
   },
-  "op": "stable",
+  "change_type": "unchanged",
   "change_reason": null,
   "previous_value": null
 }
@@ -1051,7 +1086,7 @@ Merge ONLY when:
     {
       "state_category": "habits_state",
       "state_name": "industry_tech_reading",
-      "change_type": "stable",
+      "change_type": "unchanged",
       "current_value": {
         "schedule": {
           "frequency_type": "weekly",
@@ -1063,70 +1098,77 @@ Merge ONLY when:
         },
         "location": "home living room",
         "priority": "medium",
-        "schedule_dates": ["2024-01-02", "2024-01-04", "2024-01-09", "2024-01-11", "2024-01-16", "2024-01-18", "2024-01-23", "2024-01-25", "2024-01-30", "2024-02-01", "2024-02-06", "2024-02-08", "2024-02-13", "2024-02-15", "2024-02-20", "2024-02-22", "2024-02-27", "2024-02-29", "2024-03-05", "2024-03-07", "2024-03-12", "2024-03-14", "2024-03-19", "2024-03-21", "2024-03-26", "2024-03-28"]
+        "schedule_dates": ["2024-01-02", "2024-01-04", "2024-01-09", "2024-01-11", "2024-01-16", "2024-01-18", "2024-01-23", "2024-01-25", "2024-01-30"]
       },
       "previous_value": null,
-      "change_reason": null
+      "change_reason": null,
+      "required_observable_fields": [
+        "current_value.schedule.timing",
+        "current_value.schedule.frequency",
+        "current_value.location"
+      ]
     }
   ],
   "events": [
     {
       "time_specification": {
         "schedule_dates": [
-          "2024-01-02", "2024-01-04", "2024-01-09", "2024-01-11", 
-          "2024-01-16", "2024-01-18", "2024-01-23", "2024-01-25", 
-          "2024-01-30", "2024-02-01", "2024-02-06", "2024-02-08", 
-          "2024-02-13", "2024-02-15", "2024-02-20", "2024-02-22", 
-          "2024-02-27", "2024-02-29", "2024-03-05", "2024-03-07", 
-          "2024-03-12", "2024-03-14", "2024-03-19", "2024-03-21", 
-          "2024-03-26", "2024-03-28"
+          "2024-01-02", "2024-01-04", "2024-01-09", "2024-01-11",
+          "2024-01-16", "2024-01-18", "2024-01-23", "2024-01-25", "2024-01-30"
         ],
         "start_time": "20:30:00",
         "end_time": "21:30:00",
-        "note": "Bi-weekly evening tech reading ritual from the living room. Sessions alternate organically between LinkedIn for industry pulse and peer updates versus Google for deeper technical searches on specific topics like whitepapers and documentation."
+        "note": "Bi-weekly evening tech reading ritual from the living room couch. Sessions alternate organically between LinkedIn for industry pulse and Google for deeper technical searches."
       },
       "app_api_variations": [
         {"app_name": "LinkedIn", "api_name": "GetFeed"},
         {"app_name": "Google", "api_name": "Search"}
       ],
-      "user_intent": "Habit execution: bi-weekly evening technical reading sessions from the living room couch. LinkedIn sessions focus on industry pulse—scrolling through posts from embedded systems engineers at ASML, NXP, and other High Tech Campus companies; catching announcements about Zephyr RTOS updates, new EtherCAT implementations, and industrial automation trends. Google sessions pivot to deep technical content—searching for specific topics like 'ARM Cortex-M7 cache optimization techniques', 'FreeRTOS vs Zephyr power consumption comparison 2024', or 'CANopen FD migration guide'; reading through technical blog posts, whitepapers, and official documentation. The mix depends on whether the mood is 'what's happening in my field' (LinkedIn) vs 'I want to learn something specific' (Google)."
+      "user_intent": "Habit execution: bi-weekly evening technical reading sessions from the living room couch. LinkedIn sessions focus on industry pulse—scrolling through posts from embedded systems engineers, catching announcements about Zephyr RTOS updates and industrial automation trends. Google sessions pivot to deep technical content—searching for specific topics like 'ARM Cortex-M7 cache optimization techniques' or 'FreeRTOS vs Zephyr comparison 2024'.",
+      "evidence_for_states": [
+        {
+          "state_name": "industry_tech_reading",
+          "evidenced_fields": ["current_value.schedule.timing", "current_value.schedule.frequency", "current_value.location"]
+        }
+      ]
     }
   ]
 }
 ```
 
-**Why This Example Demonstrates Realistic Variation:**
-- Uses `app_api_variations` as a set of valid app-api combinations
-- LinkedIn serves "social/industry pulse" needs
-- Google serves "specific technical knowledge" needs
-- The `user_intent` explains WHY different variations exist and what each serves
-- The downstream code will sample from this set for each schedule_date
+**Evidence Coverage Verification:**
+| Required Field | Evidenced By |
+|----------------|--------------|
+| `current_value.schedule.timing` | w1_e001 (start_time/end_time) ✓ |
+| `current_value.schedule.frequency` | w1_e001 (schedule_dates pattern) ✓ |
+| `current_value.location` | w1_e001 (user_intent: "living room couch") ✓ |
 
 ---
 
-### Example 3: Habit Acquire with Establishment Journey and Variation
+### Example 4: Merged Chain — Two States with Shared Events
 
-**Input State Item:**
+**Input State Items:**
 ```json
-{
-  "name": "ai_tool_experimentation",
-  "current_value": {
-    "schedule": {
-      "frequency_type": "weekly",
-      "days_of_week": [4]
-    },
-    "timing": {
-      "start_time": "15:00",
-      "end_time": "16:30"
-    },
-    "location": "home office",
-    "priority": "low",
-    "schedule_dates": ["2024-01-05", "2024-01-12", "2024-01-19", "2024-01-26", "2024-02-02", "2024-02-09", "2024-02-16", "2024-02-23", "2024-03-01", "2024-03-08", "2024-03-15", "2024-03-22", "2024-03-29"]
+[
+  {
+    "name": "technical_skills_inventory",
+    "current_value": "AI-assisted development (GitHub Copilot and ChatGPT-4 for unit test generation)",
+    "op": "add",
+    "change_reason": "Exploring productivity gains through AI tools and improving data processing capabilities for robotics telemetry.",
+    "previous_value": null
   },
-  "op": "acquire",
-  "change_reason": "Setting aside dedicated time on Friday afternoons to evaluate how AI tools handle legacy C++ codebases.",
-  "previous_value": null
-}
+  {
+    "name": "learning_style",
+    "current_value": {
+      "statement": "Strongly prefers hands-on project-based learning, now specifically favoring interactive AI-pair programming as a primary exploration method for new technologies"
+    },
+    "op": "refine",
+    "change_reason": "Discovered that AI-assisted coding significantly accelerates the 'doing' phase of project-based learning.",
+    "previous_value": {
+      "statement": "Prefers hands-on, hardware-in-the-loop experimentation over purely theoretical documentation or video-based tutorials"
+    }
+  }
+]
 ```
 
 **Generated Event Chain:**
@@ -1134,126 +1176,165 @@ Merge ONLY when:
 {
   "converted_state_items": [
     {
-      "state_category": "habits_state",
-      "state_name": "ai_tool_experimentation",
-      "change_type": "acquire",
-      "current_value": {
-        "schedule": {
-          "frequency_type": "weekly",
-          "days_of_week": [4]
-        },
-        "timing": {
-          "start_time": "15:00",
-          "end_time": "16:30"
-        },
-        "location": "home office",
-        "priority": "low",
-        "schedule_dates": ["2024-01-05", "2024-01-12", "2024-01-19", "2024-01-26", "2024-02-02", "2024-02-09", "2024-02-16", "2024-02-23", "2024-03-01", "2024-03-08", "2024-03-15", "2024-03-22", "2024-03-29"]
-      },
+      "state_category": "user_attributes_state",
+      "state_name": "technical_skills_inventory",
+      "change_type": "add",
+      "current_value": "AI-assisted development (GitHub Copilot and ChatGPT-4 for unit test generation)",
       "previous_value": null,
-      "change_reason": "Setting aside dedicated time on Friday afternoons to evaluate how AI tools handle legacy C++ codebases."
+      "change_reason": "Exploring productivity gains through AI tools and improving data processing capabilities for robotics telemetry.",
+      "required_observable_fields": ["current_value", "change_reason"]
+    },
+    {
+      "state_category": "preferences_state",
+      "state_name": "learning_style",
+      "change_type": "refine",
+      "current_value": {
+        "statement": "Strongly prefers hands-on project-based learning, now specifically favoring interactive AI-pair programming as a primary exploration method for new technologies"
+      },
+      "previous_value": {
+        "statement": "Prefers hands-on, hardware-in-the-loop experimentation over purely theoretical documentation or video-based tutorials"
+      },
+      "change_reason": "Discovered that AI-assisted coding significantly accelerates the 'doing' phase of project-based learning.",
+      "required_observable_fields": ["current_value.statement", "previous_value.statement", "change_reason"]
     }
   ],
   "events": [
     {
       "time_specification": {
         "schedule_dates": ["2024-01-02"],
-        "time": "20:30:00"
+        "time": "10:15:00"
       },
-      "app_name": "LLM Assistant",
-      "api_name": "ContinueConversation",
-      "user_intent": "Change reason crystallization: reflecting on past month's scattered AI tool attempts with Claude; realizing that trying Copilot on Monday, ChatGPT on Thursday, and Cursor randomly led to no clear conclusions about which tool works best for embedded C++ work"
+      "app_name": "LinkedIn",
+      "api_name": "GetFeed",
+      "user_intent": "Trigger moment: scrolling through CES 2024 recap posts on LinkedIn and noticing the heavy emphasis on Generative AI for industrial code generation; sparking curiosity about how these tools could optimize embedded firmware workflow and improve productivity.",
+      "evidence_for_states": [
+        {
+          "state_name": "technical_skills_inventory",
+          "evidenced_fields": ["change_reason"]
+        }
+      ]
     },
     {
       "time_specification": {
-        "schedule_dates": ["2024-01-03"],
-        "time": "12:15:00"
+        "schedule_dates": ["2024-01-02"],
+        "time": "20:30:00"
       },
       "app_name": "Google",
       "api_name": "Search",
-      "user_intent": "Habit design research: searching 'systematic approach to evaluating developer tools' to find frameworks for structured experimentation; wanting to avoid previous mistake of unstructured exploration"
-    },
-    {
-      "time_specification": {
-        "schedule_dates": ["2024-01-03"],
-        "time": "21:00:00"
-      },
-      "app_name": "LLM Assistant",
-      "api_name": "ContinueConversation",
-      "user_intent": "Habit structure planning: asking Claude to help design a 13-week AI tool evaluation protocol with specific test tasks for each week; deciding on Friday afternoons when energy for creative work is typically higher and weekend proximity allows extended sessions if needed"
+      "user_intent": "Initial research: searching 'GitHub Copilot for embedded C++ performance optimization' and 'ChatGPT-4 unit test generation for real-time systems' to evaluate if AI tools can handle deterministic RTOS constraints.",
+      "evidence_for_states": [
+        {
+          "state_name": "technical_skills_inventory",
+          "evidenced_fields": ["current_value"]
+        }
+      ]
     },
     {
       "time_specification": {
         "schedule_dates": ["2024-01-04"],
-        "time": "19:45:00"
+        "time": "19:00:00"
       },
-      "app_name": "Notion",
-      "api_name": "CreateDatabaseEntry",
-      "user_intent": "Habit infrastructure setup: creating 'AI Tool Evaluation Tracker' database with columns for date, tool tested, task type, success metrics, and learnings; blocking Friday 3-5pm as recurring 'AI Lab' time in personal schedule"
+      "app_name": "Google",
+      "api_name": "Search",
+      "user_intent": "Old preference demonstration: searching 'finite state machine design patterns embedded systems PDF' to find comprehensive documentation before implementing motor control FSM; following established pattern of reading documentation first before hands-on implementation.",
+      "evidence_for_states": [
+        {
+          "state_name": "learning_style",
+          "evidenced_fields": ["previous_value.statement"]
+        }
+      ]
     },
     {
       "time_specification": {
-        "schedule_dates": [
-          "2024-01-05", "2024-01-12", "2024-01-19", "2024-01-26",
-          "2024-02-02", "2024-02-09", "2024-02-16", "2024-02-23",
-          "2024-03-01", "2024-03-08", "2024-03-15", "2024-03-22", "2024-03-29"
-        ],
-        "start_time": "15:00:00",
-        "end_time": "16:30:00",
-        "note": "Weekly Friday AI experimentation sessions. Sessions involve a mix of interactive AI testing (LLM conversations), targeted research (Google searches for specific comparisons), and documentation (Notion updates). The balance shifts over time as the habit matures."
+        "schedule_dates": ["2024-01-05"],
+        "time": "15:30:00"
       },
-      "app_api_variations": [
-        {"app_name": "LLM Assistant", "api_name": "ContinueConversation"},
-        {"app_name": "Google", "api_name": "Search"},
-        {"app_name": "Notion", "api_name": "UpdatePage"}
-      ],
-      "user_intent": "Habit execution: dedicated Friday afternoon AI tool evaluation sessions. LLM Assistant sessions involve interactive testing—feeding legacy C++ code to different AI tools, asking Claude to explain suggestions, debugging AI-generated code together. Google sessions address specific questions that emerge—'Copilot C++20 coroutines support', 'ChatGPT vs Claude embedded systems coding comparison', 'AI code generation accuracy benchmarks'. Notion sessions document findings—updating the evaluation tracker with results, recording which tool works best for which task type, preparing to share learnings with team."
+      "app_name": "LLM Assistant",
+      "api_name": "CreateConversation",
+      "user_intent": "Catalyst moment for preference shift: starting an interactive session to refactor a complex state machine implementation; choosing to 'build with AI' rather than spending hours reading the legacy documentation for the old motion control module—a deliberate departure from usual documentation-first approach.",
+      "evidence_for_states": [
+        {
+          "state_name": "technical_skills_inventory",
+          "evidenced_fields": ["current_value"]
+        },
+        {
+          "state_name": "learning_style",
+          "evidenced_fields": ["change_reason", "current_value.statement"]
+        }
+      ]
     },
     {
       "time_specification": {
-        "schedule_dates": ["2024-02-02"],
-        "time": "17:15:00"
+        "schedule_dates": ["2024-01-19"],
+        "time": "16:00:00"
+      },
+      "app_name": "LLM Assistant",
+      "api_name": "ContinueConversation",
+      "user_intent": "Demonstrating new preference and skill: prompt-engineering a complex Python test script using ChatGPT to process robot telemetry instead of searching StackOverflow; finding that the interactive dialogue accelerates the learning of NumPy much faster than static tutorials.",
+      "evidence_for_states": [
+        {
+          "state_name": "technical_skills_inventory",
+          "evidenced_fields": ["current_value", "change_reason"]
+        },
+        {
+          "state_name": "learning_style",
+          "evidenced_fields": ["current_value.statement", "change_reason"]
+        }
+      ]
+    },
+    {
+      "time_specification": {
+        "schedule_dates": ["2024-03-01"],
+        "time": "15:45:00"
       },
       "app_name": "Notion",
-      "api_name": "UpdatePage",
-      "user_intent": "Mid-habit reflection: updating evaluation tracker with month-one insights after completing Copilot deep-dive; noting that Copilot excels at boilerplate but struggles with hardware-specific code patterns; adjusting February protocol to test this hypothesis with ChatGPT"
+      "api_name": "CreatePage",
+      "user_intent": "Outcome documentation: creating a 'Toy Project' log where documenting the limits of AI-generated ARM assembly; reflecting on how the shift to AI-pair programming has halved the time from 'idea' to 'running code' on hardware—confirming that this interactive approach accelerates the 'doing' phase of learning.",
+      "evidence_for_states": [
+        {
+          "state_name": "technical_skills_inventory",
+          "evidenced_fields": ["current_value", "change_reason"]
+        },
+        {
+          "state_name": "learning_style",
+          "evidenced_fields": ["current_value.statement", "change_reason"]
+        }
+      ]
     }
   ]
 }
 ```
 
-**Why This Example Works:**
-- Shows full acquisition journey (motivation → design → infrastructure → execution)
-- Execution events use `app_api_variations` with three valid options representing different aspects of the experimentation habit
-- The `note` and `user_intent` explain what each variation serves
-- Separate mid-habit reflection event shows the habit is alive and evolving
+**Evidence Coverage Verification:**
 
----
+**State: technical_skills_inventory**
+| Required Field | Evidenced By |
+|----------------|--------------|
+| `current_value` | w1_e002, w1_e004, w1_e005, w1_e006 ✓ |
+| `change_reason` | w1_e001 (trigger: productivity gains), w1_e005 (telemetry processing), w1_e006 (outcome) ✓ |
 
-### Example 4: Preference Shift — From Old to New Through Catalyst
+**State: learning_style**
+| Required Field | Evidenced By |
+|----------------|--------------|
+| `current_value.statement` | w1_e004, w1_e005, w1_e006 ✓ |
+| `previous_value.statement` | w1_e003 ✓ |
+| `change_reason` | w1_e004 (catalyst), w1_e005 (discovery), w1_e006 (reflection) ✓ |
+
+### Example 5: Preference Shift — From Material-Only to Balanced Spending
 
 **Input State Item:**
 ```json
 {
-  "name": "learning_style",
+  "name": "spending_logic",
   "current_value": {
-    "statement": "Strongly prefers hands-on project-based learning, now specifically favoring interactive AI-pair programming as a primary exploration method for new technologies",
-    "signals": [
-      "Used GitHub Copilot to refactor a complex state machine implementation this month",
-      "Prompt-engineered a test script using ChatGPT instead of searching StackOverflow",
-      "Built a small 'toy' project to test AI code generation limits on ARM assembly"
-    ]
+    "statement": "Prefers a balanced approach between high-quality material acquisitions and intentional charitable giving, valuing social impact alongside durability"
   },
-  "op": "refine",
-  "change_reason": "Discovered that AI-assisted coding significantly accelerates the 'doing' phase of project-based learning.",
+  "change_type": "shift",
+  "change_reason": "A year of significant global events and the symbolic reopening of Notre Dame shifted his perspective toward more balanced spending that includes intentional charitable impact.",
   "previous_value": {
-    "statement": "Prefers hands-on, hardware-in-the-loop experimentation over purely theoretical documentation or video-based tutorials",
-    "signals": [
-      "Purchased a development board specifically to test a new RTOS feature mentioned in a manual",
-      "Spent three hours debugging a sensor interface manually rather than reading the full spec first",
-      "Configured a local test-bench to replicate a production bug instead of using a simulator"
-    ]
-  }
+    "statement": "Prefers purchasing high-quality, durable electronics and appliances over budget-friendly but short-lived alternatives"
+  },
+  "required_observable_fields": ["current_value.statement", "change_reason"]
 }
 ```
 
@@ -1263,121 +1344,109 @@ Merge ONLY when:
   "converted_state_items": [
     {
       "state_category": "preferences_state",
-      "state_name": "learning_style",
-      "change_type": "refine",
+      "state_name": "spending_logic",
+      "change_type": "shift",
       "current_value": {
-        "statement": "Strongly prefers hands-on project-based learning, now specifically favoring interactive AI-pair programming as a primary exploration method for new technologies",
-        "signals": [
-          "Used GitHub Copilot to refactor a complex state machine implementation this month",
-          "Prompt-engineered a test script using ChatGPT instead of searching StackOverflow",
-          "Built a small 'toy' project to test AI code generation limits on ARM assembly"
-        ]
+        "statement": "Prefers a balanced approach between high-quality material acquisitions and intentional charitable giving, valuing social impact alongside durability"
       },
       "previous_value": {
-        "statement": "Prefers hands-on, hardware-in-the-loop experimentation over purely theoretical documentation or video-based tutorials",
-        "signals": [
-          "Purchased a development board specifically to test a new RTOS feature mentioned in a manual",
-          "Spent three hours debugging a sensor interface manually rather than reading the full spec first",
-          "Configured a local test-bench to replicate a production bug instead of using a simulator"
-        ]
+        "statement": "Prefers purchasing high-quality, durable electronics and appliances over budget-friendly but short-lived alternatives"
       },
-      "change_reason": "Discovered that AI-assisted coding significantly accelerates the 'doing' phase of project-based learning."
+      "change_reason": "A year of significant global events and the symbolic reopening of Notre Dame shifted his perspective toward more balanced spending that includes intentional charitable impact.",
+      "required_observable_fields": ["current_value.statement", "change_reason"]
     }
   ],
   "events": [
     {
       "time_specification": {
-        "schedule_dates": ["2024-01-08"],
-        "time": "20:00:00"
+        "schedule_dates": ["2024-12-07"],
+        "time": "20:30:00"
       },
       "app_name": "Google",
       "api_name": "Search",
-      "user_intent": "Old preference demonstration: searching 'finite state machine design patterns embedded systems PDF' to find comprehensive documentation before implementing motor control FSM; following established pattern of hands-on learning but still relying on documentation as primary resource"
+      "user_intent": "Catalyst moment: searching 'Notre Dame cathedral reopening December 2024' after seeing news coverage; feeling moved by the global community effort to restore a cultural landmark and reflecting on the power of collective charitable action.",
+      "evidence_for_states": [
+        {
+          "state_name": "spending_logic",
+          "evidenced_fields": ["change_reason"]
+        }
+      ]
     },
     {
       "time_specification": {
-        "schedule_dates": ["2024-01-15"],
-        "time": "19:45:00"
+        "schedule_dates": ["2024-12-08"],
+        "time": "14:00:00"
       },
-      "app_name": "Notion",
-      "api_name": "CreatePage",
-      "user_intent": "Frustration documentation: creating note titled 'FSM Learning Struggle' after one week of documentation reading still leaves confusion about hierarchical state handling; beginning to question whether documentation-then-build approach is working for this topic"
+      "app_name": "Google",
+      "api_name": "Search",
+      "user_intent": "Preference shift exploration: searching 'Friends of Notre Dame de Paris donation' to find official channels for contributing to the cathedral's ongoing preservation; wanting to participate in this historic moment rather than just observing.",
+      "evidence_for_states": [
+        {
+          "state_name": "spending_logic",
+          "evidenced_fields": ["current_value.statement", "change_reason"]
+        }
+      ]
     },
     {
       "time_specification": {
-        "schedule_dates": ["2024-01-22"],
+        "schedule_dates": ["2024-12-08"],
         "time": "14:30:00"
       },
-      "app_name": "LLM Assistant",
-      "api_name": "ContinueConversation",
-      "user_intent": "Catalyst moment: desperately asking Claude 'can you help me build a simple hierarchical FSM step by step?' after 2 weeks of documentation produced more confusion than clarity; pivoting from read-then-build to build-with-AI approach out of frustration"
+      "app_name": "Chase",
+      "api_name": "PayBill",
+      "user_intent": "New preference demonstration: making commemorative donation to Friends of Notre Dame de Paris; consciously allocating funds that might have gone toward a material purchase (was considering new wireless earbuds) toward charitable impact instead.",
+      "evidence_for_states": [
+        {
+          "state_name": "spending_logic",
+          "evidenced_fields": ["current_value.statement"]
+        }
+      ]
     },
     {
       "time_specification": {
-        "schedule_dates": ["2024-01-22"],
-        "time": "16:45:00"
-      },
-      "app_name": "LLM Assistant",
-      "api_name": "ContinueConversation",
-      "user_intent": "Revelation experience: continuing AI pair programming session, now on third iteration of FSM implementation; suddenly understanding hierarchical state transitions through building rather than reading—what took 2 weeks to NOT understand is becoming clear in hours"
-    },
-    {
-      "time_specification": {
-        "schedule_dates": ["2024-01-23"],
-        "time": "10:00:00"
-      },
-      "app_name": "LLM Assistant",
-      "api_name": "ContinueConversation",
-      "user_intent": "Preference consolidation: asking Claude to extend yesterday's FSM with edge cases; completing what would have been weeks of documentation study in second day of hands-on building; explicitly recognizing AI-assisted building as superior learning approach"
-    },
-    {
-      "time_specification": {
-        "schedule_dates": ["2024-01-24"],
-        "time": "20:30:00"
-      },
-      "app_name": "Notion",
-      "api_name": "UpdatePage",
-      "user_intent": "Preference articulation: updating 'FSM Learning Struggle' note with breakthrough summary; explicitly writing 'AI-assisted coding significantly accelerates the doing phase'—the exact principle that now guides learning approach"
-    },
-    {
-      "time_specification": {
-        "schedule_dates": ["2024-02-05"],
-        "time": "15:00:00"
-      },
-      "app_name": "LLM Assistant",
-      "api_name": "ContinueConversation",
-      "user_intent": "New preference application: starting to learn CAN bus protocol by asking Claude to help build a simple message parser instead of reading protocol specification; deliberately applying AI-pair-programming-first approach validated by FSM experience"
-    },
-    {
-      "time_specification": {
-        "schedule_dates": ["2024-02-12"],
-        "time": "21:15:00"
-      },
-      "app_name": "LLM Assistant",
-      "api_name": "ContinueConversation",
-      "user_intent": "New preference reinforcement: learning I2C driver implementation through iterative building with AI assistance; skipping the 50-page specification document entirely in favor of 'build with AI and discover gaps' approach"
-    },
-    {
-      "time_specification": {
-        "schedule_dates": ["2024-03-01"],
+        "schedule_dates": ["2024-12-20"],
         "time": "19:00:00"
       },
-      "app_name": "WhatsApp",
-      "api_name": "SendMessage",
-      "user_intent": "New preference evangelism: advising junior colleague struggling with SPI protocol to 'just start building with ChatGPT instead of reading the spec—you'll learn 10x faster'; confidently sharing refined learning philosophy"
+      "app_name": "Google",
+      "api_name": "Search",
+      "user_intent": "Balanced approach in action: searching 'Stichting Vluchteling year-end donation' for holiday charitable giving; integrating humanitarian support into year-end spending alongside planned material gifts for family.",
+      "evidence_for_states": [
+        {
+          "state_name": "spending_logic",
+          "evidenced_fields": ["current_value.statement"]
+        }
+      ]
+    },
+    {
+      "time_specification": {
+        "schedule_dates": ["2024-12-20"],
+        "time": "19:30:00"
+      },
+      "app_name": "Chase",
+      "api_name": "PayBill",
+      "user_intent": "New preference reinforcement: completing year-end donation to Stichting Vluchteling; reflecting that this year's holiday spending now balances quality gifts (material) with meaningful charitable contributions (social impact)—a shift from previous years' material-only focus.",
+      "evidence_for_states": [
+        {
+          "state_name": "spending_logic",
+          "evidenced_fields": ["current_value.statement"]
+        }
+      ]
     }
   ]
 }
 ```
 
-**Why This Example Works:**
-- `converted_state_items` contains both current_value AND previous_value with full detail including signals
-- Old preference is demonstrated through concrete actions (documentation search)
-- Struggle period is observable (frustration note)
-- Catalyst moment is precise (the desperate pivot to AI pair programming)
-- New preference is applied to multiple subsequent contexts (CAN bus, I2C, advising colleague)
-- The change_reason becomes observable through the Notion update
+**Evidence Coverage Verification:**
+| Required Field | Evidenced By |
+|----------------|--------------|
+| `current_value.statement` | w4_e002, w4_e003, w4_e004, w4_e005 (multiple events showing balanced material + charitable choices) ✓ |
+| `change_reason` | w4_e001 (Notre Dame catalyst), w4_e002 (connecting to global events) ✓ |
 
+**Why This Example Works:**
+- `change_reason` mentions "Notre Dame reopening" → w4_e001, w4_e002 explicitly connect to this
+- `change_reason` mentions "significant global events" → charitable giving demonstrates engagement with global issues
+- `current_value.statement` mentions "balanced approach" → events show BOTH material considerations AND charitable giving
+- w4_e003 explicitly shows the choice to donate instead of buying earbuds → demonstrates preference shift from material-only
 ---
 
 ## 9. Validation Checklist
@@ -1390,21 +1459,24 @@ Before finalizing output, verify:
 - [ ] Every `preferences_state` item appears in at least one chain
 
 ### Converted State Items Validation
-- [ ] Each `converted_state_items` entry contains: state_category, state_name, change_type, current_value, previous_value, change_reason
+- [ ] Each `converted_state_items` entry contains: state_category, state_name, change_type, current_value, previous_value, change_reason, required_observable_fields
 - [ ] `current_value` is copied exactly from input state
 - [ ] `previous_value` is copied exactly from input state (or null if not present)
 - [ ] `change_reason` is copied exactly from input state (or null if not present)
+- [ ] `required_observable_fields` is copied exactly from input state
+- [ ] `change_type` matches the input (add | modify | unchanged | acquire | adjust | drop | refine | shift)
 
 ### Lossless Conversion Validation
 For EACH state item, confirm:
 - [ ] Could someone reconstruct the state item from ONLY the events?
 - [ ] Is the `change_reason` (if present) observable through at least one event?
 - [ ] For `add/acquire`: Are both process AND outcome events present?
-- [ ] For `stable`: Is the state demonstrated across multiple contexts?
+- [ ] For `drop`: Is the habit clearly discontinued with no more pattern execution?
+- [ ] For `unchanged`: Is the state demonstrated across multiple contexts?
 - [ ] For preferences: Are CHOICES shown (A over B), not just usage of A?
 
 ### Habit Variation Validation (CRITICAL)
-- [ ] Stable/recurring habits with natural variation use `app_api_variations`
+- [ ] Unchanged/recurring habits with natural variation use `app_api_variations`
 - [ ] Each entry in `app_api_variations` is a valid {app_name, api_name} pair
 - [ ] No duplicate entries in `app_api_variations` (it's a set)
 - [ ] The `user_intent` explains what each variation serves
@@ -1445,6 +1517,11 @@ For EACH state item, confirm:
 8. **Output ONLY the JSON** — no markdown fences, no commentary
 
 **Remember:** Your goal is to create a behavioral trace so realistic and detailed that the original state items become fully observable through the events. Information should flow FROM state TO events with zero loss. Habits should show realistic human variation through `app_api_variations` when natural variation exists.
+
+**Evidence Annotation Reminder:**
+- Every event MUST have `evidence_for_states` populated
+- Every field in `required_observable_fields` MUST be covered by at least one event
+- Use the Evidence Coverage Verification table format shown in examples to double-check your work before outputting
 """)
 
 @dataclass
@@ -1464,340 +1541,12 @@ def render_events_chain_prompt(request: EventsChainRequest) -> str:
         app_catalog_json=json.dumps(APP_CATALOG, indent=2),
         user_basic_profile=request.user_basic_profile,
         domain_name=request.domain_name,
-        user_life_context=request.user_life_context,
         user_previous_window_summary=request.user_previous_window_summary,
         user_domain_previous_window_summary=request.user_domain_previous_window_summary,
         user_this_window_description=request.user_this_window_description,
         domain_window_state=request.domain_window_state,
         world_background=request.world_background,
     )
-
-
-# OLD TEMPLATE CONTENT BELOW - TO BE REMOVED
-# """
-
-# ## Example 1: Two Related Items Grouped Together (Valid Grouping)
-
-# State items to be grouped:
-# ```json
-# [
-#   {
-#     "name": "user_health_tracking_devices",
-#     "current_value": "Whoop 4.0",
-#     "op": "add",
-#     "change_reason": "Influenced by CES 2024 tech trends"
-#   },
-#   {
-#     "name": "wellness_philosophy", 
-#     "current_value": "Strongly prefers highly granular, AI-enhanced data metrics",
-#     "op": "amplify",
-#     "change_reason": "Adoption of the Whoop strap increases reliance on algorithmic health insights"
-#   }
-# ]
-# ```
-
-# Why grouped: These 2 items are directly causally connected - acquiring Whoop (attribute) directly amplifies the data-driven preference (preference). This is a valid grouping.
-
-# Evidence chain:
-# ```json
-# {
-#   "evidence_chain_id": "w1_health_group_001",
-#   "proving_state_items": [
-#     {
-#       "state_category": "user_attributes_state",
-#       "state_name": "user_health_tracking_devices",
-#       "state_value": "Whoop 4.0 (screenless wearable for recovery tracking)",
-#       "operation": "add",
-#       "change_reason": "Influenced by CES 2024 tech trends"
-#     },
-#     {
-#       "state_category": "preferences_state",
-#       "state_name": "wellness_philosophy",
-#       "state_value": "Strongly prefers highly granular, AI-enhanced data metrics",
-#       "operation": "amplify",
-#       "change_reason": "Adoption of the Whoop strap increases reliance on algorithmic health insights"
-#     }
-#   ],
-#   "evidence_story": "User's interest in Whoop began from watching CES coverage (app log), but the decision to purchase was driven by detailed discussion with AI about algorithmic recovery insights (dialogue). The dialogue reveals user's preference for data-driven approaches, which explains why they chose Whoop over simpler alternatives. Subsequent app logs show daily engagement with Whoop's granular metrics, while dialogue discussions about interpreting the data demonstrate deepening reliance on algorithmic guidance.",
-#   "multi_source_dependency_rationale": "Without dialogue, we'd only see that user bought and uses Whoop, but not why (preference for AI-enhanced metrics over simple tracking). Without app logs, we'd only know user is interested in data tracking, but not that they actually acquired the device or use it consistently.",
-#   "evidence_sequence": [
-#     {
-#       "evidence_id": "w1_health_group_001_ev001",
-#       "behavior_type": "information_seeking",
-#       "data_source": "app_log",
-#       "time_specification": {
-#         "type": "specific_time",
-#         "specific_time": "2024-01-20 22:15:33"
-#       },
-#       "description": "User watches 'CES 2024: Best Health Wearables' video (18 min) on YouTube from The Verge, pauses and replays the Whoop 4.0 segment multiple times"
-#     },
-#     {
-#       "evidence_id": "w1_health_group_001_ev002",
-#       "behavior_type": "decision_making",
-#       "data_source": "dialogue",
-#       "time_specification": {
-#         "type": "specific_time",
-#         "specific_time": "2024-01-22 20:31:09"
-#       },
-#       "description": "User asks AI to compare Whoop 4.0 vs Apple Watch Series 8 specifically for recovery algorithms and data granularity. User explains they already have Apple Watch but want 'more scientific, AI-driven insights into when to push hard vs rest'. Conversation reveals preference for algorithmic guidance over simple metrics."
-#     },
-#     {
-#       "evidence_id": "w1_health_group_001_ev003",
-#       "behavior_type": "transactional",
-#       "data_source": "app_log",
-#       "time_specification": {
-#         "type": "specific_time",
-#         "specific_time": "2024-01-25 19:47:33"
-#       },
-#       "description": "User subscribes to Whoop annual membership ($239) and device ships. Transaction made within days of AI conversation, selecting annual plan (showing commitment)."
-#     },
-#     {
-#       "evidence_id": "w1_health_group_001_ev004",
-#       "behavior_type": "usage_tracking",
-#       "data_source": "app_log",
-#       "time_specification": {
-#         "type": "time_range",
-#         "time_range": {
-#           "start": "2024-02-01",
-#           "end": "2024-03-31",
-#           "frequency": "daily"
-#         }
-#       },
-#       "description": "User checks Whoop app every morning (7:15-7:30 AM) to view recovery score, HRV, and strain recommendations before deciding workout intensity. Average session duration 3-5 minutes, views detailed metrics breakdown."
-#     },
-#     {
-#       "evidence_id": "w1_health_group_001_ev005",
-#       "behavior_type": "self_reporting",
-#       "data_source": "dialogue",
-#       "time_specification": {
-#         "type": "specific_time",
-#         "specific_time": "2024-02-28 19:22:15"
-#       },
-#       "description": "User discusses with AI how they now rely on Whoop's recovery algorithm to decide whether to climb hard or take rest day. Mentions 'trusting the data more than my own feeling' and asks AI to explain the HRV science behind recommendations."
-#     }
-#   ]
-# }
-# ```
-
-# ---
-
-# ## Example 2: Independent Habit (Stable)
-
-# State item:
-# ```json
-# {
-#   "name": "morning_hydration_routine",
-#   "current_value": {
-#     "action": "drink_water_and_electrolyte_mix",
-#     "frequency": "daily",
-#     "timing": "immediately after waking (7:00 AM - 7:15 AM)"
-#   },
-#   "op": "stable"
-# }
-# ```
-
-# Evidence chain:
-# ```json
-# {
-#   "evidence_chain_id": "w1_health_habit_002",
-#   "proving_state_items": [
-#     {
-#       "state_category": "habits_state",
-#       "state_name": "morning_hydration_routine",
-#       "state_value": {
-#         "action": "drink_water_and_electrolyte_mix",
-#         "frequency": "daily",
-#         "timing": "immediately after waking (7:00 AM - 7:15 AM)"
-#       },
-#       "operation": "stable",
-#       "change_reason": null
-#     }
-#   ],
-#   "evidence_story": "User maintains consistent morning hydration habit tracked via a hydration app (app log), but the specific choice of adding electrolytes (not just plain water) was based on AI conversation about optimal hydration for climbing training. App logs show daily execution, dialogue reveals the reasoning behind the specific method.",
-#   "multi_source_dependency_rationale": "Without app logs, we'd know user believes in electrolyte hydration but not that they actually do it daily. Without dialogue, we'd see hydration logs but not understand why they specifically use electrolyte mix rather than plain water.",
-#   "evidence_sequence": [
-#     {
-#       "evidence_id": "w1_health_habit_002_ev001",
-#       "behavior_type": "information_seeking",
-#       "data_source": "dialogue",
-#       "time_specification": {
-#         "type": "specific_time",
-#         "specific_time": "2024-01-08 20:45:11"
-#       },
-#       "description": "User asks AI whether adding electrolytes to morning water helps with climbing performance and recovery. AI explains benefits of sodium/potassium for athletes, user asks about simple implementation (pinch of sea salt vs commercial products)."
-#     },
-#     {
-#       "evidence_id": "w1_health_habit_002_ev002",
-#       "behavior_type": "usage_tracking",
-#       "data_source": "app_log",
-#       "time_specification": {
-#         "type": "time_range",
-#         "time_range": {
-#           "start": "2024-01-10",
-#           "end": "2024-03-31",
-#           "frequency": "daily"
-#         }
-#       },
-#       "description": "User logs water intake in WaterMinder app every morning at 7:05-7:15 AM, consistently noting '500ml water + sea salt' or '500ml water + electrolyte mix'. Over 80% completion rate across the period."
-#     }
-#   ]
-# }
-# ```
-
-# ---
-
-# ## Example 3: Preference Revealed Through Decision
-
-# State item:
-# ```json
-# {
-#   "name": "exercise_environment",
-#   "current_value": "Prefers indoor, climate-controlled environments for exercise to maintain consistency regardless of weather",
-#   "op": "stable"
-# }
-# ```
-
-# Evidence chain:
-# ```json
-# {
-#   "evidence_chain_id": "w1_health_pref_001",
-#   "proving_state_items": [
-#     {
-#       "state_category": "preferences_state",
-#       "state_name": "exercise_environment",
-#       "state_value": "Prefers indoor, climate-controlled environments for exercise to maintain consistency regardless of weather",
-#       "operation": "stable",
-#       "change_reason": null
-#     }
-#   ],
-#   "evidence_story": "User's preference for indoor exercise is revealed through consistent gym check-ins even on mild weather days (app logs) and a conversation with AI where user explicitly explains choosing indoor climbing because outdoor weather in Chicago is unreliable and they prioritize training consistency.",
-#   "multi_source_dependency_rationale": "Without app logs, we'd only have user's stated preference but no behavioral proof. Without dialogue, we'd see indoor gym attendance but couldn't distinguish between preference vs lack of outdoor options - the dialogue reveals this is a deliberate choice for consistency, not just convenience.",
-#   "evidence_sequence": [
-#     {
-#       "evidence_id": "w1_health_pref_001_ev001",
-#       "behavior_type": "usage_tracking",
-#       "data_source": "app_log",
-#       "time_specification": {
-#         "type": "time_range",
-#         "time_range": {
-#           "start": "2024-01-01",
-#           "end": "2024-03-31",
-#           "frequency": "weekly"
-#         }
-#       },
-#     },
-#     {
-#       "evidence_id": "w1_health_pref_001_ev002",
-#       "behavior_type": "decision_making",
-#       "data_source": "dialogue",
-#       "time_specification": {
-#         "type": "specific_time",
-#         "specific_time": "2024-03-15 18:30:44"
-#       },
-#       "description": "Friend mentions trying outdoor climbing spot, user discusses with AI why they prefer indoor climbing. User explains: 'Chicago weather is too unpredictable, I need consistent training conditions to progress. Indoor gym means I never skip sessions due to rain or cold.' Reveals preference is about training reliability, not comfort."
-#     }
-#   ]
-# }
-# ```
-
-# ## Example 4: INVALID Grouping Examples
-
-# ### Example 4A: Temporal Proximity (WRONG)
-
-# **DON'T DO THIS:**
-# ```json
-# {
-#   "proving_state_items": [
-#     {"state_name": "morning_hydration_routine"},    // Happens at 7:00 AM
-#     {"state_name": "sleep_tracking_review"}         // Happens at 7:15 AM
-#   ],
-#   "evidence_story": "User does both in the morning routine..."
-# }
-# ```
-
-# **Why this is WRONG:**
-# - These are two independent habits that just happen sequentially
-# - No causal relationship: hydrating doesn't cause sleep tracking review
-# - Evidence for hydration (drinking water log) is completely separate from evidence for sleep review (checking Whoop app)
-# - Just because they happen in the same 30-minute window doesn't make them one event
-
-# **CORRECT APPROACH:**
-# - Chain 1: morning_hydration_routine (1 item) - Prove with water intake logs + dialogue about electrolyte choice
-# - Chain 2: sleep_tracking_review (1 item) - Prove with app usage logs + dialogue about sleep optimization
-
-# ### Example 4B: Thematic Similarity (WRONG)
-
-# **DON'T DO THIS:**
-# ```json
-# {
-#   "proving_state_items": [
-#     {"state_name": "user_dietary_supplements"},     // Vitamin D
-#     {"state_name": "user_health_tracking_devices"}, // Whoop
-#     {"state_name": "morning_mindfulness_meditation"} // Meditation
-#   ],
-#   "evidence_story": "User adopted multiple wellness practices in Q1..."
-# }
-# ```
-
-# **Why this is WRONG:**
-# - All three are "wellness" related but completely independent
-# - Buying Vitamin D has no causal relationship with buying Whoop or starting meditation
-# - Each has its own acquisition story, evidence, and timeline
-# - "All happened in Q1" is not a valid grouping criterion
-
-# **CORRECT APPROACH:**
-# - Chain 1: user_dietary_supplements (1 item)
-# - Chain 2: user_health_tracking_devices (1 item) 
-# - Chain 3: morning_mindfulness_meditation (1 item)
-
-# ### Example 4C: Valid Grouping (CORRECT)
-
-# **DO THIS:**
-# ```json
-# {
-#   "proving_state_items": [
-#     {
-#       "state_name": "user_health_tracking_devices",  // Whoop device
-#       "operation": "add"
-#     },
-#     {
-#       "state_name": "wellness_philosophy",            // Data-driven preference
-#       "operation": "amplify"
-#     }
-#   ]
-# }
-# ```
-
-# **Why this is CORRECT:**
-# - Direct causal relationship: acquiring Whoop amplifies data-driven preference
-# - change_reason explicitly links them: "Adoption of the Whoop strap increases reliance on algorithmic health insights"
-# - Evidence naturally overlaps: discussions about wanting better data → purchase → using data features
-# - Cannot be fully separated: the preference explains the purchase, the purchase enables the preference
-
-
-# ---
-
-# ## Critical Rules
-
-# 1. **MANDATORY: Cover all state items** - Each item must appear in exactly one evidence chain
-# 2. **DEFAULT: One state item per chain** - Only group if ALL three criteria are met (causal + inseparable + shared story)
-# 3. **FORBIDDEN: Grouping by temporal proximity, theme, or domain** - These are invalid reasons
-# 4. **MANDATORY: Every evidence chain MUST include BOTH app_log AND dialogue sources**
-# 5. **MANDATORY: Multi-source dependency** - Neither source alone should be sufficient to prove the state
-# 6. **Minimal evidence only** - No redundant or repetitive evidence pieces
-# 7. **Maximize chain count** - More chains (with fewer items each) is better than fewer chains (with many items)
-# 8. **Reveal preferences through decisions** - Show choices, not just statements
-# 9. **Use time_range for recurring patterns** - Don't list many individual instances
-# 10. **All times must fall within window's time_range**
-# 11. **Return ONLY valid JSON** - No comments or extra text
-
-# **Self-check before grouping items:**
-# - [ ] Does Item A directly cause Item B? (not just "happen before")
-# - [ ] Is the evidence for A inherently overlapping with evidence for B?
-# - [ ] Are they part of ONE acquisition/change event, not just the same time period?
-# - If any answer is "no", keep items separate.
-
-# """)
 
 def generate_events_chain(
     llm_client: GeminiJSONClient, request: EventsChainRequest

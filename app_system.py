@@ -11,6 +11,7 @@ Apps implemented based on app_catalog.py and app_models.py definitions.
 from __future__ import annotations
 
 import random
+import re
 import uuid
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
@@ -27,7 +28,7 @@ from mem_bench.behavior_and_conversation.app_models import (
     # Spotify
     SpotifyState, SpotifyPlaylist, SpotifySong, SpotifyPlayHistory,
     # Fitbit
-    FitbitState, FitbitGoal, FitbitWorkout, FitbitDailySync,
+    FitbitState, FitbitGoal, FitbitWorkout, FitbitDailySync, FitbitActivity,
     # Chase
     ChaseState, ChaseAccount, ChaseTransaction,
     # Robinhood
@@ -50,6 +51,10 @@ from mem_bench.behavior_and_conversation.app_models import (
     LLMState, LLMConversation, LLMMessage,
     # Google
     GoogleState, GoogleSearchHistory, GoogleSearchResult,
+    # Google Maps
+    GoogleMapsState, GoogleMapsPlace, GoogleMapsCheckIn, GoogleMapsSharedLocation, GoogleMapsDirections, Location,
+    # UberEats
+    UberEatsState, UberEatsRestaurant, UberEatsMenuItem, UberEatsOrderItem, UberEatsOrder,
     # Enums
     AssetType, TransactionType, ChaseTransactionType, ChaseAccountType, ChaseCategory,
     MessageType, MediaType, ContentType, InstagramContentType, NetflixPlan, BookShelf,
@@ -138,6 +143,10 @@ def _build_api_schemas() -> Dict[str, Dict[str, Dict[str, Any]]]:
         "LogWorkout": {
             "input": _model_to_schema(app_models.LogWorkoutInput),
             "output": _model_to_schema(app_models.LogWorkoutOutput),
+        },
+        "RecordActivity": {
+            "input": _model_to_schema(app_models.RecordActivityInput),
+            "output": _model_to_schema(app_models.RecordActivityOutput),
         },
         "SyncDevice": {
             "input": _model_to_schema(app_models.SyncDeviceInput),
@@ -355,6 +364,10 @@ def _build_api_schemas() -> Dict[str, Dict[str, Dict[str, Any]]]:
     
     # Instagram APIs
     schemas["Instagram"] = {
+        "CreatePost": {
+            "input": _model_to_schema(app_models.CreatePostInput),
+            "output": _model_to_schema(app_models.CreatePostOutput),
+        },
         "PostStory": {
             "input": _model_to_schema(app_models.PostStoryInput),
             "output": _model_to_schema(app_models.PostStoryOutput),
@@ -406,6 +419,46 @@ def _build_api_schemas() -> Dict[str, Dict[str, Dict[str, Any]]]:
         "ContinueConversation": {
             "input": _model_to_schema(app_models.ContinueConversationInput),
             "output": _model_to_schema(app_models.ContinueConversationOutput),
+        },
+    }
+    
+    # Google Maps APIs
+    schemas["Google Maps"] = {
+        "ShareLocation": {
+            "input": _model_to_schema(app_models.ShareLocationInput),
+            "output": _model_to_schema(app_models.ShareLocationOutput),
+        },
+        "CheckIn": {
+            "input": _model_to_schema(app_models.CheckInInput),
+            "output": _model_to_schema(app_models.CheckInOutput),
+        },
+        "GetDirections": {
+            "input": _model_to_schema(app_models.GetDirectionsInput),
+            "output": _model_to_schema(app_models.GetDirectionsOutput),
+        },
+        "SearchPlaces": {
+            "input": _model_to_schema(app_models.SearchPlacesInput),
+            "output": _model_to_schema(app_models.SearchPlacesOutput),
+        },
+    }
+    
+    # UberEats APIs
+    schemas["UberEats"] = {
+        "SearchRestaurants": {
+            "input": _model_to_schema(app_models.SearchRestaurantsInput),
+            "output": _model_to_schema(app_models.SearchRestaurantsOutput),
+        },
+        "GetMenu": {
+            "input": _model_to_schema(app_models.GetMenuInput),
+            "output": _model_to_schema(app_models.GetMenuOutput),
+        },
+        "PlaceOrder": {
+            "input": _model_to_schema(app_models.PlaceOrderInput),
+            "output": _model_to_schema(app_models.PlaceOrderOutput),
+        },
+        "GetOrderHistory": {
+            "input": _model_to_schema(app_models.GetOrderHistoryInput),
+            "output": _model_to_schema(app_models.GetOrderHistoryOutput),
         },
     }
     
@@ -485,6 +538,20 @@ def get_api_input_output_models(app_name: str, api_name: str):
         ("Google", "ClickResult"): (app_models.ClickResultInput, app_models.ClickResultOutput),
         ("LLM Assistant", "CreateConversation"): (app_models.CreateConversationInput, app_models.CreateConversationOutput),
         ("LLM Assistant", "ContinueConversation"): (app_models.ContinueConversationInput, app_models.ContinueConversationOutput),
+        # Google Maps
+        ("Google Maps", "ShareLocation"): (app_models.ShareLocationInput, app_models.ShareLocationOutput),
+        ("Google Maps", "CheckIn"): (app_models.CheckInInput, app_models.CheckInOutput),
+        ("Google Maps", "GetDirections"): (app_models.GetDirectionsInput, app_models.GetDirectionsOutput),
+        ("Google Maps", "SearchPlaces"): (app_models.SearchPlacesInput, app_models.SearchPlacesOutput),
+        # Fitbit RecordActivity
+        ("Fitbit", "RecordActivity"): (app_models.RecordActivityInput, app_models.RecordActivityOutput),
+        # Instagram CreatePost
+        ("Instagram", "CreatePost"): (app_models.CreatePostInput, app_models.CreatePostOutput),
+        # UberEats
+        ("UberEats", "SearchRestaurants"): (app_models.SearchRestaurantsInput, app_models.SearchRestaurantsOutput),
+        ("UberEats", "GetMenu"): (app_models.GetMenuInput, app_models.GetMenuOutput),
+        ("UberEats", "PlaceOrder"): (app_models.PlaceOrderInput, app_models.PlaceOrderOutput),
+        ("UberEats", "GetOrderHistory"): (app_models.GetOrderHistoryInput, app_models.GetOrderHistoryOutput),
     }
     
     return model_map.get((app_name, api_name), (None, None))
@@ -790,7 +857,6 @@ class AmazonApp(BaseApp):
 
     def _extract_search_query(self, description: str) -> str:
         """Extract search query from description."""
-        import re
         quoted = re.findall(r"'([^']*)'|\"([^\"]*)\"", description)
         if quoted:
             return quoted[0][0] or quoted[0][1]
@@ -799,7 +865,6 @@ class AmazonApp(BaseApp):
 
     def _extract_product_id(self, description: str) -> str:
         """Extract or generate product ID from description."""
-        import re
         # Try to find existing product ID
         match = re.search(r'PROD[A-Z0-9]+', description)
         if match:
@@ -813,7 +878,6 @@ class AmazonApp(BaseApp):
 
     def _extract_quantity(self, description: str) -> int:
         """Extract quantity from description."""
-        import re
         numbers = re.findall(r'\d+', description)
         return int(numbers[0]) if numbers else 1
 
@@ -842,7 +906,6 @@ class AmazonApp(BaseApp):
             return self._product_cache[product_id]
 
         # Extract name from description
-        import re
         quoted = re.findall(r"'([^']*)'|\"([^\"]*)\"", description)
         name = quoted[0][0] or quoted[0][1] if quoted else f"Product {product_id}"
 
@@ -988,7 +1051,6 @@ class GoogleApp(BaseApp):
 
     def _extract_search_query(self, description: str) -> str:
         """Extract search query from description."""
-        import re
         quoted = re.findall(r"'([^']*)'|\"([^\"]*)\"", description)
         if quoted:
             return quoted[0][0] or quoted[0][1]
@@ -997,7 +1059,6 @@ class GoogleApp(BaseApp):
 
     def _extract_result_id(self, description: str) -> str:
         """Extract result ID from description."""
-        import re
         match = re.search(r'RES[A-Z0-9]+', description)
         if match:
             return match.group(0)
@@ -1165,7 +1226,6 @@ class SpotifyApp(BaseApp):
 
     def _extract_search_query(self, description: str) -> str:
         """Extract search query from description."""
-        import re
         quoted = re.findall(r"'([^']*)'|\"([^\"]*)\"", description)
         if quoted:
             return quoted[0][0] or quoted[0][1]
@@ -1173,7 +1233,6 @@ class SpotifyApp(BaseApp):
 
     def _extract_song_id(self, description: str) -> str:
         """Extract or generate song ID from description."""
-        import re
         match = re.search(r'SONG[A-Z0-9]+', description)
         if match:
             return match.group(0)
@@ -1185,7 +1244,6 @@ class SpotifyApp(BaseApp):
 
     def _extract_playlist_info(self, description: str) -> Tuple[str, str]:
         """Extract playlist ID and name from description."""
-        import re
         quoted = re.findall(r"'([^']*)'|\"([^\"]*)\"", description)
         playlist_name = quoted[0][0] or quoted[0][1] if quoted else "My Playlist"
         
@@ -1196,7 +1254,6 @@ class SpotifyApp(BaseApp):
 
     def _extract_artist_info(self, description: str) -> Tuple[str, str]:
         """Extract artist ID and name from description."""
-        import re
         quoted = re.findall(r"'([^']*)'|\"([^\"]*)\"", description)
         artist_name = quoted[0][0] or quoted[0][1] if quoted else "Unknown Artist"
         
@@ -1226,7 +1283,6 @@ class SpotifyApp(BaseApp):
             return self._song_cache[song_id]
 
         # Try to get from database
-        import re
         quoted = re.findall(r"'([^']*)'|\"([^\"]*)\"", description)
         
         if quoted:
@@ -1270,6 +1326,7 @@ class FitbitApp(BaseApp):
                 {"goal_type": "active_minutes", "target_value": 30},
             ],
             "workout_history": [],
+            "activity_history": [],
             "daily_syncs": []
         }
 
@@ -1285,6 +1342,8 @@ class FitbitApp(BaseApp):
 
         if api_name == "LogWorkout":
             return self._log_workout(timestamp, description, context)
+        elif api_name == "RecordActivity":
+            return self._record_activity(timestamp, description, context)
         elif api_name == "SyncDevice":
             return self._sync_device(timestamp, description, context)
         elif api_name == "SetGoals":
@@ -1293,10 +1352,12 @@ class FitbitApp(BaseApp):
             raise ValueError(f"Unknown Fitbit API: {api_name}")
 
     def _log_workout(self, timestamp: str, description: str, context: Dict[str, Any]) -> AppLogEntry:
-        """Manually log a workout session with type, duration, and intensity."""
+        """Manually log a workout session with type, duration, intensity, and location."""
         activity_type = self._extract_activity_type(description)
         duration_minutes = self._extract_duration(description)
         intensity = self._extract_intensity(description)
+        location = self._extract_location(description)
+        location_address = self._extract_location_address(description)
         calories_burned = self._calculate_calories(activity_type, duration_minutes, intensity)
 
         workout_id = f"WKT{uuid.uuid4().hex[:8].upper()}"
@@ -1306,7 +1367,9 @@ class FitbitApp(BaseApp):
             "duration_minutes": duration_minutes,
             "intensity": intensity,
             "calories_burned": calories_burned,
-            "timestamp": timestamp
+            "timestamp": timestamp,
+            "location": location,
+            "location_address": location_address
         }
         self._append_to_history("workout_history", workout)
 
@@ -1324,10 +1387,65 @@ class FitbitApp(BaseApp):
             request={
                 "activity_type": activity_type,
                 "duration_minutes": duration_minutes,
-                "intensity": intensity
+                "intensity": intensity,
+                "location": location,
+                "location_address": location_address
             },
             response={
                 "workout": workout,
+                "calories_burned": calories_burned,
+                "today_total_active_minutes": today_active_minutes
+            }
+        )
+
+    def _record_activity(self, timestamp: str, description: str, context: Dict[str, Any]) -> AppLogEntry:
+        """Record an outdoor activity with route and location tracking."""
+        activity_type = self._extract_outdoor_activity_type(description)
+        duration_minutes = self._extract_duration(description)
+        distance_km = self._extract_distance(description)
+        start_location = self._extract_start_location(description)
+        end_location = self._extract_end_location(description)
+        route_description = self._extract_route_description(description)
+        calories_burned = self._calculate_calories(activity_type, duration_minutes, "medium")
+
+        activity_id = f"ACT{uuid.uuid4().hex[:8].upper()}"
+        activity = {
+            "activity_id": activity_id,
+            "activity_type": activity_type,
+            "duration_minutes": duration_minutes,
+            "distance_km": distance_km,
+            "calories_burned": calories_burned,
+            "timestamp": timestamp,
+            "start_location": start_location,
+            "end_location": end_location,
+            "route_description": route_description
+        }
+        self._append_to_history("activity_history", activity)
+
+        # Calculate today's total active minutes
+        date = timestamp.split()[0]
+        today_active_minutes = sum(
+            w["duration_minutes"] for w in self.state["workout_history"]
+            if w["timestamp"].startswith(date)
+        ) + sum(
+            a["duration_minutes"] for a in self.state["activity_history"]
+            if a["timestamp"].startswith(date)
+        )
+
+        return AppLogEntry(
+            timestamp=timestamp,
+            app_name=self.app_name,
+            api_name="RecordActivity",
+            request={
+                "activity_type": activity_type,
+                "duration_minutes": duration_minutes,
+                "distance_km": distance_km,
+                "start_location": start_location,
+                "end_location": end_location,
+                "route_description": route_description
+            },
+            response={
+                "activity": activity,
                 "calories_burned": calories_burned,
                 "today_total_active_minutes": today_active_minutes
             }
@@ -1406,7 +1524,6 @@ class FitbitApp(BaseApp):
 
     def _extract_duration(self, description: str) -> int:
         """Extract duration in minutes from description."""
-        import re
         match = re.search(r'(\d+)\s*(?:min|minute)', description, re.IGNORECASE)
         if match:
             return int(match.group(1))
@@ -1426,7 +1543,6 @@ class FitbitApp(BaseApp):
 
     def _extract_goals(self, description: str) -> List[Dict]:
         """Extract goals from description."""
-        import re
         goals = []
         desc_lower = description.lower()
 
@@ -1458,11 +1574,85 @@ class FitbitApp(BaseApp):
             "swimming": 9,
             "walking": 4,
             "yoga": 3,
-            "strength_training": 6
+            "strength_training": 6,
+            "hiking": 7,
+            "outdoor_run": 10,
         }
         base_rate = base_rates.get(activity_type, 5)
         intensity_mult = {"low": 0.7, "medium": 1.0, "high": 1.3}.get(intensity, 1.0)
         return int(base_rate * duration * intensity_mult)
+
+    def _extract_location(self, description: str) -> Optional[str]:
+        """Extract workout location from description."""
+        # Look for "at X" pattern
+        match = re.search(r'\bat\s+(?:the\s+)?([A-Z][a-zA-Z\s]+(?:Gym|Park|Center|Studio|Club|Pool|Home|Beach)?)', description)
+        if match:
+            return match.group(1).strip()
+        # Check for common location keywords
+        desc_lower = description.lower()
+        if "gym" in desc_lower:
+            return "Gym"
+        elif "home" in desc_lower:
+            return "Home"
+        elif "park" in desc_lower:
+            return "Park"
+        elif "pool" in desc_lower:
+            return "Pool"
+        elif "studio" in desc_lower:
+            return "Studio"
+        return None
+
+    def _extract_location_address(self, description: str) -> Optional[str]:
+        """Extract location address from description."""
+        # Look for address patterns
+        match = re.search(r'(?:at|located at)\s+(\d+[^,]+,\s*[A-Za-z\s]+)', description)
+        if match:
+            return match.group(1).strip()
+        return None
+
+    def _extract_outdoor_activity_type(self, description: str) -> str:
+        """Extract outdoor activity type from description."""
+        desc_lower = description.lower()
+        if "hik" in desc_lower:
+            return "hiking"
+        elif "walk" in desc_lower:
+            return "walking"
+        elif "run" in desc_lower or "jog" in desc_lower:
+            return "outdoor_run"
+        elif "bike" in desc_lower or "cycl" in desc_lower:
+            return "cycling"
+        return random.choice(["walking", "hiking", "outdoor_run"])
+
+    def _extract_distance(self, description: str) -> Optional[float]:
+        """Extract distance in km from description."""
+        match = re.search(r'(\d+(?:\.\d+)?)\s*(?:km|kilometer)', description, re.IGNORECASE)
+        if match:
+            return float(match.group(1))
+        match = re.search(r'(\d+(?:\.\d+)?)\s*(?:mi|mile)', description, re.IGNORECASE)
+        if match:
+            return round(float(match.group(1)) * 1.60934, 2)  # Convert miles to km
+        return None
+
+    def _extract_start_location(self, description: str) -> Optional[str]:
+        """Extract start location from description."""
+        match = re.search(r'(?:from|starting at|start(?:ed)? at)\s+([A-Z][a-zA-Z\s]+)', description)
+        if match:
+            return match.group(1).strip()
+        return None
+
+    def _extract_end_location(self, description: str) -> Optional[str]:
+        """Extract end location from description."""
+        match = re.search(r'(?:to|ending at|end(?:ed)? at|arrived at)\s+([A-Z][a-zA-Z\s]+)', description)
+        if match:
+            return match.group(1).strip()
+        return None
+
+    def _extract_route_description(self, description: str) -> Optional[str]:
+        """Extract route description from description."""
+        match = re.search(r'(?:via|through|along)\s+([^,\.]+)', description)
+        if match:
+            return match.group(1).strip()
+        return None
 
 
 class WhatsAppApp(BaseApp):
@@ -1577,7 +1767,6 @@ class WhatsAppApp(BaseApp):
 
     def _extract_contact_id(self, description: str) -> str:
         """Extract contact ID from description."""
-        import re
         quoted = re.findall(r"'([^']*)'|\"([^\"]*)\"", description)
         if quoted:
             return quoted[0][0] or quoted[0][1]
@@ -1591,7 +1780,6 @@ class WhatsAppApp(BaseApp):
 
     def _extract_message_content(self, description: str) -> str:
         """Extract message content from description."""
-        import re
         quoted = re.findall(r"'([^']*)'|\"([^\"]*)\"", description)
         if quoted:
             return quoted[0][0] or quoted[0][1]
@@ -1610,7 +1798,6 @@ class WhatsAppApp(BaseApp):
 
     def _extract_caption(self, description: str) -> Optional[str]:
         """Extract caption from description."""
-        import re
         # Look for text after media type keywords
         match = re.search(r'(?:caption|with|saying)\s*[:\s]?\s*["\']?([^"\']+)["\']?', description, re.IGNORECASE)
         if match:
@@ -1619,7 +1806,6 @@ class WhatsAppApp(BaseApp):
 
     def _extract_limit(self, description: str) -> int:
         """Extract message limit from description."""
-        import re
         match = re.search(r'(\d+)\s*messages?', description, re.IGNORECASE)
         if match:
             return int(match.group(1))
@@ -1843,7 +2029,6 @@ class ChaseApp(BaseApp):
 
     def _extract_account_id(self, description: str) -> Optional[str]:
         """Extract account ID from description."""
-        import re
         match = re.search(r'(CHK|SAV|CC)\d+', description, re.IGNORECASE)
         if match:
             return match.group(0).upper()
@@ -1859,7 +2044,6 @@ class ChaseApp(BaseApp):
 
     def _extract_amount(self, description: str) -> float:
         """Extract monetary amount from description."""
-        import re
         match = re.search(r'\$?(\d+(?:\.\d{2})?)', description)
         if match:
             return float(match.group(1))
@@ -1867,7 +2051,6 @@ class ChaseApp(BaseApp):
 
     def _extract_limit(self, description: str) -> int:
         """Extract limit from description."""
-        import re
         match = re.search(r'(\d+)\s*(?:transactions?|items?)', description, re.IGNORECASE)
         if match:
             return int(match.group(1))
@@ -1875,7 +2058,6 @@ class ChaseApp(BaseApp):
 
     def _extract_search_query(self, description: str) -> str:
         """Extract search query from description."""
-        import re
         quoted = re.findall(r"'([^']*)'|\"([^\"]*)\"", description)
         if quoted:
             return quoted[0][0] or quoted[0][1]
@@ -1883,8 +2065,6 @@ class ChaseApp(BaseApp):
 
     def _extract_transfer_accounts(self, description: str) -> Tuple[str, str]:
         """Extract from and to account IDs."""
-        import re
-        
         from_match = re.search(r'from\s+(CHK|SAV|CC|checking|savings?|credit)\d*', description, re.IGNORECASE)
         to_match = re.search(r'to\s+(CHK|SAV|CC|checking|savings?|credit)\d*', description, re.IGNORECASE)
         
@@ -1911,7 +2091,6 @@ class ChaseApp(BaseApp):
 
     def _extract_biller_name(self, description: str) -> str:
         """Extract biller name from description."""
-        import re
         quoted = re.findall(r"'([^']*)'|\"([^\"]*)\"", description)
         if quoted:
             return quoted[0][0] or quoted[0][1]
@@ -2184,7 +2363,6 @@ class RobinhoodApp(BaseApp):
 
     def _extract_symbol(self, description: str) -> str:
         """Extract stock/crypto symbol from description."""
-        import re
         # Look for uppercase symbols
         match = re.search(r'\b([A-Z]{1,5})\b', description)
         if match and match.group(1) not in ["A", "I", "THE", "AND", "FOR"]:
@@ -2207,7 +2385,6 @@ class RobinhoodApp(BaseApp):
 
     def _extract_quantity(self, description: str) -> float:
         """Extract quantity from description."""
-        import re
         match = re.search(r'(\d+(?:\.\d+)?)\s*(?:shares?|units?|coins?)?', description, re.IGNORECASE)
         if match:
             return float(match.group(1))
@@ -2224,7 +2401,6 @@ class RobinhoodApp(BaseApp):
 
     def _extract_search_query(self, description: str) -> str:
         """Extract search query from description."""
-        import re
         quoted = re.findall(r"'([^']*)'|\"([^\"]*)\"", description)
         if quoted:
             return quoted[0][0] or quoted[0][1]
@@ -2473,7 +2649,6 @@ class GmailApp(BaseApp):
 
     def _extract_limit(self, description: str) -> int:
         """Extract limit from description."""
-        import re
         match = re.search(r'(\d+)\s*(?:emails?|messages?)', description, re.IGNORECASE)
         if match:
             return int(match.group(1))
@@ -2481,7 +2656,6 @@ class GmailApp(BaseApp):
 
     def _extract_email_id(self, description: str) -> str:
         """Extract email ID from description."""
-        import re
         match = re.search(r'EMAIL[A-Z0-9]+', description)
         if match:
             return match.group(0)
@@ -2489,7 +2663,6 @@ class GmailApp(BaseApp):
 
     def _extract_recipient(self, description: str) -> str:
         """Extract recipient email from description."""
-        import re
         # Try to find email pattern
         match = re.search(r'[\w\.-]+@[\w\.-]+\.\w+', description)
         if match:
@@ -2505,7 +2678,6 @@ class GmailApp(BaseApp):
 
     def _extract_subject(self, description: str) -> str:
         """Extract email subject from description."""
-        import re
         # Look for "subject:" pattern
         match = re.search(r'subject[:\s]+["\']?([^"\']+)["\']?', description, re.IGNORECASE)
         if match:
@@ -2520,7 +2692,6 @@ class GmailApp(BaseApp):
 
     def _extract_body(self, description: str) -> str:
         """Extract email body from description."""
-        import re
         quoted = re.findall(r"'([^']*)'|\"([^\"]*)\"", description)
         if len(quoted) > 1:
             return quoted[1][0] or quoted[1][1]
@@ -2646,7 +2817,6 @@ class LLMAssistantApp(BaseApp):
 
     def _extract_message(self, description: str) -> str:
         """Extract message from description."""
-        import re
         quoted = re.findall(r"'([^']*)'|\"([^\"]*)\"", description)
         if quoted:
             return quoted[0][0] or quoted[0][1]
@@ -2654,7 +2824,6 @@ class LLMAssistantApp(BaseApp):
 
     def _extract_conversation_id(self, description: str) -> str:
         """Extract conversation ID from description."""
-        import re
         match = re.search(r'CONV[A-Z0-9]+', description)
         if match:
             return match.group(0)
@@ -2806,12 +2975,10 @@ class LinkedInApp(BaseApp):
             response={"user_id": user_id, "sent_at": timestamp})
 
     def _extract_quoted(self, description: str) -> Optional[str]:
-        import re
         quoted = re.findall(r"'([^']*)'|\"([^\"]*)\"", description)
         return (quoted[0][0] or quoted[0][1]) if quoted else None
 
     def _extract_post_id(self, description: str) -> str:
-        import re
         match = re.search(r'POST[A-Z0-9]+', description)
         return match.group(0) if match else f"POST{random.randint(1000, 9999)}"
 
@@ -2853,7 +3020,6 @@ class NotionApp(BaseApp):
             request={"limit": 50}, response={"pages": pages})
 
     def _create_page(self, timestamp: str, description: str, context: Dict[str, Any]) -> AppLogEntry:
-        import re
         quoted = re.findall(r"'([^']*)'|\"([^\"]*)\"", description)
         title = (quoted[0][0] or quoted[0][1]) if quoted else "New Page"
         content = description[:500]
@@ -2864,7 +3030,6 @@ class NotionApp(BaseApp):
             request={"title": title, "content": content}, response={"page": page})
 
     def _update_page(self, timestamp: str, description: str, context: Dict[str, Any]) -> AppLogEntry:
-        import re
         match = re.search(r'PAGE[A-Z0-9]+', description)
         page_id = match.group(0) if match else (self.state["pages"][-1]["page_id"] if self.state["pages"] else f"PAGE{random.randint(1000, 9999)}")
         page = next((p for p in self.state["pages"] if p["page_id"] == page_id), None)
@@ -2878,7 +3043,6 @@ class NotionApp(BaseApp):
             request={"page_id": page_id}, response={"page": page})
 
     def _search_content(self, timestamp: str, description: str, context: Dict[str, Any]) -> AppLogEntry:
-        import re
         quoted = re.findall(r"'([^']*)'|\"([^\"]*)\"", description)
         query = (quoted[0][0] or quoted[0][1]) if quoted else "search"
         results = [{"page_id": p["page_id"], "title": p["title"], "snippet": p["content"][:50]} for p in self.state["pages"] if query.lower() in p["title"].lower() or query.lower() in p["content"].lower()]
@@ -2925,7 +3089,6 @@ class NetflixApp(BaseApp):
         raise ValueError(f"Unknown Netflix API: {api_name}")
 
     def _search_content(self, timestamp: str, description: str, context: Dict[str, Any]) -> AppLogEntry:
-        import re
         quoted = re.findall(r"'([^']*)'|\"([^\"]*)\"", description)
         query = (quoted[0][0] or quoted[0][1]) if quoted else "movie"
         titles = self._generate_titles(query)
@@ -2963,7 +3126,6 @@ class NetflixApp(BaseApp):
             request={"title_id": title_id, "rating": rating}, response={"title_id": title_id, "rating": rating})
 
     def _extract_title_id(self, description: str) -> str:
-        import re
         match = re.search(r'TITLE[A-Z0-9]+', description)
         return match.group(0) if match else f"TITLE{random.randint(1000, 9999)}"
 
@@ -2980,7 +3142,6 @@ class NetflixApp(BaseApp):
     def _get_or_create_title(self, title_id: str, description: str) -> Dict:
         if title_id in self._title_cache:
             return self._title_cache[title_id]
-        import re
         quoted = re.findall(r"'([^']*)'|\"([^\"]*)\"", description)
         name = (quoted[0][0] or quoted[0][1]) if quoted else f"Title {title_id}"
         title = {"title_id": title_id, "name": name, "content_type": "movie", "genre": "Drama"}
@@ -3013,7 +3174,6 @@ class GoodreadsApp(BaseApp):
         raise ValueError(f"Unknown Goodreads API: {api_name}")
 
     def _search_books(self, timestamp: str, description: str, context: Dict[str, Any]) -> AppLogEntry:
-        import re
         quoted = re.findall(r"'([^']*)'|\"([^\"]*)\"", description)
         query = (quoted[0][0] or quoted[0][1]) if quoted else "book"
         books = self._generate_books(query)
@@ -3039,7 +3199,6 @@ class GoodreadsApp(BaseApp):
 
     def _rate_book(self, timestamp: str, description: str, context: Dict[str, Any]) -> AppLogEntry:
         book_id = self._extract_book_id(description)
-        import re
         match = re.search(r'(\d)', description)
         rating = int(match.group(1)) if match else random.randint(3, 5)
         rating = max(1, min(5, rating))
@@ -3048,7 +3207,6 @@ class GoodreadsApp(BaseApp):
 
     def _write_review(self, timestamp: str, description: str, context: Dict[str, Any]) -> AppLogEntry:
         book_id = self._extract_book_id(description)
-        import re
         quoted = re.findall(r"'([^']*)'|\"([^\"]*)\"", description)
         review_text = (quoted[0][0] or quoted[0][1]) if quoted else "Great book!"
         review = {"book_id": book_id, "rating": random.randint(3, 5), "review_text": review_text, "reviewed_at": timestamp}
@@ -3057,7 +3215,6 @@ class GoodreadsApp(BaseApp):
             request={"book_id": book_id, "review_text": review_text}, response={"review": review})
 
     def _extract_book_id(self, description: str) -> str:
-        import re
         match = re.search(r'BOOK[A-Z0-9]+', description)
         return match.group(0) if match else f"BOOK{random.randint(1000, 9999)}"
 
@@ -3074,12 +3231,660 @@ class GoodreadsApp(BaseApp):
     def _get_or_create_book(self, book_id: str, description: str) -> Dict:
         if book_id in self._book_cache:
             return self._book_cache[book_id]
-        import re
         quoted = re.findall(r"'([^']*)'|\"([^\"]*)\"", description)
         title = (quoted[0][0] or quoted[0][1]) if quoted else f"Book {book_id}"
         book = {"book_id": book_id, "title": title, "author": "Unknown Author", "genre": "Fiction"}
         self._book_cache[book_id] = book
         return book
+
+
+class GoogleMapsApp(BaseApp):
+    """Google Maps navigation & location services app based on app_catalog.py definitions."""
+
+    def __init__(self, user_id: str):
+        super().__init__("Google Maps", user_id)
+
+    def _initialize_state(self) -> None:
+        """Initialize Google Maps state based on GoogleMapsState model."""
+        self.state = {
+            "user_id": self.user_id,
+            "home_location": None,
+            "work_location": None,
+            "saved_places": [],
+            "checkin_history": [],
+            "shared_locations": [],
+            "directions_history": []
+        }
+
+    def call_api(
+        self,
+        api_name: str,
+        timestamp: str,
+        description: str,
+        context: Dict[str, Any]
+    ) -> AppLogEntry:
+        """Call Google Maps API based on app_catalog.py definitions."""
+        self.ensure_initialized()
+        
+        handlers = {
+            "ShareLocation": self._share_location,
+            "CheckIn": self._check_in,
+            "GetDirections": self._get_directions,
+            "SearchPlaces": self._search_places,
+        }
+        handler = handlers.get(api_name)
+        if handler:
+            return handler(timestamp, description, context)
+        raise ValueError(f"Unknown Google Maps API: {api_name}")
+
+    def _share_location(self, timestamp: str, description: str, context: Dict[str, Any]) -> AppLogEntry:
+        """Share current location with another person for a specified duration."""
+        # Extract who to share with
+        shared_with = self._extract_person_name(description) or f"user{random.randint(1, 1000)}"
+        
+        # Extract duration
+        duration_minutes = None
+        match = re.search(r'(\d+)\s*(?:min|minute|hour|hr)', description, re.IGNORECASE)
+        if match:
+            val = int(match.group(1))
+            if 'hour' in description.lower() or 'hr' in description.lower():
+                duration_minutes = val * 60
+            else:
+                duration_minutes = val
+        
+        # Generate current location
+        current_location = self._generate_location(description)
+        
+        share_id = f"SHARE{uuid.uuid4().hex[:8].upper()}"
+        expires_at = None
+        if duration_minutes:
+            from datetime import datetime, timedelta
+            dt = datetime.strptime(timestamp, "%Y-%m-%d %H:%M:%S")
+            expires_at = (dt + timedelta(minutes=duration_minutes)).strftime("%Y-%m-%d %H:%M:%S")
+        
+        shared_location = {
+            "share_id": share_id,
+            "shared_with": shared_with,
+            "location": current_location,
+            "shared_at": timestamp,
+            "expires_at": expires_at
+        }
+        self._append_to_history("shared_locations", shared_location)
+        
+        return AppLogEntry(
+            timestamp=timestamp,
+            app_name=self.app_name,
+            api_name="ShareLocation",
+            request={
+                "shared_with": shared_with,
+                "duration_minutes": duration_minutes
+            },
+            response={
+                "share_id": share_id,
+                "shared_location": shared_location
+            }
+        )
+
+    def _check_in(self, timestamp: str, description: str, context: Dict[str, Any]) -> AppLogEntry:
+        """Check in at a specific location to record presence."""
+        place_name = self._extract_place_name(description)
+        address = self._extract_address(description)
+        
+        # Extract note
+        quoted = re.findall(r"'([^']*)'|\"([^\"]*)\"", description)
+        note = (quoted[0][0] or quoted[0][1]) if quoted else None
+        
+        # Generate location
+        location = self._generate_location_from_place(place_name, address)
+        
+        checkin_id = f"CHECKIN{uuid.uuid4().hex[:8].upper()}"
+        checkin = {
+            "checkin_id": checkin_id,
+            "location": location,
+            "timestamp": timestamp,
+            "note": note
+        }
+        self._append_to_history("checkin_history", checkin)
+        
+        return AppLogEntry(
+            timestamp=timestamp,
+            app_name=self.app_name,
+            api_name="CheckIn",
+            request={
+                "place_name": place_name,
+                "address": address,
+                "note": note
+            },
+            response={
+                "checkin": checkin
+            }
+        )
+
+    def _get_directions(self, timestamp: str, description: str, context: Dict[str, Any]) -> AppLogEntry:
+        """Get directions between two locations with travel mode options."""
+        # Extract origin and destination
+        origin = self._extract_origin(description)
+        destination = self._extract_destination(description)
+        
+        # Extract travel mode
+        travel_mode = "driving"
+        if "walk" in description.lower():
+            travel_mode = "walking"
+        elif "transit" in description.lower() or "bus" in description.lower() or "train" in description.lower():
+            travel_mode = "transit"
+        elif "bike" in description.lower() or "cycl" in description.lower():
+            travel_mode = "bicycling"
+        
+        # Generate mock distance and duration based on travel mode
+        base_distance = random.uniform(2.0, 30.0)
+        speed_map = {"driving": 40, "walking": 5, "transit": 25, "bicycling": 15}  # km/h
+        duration_minutes = int(base_distance / speed_map[travel_mode] * 60)
+        
+        origin_location = self._generate_location_from_place(origin, None)
+        destination_location = self._generate_location_from_place(destination, None)
+        
+        directions_id = f"DIR{uuid.uuid4().hex[:8].upper()}"
+        directions = {
+            "directions_id": directions_id,
+            "origin": origin_location,
+            "destination": destination_location,
+            "travel_mode": travel_mode,
+            "distance_km": round(base_distance, 1),
+            "duration_minutes": duration_minutes,
+            "searched_at": timestamp
+        }
+        self._append_to_history("directions_history", directions)
+        
+        return AppLogEntry(
+            timestamp=timestamp,
+            app_name=self.app_name,
+            api_name="GetDirections",
+            request={
+                "origin": origin,
+                "destination": destination,
+                "travel_mode": travel_mode
+            },
+            response={
+                "directions": directions
+            }
+        )
+
+    def _search_places(self, timestamp: str, description: str, context: Dict[str, Any]) -> AppLogEntry:
+        """Search for nearby places by category or keyword."""
+        
+        # Extract search query
+        quoted = re.findall(r"'([^']*)'|\"([^\"]*)\"", description)
+        query = (quoted[0][0] or quoted[0][1]) if quoted else self._infer_query(description)
+        
+        # Extract category
+        category = self._infer_category(description)
+        
+        # Generate places
+        places = self._generate_places(query, category)
+        
+        return AppLogEntry(
+            timestamp=timestamp,
+            app_name=self.app_name,
+            api_name="SearchPlaces",
+            request={
+                "query": query,
+                "category": category
+            },
+            response={
+                "places": places,
+                "search_timestamp": timestamp
+            }
+        )
+
+    def _extract_person_name(self, description: str) -> Optional[str]:
+        """Extract person name from description."""
+        # Look for "with X" pattern
+        match = re.search(r'\bwith\s+([A-Z][a-zA-Z]+)', description)
+        if match:
+            return match.group(1)
+        return None
+
+    def _extract_place_name(self, description: str) -> str:
+        """Extract place name from description."""
+        # Look for "at X" pattern
+        match = re.search(r'\bat\s+(?:the\s+)?([A-Z][a-zA-Z\s\']+)', description)
+        if match:
+            return match.group(1).strip()
+        # Look for quoted text
+        quoted = re.findall(r"'([^']*)'|\"([^\"]*)\"", description)
+        if quoted:
+            return quoted[0][0] or quoted[0][1]
+        return "Unknown Location"
+
+    def _extract_address(self, description: str) -> Optional[str]:
+        """Extract address from description."""
+        match = re.search(r'(\d+[^,]+,\s*[A-Za-z\s]+(?:,\s*[A-Z]{2}\s*\d+)?)', description)
+        if match:
+            return match.group(1).strip()
+        return None
+
+    def _extract_origin(self, description: str) -> str:
+        """Extract origin from description."""
+        match = re.search(r'\bfrom\s+(?:the\s+)?([A-Za-z][A-Za-z\s\']+?)(?:\s+to\s+|\s*$)', description)
+        if match:
+            return match.group(1).strip()
+        return "Current Location"
+
+    def _extract_destination(self, description: str) -> str:
+        """Extract destination from description."""
+        match = re.search(r'\bto\s+(?:the\s+)?([A-Za-z][A-Za-z\s\']+)', description)
+        if match:
+            return match.group(1).strip()
+        return "Destination"
+
+    def _generate_location(self, description: str) -> Dict[str, Any]:
+        """Generate a location object."""
+        return {
+            "latitude": round(random.uniform(33.0, 48.0), 6),
+            "longitude": round(random.uniform(-122.0, -73.0), 6),
+            "address": f"{random.randint(100, 9999)} Main St",
+            "place_name": self._extract_place_name(description) if description else None,
+            "city": random.choice(["San Francisco", "New York", "Los Angeles", "Chicago", "Seattle"]),
+            "country": "USA"
+        }
+
+    def _generate_location_from_place(self, place_name: str, address: Optional[str]) -> Dict[str, Any]:
+        """Generate a location object from place name."""
+        return {
+            "latitude": round(random.uniform(33.0, 48.0), 6),
+            "longitude": round(random.uniform(-122.0, -73.0), 6),
+            "address": address or f"{random.randint(100, 9999)} {random.choice(['Main', 'Oak', 'Pine', 'Market'])} St",
+            "place_name": place_name,
+            "city": random.choice(["San Francisco", "New York", "Los Angeles", "Chicago", "Seattle"]),
+            "country": "USA"
+        }
+
+    def _infer_query(self, description: str) -> str:
+        """Infer search query from description."""
+        desc_lower = description.lower()
+        if "restaurant" in desc_lower or "food" in desc_lower or "eat" in desc_lower:
+            return "restaurants"
+        elif "coffee" in desc_lower or "cafe" in desc_lower:
+            return "coffee shops"
+        elif "gym" in desc_lower or "fitness" in desc_lower:
+            return "gyms"
+        elif "park" in desc_lower:
+            return "parks"
+        elif "gas" in desc_lower or "fuel" in desc_lower:
+            return "gas stations"
+        return "nearby places"
+
+    def _infer_category(self, description: str) -> Optional[str]:
+        """Infer place category from description."""
+        desc_lower = description.lower()
+        categories = {
+            "restaurant": ["restaurant", "dining", "eat", "food"],
+            "cafe": ["coffee", "cafe", "tea"],
+            "gym": ["gym", "fitness", "workout"],
+            "park": ["park", "outdoor", "nature"],
+            "gas_station": ["gas", "fuel", "petrol"],
+            "shopping": ["shop", "store", "mall"],
+            "hotel": ["hotel", "stay", "accommodation"],
+        }
+        for cat, keywords in categories.items():
+            if any(kw in desc_lower for kw in keywords):
+                return cat
+        return None
+
+    def _generate_places(self, query: str, category: Optional[str]) -> List[Dict[str, Any]]:
+        """Generate search results for places."""
+        num_places = random.randint(3, 6)
+        places = []
+        
+        place_names = {
+            "restaurants": ["Bella Italia", "Golden Dragon", "The Grill House", "Sakura Sushi", "Taco Palace"],
+            "coffee shops": ["Blue Bottle Coffee", "Starbucks", "Philz Coffee", "Peet's Coffee", "Local Brew"],
+            "gyms": ["24 Hour Fitness", "Planet Fitness", "CrossFit Box", "Gold's Gym", "Anytime Fitness"],
+            "parks": ["Central Park", "Riverside Park", "Golden Gate Park", "Lincoln Park", "Memorial Park"],
+            "gas stations": ["Shell", "Chevron", "76", "Exxon", "Mobil"],
+        }
+        
+        default_names = place_names.get(query, [f"{query.title()} Place {i+1}" for i in range(5)])
+        
+        for i in range(num_places):
+            place_id = f"PLACE{uuid.uuid4().hex[:8].upper()}"
+            name = default_names[i % len(default_names)]
+            places.append({
+                "place_id": place_id,
+                "name": name,
+                "address": f"{random.randint(100, 9999)} {random.choice(['Main', 'Oak', 'Pine', 'Market'])} St",
+                "category": category or "general",
+                "rating": round(random.uniform(3.5, 5.0), 1),
+                "location": {
+                    "latitude": round(random.uniform(33.0, 48.0), 6),
+                    "longitude": round(random.uniform(-122.0, -73.0), 6)
+                }
+            })
+        
+        return places
+
+
+class UberEatsApp(BaseApp):
+    """UberEats food delivery app based on app_catalog.py definitions."""
+
+    def __init__(self, user_id: str):
+        super().__init__("UberEats", user_id)
+        self._restaurant_cache: Dict[str, Dict] = {}
+        self._menu_cache: Dict[str, List[Dict]] = {}
+
+    def _initialize_state(self) -> None:
+        """Initialize UberEats state based on UberEatsState model."""
+        self.state = {
+            "user_id": self.user_id,
+            "delivery_addresses": [f"{random.randint(100, 9999)} Main St, City, ST 12345"],
+            "default_address": None,
+            "default_location": None,
+            "favorite_restaurants": [],
+            "order_history": []
+        }
+        self.state["default_address"] = self.state["delivery_addresses"][0]
+
+    def call_api(
+        self,
+        api_name: str,
+        timestamp: str,
+        description: str,
+        context: Dict[str, Any]
+    ) -> AppLogEntry:
+        """Call UberEats API based on app_catalog.py definitions."""
+        self.ensure_initialized()
+        
+        handlers = {
+            "SearchRestaurants": self._search_restaurants,
+            "GetMenu": self._get_menu,
+            "PlaceOrder": self._place_order,
+            "GetOrderHistory": self._get_order_history,
+        }
+        handler = handlers.get(api_name)
+        if handler:
+            return handler(timestamp, description, context)
+        raise ValueError(f"Unknown UberEats API: {api_name}")
+
+    def _search_restaurants(self, timestamp: str, description: str, context: Dict[str, Any]) -> AppLogEntry:
+        """Search for restaurants by name, cuisine type, or category."""
+        # Extract query
+        quoted = re.findall(r"'([^']*)'|\"([^\"]*)\"", description)
+        query = (quoted[0][0] or quoted[0][1]) if quoted else None
+        
+        # Extract cuisine type
+        cuisine_type = self._extract_cuisine_type(description)
+        
+        # Generate restaurants
+        restaurants = self._generate_restaurants(query, cuisine_type)
+        
+        return AppLogEntry(
+            timestamp=timestamp,
+            app_name=self.app_name,
+            api_name="SearchRestaurants",
+            request={
+                "query": query,
+                "cuisine_type": cuisine_type
+            },
+            response={
+                "restaurants": restaurants
+            }
+        )
+
+    def _get_menu(self, timestamp: str, description: str, context: Dict[str, Any]) -> AppLogEntry:
+        """View menu items and prices for a specific restaurant."""
+        # Extract restaurant ID
+        match = re.search(r'REST[A-Z0-9]+', description)
+        restaurant_id = match.group(0) if match else f"REST{random.randint(1000, 9999)}"
+        
+        # Get or create restaurant
+        restaurant = self._get_or_create_restaurant(restaurant_id, description)
+        
+        # Get or create menu
+        menu_items = self._get_or_create_menu(restaurant_id, restaurant.get("cuisine_type", "American"))
+        
+        return AppLogEntry(
+            timestamp=timestamp,
+            app_name=self.app_name,
+            api_name="GetMenu",
+            request={
+                "restaurant_id": restaurant_id
+            },
+            response={
+                "restaurant": restaurant,
+                "menu_items": menu_items
+            }
+        )
+
+    def _place_order(self, timestamp: str, description: str, context: Dict[str, Any]) -> AppLogEntry:
+        """Place a food delivery order with items and delivery address."""
+        from datetime import datetime, timedelta
+        
+        # Extract restaurant ID
+        match = re.search(r'REST[A-Z0-9]+', description)
+        restaurant_id = match.group(0) if match else f"REST{random.randint(1000, 9999)}"
+        
+        # Get or create restaurant
+        restaurant = self._get_or_create_restaurant(restaurant_id, description)
+        
+        # Get or create menu and select items
+        menu_items = self._get_or_create_menu(restaurant_id, restaurant.get("cuisine_type", "American"))
+        
+        # Generate order items
+        num_items = random.randint(1, 4)
+        order_items = []
+        subtotal = 0.0
+        for i in range(min(num_items, len(menu_items))):
+            item = menu_items[i]
+            quantity = random.randint(1, 2)
+            order_items.append({
+                "item_id": item["item_id"],
+                "name": item["name"],
+                "quantity": quantity,
+                "price": item["price"],
+                "special_instructions": None
+            })
+            subtotal += item["price"] * quantity
+        
+        # Calculate totals
+        delivery_fee = restaurant.get("delivery_fee", round(random.uniform(1.99, 5.99), 2))
+        tip = round(subtotal * random.uniform(0.15, 0.25), 2)
+        total = round(subtotal + delivery_fee + tip, 2)
+        
+        # Get delivery address
+        delivery_address = self.state["default_address"]
+        
+        # Generate order
+        order_id = f"ORDER{uuid.uuid4().hex[:8].upper()}"
+        dt = datetime.strptime(timestamp, "%Y-%m-%d %H:%M:%S")
+        estimated_delivery = (dt + timedelta(minutes=restaurant.get("delivery_time_minutes", 35))).strftime("%Y-%m-%d %H:%M:%S")
+        
+        order = {
+            "order_id": order_id,
+            "restaurant_id": restaurant_id,
+            "restaurant_name": restaurant.get("name", "Restaurant"),
+            "items": order_items,
+            "subtotal": round(subtotal, 2),
+            "delivery_fee": delivery_fee,
+            "tip": tip,
+            "total": total,
+            "delivery_address": delivery_address,
+            "delivery_location": None,
+            "order_time": timestamp,
+            "estimated_delivery": estimated_delivery,
+            "status": "placed"
+        }
+        self._append_to_history("order_history", order)
+        
+        return AppLogEntry(
+            timestamp=timestamp,
+            app_name=self.app_name,
+            api_name="PlaceOrder",
+            request={
+                "restaurant_id": restaurant_id,
+                "items": [{"item_id": item["item_id"], "quantity": item["quantity"]} for item in order_items],
+                "delivery_address": delivery_address,
+                "tip_amount": tip
+            },
+            response={
+                "order": order
+            }
+        )
+
+    def _get_order_history(self, timestamp: str, description: str, context: Dict[str, Any]) -> AppLogEntry:
+        """View past food delivery orders."""
+        # Extract limit
+        match = re.search(r'(\d+)', description)
+        limit = int(match.group(1)) if match else 10
+        limit = min(limit, 50)
+        
+        orders = self.state["order_history"][-limit:]
+        
+        return AppLogEntry(
+            timestamp=timestamp,
+            app_name=self.app_name,
+            api_name="GetOrderHistory",
+            request={
+                "limit": limit
+            },
+            response={
+                "orders": orders
+            }
+        )
+
+    def _extract_cuisine_type(self, description: str) -> Optional[str]:
+        """Extract cuisine type from description."""
+        desc_lower = description.lower()
+        cuisines = {
+            "Italian": ["italian", "pizza", "pasta"],
+            "Chinese": ["chinese", "dim sum", "noodle"],
+            "Mexican": ["mexican", "taco", "burrito"],
+            "Japanese": ["japanese", "sushi", "ramen"],
+            "Indian": ["indian", "curry", "tandoori"],
+            "Thai": ["thai", "pad thai"],
+            "American": ["american", "burger", "bbq"],
+            "Korean": ["korean", "kimchi", "bibimbap"],
+        }
+        for cuisine, keywords in cuisines.items():
+            if any(kw in desc_lower for kw in keywords):
+                return cuisine
+        return None
+
+    def _generate_restaurants(self, query: Optional[str], cuisine_type: Optional[str]) -> List[Dict[str, Any]]:
+        """Generate restaurant search results."""
+        num_restaurants = random.randint(4, 8)
+        restaurants = []
+        
+        cuisine = cuisine_type or random.choice(["Italian", "Chinese", "Mexican", "Japanese", "American"])
+        
+        restaurant_names = {
+            "Italian": ["Bella Italia", "Pasta Paradise", "La Dolce Vita", "Trattoria Roma", "Pizza Palace"],
+            "Chinese": ["Golden Dragon", "Jade Garden", "Wok n Roll", "Dynasty", "Lucky House"],
+            "Mexican": ["Taco Palace", "Casa del Sol", "El Mariachi", "Cantina", "Fiesta Grill"],
+            "Japanese": ["Sakura Sushi", "Tokyo Table", "Zen Garden", "Ramen House", "Sashimi Bar"],
+            "American": ["The Grill House", "Burger Joint", "Smokehouse BBQ", "Classic Diner", "All-American"],
+            "Indian": ["Taj Mahal", "Curry House", "Spice of India", "Mumbai Kitchen", "Tandoor Grill"],
+            "Thai": ["Thai Orchid", "Bangkok Kitchen", "Pad Thai House", "Basil Leaf", "Siam Cuisine"],
+            "Korean": ["Seoul Kitchen", "K-BBQ", "Kimchi House", "Bibimbap Bowl", "Korea Garden"],
+        }
+        
+        names = restaurant_names.get(cuisine, [f"{cuisine} Restaurant {i+1}" for i in range(5)])
+        
+        for i in range(num_restaurants):
+            restaurant_id = f"REST{uuid.uuid4().hex[:8].upper()}"
+            name = names[i % len(names)]
+            restaurant = {
+                "restaurant_id": restaurant_id,
+                "name": name,
+                "cuisine_type": cuisine,
+                "rating": round(random.uniform(3.5, 5.0), 1),
+                "delivery_time_minutes": random.randint(20, 50),
+                "delivery_fee": round(random.uniform(0.99, 5.99), 2),
+                "address": f"{random.randint(100, 9999)} {random.choice(['Main', 'Oak', 'Pine'])} St"
+            }
+            restaurants.append(restaurant)
+            self._restaurant_cache[restaurant_id] = restaurant
+        
+        return restaurants
+
+    def _get_or_create_restaurant(self, restaurant_id: str, description: str) -> Dict[str, Any]:
+        """Get or create a restaurant by ID."""
+        if restaurant_id in self._restaurant_cache:
+            return self._restaurant_cache[restaurant_id]
+        
+        quoted = re.findall(r"'([^']*)'|\"([^\"]*)\"", description)
+        name = (quoted[0][0] or quoted[0][1]) if quoted else f"Restaurant {restaurant_id[-4:]}"
+        cuisine_type = self._extract_cuisine_type(description) or "American"
+        
+        restaurant = {
+            "restaurant_id": restaurant_id,
+            "name": name,
+            "cuisine_type": cuisine_type,
+            "rating": round(random.uniform(3.5, 5.0), 1),
+            "delivery_time_minutes": random.randint(20, 50),
+            "delivery_fee": round(random.uniform(0.99, 5.99), 2),
+            "address": f"{random.randint(100, 9999)} Main St"
+        }
+        self._restaurant_cache[restaurant_id] = restaurant
+        return restaurant
+
+    def _get_or_create_menu(self, restaurant_id: str, cuisine_type: str) -> List[Dict[str, Any]]:
+        """Get or create menu items for a restaurant."""
+        if restaurant_id in self._menu_cache:
+            return self._menu_cache[restaurant_id]
+        
+        menu_templates = {
+            "Italian": [
+                ("Margherita Pizza", "mains", 14.99),
+                ("Spaghetti Carbonara", "mains", 16.99),
+                ("Chicken Parmigiana", "mains", 18.99),
+                ("Caesar Salad", "appetizers", 9.99),
+                ("Tiramisu", "desserts", 8.99),
+            ],
+            "Chinese": [
+                ("Kung Pao Chicken", "mains", 15.99),
+                ("Beef and Broccoli", "mains", 16.99),
+                ("Fried Rice", "mains", 12.99),
+                ("Spring Rolls", "appetizers", 7.99),
+                ("Dim Sum Platter", "appetizers", 14.99),
+            ],
+            "Mexican": [
+                ("Beef Tacos", "mains", 12.99),
+                ("Chicken Burrito", "mains", 13.99),
+                ("Quesadilla", "mains", 11.99),
+                ("Guacamole & Chips", "appetizers", 8.99),
+                ("Churros", "desserts", 6.99),
+            ],
+            "Japanese": [
+                ("Sushi Combo", "mains", 22.99),
+                ("Chicken Teriyaki", "mains", 16.99),
+                ("Ramen Bowl", "mains", 14.99),
+                ("Edamame", "appetizers", 5.99),
+                ("Mochi Ice Cream", "desserts", 7.99),
+            ],
+            "American": [
+                ("Classic Burger", "mains", 14.99),
+                ("BBQ Ribs", "mains", 21.99),
+                ("Grilled Chicken", "mains", 17.99),
+                ("Onion Rings", "appetizers", 7.99),
+                ("Apple Pie", "desserts", 6.99),
+            ],
+        }
+        
+        template = menu_templates.get(cuisine_type, menu_templates["American"])
+        menu_items = []
+        
+        for name, category, price in template:
+            item_id = f"ITEM{uuid.uuid4().hex[:8].upper()}"
+            menu_items.append({
+                "item_id": item_id,
+                "name": name,
+                "description": f"Delicious {name.lower()}",
+                "price": price,
+                "category": category
+            })
+        
+        self._menu_cache[restaurant_id] = menu_items
+        return menu_items
 
 
 class InstagramApp(BaseApp):
@@ -3099,6 +3904,7 @@ class InstagramApp(BaseApp):
     def call_api(self, api_name: str, timestamp: str, description: str, context: Dict[str, Any]) -> AppLogEntry:
         self.ensure_initialized()
         handlers = {
+            "CreatePost": self._create_post,
             "PostStory": self._post_story,
             "LikePost": self._like_post,
             "CommentOnPost": self._comment_on_post,
@@ -3112,19 +3918,72 @@ class InstagramApp(BaseApp):
             return handler(timestamp, description, context)
         raise ValueError(f"Unknown Instagram API: {api_name}")
 
+    def _create_post(self, timestamp: str, description: str, context: Dict[str, Any]) -> AppLogEntry:
+        """Create a new photo or video post with caption and optional location tag."""
+        content_type = "video" if "video" in description.lower() else "photo"
+        quoted = re.findall(r"'([^']*)'|\"([^\"]*)\"", description)
+        caption = (quoted[0][0] or quoted[0][1]) if quoted else description[:100]
+        location = self._extract_location(description)
+        location_address = self._extract_location_address(description)
+        
+        post_id = f"POST{uuid.uuid4().hex[:8].upper()}"
+        post = {
+            "post_id": post_id,
+            "author": self.user_id,
+            "content_type": content_type,
+            "caption": caption,
+            "timestamp": timestamp,
+            "likes_count": 0,
+            "location": location,
+            "location_address": location_address
+        }
+        self._append_to_history("posts", post)
+        return AppLogEntry(
+            timestamp=timestamp, 
+            app_name=self.app_name, 
+            api_name="CreatePost",
+            request={
+                "content_type": content_type, 
+                "caption": caption,
+                "location": location,
+                "location_address": location_address
+            }, 
+            response={"post": post}
+        )
+
     def _post_story(self, timestamp: str, description: str, context: Dict[str, Any]) -> AppLogEntry:
         content_type = "video" if "video" in description.lower() else "photo"
-        import re
         quoted = re.findall(r"'([^']*)'|\"([^\"]*)\"", description)
         caption = (quoted[0][0] or quoted[0][1]) if quoted else None
+        location = self._extract_location(description)
+        location_address = self._extract_location_address(description)
+        
         post_id = f"POST{uuid.uuid4().hex[:8].upper()}"
-        post = {"post_id": post_id, "author": self.user_id, "content_type": "story", "caption": caption or "", "timestamp": timestamp, "likes_count": 0}
+        post = {
+            "post_id": post_id, 
+            "author": self.user_id, 
+            "content_type": "story", 
+            "caption": caption or "", 
+            "timestamp": timestamp, 
+            "likes_count": 0,
+            "location": location,
+            "location_address": location_address
+        }
         self._append_to_history("posts", post)
-        return AppLogEntry(timestamp=timestamp, app_name=self.app_name, api_name="PostStory",
-            request={"content_type": content_type, "caption": caption}, response={"post": post})
+        return AppLogEntry(
+            timestamp=timestamp, 
+            app_name=self.app_name, 
+            api_name="PostStory",
+            request={
+                "content_type": content_type, 
+                "caption": caption,
+                "location": location,
+                "location_address": location_address
+            }, 
+            response={"post": post}
+        )
 
     def _like_post(self, timestamp: str, description: str, context: Dict[str, Any]) -> AppLogEntry:
-        import re
         match = re.search(r'POST[A-Z0-9]+', description)
         post_id = match.group(0) if match else f"POST{random.randint(1000, 9999)}"
         new_likes = random.randint(10, 1000)
@@ -3132,7 +3991,6 @@ class InstagramApp(BaseApp):
             request={"post_id": post_id}, response={"post_id": post_id, "new_likes_count": new_likes})
 
     def _comment_on_post(self, timestamp: str, description: str, context: Dict[str, Any]) -> AppLogEntry:
-        import re
         match = re.search(r'POST[A-Z0-9]+', description)
         post_id = match.group(0) if match else f"POST{random.randint(1000, 9999)}"
         quoted = re.findall(r"'([^']*)'|\"([^\"]*)\"", description)
@@ -3142,7 +4000,6 @@ class InstagramApp(BaseApp):
             response={"post_id": post_id, "comment_timestamp": timestamp})
 
     def _send_direct_message(self, timestamp: str, description: str, context: Dict[str, Any]) -> AppLogEntry:
-        import re
         quoted = re.findall(r"'([^']*)'|\"([^\"]*)\"", description)
         message = (quoted[0][0] or quoted[0][1]) if quoted else "Hey!"
         to_user_id = f"user{random.randint(1, 1000)}"
@@ -3168,6 +4025,29 @@ class InstagramApp(BaseApp):
     def _get_following(self, timestamp: str, description: str, context: Dict[str, Any]) -> AppLogEntry:
         return AppLogEntry(timestamp=timestamp, app_name=self.app_name, api_name="GetFollowing",
             request={}, response={"following": self.state["following"][-50:], "following_count": len(self.state["following"])})
+
+    def _extract_location(self, description: str) -> Optional[str]:
+        """Extract location from description."""
+        # Look for "at X" pattern
+        match = re.search(r'\bat\s+(?:the\s+)?([A-Z][a-zA-Z\s\']+(?:Restaurant|Cafe|Beach|Park|Museum|Hotel|Bar|Club|Mall|Store)?)', description)
+        if match:
+            return match.group(1).strip()
+        # Look for "in X" pattern
+        match = re.search(r'\bin\s+([A-Z][a-zA-Z\s,]+)', description)
+        if match:
+            location = match.group(1).strip()
+            # Limit length
+            if len(location) < 50:
+                return location
+        return None
+
+    def _extract_location_address(self, description: str) -> Optional[str]:
+        """Extract location address from description."""
+        # Look for address patterns
+        match = re.search(r'(?:at|located at|address[:\s]+)\s*(\d+[^,\.]+,\s*[A-Za-z\s]+)', description)
+        if match:
+            return match.group(1).strip()
+        return None
 
 
 class AppRegistry:
@@ -3210,6 +4090,8 @@ class AppRegistry:
         "Instagram": InstagramApp,
         "Google": GoogleApp,
         "LLM Assistant": LLMAssistantApp,
+        "Google Maps": GoogleMapsApp,
+        "UberEats": UberEatsApp,
     }
 
     def __init__(self):
