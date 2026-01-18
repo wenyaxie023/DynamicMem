@@ -2055,13 +2055,24 @@ The state of this app before this API call, which may include:
 
 ### 4. Event Payload
 Details about this specific event:
-- Timestamp
+- Time specification (reference time, NOT exact timestamp to use)
 - User intent (why this interaction is happening)
 - Related state items (which user attributes/habits/preferences this demonstrates)
 - Chain context
 
 ```
 {{ event_payload }}
+```
+
+### 5. Previous App Logs in This Chain
+Previously generated app logs from the same event chain (in chronological order). Use these to maintain consistency in:
+- Ongoing conversations or sessions
+- Product/item references (use same IDs, names)
+- Narrative continuity
+- Building on previous interactions
+
+```
+{{ previous_chain_logs }}
 ```
 
 ---
@@ -2079,22 +2090,22 @@ Details about this specific event:
 
 **Characteristics of realistic user input:**
 
-✅ **Natural and concise**
+**Natural and concise**
 - Users typically use short queries and natural language
 - Not overly verbose or formal
 - May include typos, abbreviations, or casual phrasing (when appropriate)
 
-✅ **Reflects user expertise**
+**Reflects user expertise**
 - Technical users naturally use technical terminology
 - Domain experts use domain-specific language
 - Adjust specificity based on user's knowledge level
 
-✅ **Context-aware**
+**Context-aware**
 - Reference previous interactions when relevant (using app state)
 - Show progression (e.g., more specific searches after general ones)
 - Reflect current user intent
 
-✅ **Sometimes "lazy" or efficient**
+**Sometimes "lazy" or efficient**
 - Users may use minimal words to get the job done
 - Not every query needs full sentences
 - Users reuse successful patterns
@@ -2102,36 +2113,36 @@ Details about this specific event:
 **Examples:**
 
 For a Senior Software Engineer searching for AI tools:
-- ✅ Good: `"github copilot vs chatgpt for C++"`
-- ✅ Good: `"AI code completion tools"`
-- ❌ Too formal: `"Please provide a comprehensive comparison of artificial intelligence-powered code completion tools suitable for enterprise C++ development"`
-- ❌ Too vague: `"coding help"`
+- Good: `"github copilot vs chatgpt for C++"`
+- Good: `"AI code completion tools"`
+- Too formal: `"Please provide a comprehensive comparison of artificial intelligence-powered code completion tools suitable for enterprise C++ development"`
+- Too vague: `"coding help"`
 
 For the same user creating a note:
-- ✅ Good: Title: `"AI Tool Evaluation Notes"`, Content: `"Tested Copilot on state machine refactor - works well with modern C++ patterns. Need to try on legacy code next."`
-- ❌ Too polished: Content looks like a published article with perfect formatting and structure
+- Good: Title: `"AI Tool Evaluation Notes"`, Content: `"Tested Copilot on state machine refactor - works well with modern C++ patterns. Need to try on legacy code next."`
+- Too polished: Content looks like a published article with perfect formatting and structure
 
 ### Rule 3: Generate Semantically Rich Output
 
 **Characteristics of semantically rich output:**
 
-✅ **Detailed and informative**
+**Detailed and informative**
 - Include descriptions, specifications, features
 - Provide realistic metadata (ratings, counts, dates)
 - Add context that makes output useful
 
-✅ **Personalized to user**
+**Personalized to user**
 - Search results should align with user's profile and interests
 - Recommendations should match user's preferences
 - Content should be relevant to user's expertise level
 
-✅ **Realistic and plausible**
+**Realistic and plausible**
 - Use real product names, song titles, artist names when possible
 - If fictional, make them realistic (e.g., realistic book titles, company names)
 - Prices, ratings, and counts should be plausible
 - Dates and timestamps should be logical
 
-✅ **Contextually appropriate**
+**Contextually appropriate**
 - Match the user's intent
 - Consider the user's previous interactions (from app state)
 - Reflect the domain context
@@ -2199,8 +2210,24 @@ Then for `AddToCart` API:
 ```
 (References the product from viewed_products)
 
+**Apply Realistic Timestamp Variation:**
+The `time_specification` in the event payload provides a **reference time**, not an exact timestamp. Real-world interactions have natural timing variation. When generating timestamps:
+
+- **Add realistic randomness**: A user who "usually works out at 7:00 AM" might actually start at 6:52, 7:08, or 7:15 on different days
+- **±15-30 minute variation is normal** for most activities (meetings, workouts, daily habits)
+- **±5-10 minute variation** for more time-sensitive activities (appointments, scheduled calls)
+- **Consider the activity context**:
+  - Morning routines vary based on sleep quality, traffic, mood
+  - Evening activities vary based on work day length, energy levels
+  - Weekend timing is typically more relaxed than weekday
+- **Duration variation**: If an activity has start_time and end_time, the actual duration can vary too
+- **Maintain logical ordering**: If you add variation, ensure timestamps still make sense sequentially
+
+Example: If time_specification shows `"start_time": "09:00:00"`:
+- Good: Generate timestamp as "09:07:23" or "08:54:15" (realistic variation)
+- Bad: Use exactly "09:00:00" (too precise, unrealistic)
+
 **Respect temporal logic:**
-- Use the event's timestamp for any time-related output fields
 - Estimated delivery dates should be in the future
 - Order numbers, IDs should be unique and follow realistic patterns
 
@@ -2208,6 +2235,20 @@ Then for `AddToCart` API:
 - If event is part of a chain (check `event_payload.chain`), ensure the API call fits the narrative
 - Related state items provide context for what this interaction demonstrates
 - User intent explains the "why" — let it guide the content
+
+**Use Previous Chain Logs for Consistency:**
+When `previous_chain_logs` is provided, use it to maintain consistency:
+- **Reference same entities**: If a previous log searched for "Sony WH-1000XM5", subsequent add-to-cart should use the same product name
+- **Continue conversations**: If previous LLM chat discussed a topic, new messages should be coherent continuations
+- **Build on context**: User may reference things done earlier in the chain ("like I mentioned earlier", "continuing from yesterday")
+- **Maintain session IDs**: If a session_id or conversation_id was established, continue using it
+- **Show progression**: Later events in a chain often show refinement, follow-up, or completion of earlier actions
+
+Example chain coherence:
+- Event 1: Search for "noise canceling headphones" → Results include Sony WH-1000XM5
+- Event 2: View product → Should be Sony WH-1000XM5 (same product from search)
+- Event 3: Add to cart → Should be Sony WH-1000XM5 (same product)
+- Event 4: Checkout → Order should contain Sony WH-1000XM5
 
 ### Rule 5: Simulate Realistic App Behavior
 
@@ -2486,18 +2527,18 @@ Then for `AddToCart` API:
 
 ---
 
-### Example 6: Fitness.LogWorkout (Habit Execution)
+### Example 6: Fitness.LogWorkout (Habit Execution with Timestamp Variation)
 
 **Context:**
 - User: Mid-30s professional, building morning workout habit
 - Intent: "Habit execution: daily morning workout, building consistency and routine"
-- Timestamp: 2024-01-08 07:15:00 (part of recurring morning habit)
+- Time specification: start_time "07:00:00" (reference time for morning workout habit)
 - App State: 
 ```json
 {
   "workouts": [
-    {"date": "2024-01-04", "type": "strength", "duration": 25},
-    {"date": "2024-01-05", "type": "cardio", "duration": 20}
+    {"date": "2024-01-04", "type": "strength", "duration": 25, "logged_at": "2024-01-04 07:12:00"},
+    {"date": "2024-01-05", "type": "cardio", "duration": 20, "logged_at": "2024-01-05 06:48:00"}
   ],
   "user_baseline": {"fitness_level": "beginner-intermediate"}
 }
@@ -2521,10 +2562,10 @@ Then for `AddToCart` API:
     "notes": "Full body circuit - push-ups, squats, planks. Felt good, added 5 extra squats."
   },
   "output": {
-    "workout_id": "workout_20240108_071500",
+    "workout_id": "workout_20240108_070823",
     "date": "2024-01-08",
     "calories_burned": 185,
-    "logged_at": "2024-01-08 07:15:00"
+    "logged_at": "2024-01-08 07:08:23"
   }
 }
 ```
@@ -2535,7 +2576,7 @@ Then for `AddToCart` API:
 - Intensity matches beginner-intermediate level
 - Calories burned is realistic for 30min moderate strength training
 - Shows gradual progression (added 5 extra squats) fitting a new habit
-- logged_at uses event timestamp
+- **logged_at has realistic variation (07:08:23 instead of exact 07:00:00)** — real people don't start workouts at exactly the scheduled time
 
 ---
 
@@ -2565,9 +2606,13 @@ Then for `AddToCart` API:
 - Bad: Generic search results when intent specifies acquisition for specific purpose
 - Good: Results and descriptions aligned with stated intent
 
+❌ **Overly precise timestamps**
+- Bad: Using exactly "07:00:00" when time_specification says "07:00:00" (too robotic)
+- Good: Using "07:08:23" or "06:54:17" (realistic human variation)
+
 ❌ **Breaking temporal logic**
-- Bad: Order timestamp is different from event timestamp
-- Good: All time fields use consistent timestamp from event
+- Bad: Timestamps going backwards within a session
+- Good: Timestamps progress logically (start < end, sequential events ordered)
 
 ❌ **Missing semantic richness**
 - Bad: Product description: `"Good headphones"`
@@ -2585,7 +2630,8 @@ Before returning your JSON, verify:
 - [ ] Output is semantically rich and detailed
 - [ ] Data aligns with user profile and intent
 - [ ] References to previous interactions are consistent with app state
-- [ ] Timestamps use event timestamp appropriately
+- [ ] **Timestamps have realistic variation** (not exactly matching time_specification)
+- [ ] **Previous chain logs are used for consistency** (same products, continuing conversations, etc.)
 - [ ] IDs and references follow realistic patterns
 - [ ] No markdown fences or extra text
 - [ ] Valid JSON syntax
@@ -2594,7 +2640,21 @@ Before returning your JSON, verify:
 
 ## Now Generate
 
-Based on all the context provided, generate the API call log (input and output) as a valid JSON object.
+Based on all the context provided, generate the API call log as a valid JSON object.
+
+**CRITICAL: Your output MUST have EXACTLY this structure:**
+
+```json
+{
+  "input": { ... },
+  "output": { ... }
+}
+```
+
+- Use **"input"** for API input (NOT "request")
+- Use **"output"** for API output (NOT "response")
+- Do NOT include any other top-level keys (no "event_id", "timestamp", "app_name", etc.)
+- The "input" and "output" values should match the API schema provided above
 
 """)
 

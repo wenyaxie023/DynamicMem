@@ -4,6 +4,10 @@ from dataclasses import dataclass
 from typing import Any, Dict, Optional, Tuple
 
 import google.generativeai as genai
+try:
+    from google import genai as genai_client
+except ImportError:  # pragma: no cover - optional dependency
+    genai_client = None
 
 
 class LLMGenerationError(RuntimeError):
@@ -53,7 +57,7 @@ class GeminiJSONClient:
 
     def __init__(
         self,
-        model_name: str = "gemini-2.5-flash-lite",
+        model_name: str = "gemini-3-flash-preview",
         api_key: Optional[str] = None,
         generation_config: Optional[Dict[str, Any]] = None,
     ) -> None:
@@ -71,9 +75,26 @@ class GeminiJSONClient:
                 "response_mime_type": "application/json",
             },
         )
+        self._structured_client = (
+            genai_client.Client(api_key=self.api_key) if genai_client else None
+        )
 
-    def generate_json(self, prompt: str) -> LLMResult:
-        response = self.model.generate_content(prompt)
+    def generate_json(
+        self,
+        prompt: str,
+        response_schema: Optional[Dict[str, Any]] = None,
+    ) -> LLMResult:
+        if response_schema and self._structured_client is not None:
+            response = self._structured_client.models.generate_content(
+                model=self.model_name,
+                contents=prompt,
+                config={
+                    "response_mime_type": "application/json",
+                    "response_json_schema": response_schema,
+                },
+            )
+        else:
+            response = self.model.generate_content(prompt)
         raw_text = (response.text or "").strip()
         try:
             payload = _parse_json_from_text(raw_text)
@@ -84,4 +105,3 @@ class GeminiJSONClient:
         # import pdb; pdb.set_trace()
         usage = _extract_usage_metadata(getattr(response, "usage_metadata", None))
         return LLMResult(data=payload, usage=usage, prompt=prompt, raw_text=raw_text)
-
