@@ -1,0 +1,92 @@
+version: 1
+
+rules:
+  # ---------------------------------------------------------
+  # State Changes: 提取用户属性、习惯或偏好的变更事实
+  # ---------------------------------------------------------
+  - id: state_item.any
+    match: windows_by_id.*.event_chains.*.related_state_items.*
+    emit:
+      domain: "#*./state_category"
+      anchor: "#*./state_name"
+      key: "#*./state_name"
+      value: "#*"
+      time_window: "#*../../../../window_id"
+
+  # ---------------------------------------------------------
+  # Events: 提取用户具体发生的行为事件事实
+  # ---------------------------------------------------------
+  - id: event.any
+    match: windows_by_id.*.event_chains.*.events.*
+    emit:
+      domain: "event"
+      anchor: "#*./event_id"
+      key: "#*./event_id"
+      value: "#*"
+      time_window: "#*../../../../window_id"
+
+# groups:
+#   # ---------------------------------------------------------
+#   # Group: State Item Details
+#   # 为状态变更补充上下文，如变更原因和类型，不再向下拆解 current_value 的具体结构
+#   # ---------------------------------------------------------
+#   - name: state_item_details
+#     base_match: windows_by_id.*.event_chains.*.related_state_items.*
+#     emit:
+#       anchor: "*./state_name"
+#       key: "*./change_type"
+#       value: "*./current_value"
+#       time_window: "*../../../../window_id"
+#     rules:
+#       - id: state.reason
+#         path: change_reason
+#         emit:
+#           anchor: "*../state_name"
+#           key: "*../change_type"
+#           value: "*../current_value"
+#           time_window: "*../../../../../window_id"
+#       - id: state.previous
+#         path: previous_value
+#         emit:
+#           anchor: "*../state_name"
+#           key: "*../change_type"
+#           value: "*../current_value"
+#           time_window: "*../../../../../window_id"
+#       # 这里停止下钻：current_value 可能是一个复杂对象（如 schedule），
+#       # 但作为一个"事实"整体，它在这一层级已经足够回答"现在的设定是什么"的问题。
+
+#   # ---------------------------------------------------------
+#   # Group: Event Details
+#   # 为事件补充上下文，如使用的时间和具体的API/APP
+#   # ---------------------------------------------------------
+#   - name: event_details
+#     base_match: windows_by_id.*.event_chains.*.events.*
+#     emit:
+#       anchor: "*./event_id"
+#       key: "*./user_intent"
+#       value: "*./user_intent"
+#       time_window: "*../../../../window_id"
+#     rules:
+#       - id: event.time
+#         path: time_specification
+#         emit:
+#           anchor: "*../event_id"
+#           key: "*../user_intent"
+#           value: "*../user_intent"
+#           time_window: "*../../../../../window_id"
+#         # time_specification 包含 schedule_dates 和 具体 time，
+#         # 作为一个整体事实保留，不再拆解为单一的时间字段。
+#       - id: event.api
+#         path: api_name
+#         emit:
+#           anchor: "*../event_id"
+#           key: "*../user_intent"
+#           value: "*../user_intent"
+#           time_window: "*../../../../../window_id"
+#       - id: event.variations
+#         path: app_api_variations
+#         emit:
+#           anchor: "*../event_id"
+#           key: "*../user_intent"
+#           value: "*../user_intent"
+#           time_window: "*../../../../../window_id"

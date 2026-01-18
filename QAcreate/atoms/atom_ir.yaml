@@ -1,0 +1,17 @@
+atoms:
+- id: state_item.any
+  match: windows_by_id.*.event_chains.*.related_state_items.*
+  emit:
+    domain: '#*./state_category'
+    anchor: '#*./state_name'
+    key: '#*./state_name'
+    value: '#*'
+    time_window: '#*../../../../window_id'
+- id: event.any
+  match: windows_by_id.*.event_chains.*.events.*
+  emit:
+    domain: event
+    anchor: '#*./event_id'
+    key: '#*./event_id'
+    value: '#*'
+    time_window: '#*../../../../window_id'
