@@ -13,19 +13,11 @@ import dotenv
 dotenv.load_dotenv()
 import os
 from tqdm import tqdm
-from mem_bench.behavior_and_conversation.atomic_events_generator import (
-    AtomicEventsRequest,
-    generate_atomic_events,
-)
 from mem_bench.behavior_and_conversation.dynamic_profile_generator import (
     DynamicProfileRequest,
     generate_dynamic_profile,
 )
 from mem_bench.behavior_and_conversation.llm_client import GeminiJSONClient, LLMResult
-from mem_bench.behavior_and_conversation.real_data_generator import (
-    RealDataRequest,
-    generate_real_data,
-)
 from mem_bench.behavior_and_conversation.elite_persona_sampler import (
     DEFAULT_SAMPLE_PATH as DEFAULT_ELITE_SAMPLE_PATH,
     DEFAULT_SAMPLE_SIZE as DEFAULT_ELITE_SAMPLE_SIZE,
@@ -62,26 +54,23 @@ from mem_bench.behavior_and_conversation.app_catalog import APP_CATALOG
 
 @dataclass
 class TimelineConfig:
-    start_date: str = "2024-01-01"
+    start_date: str = "2023-10-01"
     end_date: str = "2024-12-31"
-    num_windows: int = 4
-
-
-@dataclass
-class AtomicEventsConfig:
-    min_per_semantic: int = 1
-    max_per_semantic: int = 3
-
-
-@dataclass
-class RealDataConfig:
-    conversation_turns_range: tuple[int, int] = (2, 4)
+    num_windows: int = 5
+    time_windows: List[Dict[str, object]] | None = (
+        [
+            {"window_id": "w0", "time_range": ["2023-10-01", "2023-12-31"]},
+            {"window_id": "w1", "time_range": ["2024-01-01", "2024-03-31"]},
+            {"window_id": "w2", "time_range": ["2024-04-01", "2024-07-01"]},
+            {"window_id": "w3", "time_range": ["2024-07-02", "2024-09-30"]},
+            {"window_id": "w4", "time_range": ["2024-10-01", "2024-12-31"]},
+        ]
+    )
 
 
 @dataclass
 class BasicProfileRequest:
     user_description: str
-
 
 @dataclass
 class SpatiotemporalConstraintsRequest:
@@ -448,9 +437,6 @@ def generate_key_alignment(
     )
     return llm_client.generate_json(prompt)
 
-
-
-
 @dataclass
 class Domain:
     domain_name: str
@@ -772,7 +758,7 @@ def _collect_temporal_events(dynamic_profiles: Dict[str, Dict]) -> List[Dict[str
                     events.append(
                         {
                             "domain": domain_name,
-                            "window_id": normalized_window_id,  # Use normalized window_id
+                            "window_id": normalized_window_id,
                             "window_range": snapshot.get("time_range"),
                             "habit": habit_name,
                             "priority": (habit.get("priority") or "").lower(),
@@ -3788,176 +3774,6 @@ def _resolve_window_states(dynamic_profile_data: Dict) -> List[Dict]:
 
     return resolved
 
-
-# def _reorganize_by_key(resolved_windows: List[Dict]) -> Dict:
-#     """
-#     Reorganize window-based data into key-based timelines.
-#     Each key maintains a timeline of its values across all windows.
-#     Merges consecutive windows with no changes (no op field) into a single time range.
-    
-#     Args:
-#         resolved_windows: List of window states from _resolve_window_states
-        
-#     Returns:
-#         Dict with structure:
-#         {
-#             "user_attributes_state": {
-#                 "key_name": {
-#                     "timeline": [
-#                         {
-#                             "time_range": ["2024-01-01", "2024-12-31"],  # merged if no changes
-#                             "current_value": ...,
-#                             # If there's a change:
-#                             "op": "modify",  # or "add", "drop", etc.
-#                             "previous_value": ...,
-#                             "change_reason": ...,
-#                         },
-#                         ...
-#                     ]
-#                 },
-#                 ...
-#             },
-#             "habits_state": {...},
-#             "preferences_state": {...}
-#         }
-#     """
-#     reorganized: Dict[str, Dict[str, Dict]] = {
-#         "user_attributes_state": {},
-#         "habits_state": {},
-#         "preferences_state": {},
-#     }
-    
-#     # First pass: collect all timeline entries
-#     for window in resolved_windows:
-#         window_id = window.get("window_id")
-#         time_range = window.get("time_range")
-#         if not window_id:
-#             continue
-        
-#         # Process each state type
-#         for state_type in ["user_attributes_state", "habits_state", "preferences_state"]:
-#             state_list = window.get(state_type, [])
-#             for item in state_list:
-#                 key_name = item.get("name")
-#                 attr_type = item.get("attribute_type")
-#                 if not key_name:
-#                     continue
-
-#                 composite_key = (
-#                     f"{attr_type}.{key_name}"
-#                     if state_type == "user_attributes_state" and attr_type
-#                     else key_name
-#                 )
-
-#                 # Initialize timeline for this key if not exists
-#                 if composite_key not in reorganized[state_type]:
-#                     reorganized[state_type][composite_key] = {"timeline": []}
-#                     if state_type == "user_attributes_state" and attr_type:
-#                         reorganized[state_type][composite_key]["attribute_type"] = attr_type
-                
-#                 # Create timeline entry (with window_id for now, will be removed after merging)
-#                 timeline_entry: Dict[str, object] = {
-#                     "window_id": window_id,
-#                     "time_range": time_range,
-#                     "current_value": item.get("current_value"),
-#                 }
-#                 if state_type == "user_attributes_state" and attr_type:
-#                     timeline_entry["attribute_type"] = attr_type
-                
-#                 # Add change information if present
-#                 if "op" in item:
-#                     timeline_entry["op"] = item.get("op")
-#                     if "previous_value" in item:
-#                         timeline_entry["previous_value"] = item.get("previous_value")
-#                     if "change_reason" in item:
-#                         timeline_entry["change_reason"] = item.get("change_reason")
-                
-#                 reorganized[state_type][composite_key]["timeline"].append(timeline_entry)
-    
-#     # Second pass: merge consecutive entries with no changes
-#     for state_type in ["user_attributes_state", "habits_state", "preferences_state"]:
-#         for key_name, key_data in reorganized[state_type].items():
-#             timeline = key_data["timeline"]
-#             if not timeline:
-#                 continue
-            
-#             merged_timeline: List[Dict[str, object]] = []
-#             i = 0
-            
-#             while i < len(timeline):
-#                 current_entry = timeline[i]
-                
-#                 # If this entry has an op (change), add it as-is (without window_id)
-#                 if "op" in current_entry:
-#                     merged_entry: Dict[str, object] = {
-#                         "time_range": list(current_entry["time_range"]),  # copy
-#                         "current_value": current_entry["current_value"],
-#                         "op": current_entry["op"],
-#                     }
-#                     if "attribute_type" in current_entry:
-#                         merged_entry["attribute_type"] = current_entry["attribute_type"]
-#                     if "previous_value" in current_entry:
-#                         merged_entry["previous_value"] = current_entry["previous_value"]
-#                     if "change_reason" in current_entry:
-#                         merged_entry["change_reason"] = current_entry["change_reason"]
-#                     merged_timeline.append(merged_entry)
-#                     i += 1
-#                     continue
-                
-#                 # Otherwise, try to merge consecutive entries with same value and no op
-#                 merged_entry = {
-#                     "time_range": list(current_entry["time_range"]),  # copy
-#                     "current_value": current_entry["current_value"],
-#                 }
-#                 if "attribute_type" in current_entry:
-#                     merged_entry["attribute_type"] = current_entry["attribute_type"]
-#                 j = i + 1
-                
-#                 # Merge consecutive entries with no op and same current_value
-#                 while j < len(timeline):
-#                     next_entry = timeline[j]
-#                     # Stop if next entry has an op (change)
-#                     if "op" in next_entry:
-#                         break
-                    
-#                     # Check if current_value is the same (deep comparison for lists/dicts)
-#                     current_val = current_entry["current_value"]
-#                     next_val = next_entry["current_value"]
-                    
-#                     # Simple comparison - for complex objects, we'd need deep comparison
-#                     # But for our use case, this should work
-#                     if current_val != next_val:
-#                         break
-                    
-#                     # Check if time ranges are consecutive
-#                     current_end = merged_entry["time_range"][1]
-#                     next_start = next_entry["time_range"][0]
-                    
-#                     # Parse dates to check if consecutive
-#                     try:
-#                         current_end_date = datetime.strptime(current_end, "%Y-%m-%d")
-#                         next_start_date = datetime.strptime(next_start, "%Y-%m-%d")
-#                         # Check if next window starts the day after current ends
-#                         if next_start_date != current_end_date + timedelta(days=1):
-#                             break
-#                     except (ValueError, TypeError):
-#                         # If date parsing fails, just check if they're adjacent strings
-#                         # This is a fallback
-#                         pass
-                    
-#                     # Merge: extend time_range to include next entry
-#                     merged_entry["time_range"][1] = next_entry["time_range"][1]
-#                     j += 1
-                
-#                 merged_timeline.append(merged_entry)
-#                 i = j
-            
-#             # Update the timeline with merged version
-#             reorganized[state_type][key_name]["timeline"] = merged_timeline
-    
-#     return reorganized
-
-
 def _identify_stable_states(resolved_windows: List[Dict]) -> Dict[str, Dict[str, Dict]]:
     """
     Identify states that stay constant (no op, same value) across all windows.
@@ -4392,6 +4208,28 @@ def generate_time_windows(
     return windows
 
 
+def _normalize_time_windows(
+    raw_windows: List[Dict[str, object]] | List[List[str]] | List[Tuple[str, str]],
+) -> List[Dict[str, str | List[str]]]:
+    windows: List[Dict[str, str | List[str]]] = []
+    for idx, entry in enumerate(raw_windows):
+        if isinstance(entry, dict):
+            window_id = str(entry.get("window_id") or f"w{idx}")
+            time_range = entry.get("time_range")
+        else:
+            window_id = f"w{idx}"
+            time_range = entry
+        if not (isinstance(time_range, (list, tuple)) and len(time_range) == 2):
+            raise ValueError(f"invalid time_range for {window_id}: {time_range}")
+        windows.append(
+            {
+                "window_id": window_id,
+                "time_range": [str(time_range[0]), str(time_range[1])],
+            }
+        )
+    return windows
+
+
 def load_domains_from_file(path: str | Path) -> List[Domain]:
     path = Path(path)
     data = json.loads(path.read_text())
@@ -4416,13 +4254,9 @@ class GenerationPipeline:
         llm_client: GeminiJSONClient,
         output_dir: Path,
         timeline: TimelineConfig | None = None,
-        atomic_config: AtomicEventsConfig | None = None,
-        real_data_config: RealDataConfig | None = None,
     ) -> None:
         self.llm_client = llm_client
         self.timeline = timeline or TimelineConfig()
-        self.atomic_config = atomic_config or AtomicEventsConfig()
-        self.real_data_config = real_data_config or RealDataConfig()
         self.output_dir = Path(output_dir)
         _ensure_dir(self.output_dir)
 
@@ -5548,11 +5382,27 @@ class GenerationPipeline:
         slug = _slugify(domain.domain_name)
 
         # Pre-generate time windows
-        time_windows = generate_time_windows(
-            timeline.start_date,
-            timeline.end_date,
-            timeline.num_windows,
-        )
+        initial_time_range: List[str] | None = None
+        if timeline.time_windows:
+            normalized = _normalize_time_windows(timeline.time_windows)
+            time_windows = []
+            for window in normalized:
+                window_id = str(window.get("window_id") or "").strip().lower()
+                if window_id in {"w0", "initial", "initial_state", "init"}:
+                    time_range = window.get("time_range")
+                    if isinstance(time_range, list) and len(time_range) == 2:
+                        initial_time_range = [
+                            str(time_range[0]),
+                            str(time_range[1]),
+                        ]
+                    continue
+                time_windows.append(window)
+        else:
+            time_windows = generate_time_windows(
+                timeline.start_date,
+                timeline.end_date,
+                timeline.num_windows,
+            )
 
         latent_result = generate_dynamic_profile(
             self.llm_client,
@@ -5565,6 +5415,10 @@ class GenerationPipeline:
                 life_domain_list=life_domain_list,
             ),
         )
+        if initial_time_range:
+            initial_state = latent_result.data.setdefault("initial_state", {})
+            if isinstance(initial_state, dict) and not initial_state.get("time_range"):
+                initial_state["time_range"] = initial_time_range
         # latent_path = self.output_dir / f"{slug}_dynamic_profile.json"
         # _write_json(latent_path, latent_result.data)
 
@@ -5758,21 +5612,6 @@ class GenerationPipeline:
 
         return all_fixes, revised_profile, aggregate_usage
 
-    # # Backward-compatible alias
-    # def _review_revise_dynamic_profile_for_domain(
-    #     self,
-    #     domain: Domain,
-    #     *,
-    #     dynamic_profile: Dict,
-    #     user_profile: str,
-    #     world_background: str,
-    # ) -> tuple[Dict, Dict]:
-    #     return self.review_revise_dynamic_profile_for_domain(
-    #         domain,
-    #         dynamic_profile=dynamic_profile,
-    #         user_profile=user_profile,
-    #         world_background=world_background,
-    #     )
     
     def review_revise_dynamic_profile_from_file(
         self,
@@ -6523,239 +6362,6 @@ class GenerationPipeline:
         _write_json(legacy_semantic_path, payload)
 
         return events_chain_windows, usage
-
-    # def generate_atomic_events_for_domain(
-    #     self,
-    #     domain: Domain,
-    #     *,
-    #     dynamic_profile_data: Dict,
-    #     events_chain_windows: List[Dict],
-    #     usage: Dict | None = None,
-    # ) -> tuple[List[Dict], Dict]:
-        # """
-        # Generate atomic events for a domain based on existing latent state and events chain.
-        
-        # Args:
-        #     spec: domain specification
-        #     dynamic_profile_data: The latent state data
-        #     events_chain_windows: List of events chain entries for each window
-        #     usage: Optional existing usage dict to update
-            
-        # Returns:
-        #     Tuple of (atomic_events_windows_list, updated_usage_dict)
-        # """
-        # if usage is None:
-        #     usage = {"atomic_events": {}}
-        # elif "atomic_events" not in usage:
-        #     usage["atomic_events"] = {}
-
-        # slug = _slugify(domain.domain_name)
-        # atomic_windows: List[Dict] = []
-
-        # # Create a mapping from window_id to resolved window state and semantic events
-        # window_states = {
-        #     w.get("window_id"): w for w in _resolve_window_states(dynamic_profile_data)
-        # }
-        # # import pdb; pdb.set_trace()
-        # for events_chain_data in events_chain_windows:
-        #     window_id = events_chain_data.get("window_id")
-        #     if not window_id:
-        #         continue
-
-        #     window_state = window_states.get(window_id)
-        #     if not window_state:
-        #         continue
-
-        #     events_payload = (
-        #         events_chain_data.get("events_chain")
-        #         or events_chain_data.get("events_chain")
-        #         or events_chain_data
-        #     )
-
-        #     atomic_result = generate_atomic_events(
-        #         self.llm_client,
-        #         AtomicEventsRequest(
-        #             domain_name=domain.domain_name,
-        #             window_id=window_id,
-        #             window_time_range=_format_window_range(window_state),
-        #             current_window_state=window_state,
-        #             events_chain=events_payload,
-        #             min_atomic_per_semantic=self.atomic_config.min_per_semantic,
-        #             max_atomic_per_semantic=self.atomic_config.max_per_semantic,
-        #         ),
-        #     )
-        #     atomic_windows.append(atomic_result.data)
-        #     usage["atomic_events"][window_id] = atomic_result.usage
-
-        # atomic_path = self.output_dir / f"{slug}_atomic_events.json"
-        # _write_json(
-        #     atomic_path,
-        #     {"domain": domain.domain_name, "windows": atomic_windows},
-        # )
-
-        # return atomic_windows, usage
-
-    def generate_real_data_for_domain(
-        self,
-        *,
-        domain: Domain,
-        dynamic_profiles: Dict[str, Dict],
-        events_chain_windows: List[Dict],
-        user_basic_profile: Dict,
-        user_life_contexts: Dict | None = None,
-        user_full_state_summaries: Dict[str, Dict] | None = None,
-        usage: Dict | None = None,
-    ) -> tuple[List[Dict], Dict]:
-        """
-        Generate real data for a domain directly from semantic events (evidence chains).
-        """
-        if usage is None:
-            usage = {"real_data": {}}
-        elif "real_data" not in usage:
-            usage["real_data"] = {}
-
-        domain_profile = (dynamic_profiles or {}).get(domain.domain_name)
-        if not isinstance(domain_profile, dict):
-            raise ValueError(f"Dynamic profile for domain {domain.domain_name} is missing.")
-
-        slug = _slugify(domain.domain_name)
-        real_windows: List[Dict] = []
-
-        resolved_windows = _resolve_window_states(domain_profile)
-        window_states = {
-            w.get("window_id"): w for w in resolved_windows if w.get("window_id")
-        }
-        window_order = [w.get("window_id") for w in resolved_windows if w.get("window_id")]
-        prev_window_map = {
-            window_order[i]: window_order[i - 1] for i in range(1, len(window_order))
-        }
-
-        life_context_baseline = {}
-        life_context_by_window: Dict[str, Dict] = {}
-        if isinstance(user_life_contexts, dict):
-            life_context_baseline = user_life_contexts.get("baseline") or {}
-            life_context_by_window = user_life_contexts.get("by_window") or {}
-
-        summary_by_window_domain: Dict[str, str] = {}
-        for window_id, entry in (user_full_state_summaries or {}).items():
-            if not window_id or not isinstance(entry, dict):
-                continue
-            domain_summary_val = (
-                entry.get("summary_by_domain", {}).get(domain.domain_name)
-                or entry.get("window_description_by_domain", {}).get(domain.domain_name, "")
-            )
-            summary_by_window_domain[window_id] = domain_summary_val
-
-        domain_initial_summary = (
-            (domain_profile.get("initial_state") or {}).get("summary") or ""
-        )
-        user_basic_profile_str = json.dumps(
-            user_basic_profile, indent=2, ensure_ascii=False
-        )
-
-        # import pdb; pdb.set_trace() 
-        for events_chain_data in events_chain_windows:
-            window_id = events_chain_data.get("window_id")
-            if not window_id:
-                continue
-
-            window_state = window_states.get(window_id, {})
-            window_time_range = (
-                events_chain_data.get("time_range") or window_state.get("time_range")
-            )
-            window_description = window_state.get("window_description") or ""
-
-            previous_window_id = prev_window_map.get(window_id)
-            previous_domain_summary_raw = (
-                domain_initial_summary
-                if previous_window_id is None
-                else summary_by_window_domain.get(previous_window_id, "")
-            )
-            if previous_domain_summary_raw:
-                previous_summary_text = (
-                    f"Window {previous_window_id or 'initial'} summary in {domain.domain_name}: "
-                    f"{previous_domain_summary_raw}"
-                )
-            else:
-                previous_summary_text = (
-                    f"No previous window summary available for window {window_id} in {domain.domain_name}."
-                )
-
-            life_context_entry = life_context_by_window.get(window_id, {}) or {}
-            base_context = life_context_entry.get("life_context") or life_context_baseline
-            delta_payload = life_context_entry.get("life_context_delta") or {}
-            life_context_for_window = _apply_life_context_delta(
-                base_context, delta_payload
-            )
-            if not life_context_for_window and isinstance(life_context_baseline, dict):
-                life_context_for_window = life_context_baseline
-            life_context_prompt_str = _format_life_context_for_prompt(
-                window_id, life_context_for_window, time_range=window_time_range
-            )
-
-            evidence_chains = events_chain_data.get("evidence_chains") or []
-            if not evidence_chains:
-                continue
-
-            window_real_data: Dict[str, object] = {
-                "window_id": window_id,
-                "time_range": window_time_range,
-                "real_data": [],
-            }
-
-            for chain_idx, chain in enumerate(evidence_chains):
-                chain_id = chain.get("evidence_chain_id") or f"{window_id}_chain_{chain_idx+1:02d}"
-                chain_payload = deepcopy(chain)
-                chain_payload.setdefault("evidence_chain_id", chain_id)
-                chain_payload.setdefault("window_id", window_id)
-                chain_payload.setdefault("time_range", window_time_range)
-                chain_payload.setdefault("domain_name", domain.domain_name)
-
-                import pdb; pdb.set_trace()
-
-                real_result = generate_real_data(
-                    self.llm_client,
-                    RealDataRequest(
-                        user_basic_profile=user_basic_profile_str,
-                        life_context=life_context_prompt_str,
-                        previous_window_summary_this_domain=previous_summary_text,
-                        current_window_description=window_description
-                        or "No description available for this domain in this window.",
-                        evidence_chain=chain_payload,
-                        window_id=window_id,
-                        window_time_range=window_time_range,
-                        domain_name=domain.domain_name,
-                    ),
-                )
-                window_real_data["real_data"].append(real_result.data)
-                usage["real_data"].setdefault(window_id, {})[chain_id] = real_result.usage
-
-                prompt_path = (
-                    self.output_dir
-                    / f"{slug}_real_data_{window_id}_{_slugify(chain_id)}_prompt.txt"
-                )
-                _write_text(prompt_path, real_result.prompt)
-
-                _write_json(
-                    self.output_dir / f"{slug}_real_data_{window_id}_{_slugify(chain_id)}.json",
-                    real_result.data,
-                )
-
-                ## record usage
-                _write_json(
-                    self.output_dir / f"{slug}_real_data_{window_id}_{_slugify(chain_id)}_usage.json",
-                    real_result.usage,
-                )
-
-            real_windows.append(window_real_data)
-
-        real_path = self.output_dir / f"{slug}_real_data.json"
-        _write_json(
-            real_path,
-            {"domain": domain.domain_name, "windows": real_windows},
-        )
-
-        return real_windows, usage
 
     def load_dynamic_profile_from_file(
         self, domain: Domain
@@ -7990,50 +7596,6 @@ def debug_cross_domain_conflict_resolution_temporal() -> None:
     resolved_profiles = _apply_conflict_resolution_to_profiles(dynamic_profiles, data)
     _write_json(output_dir / "dynamic_profiles_conflict_resolved_claude.json", resolved_profiles)
 
-def merge_first_n_app_logs(
-    app_log_dir: Path,
-    n: int,
-    output_path: Optional[Path] = None,
-    pattern: str = "app_log_*.json",
-) -> Path:
-    """Merge the first N app log files in a directory into a single JSON file."""
-    if n <= 0:
-        raise ValueError("n must be a positive integer")
-
-    app_log_dir = Path(app_log_dir)
-    files = list(app_log_dir.glob(pattern))
-    if not files:
-        raise FileNotFoundError(f"No app log files found in {app_log_dir} with pattern {pattern}")
-
-    def _sort_key(path: Path) -> Tuple[int, str]:
-        match = re.search(r"app_log_e(\d+)", path.name)
-        if match:
-            return (int(match.group(1)), path.name)
-        return (10**12, path.name)
-
-    files = sorted(files, key=_sort_key)
-    selected_files = files[:n]
-
-    app_logs: List[Dict[str, Any]] = []
-    for path in selected_files:
-        with open(path, "r") as f:
-            app_logs.append(json.load(f))
-
-    if output_path is None:
-        output_path = app_log_dir / f"app_log_{n}.json"
-
-    output_data = {
-        "source_dir": str(app_log_dir),
-        "pattern": pattern,
-        "total_available": len(files),
-        "total_merged": len(app_logs),
-        "app_logs": app_logs,
-    }
-
-    with open(output_path, "w") as f:
-        json.dump(output_data, f, indent=2, ensure_ascii=False)
-
-    return output_path
 
 if __name__ == "__main__":
     # debug_cross_domain_conflict_resolution_temporal()
