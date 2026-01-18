@@ -6,7 +6,7 @@ from typing import Any, Dict, Optional, Tuple
 import google.generativeai as genai
 try:
     from google import genai as genai_client
-except ImportError:  # pragma: no cover - optional dependency
+except ImportError: 
     genai_client = None
 
 
@@ -98,7 +98,7 @@ class GeminiJSONClient:
         raw_text = (response.text or "").strip()
         try:
             payload = _parse_json_from_text(raw_text)
-        except json.JSONDecodeError as exc:  # pragma: no cover - depends on LLM output
+        except json.JSONDecodeError as exc:
             raise LLMGenerationError(
                 f"Failed to decode JSON from model response: {exc}\nRaw response:\n{raw_text}"
             ) from exc

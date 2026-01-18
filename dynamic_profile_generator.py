@@ -3,7 +3,7 @@ from typing import List, Dict
 
 from jinja2 import Template
 
-from mem_bench.behavior_and_conversation.llm_client import (
+from llm_client import (
     GeminiJSONClient,
     LLMResult,
 )

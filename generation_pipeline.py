@@ -13,28 +13,28 @@ import dotenv
 dotenv.load_dotenv()
 import os
 from tqdm import tqdm
-from mem_bench.behavior_and_conversation.dynamic_profile_generator import (
+from dynamic_profile_generator import (
     DynamicProfileRequest,
     generate_dynamic_profile,
 )
-from mem_bench.behavior_and_conversation.llm_client import GeminiJSONClient, LLMResult
-from mem_bench.behavior_and_conversation.elite_persona_sampler import (
+from llm_client import GeminiJSONClient, LLMResult
+from elite_persona_sampler import (
     DEFAULT_SAMPLE_PATH as DEFAULT_ELITE_SAMPLE_PATH,
     DEFAULT_SAMPLE_SIZE as DEFAULT_ELITE_SAMPLE_SIZE,
     DEFAULT_SEED as ELITE_SAMPLE_SEED,
     load_sampled_personas,
     sample_elite_personas,
 )
-from mem_bench.behavior_and_conversation.events_chain_generator import (
+from events_chain_generator import (
     EventsChainRequest,
     generate_events_chain,
 )
-from mem_bench.behavior_and_conversation.app_system import (
+from app_system import (
     APP_API_SCHEMAS,
     AppRegistry,
     get_api_input_output_models,
 )
-from mem_bench.behavior_and_conversation.prompt_templates import (
+from prompt_templates import (
     ATTRIBUTE_CONFLICT_RESOLUTION_PROMPT,
     BASIC_PROFILE_PROMPT,
     DYNAMIC_PROFILE_TEMPLATE_EXCERPT,
@@ -50,7 +50,7 @@ from mem_bench.behavior_and_conversation.prompt_templates import (
     rule4_short_term_followup_prompt,
     rule5_time_conflict_prompt,
 )
-from mem_bench.behavior_and_conversation.app_catalog import APP_CATALOG
+from app_catalog import APP_CATALOG
 
 @dataclass
 class TimelineConfig:

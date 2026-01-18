@@ -12,7 +12,7 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from typing import Any, Dict, Tuple
 
-from mem_bench.behavior_and_conversation import app_models
+import app_models
 
 
 MAX_API_CALL_HISTORY = 20

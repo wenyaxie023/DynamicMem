@@ -3,8 +3,8 @@ from dataclasses import dataclass
 
 from jinja2 import Template
 
-from mem_bench.behavior_and_conversation.app_catalog import APP_CATALOG
-from mem_bench.behavior_and_conversation.llm_client import (
+from app_catalog import APP_CATALOG
+from llm_client import (
     GeminiJSONClient,
     LLMResult,
 )
