@@ -5,6 +5,7 @@ Pydantic models for app state and API schemas.
 from __future__ import annotations
 
 from datetime import datetime, date
+from decimal import Decimal
 from enum import Enum
 from typing import Any, Dict, List, Optional
 
@@ -12,6 +13,20 @@ from pydantic import BaseModel, Field
 
 
 # ==================== Shared Enums ====================
+class UberEatsOrderStatus(str, Enum):
+    PLACED = "placed"
+    PREPARING = "preparing"
+    ON_THE_WAY = "on_the_way"
+    DELIVERED = "delivered"
+
+
+class GoogleMapsTravelMode(str, Enum):
+    DRIVING = "driving"
+    WALKING = "walking"
+    TRANSIT = "transit"
+    BICYCLING = "bicycling"
+
+
 class AssetType(str, Enum):
     STOCK = "stock"
     CRYPTO = "crypto"
@@ -114,7 +129,7 @@ class CartItem(BaseModel):
     """Item in shopping cart"""
     product_id: str
     name: str
-    price: float = Field(description="Price in USD")
+    price: Decimal = Field(description="Price in USD")
     quantity: int = Field(ge=1, description="Number of items")
 
 
@@ -122,7 +137,7 @@ class WishlistItem(BaseModel):
     """Item in wishlist"""
     product_id: str
     name: str
-    price: float = Field(description="Price in USD")
+    price: Decimal = Field(description="Price in USD")
     added_at: datetime = Field(description="When the item was added to wishlist")
 
 
@@ -130,13 +145,13 @@ class OrderItem(BaseModel):
     """Item in an order"""
     product_id: str
     name: str
-    price: float = Field(description="Price in USD")
+    price: Decimal = Field(description="Price in USD")
     quantity: int = Field(ge=1, description="Number of items")
 
 
 class ProductReview(BaseModel):
     """Product review"""
-    rating: int = Field(ge=1, le=5, description="Rating from 1 (worst) to 5 (best)")
+    rating: int = Field(ge=1, le=5, description="Rating")
     text: str = Field(description="Review content")
     author: str = Field(description="Reviewer's display name")
 
@@ -144,15 +159,15 @@ class ProductReview(BaseModel):
 class WatchlistItem(BaseModel):
     """Stock/crypto in watchlist"""
     symbol: str = Field(description="Stock ticker or crypto symbol (e.g., AAPL, BTC)")
-    current_price: float = Field(description="Current market price in USD")
-    change_percent: float = Field(description="Price change percentage from previous close")
+    current_price: Decimal = Field(description="Current market price in USD")
+    change_percent: Decimal = Field(description="Price change percentage from previous close")
 
 
 class StockSearchResult(BaseModel):
     """Stock search result"""
     symbol: str = Field(description="Stock ticker or crypto symbol")
     name: str = Field(description="Company or cryptocurrency name")
-    current_price: float = Field(description="Current market price in USD")
+    current_price: Decimal = Field(description="Current market price in USD")
 
 
 class EmailPreview(BaseModel):
@@ -160,7 +175,7 @@ class EmailPreview(BaseModel):
     email_id: str
     from_address: str
     subject: str
-    snippet: str = Field(description="Preview of email body, first ~50 characters")
+    snippet: str = Field(max_length=50, description="Preview of email body")
     timestamp: datetime
     is_read: bool
 
@@ -192,16 +207,16 @@ class NotionSearchResult(BaseModel):
 class AmazonProduct(BaseModel):
     product_id: str
     name: str
-    price: float = Field(description="Price in USD")
+    price: Decimal = Field(description="Price in USD")
     category: str
-    rating: float = Field(ge=1.0, le=5.0, description="Average rating from 1.0 to 5.0")
+    rating: float = Field(ge=1.0, le=5.0, description="Average rating")
     
 class AmazonOrder(BaseModel):
     order_id: str
     product_id: str
     product_name: str
     quantity: int = Field(ge=1)
-    total_price: float = Field(description="Total price in USD")
+    total_price: Decimal = Field(description="Total price in USD")
     order_date: datetime
     
 class AmazonState(BaseModel):
@@ -287,14 +302,14 @@ class ChaseTransaction(BaseModel):
     transaction_id: str
     transaction_date: date = Field(description="Date of the transaction")
     merchant: str
-    amount: float = Field(description="Transaction amount in USD")
+    amount: Decimal = Field(description="Transaction amount in USD")
     transaction_type: ChaseTransactionType
     category: ChaseCategory
     
 class ChaseAccount(BaseModel):
     account_id: str
     account_type: ChaseAccountType
-    balance: float = Field(description="Current balance in USD")
+    balance: Decimal = Field(description="Current balance in USD")
     
 class ChaseState(BaseModel):
     user_id: str
@@ -306,7 +321,7 @@ class RobinhoodHolding(BaseModel):
     symbol: str = Field(description="Stock ticker or crypto symbol")
     asset_type: AssetType
     quantity: float = Field(ge=0, description="Number of shares or units held")
-    average_buy_price: float = Field(description="Average purchase price in USD")
+    average_buy_price: Decimal = Field(description="Average purchase price in USD")
     
 class RobinhoodTransaction(BaseModel):
     transaction_id: str
@@ -314,12 +329,12 @@ class RobinhoodTransaction(BaseModel):
     asset_type: AssetType
     transaction_type: TransactionType
     quantity: float = Field(ge=0)
-    price: float = Field(description="Price per share/unit in USD")
+    price: Decimal = Field(description="Price per share/unit in USD")
     timestamp: datetime
     
 class RobinhoodState(BaseModel):
     user_id: str
-    cash_balance: float = Field(description="Available cash in USD")
+    cash_balance: Decimal = Field(description="Available cash in USD")
     holdings: List[RobinhoodHolding] = Field(default_factory=list)
     watchlist: List[str] = Field(default_factory=list, description="List of stock/crypto symbols being watched")
     transaction_history: List[RobinhoodTransaction] = Field(default_factory=list)
@@ -359,8 +374,8 @@ class GmailState(BaseModel):
 class LinkedInExperience(BaseModel):
     company: str
     title: str
-    start_date: str = Field(description="Start date in YYYY-MM format")
-    end_date: Optional[str] = Field(default=None, description="End date in YYYY-MM format, None if current position")
+    start_date: date = Field(description="Start date")
+    end_date: Optional[date] = Field(default=None, description="End date, None if current position")
     
 class LinkedInPost(BaseModel):
     post_id: str
@@ -532,7 +547,7 @@ class GoogleMapsDirections(BaseModel):
     directions_id: str
     origin: Location
     destination: Location
-    travel_mode: str = Field(description="Mode of travel: driving, walking, transit, bicycling")
+    travel_mode: GoogleMapsTravelMode = Field(description="Mode of travel: driving, walking, transit, bicycling")
     distance_km: float
     duration_minutes: int
     searched_at: datetime
@@ -556,7 +571,7 @@ class UberEatsRestaurant(BaseModel):
     cuisine_type: str = Field(description="Type of cuisine (e.g., Italian, Chinese, Mexican)")
     rating: float = Field(ge=0, le=5, description="Average rating")
     delivery_time_minutes: int = Field(description="Estimated delivery time in minutes")
-    delivery_fee: float = Field(description="Delivery fee in USD")
+    delivery_fee: Decimal = Field(description="Delivery fee in USD")
     address: str
     location: Optional[Location] = None
 
@@ -566,7 +581,7 @@ class UberEatsMenuItem(BaseModel):
     item_id: str
     name: str
     description: str
-    price: float = Field(description="Price in USD")
+    price: Decimal = Field(description="Price in USD")
     category: str = Field(description="Menu category like appetizers, mains, desserts")
 
 
@@ -575,7 +590,7 @@ class UberEatsOrderItem(BaseModel):
     item_id: str
     name: str
     quantity: int = Field(ge=1)
-    price: float
+    price: Decimal
     special_instructions: Optional[str] = None
 
 
@@ -585,15 +600,15 @@ class UberEatsOrder(BaseModel):
     restaurant_id: str
     restaurant_name: str
     items: List[UberEatsOrderItem]
-    subtotal: float
-    delivery_fee: float
-    tip: float
-    total: float
+    subtotal: Decimal
+    delivery_fee: Decimal
+    tip: Decimal
+    total: Decimal
     delivery_address: str
     delivery_location: Optional[Location] = None
     order_time: datetime
     estimated_delivery: datetime
-    status: str = Field(description="Order status: placed, preparing, on_the_way, delivered")
+    status: UberEatsOrderStatus = Field(description="Order status: placed, preparing, on_the_way, delivered")
 
 
 class UberEatsState(BaseModel):
@@ -629,14 +644,14 @@ class AddToCartInput(BaseModel):
     
 class AddToCartOutput(BaseModel):
     cart: List[CartItem]
-    cart_total: float = Field(description="Total cart value in USD")
+    cart_total: Decimal = Field(description="Total cart value in USD")
     
 class ShowCartInput(BaseModel):
     pass
     
 class ShowCartOutput(BaseModel):
     cart_items: List[CartItem]
-    cart_total: float = Field(description="Total cart value in USD")
+    cart_total: Decimal = Field(description="Total cart value in USD")
     prime_member: bool
     
 class ShowWishlistInput(BaseModel):
@@ -651,7 +666,7 @@ class CheckoutInput(BaseModel):
 class CheckoutOutput(BaseModel):
     order_id: str
     order_items: List[OrderItem]
-    total_price: float = Field(description="Total order price in USD")
+    total_price: Decimal = Field(description="Total order price in USD")
     order_date: datetime
     estimated_delivery: date = Field(description="Estimated delivery date")
     prime_member: bool
@@ -721,7 +736,7 @@ class GetBalanceInput(BaseModel):
     
 class GetBalanceOutput(BaseModel):
     accounts: List[ChaseAccount]
-    total_balance: float = Field(description="Total balance across all accounts in USD")
+    total_balance: Decimal = Field(description="Total balance across all accounts in USD")
     last_updated: datetime
     
 class GetTransactionsInput(BaseModel):
@@ -731,7 +746,7 @@ class GetTransactionsInput(BaseModel):
     
 class GetTransactionsOutput(BaseModel):
     transactions: List[ChaseTransaction]
-    account_balance: float
+    account_balance: Decimal
     
 class SearchTransactionsInput(BaseModel):
     query: str = Field(description="Search by merchant name or category")
@@ -742,22 +757,22 @@ class SearchTransactionsOutput(BaseModel):
 class TransferMoneyInput(BaseModel):
     from_account_id: str
     to_account_id: str
-    amount: float = Field(gt=0, description="Amount to transfer in USD")
+    amount: Decimal = Field(gt=0, description="Amount to transfer in USD")
     
 class TransferMoneyOutput(BaseModel):
     transaction_id: str
-    from_account_new_balance: float
-    to_account_new_balance: float
+    from_account_new_balance: Decimal
+    to_account_new_balance: Decimal
     timestamp: datetime
     
 class PayBillInput(BaseModel):
     biller_name: str
-    amount: float = Field(gt=0, description="Bill amount in USD")
+    amount: Decimal = Field(gt=0, description="Bill amount in USD")
     from_account_id: str
     
 class PayBillOutput(BaseModel):
     transaction_id: str
-    new_balance: float = Field(description="New account balance after payment")
+    new_balance: Decimal = Field(description="New account balance after payment")
     timestamp: datetime
 
 # ==================== Robinhood APIs ====================
@@ -765,9 +780,9 @@ class GetPortfolioInput(BaseModel):
     pass
     
 class GetPortfolioOutput(BaseModel):
-    cash_balance: float
+    cash_balance: Decimal
     holdings: List[RobinhoodHolding]
-    total_portfolio_value: float = Field(description="Total value of holdings + cash in USD")
+    total_portfolio_value: Decimal = Field(description="Total value of holdings + cash in USD")
     
 class GetWatchlistInput(BaseModel):
     pass
@@ -786,29 +801,29 @@ class GetStockQuoteInput(BaseModel):
     
 class GetStockQuoteOutput(BaseModel):
     symbol: str
-    current_price: float
-    change_percent: float = Field(description="Price change percentage from previous close")
+    current_price: Decimal
+    change_percent: Decimal = Field(description="Price change percentage from previous close")
     timestamp: datetime
     in_watchlist: bool
     
 class BuyStockInput(BaseModel):
     symbol: str
-    quantity: float = Field(gt=0)
+    quantity: Decimal = Field(gt=0)
     asset_type: AssetType
     
 class BuyStockOutput(BaseModel):
     transaction: RobinhoodTransaction
-    new_cash_balance: float
+    new_cash_balance: Decimal
     new_holding: RobinhoodHolding
     
 class SellStockInput(BaseModel):
     symbol: str
-    quantity: float = Field(gt=0)
+    quantity: Decimal = Field(gt=0)
     asset_type: AssetType
     
 class SellStockOutput(BaseModel):
     transaction: RobinhoodTransaction
-    new_cash_balance: float
+    new_cash_balance: Decimal
     remaining_holding: Optional[RobinhoodHolding] = Field(description="Remaining holding after sale, None if fully sold")
 
 # ==================== WhatsApp APIs ====================
@@ -878,8 +893,8 @@ class UpdateProfileOutput(BaseModel):
 class AddExperienceInput(BaseModel):
     company: str
     title: str
-    start_date: str = Field(description="Start date in YYYY-MM format")
-    end_date: Optional[str] = Field(default=None, description="End date in YYYY-MM format, None if current position")
+    start_date: date = Field(description="Start date")
+    end_date: Optional[date] = Field(default=None, description="End date, None if current position")
     
 class AddExperienceOutput(BaseModel):
     experience: LinkedInExperience
@@ -992,7 +1007,7 @@ class ShowTitleInput(BaseModel):
 class ShowTitleOutput(BaseModel):
     title: NetflixTitle
     description: str
-    rating: float = Field(ge=0, le=5, description="Average user rating from 0 to 5")
+    rating: float = Field(ge=0, le=5, description="Average user rating")
     in_my_list: bool
     
 class PlayContentInput(BaseModel):
@@ -1031,7 +1046,7 @@ class ShowBookInput(BaseModel):
 class ShowBookOutput(BaseModel):
     book: GoodreadsBook
     description: str
-    average_rating: float = Field(ge=1.0, le=5.0, description="Average rating from 1.0 to 5.0")
+    average_rating: float = Field(ge=1.0, le=5.0, description="Average rating")
     on_shelf: Optional[BookShelf] = Field(default=None, description="Which shelf the book is on, if any")
     
 class AddToShelfInput(BaseModel):
@@ -1043,16 +1058,16 @@ class AddToShelfOutput(BaseModel):
     
 class RateBookInput(BaseModel):
     book_id: str
-    rating: int = Field(ge=1, le=5, description="Rating from 1 (worst) to 5 (best)")
+    rating: int = Field(ge=1, le=5, description="Rating")
     
 class RateBookOutput(BaseModel):
-    rating: int = Field(ge=1, le=5, description="Rating from 1 (worst) to 5 (best)")
+    rating: int = Field(ge=1, le=5, description="Rating")
     rated_at: datetime
     
 class WriteReviewInput(BaseModel):
     book_id: str
     review_text: str
-    rating: Optional[int] = Field(default=None, ge=1, le=5, description="Optional rating from 1 to 5")
+    rating: Optional[int] = Field(default=None, ge=1, le=5, description="Optional rating")
     
 class WriteReviewOutput(BaseModel):
     review: GoodreadsReview
@@ -1222,7 +1237,7 @@ class PlaceOrderInput(BaseModel):
     restaurant_id: str
     items: List[Dict[str, Any]] = Field(description="List of items with item_id, quantity, and optional special_instructions")
     delivery_address: str
-    tip_amount: Optional[float] = Field(default=0.0, ge=0, description="Tip amount in USD")
+    tip_amount: Optional[Decimal] = Field(default=Decimal('0.0'), ge=0, description="Tip amount in USD")
     
 class PlaceOrderOutput(BaseModel):
     order: UberEatsOrder
