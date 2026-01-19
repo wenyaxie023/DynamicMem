@@ -10,6 +10,7 @@ Each app class owns:
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
+from decimal import Decimal
 from typing import Any, Dict, Tuple
 
 import app_models
@@ -199,6 +200,16 @@ class SpotifyApp(BaseApp):
                 if artist_id not in followed:
                     self._append_to_state_history("followed_artists", artist_id, MAX_HISTORY_LARGE)
         elif api_name == "AddToPlaylist":
+            playlist_id = request_payload.get("playlist_id", "")
+            song_id = request_payload.get("song_id", "")
+            if playlist_id and song_id:
+                playlists = self.state.setdefault("playlists", [])
+                for pl in playlists:
+                    if pl.get("playlist_id") == playlist_id:
+                        song_ids = pl.setdefault("song_ids", [])
+                        if song_id not in song_ids:
+                            song_ids.append(song_id)
+                        break
             self._trim_state_history("playlists", MAX_HISTORY_SMALL)
 
 
@@ -226,10 +237,51 @@ class FitbitApp(BaseApp):
             workout = response_payload.get("workout", {})
             if workout:
                 self._append_to_state_history("workout_history", workout, MAX_HISTORY_MEDIUM)
+                
+                # Update daily stats
+                workout_date = workout.get("timestamp", "").split("T")[0] if "T" in workout.get("timestamp", "") else ""
+                if workout_date:
+                    daily_syncs = self.state.setdefault("daily_syncs", [])
+                    # Find or create sync for this date
+                    sync_entry = next((s for s in daily_syncs if s.get("sync_date", "") == workout_date), None)
+                    if not sync_entry:
+                        sync_entry = {
+                            "sync_date": workout_date,
+                            "steps": 0,
+                            "active_minutes": 0,
+                            "calories_burned": 0,
+                            "sleep_hours": 0.0,
+                            "avg_heart_rate": 0
+                        }
+                        daily_syncs.append(sync_entry)
+                    
+                    sync_entry["active_minutes"] = sync_entry.get("active_minutes", 0) + workout.get("duration_minutes", 0)
+                    sync_entry["calories_burned"] = sync_entry.get("calories_burned", 0) + workout.get("calories_burned", 0)
         elif api_name == "RecordActivity":
             activity = response_payload.get("activity", {})
             if activity:
                 self._append_to_state_history("activity_history", activity, MAX_HISTORY_MEDIUM)
+                
+                # Update daily stats (reuse logic from LogWorkout)
+                activity_date = activity.get("timestamp", "").split("T")[0] if "T" in activity.get("timestamp", "") else ""
+                if activity_date:
+                    daily_syncs = self.state.setdefault("daily_syncs", [])
+                    sync_entry = next((s for s in daily_syncs if s.get("sync_date", "") == activity_date), None)
+                    if not sync_entry:
+                        sync_entry = {
+                            "sync_date": activity_date,
+                            "steps": 0,
+                            "active_minutes": 0,
+                            "calories_burned": 0,
+                            "sleep_hours": 0.0,
+                            "avg_heart_rate": 0
+                        }
+                        daily_syncs.append(sync_entry)
+                    
+                    sync_entry["active_minutes"] = sync_entry.get("active_minutes", 0) + activity.get("duration_minutes", 0)
+                    # Use a rough estimate if calories not provided, or take from response if available. 
+                    # Assuming response has it as per model.
+                    sync_entry["calories_burned"] = sync_entry.get("calories_burned", 0) + activity.get("calories_burned", 0)
         elif api_name == "SyncDevice":
             sync_data = response_payload.get("sync_data", {})
             if sync_data:
@@ -277,6 +329,30 @@ class ChaseApp(BaseApp):
                 "to_account": request_payload.get("to_account_id", ""),
             }
             self._append_to_state_history("transaction_history", transaction, MAX_HISTORY_SMALL)
+            
+            # Update balances
+            amount = Decimal(str(request_payload.get("amount", 0)))
+            from_acc_id = request_payload.get("from_account_id")
+            to_acc_id = request_payload.get("to_account_id")
+            
+            for acc in self.state.get("accounts", []):
+                if acc.get("account_id") == from_acc_id:
+                    current_bal = Decimal(str(acc.get("balance", 0)))
+                    acc["balance"] = float(current_bal - amount)
+                elif acc.get("account_id") == to_acc_id:
+                    current_bal = Decimal(str(acc.get("balance", 0)))
+                    acc["balance"] = float(current_bal + amount)
+
+        if api_name == "PayBill":
+            # Also deduct for bill payments
+            amount = Decimal(str(request_payload.get("amount", 0)))
+            from_acc_id = request_payload.get("from_account_id")
+            if from_acc_id:
+                for acc in self.state.get("accounts", []):
+                    if acc.get("account_id") == from_acc_id:
+                        current_bal = Decimal(str(acc.get("balance", 0)))
+                        acc["balance"] = float(current_bal - amount)
+                        break
 
 
 class RobinhoodApp(BaseApp):
@@ -303,6 +379,50 @@ class RobinhoodApp(BaseApp):
             transaction = response_payload.get("transaction", {})
             if transaction:
                 self._append_to_state_history("transaction_history", transaction, MAX_HISTORY_SMALL)
+                
+                # Update portfolio
+                symbol = transaction.get("symbol")
+                qty = Decimal(str(transaction.get("quantity", 0)))
+                price = Decimal(str(transaction.get("price", 0)))
+                asset_type = transaction.get("asset_type")
+                cost = qty * price
+                
+                cash_bal = Decimal(str(self.state.get("cash_balance", 0)))
+                holdings = self.state.setdefault("holdings", [])
+                
+                if api_name == "BuyStock":
+                    self.state["cash_balance"] = float(cash_bal - cost)
+                    
+                    # Update holdings
+                    existing = next((h for h in holdings if h.get("symbol") == symbol), None)
+                    if existing:
+                        old_qty = Decimal(str(existing.get("quantity", 0)))
+                        old_avg = Decimal(str(existing.get("average_buy_price", 0)))
+                        new_qty = old_qty + qty
+                        # Weighted average price
+                        new_avg = ((old_qty * old_avg) + cost) / new_qty
+                        existing["quantity"] = float(new_qty)
+                        existing["average_buy_price"] = float(new_avg)
+                    else:
+                        holdings.append({
+                            "symbol": symbol,
+                            "asset_type": asset_type,
+                            "quantity": float(qty),
+                            "average_buy_price": float(price)
+                        })
+                        
+                elif api_name == "SellStock":
+                    self.state["cash_balance"] = float(cash_bal + cost)
+                    
+                    existing = next((h for h in holdings if h.get("symbol") == symbol), None)
+                    if existing:
+                        current_qty = Decimal(str(existing.get("quantity", 0)))
+                        new_qty = current_qty - qty
+                        if new_qty <= 0:
+                            holdings.remove(existing)
+                        else:
+                            existing["quantity"] = float(new_qty)
+        
         self._trim_state_history("watchlist", MAX_HISTORY_LARGE)
 
 
@@ -449,6 +569,7 @@ class NetflixApp(BaseApp):
         "PlayContent": (app_models.PlayContentInput, app_models.PlayContentOutput),
         "AddToMyList": (app_models.AddToMyListInput, app_models.AddToMyListOutput),
         "RateContent": (app_models.RateContentInput, app_models.RateContentOutput),
+        "SearchContent": (app_models.NetflixSearchContentInput, app_models.NetflixSearchContentOutput),
     }
 
     def _initialize_state(self) -> None:
@@ -512,6 +633,8 @@ class InstagramApp(BaseApp):
         "FollowUser": (app_models.FollowUserInput, app_models.FollowUserOutput),
         "UnfollowUser": (app_models.UnfollowUserInput, app_models.UnfollowUserOutput),
         "GetFollowing": (app_models.GetFollowingInput, app_models.GetFollowingOutput),
+        "LikePost": (app_models.InstagramLikePostInput, app_models.InstagramLikePostOutput),
+        "CommentOnPost": (app_models.InstagramCommentOnPostInput, app_models.InstagramCommentOnPostOutput),
     }
 
     def _initialize_state(self) -> None:

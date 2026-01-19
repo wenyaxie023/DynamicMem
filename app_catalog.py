@@ -825,7 +825,7 @@ APP_CATALOG = {
         {
             "app_name": "Google",
             "app_category": "Search Engine",
-            "life_domains": ["All domains - cross-cutting tool"],
+            "relevant_life_domains": ["All domains - cross-cutting tool"],
             "apis": [
                 {
                     "api_name": "Search",
