@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 import re
 from copy import deepcopy
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from datetime import date, datetime, time, timedelta
 from collections import Counter
 from pathlib import Path
@@ -57,8 +57,8 @@ class TimelineConfig:
     start_date: str = "2023-10-01"
     end_date: str = "2024-12-31"
     num_windows: int = 5
-    time_windows: List[Dict[str, object]] | None = (
-        [
+    time_windows: List[Dict[str, object]] | None = field(
+        default_factory=lambda: [
             {"window_id": "w0", "time_range": ["2023-10-01", "2023-12-31"]},
             {"window_id": "w1", "time_range": ["2024-01-01", "2024-03-31"]},
             {"window_id": "w2", "time_range": ["2024-04-01", "2024-07-01"]},

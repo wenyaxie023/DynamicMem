@@ -8,6 +8,8 @@ from llm_client import (
     GeminiJSONClient,
     LLMResult,
 )
+from typing import Optional
+
 
 events_chain_template = Template("""You are an expert at generating realistic event chains that demonstrate user behaviors based on their dynamic profile state.
 
@@ -1529,11 +1531,11 @@ class EventsChainRequest:
     user_basic_profile: str
     domain_name: str
     domain_window_state: str
-    user_life_context: str
     user_previous_window_summary: str
     user_domain_previous_window_summary: str
     user_this_window_description: str
     world_background: str
+    user_life_context: Optional[str] = None
 
 
 def render_events_chain_prompt(request: EventsChainRequest) -> str:
