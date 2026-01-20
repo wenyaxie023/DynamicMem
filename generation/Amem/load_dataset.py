@@ -4,6 +4,8 @@ import os
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
+import re
+from copy import deepcopy
 
 @dataclass
 class QA:
@@ -235,6 +237,152 @@ def get_dataset_statistics(samples: List[LoCoMoSample]) -> Dict:
         )
     }
     return stats
+
+# -----------------------------
+# MemBench dataset (app logs)
+# -----------------------------
+
+@dataclass
+class MemBenchEvent:
+    event_id: str
+    app_name: str
+    api_name: str
+    request: Optional[dict]
+    response: Optional[dict]
+
+@dataclass
+class MemBenchSample:
+    """A single MemBench sample (typically 1 user/app-log file)."""
+    sample_id: str
+    qa: List[QA]
+    app_logs: List[MemBenchEvent]
+
+_TIMESTAMP_KEY_RE = re.compile(r"(timestamp|created_at|updated_at)", re.IGNORECASE)
+
+def _is_timestamp_key(key: str) -> bool:
+    return bool(_TIMESTAMP_KEY_RE.search(key))
+
+def _collect_timestamps(obj: object, out: List[str]) -> None:
+    if isinstance(obj, dict):
+        for key, value in obj.items():
+            if isinstance(key, str) and _is_timestamp_key(key):
+                if isinstance(value, (str, int, float)):
+                    out.append(str(value))
+            _collect_timestamps(value, out)
+    elif isinstance(obj, list):
+        for item in obj:
+            _collect_timestamps(item, out)
+
+def _strip_timestamp_fields(obj: object) -> object:
+    if isinstance(obj, dict):
+        filtered = {}
+        for key, value in obj.items():
+            if isinstance(key, str) and _is_timestamp_key(key):
+                continue
+            filtered[key] = _strip_timestamp_fields(value)
+        return filtered
+    if isinstance(obj, list):
+        return [_strip_timestamp_fields(item) for item in obj]
+    return obj
+
+def build_membench_memory_from_event(event: MemBenchEvent) -> tuple[str, Optional[str]]:
+    """
+    Convert a MemBench event into memory content + time.
+
+    Rules:
+    - Only `response` content is added as memory payload.
+    - Any `*timestamp*` or `created_at` fields are extracted as the memory `time`.
+    - Timestamp fields are removed from the text payload; everything else is concatenated.
+    """
+    if isinstance(event, tuple) and len(event) == 2 and isinstance(event[1], MemBenchEvent):
+        event = event[1]
+    response_obj = event.response or {}
+    timestamps: List[str] = []
+    _collect_timestamps(response_obj, timestamps)
+    time_str = timestamps[0] if timestamps else None
+
+    response_without_timestamps = _strip_timestamp_fields(deepcopy(response_obj))
+    response_text = json.dumps(response_without_timestamps, ensure_ascii=False, sort_keys=True)
+
+    content = (
+        f"Event {event.event_id} | App: {event.app_name} | API: {event.api_name} | "
+        f"Response: {response_text}"
+    )
+    return content, time_str
+
+def _parse_qa_list(raw_qa: object) -> List[QA]:
+    if raw_qa is None:
+        return []
+    if isinstance(raw_qa, dict) and "qa" in raw_qa:
+        raw_qa = raw_qa["qa"]
+    if not isinstance(raw_qa, list):
+        raise ValueError("Invalid QA format: expected list or object with 'qa' list.")
+
+    qa_list: List[QA] = []
+    for qa in raw_qa:
+        if not isinstance(qa, dict):
+            continue
+        qa_list.append(
+            QA(
+                question=str(qa.get("question", "")),
+                answer=qa.get("answer"),
+                evidence=list(qa.get("evidence", [])) if qa.get("evidence") is not None else [],
+                category=qa.get("category"),
+                adversarial_answer=qa.get("adversarial_answer"),
+            )
+        )
+    return qa_list
+
+def load_membench_dataset(
+    app_log_path: Union[str, Path],
+    qa_path: Optional[Union[str, Path]] = None,
+) -> MemBenchSample:
+    """
+    Load a MemBench dataset sample from:
+    - `app_log_path`: JSON file containing top-level `app_logs` list (or the list itself).
+    - `qa_path` (optional): JSON file containing `{"qa": [...]}`.
+      If omitted, tries to read `qa` from `app_log_path` (if present).
+    """
+    app_log_path = Path(app_log_path)
+    if not app_log_path.exists():
+        raise FileNotFoundError(f"App log file not found at {app_log_path}")
+
+    with open(app_log_path, "r", encoding="utf-8") as f:
+        raw = json.load(f)
+
+    raw_app_logs = raw.get("app_logs") if isinstance(raw, dict) else raw
+    if not isinstance(raw_app_logs, list):
+        raise ValueError("Invalid app log format: expected list or object with 'app_logs' list.")
+
+    if qa_path is None and isinstance(raw, dict) and "qa" in raw:
+        raw_qa = raw["qa"]
+    elif qa_path is not None:
+        qa_path = Path(qa_path)
+        if not qa_path.exists():
+            raise FileNotFoundError(f"QA file not found at {qa_path}")
+        with open(qa_path, "r", encoding="utf-8") as f:
+            raw_qa = json.load(f)
+    else:
+        raw_qa = None
+
+    qa_list = _parse_qa_list(raw_qa)
+
+    events: List[MemBenchEvent] = []
+    for ev in raw_app_logs:
+        if not isinstance(ev, dict):
+            continue
+        events.append(
+            MemBenchEvent(
+                event_id=str(ev.get("event_id", "")),
+                app_name=str(ev.get("app_name", "")),
+                api_name=str(ev.get("api_name", "")),
+                request=ev.get("request"),
+                response=ev.get("response"),
+            )
+        )
+
+    sample_id = app_log_path.stem
+    return MemBenchSample(sample_id=sample_id, qa=qa_list, app_logs=events)
 
 if __name__ == "__main__":
     # Example usage

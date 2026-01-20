@@ -13,6 +13,7 @@ from transformers import AutoModel, AutoTokenizer
 from nltk.tokenize import word_tokenize
 import pickle
 from pathlib import Path
+
 from litellm import completion
 import requests
 import json as json_lib
@@ -177,7 +178,7 @@ class LiteLLMController(BaseLLMController):
     def __init__(self, model: str, api_base: Optional[str] = None, api_key: Optional[str] = None):
         self.model = model
         self.api_base = api_base
-        self.api_key = api_key or "EMPTY"
+        self.api_key = api_key
     
     def _generate_empty_value(self, schema_type: str, schema_items: dict = None) -> Any:
         if schema_type == "array":
@@ -224,7 +225,6 @@ class LiteLLMController(BaseLLMController):
                 completion_args["api_base"] = self.api_base
             if self.api_key:
                 completion_args["api_key"] = self.api_key
-                
             response = completion(**completion_args)
             return response.choices[0].message.content
             
@@ -246,11 +246,13 @@ class LLMController:
             self.llm = OpenAIController(model, api_key)
         elif backend == "ollama":
             # Use LiteLLM to control Ollama with JSON output
-            ollama_model = f"ollama/{model}" if not model.startswith("ollama/") else model
+            # ollama_model = f"ollama/{model}" if not model.startswith("ollama/") else model
+            ollama_model = model
             self.llm = LiteLLMController(
                 model=ollama_model, 
-                api_base="http://localhost:11434", 
-                api_key="EMPTY"
+                # api_base="http://localhost:11434", 
+                api_base=api_base, 
+                # api_key=api_key
             )
         elif backend == "sglang":
             # Direct SGLang API calls (better performance, no proxy)
