@@ -2,3 +2,5 @@ __pycache__
 *.json
 logs
 qdrant_storage
+env
+*DS_Store

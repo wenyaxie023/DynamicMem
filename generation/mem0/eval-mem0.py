@@ -11,10 +11,10 @@ from mem0 import Memory
 from openai import OpenAI
 
 
-PROJECT_ROOT = Path(__file__).resolve().parent.parent
-AMEM_DIR = PROJECT_ROOT / "Amem"
-if AMEM_DIR.exists() and str(AMEM_DIR) not in sys.path:
-    sys.path.append(str(AMEM_DIR))
+GENERATION_DIR = Path(__file__).resolve().parent.parent
+MOCK_DATA_DIR = GENERATION_DIR / "mock_data"
+if str(GENERATION_DIR) not in sys.path:
+    sys.path.append(str(GENERATION_DIR))
 
 from load_dataset import MemBenchSample, build_membench_memory_from_event, load_membench_dataset  # type: ignore  # noqa: E402
 
@@ -314,8 +314,8 @@ def evaluate_membench_with_mem0(
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Evaluate Mem0 on MemBench app-log dataset")
-    parser.add_argument("--app-log", type=str, default="app_log_518.json", help="Path to app log JSON")
-    parser.add_argument("--qa", type=str, default="qa_samples.json", help="Path to QA JSON")
+    parser.add_argument("--app-log", type=str, default="../mock_data/app_log_518.json", help="Path to app log JSON")
+    parser.add_argument("--qa", type=str, default="../mock_data/qa_samples.json", help="Path to QA JSON")
     parser.add_argument(
         "--collection-name",
         type=str,
@@ -348,13 +348,18 @@ def main() -> None:
     )
     args = parser.parse_args()
 
-    base_dir = Path(__file__).resolve().parent
     app_log_path = Path(args.app_log)
     if not app_log_path.is_absolute():
-        app_log_path = (AMEM_DIR if AMEM_DIR.exists() else base_dir) / app_log_path
+        if app_log_path.exists():
+            app_log_path = app_log_path.resolve()
+        else:
+            app_log_path = MOCK_DATA_DIR / app_log_path.name
     qa_path = Path(args.qa)
     if not qa_path.is_absolute():
-        qa_path = (AMEM_DIR if AMEM_DIR.exists() else base_dir) / qa_path
+        if qa_path.exists():
+            qa_path = qa_path.resolve()
+        else:
+            qa_path = MOCK_DATA_DIR / qa_path.name
     output_path = Path(args.output) if args.output else None
 
     mem0_config = load_mem0_config(

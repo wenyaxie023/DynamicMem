@@ -3,13 +3,20 @@ import json
 import os
 import re
 import logging
+import sys
+from pathlib import Path
 from datetime import datetime
 from typing import Optional, Any
 
 import nltk
 
 from memory_layer import AgenticMemorySystem, LLMController
-from load_dataset import load_membench_dataset, build_membench_memory_from_event, MemBenchSample
+
+GENERATION_DIR = Path(__file__).resolve().parent.parent
+if str(GENERATION_DIR) not in sys.path:
+    sys.path.append(str(GENERATION_DIR))
+
+from load_dataset import build_membench_memory_from_event, load_membench_dataset, MemBenchSample  # type: ignore
 
 
 def _ensure_nltk() -> None:
@@ -207,8 +214,8 @@ def evaluate_membench(
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Evaluate agent on MemBench app-log dataset")
-    parser.add_argument("--app-log", type=str, default="app_log_518.json", help="Path to app log JSON")
-    parser.add_argument("--qa", type=str, default="qa_samples.json", help="Path to QA JSON")
+    parser.add_argument("--app-log", type=str, default="../mock_data/app_log_518.json", help="Path to app log JSON")
+    parser.add_argument("--qa", type=str, default="../mock_data/qa_samples.json", help="Path to QA JSON")
     parser.add_argument("--model", type=str, default="gpt-4o-mini", help="Model name")
     parser.add_argument("--backend", type=str, default="sglang", help="Backend (openai, ollama, sglang)")
     parser.add_argument("--retrieve-k", type=int, default=10, help="Number of retrieved memories")
@@ -219,12 +226,21 @@ def main() -> None:
     args = parser.parse_args()
 
     base_dir = os.path.dirname(__file__)
+    mock_data_dir = os.path.normpath(os.path.join(base_dir, "..", "mock_data"))
     app_log_path = args.app_log
     qa_path = args.qa
     if not os.path.isabs(app_log_path):
-        app_log_path = os.path.join(base_dir, app_log_path)
+        candidate = os.path.join(base_dir, app_log_path)
+        if os.path.exists(candidate):
+            app_log_path = candidate
+        else:
+            app_log_path = os.path.join(mock_data_dir, os.path.basename(app_log_path))
     if not os.path.isabs(qa_path):
-        qa_path = os.path.join(base_dir, qa_path)
+        candidate = os.path.join(base_dir, qa_path)
+        if os.path.exists(candidate):
+            qa_path = candidate
+        else:
+            qa_path = os.path.join(mock_data_dir, os.path.basename(qa_path))
     output_path = args.output
     if output_path and not os.path.isabs(output_path):
         output_path = os.path.join(base_dir, output_path)
