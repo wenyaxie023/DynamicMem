@@ -1,2 +1,4 @@
 __pycache__
 *.json
+logs
+qdrant_storage

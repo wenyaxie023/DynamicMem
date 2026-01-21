@@ -84,6 +84,8 @@ class MemBenchAgent:
         self.temperature = temperature
 
     def add_memory(self, content: str, time: Optional[str] = None) -> None:
+        print("content:", content)
+        input('enter')
         self.memory_system.add_note(content, time=time)
 
     def retrieve_memory(self, query: str) -> str:
@@ -151,12 +153,12 @@ def evaluate_membench(
         sglang_host=sglang_host,
         sglang_port=sglang_port,
     )
-    # max_events = 5
+    max_events = 5
     for idx, event in enumerate(sample.app_logs):
         content, time_str = build_membench_memory_from_event(event)
         agent.add_memory(content, time=time_str)
-        # if idx + 1 >= max_events:
-        #     break
+        if idx + 1 >= max_events:
+            break
     logger.info(f"Added {min(len(sample.app_logs), max_events)} events to memory (max_events={max_events})")
 
     total = 0
