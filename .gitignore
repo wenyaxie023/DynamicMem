@@ -4,3 +4,5 @@ logs
 qdrant_storage
 env
 *DS_Store
+*.log
+
