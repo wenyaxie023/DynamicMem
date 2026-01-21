@@ -1,5 +1,5 @@
 from dataclasses import dataclass
-from typing import List, Dict
+from typing import List, Dict, Any
 
 from jinja2 import Template
 
@@ -7,6 +7,7 @@ from llm_client import (
     GeminiJSONClient,
     LLMResult,
 )
+from prompt_templates import WORLD_BACKGROUND_GENERATION_PROMPT
 
 dynamic_profile_template = Template("""You are an expert simulator of long-horizon dynamic user profile trajectories.
 
@@ -15,7 +16,7 @@ Given the world background, the basic user profile, and ONE life domain, time wi
 
 **Simulation approach**: We use an **initial state + incremental deltas** model:
 - Define the baseline state at time 0 (initial_state)
-- For each subsequent time window, specify only what CHANGED (deltas), using valid operations to represent the change.
+- For each subsequent time window, specify only what CHANGED (deltas), using valid change_type to represent the change.
 
 
 ### Input Provided:
@@ -57,9 +58,9 @@ Before proceeding, you must understand these core concepts:
     "commute_mode": "Driving personal car to office (25-minute commute each way on weekdays)",
   }
   
-  - **Delta Format**: Use modify operation to represent the change.
-  For singular attributes, only the **modify** operation is valid, because it is a single value and cannot be added or removed.
-  - Details of the **modify** operation:
+  - **Delta Format**: Use modify change_type to represent the change.
+  For singular attributes, only the **modify** change_type is valid, because it is a single value and cannot be added or removed.
+  - Details of the **modify** change_type:
     - **modify**:
       Meaning: Replace the current value with a new value.
       **CRITICAL**: You can ONLY modify attributes that already exist in previous state.
@@ -70,7 +71,7 @@ Before proceeding, you must understand these core concepts:
           "primary_residence": "Rented studio apartment in downtown area"
         }
         Delta: {
-          "op": "modify",
+          "change_type": "modify",
           "attribute_type": "singular",
           "attribute_name": "primary_residence",
           "delta": "Recently purchased two-bedroom apartment in suburban area",
@@ -101,9 +102,9 @@ Before proceeding, you must understand these core concepts:
     ]
   }
 
-  - **Delta Format**: Use add and remove operations to represent the change.
-    For collection attributes, the **add** and **remove** operations are allowed, because it is a multi-item collection and can be added or removed. Modify is not allowed, it can be represented as a combination of **add** and **remove**.
-    - Details of the **add** and **remove** operations:
+  - **Delta Format**: Use add and remove change_type to represent the change.
+    For collection attributes, the **add** and **remove** change_type are allowed, because it is a multi-item collection and can be added or removed. Modify is not allowed, it can be represented as a combination of **add** and **remove**.
+    - Details of the **add** and **remove** change_type:
       - **add**:
         Meaning: Add new items to a collection array. This covers:
           (1) The collection already exists: append new items to the existing array
@@ -119,7 +120,7 @@ Before proceeding, you must understand these core concepts:
             ]
           }
           Delta: {
-            "op": "add",
+            "change_type": "add",
             "attribute_type": "collections",
             "collection_name": "fitness_gear",
             "delta": [
@@ -132,7 +133,7 @@ Before proceeding, you must understand these core concepts:
         Example (create new collection):
           Current state: (no 'meal_prep_containers' exists)
           Delta: {
-            "op": "add",
+            "change_type": "add",
             "attribute_type": "collections",
             "collection_name": "meal_prep_containers",
             "delta": [
@@ -154,7 +155,7 @@ Before proceeding, you must understand these core concepts:
             ]
           }
           Delta: {
-            "op": "remove",
+            "change_type": "remove",
             "attribute_type": "collections",
             "collection_name": "photography_lenses",
             "delta": [
@@ -282,6 +283,8 @@ Before proceeding, you must understand these core concepts:
       - Bad: "studying" from 08:00 to 18:00 (exceeds 3 hours)
   4. **Fixed timing**: All timings are fixed (no flexibility parameter)
   5. **No time/frequency words in habit_name**: Use schedule field for timing info
+  6. **No time conflicts**: Habits cannot overlap in time on any shared day; schedules must be realistic.
+  7. **Travel buffer across locations**: If two habits occur on the same day in different locations, leave at least 30 minutes between end_time and the next start_time.
 
   **Complete examples:**
   "dog_walk": {
@@ -297,7 +300,7 @@ Before proceeding, you must understand these core concepts:
     "priority": "medium"
   }
 
-  **Allowed operations:**
+  **Allowed change_type:**
   User can acquire a new habit, drop an existing habit, or adjust an existing habit.
   
   - **acquire**: Start a new habit. Delta = complete habit object.
@@ -313,17 +316,17 @@ Before proceeding, you must understand these core concepts:
     
     Example (change schedule):
     {
-      "op": "adjust",
+      "change_type": "adjust",
       "habit_name": "outdoor_jog",
       "delta": {
         "schedule": {"frequency_type": "daily"}
       },
       "reason": "Building up cardiovascular endurance, increased from 3x/week to daily"
     }
-    
+
     Example (change timing):
     {
-      "op": "adjust",
+      "change_type": "adjust",
       "habit_name": "reading",
       "delta": {
         "timing": {"start_time": "21:00", "end_time": "22:00"}
@@ -333,7 +336,7 @@ Before proceeding, you must understand these core concepts:
 
     Example (change location):
     {
-      "op": "adjust",
+      "change_type": "adjust",
       "habit_name": "outdoor_run",
       "delta": {
         "location": "state park trail"
@@ -450,8 +453,8 @@ Before proceeding, you must understand these core concepts:
   - User prefers outdoor running (initial preference)
   - Winter arrives: preference shifts to indoor exercise (too shallow, unrealistic)
 
-  **Allowed operations:**
-  
+  **Allowed change_type:**
+
   - **shift**:
     Meaning: Preference direction changes (from preferring A to preferring B).
     **CRITICAL**: You can ONLY use "shift" if this preference already exists in a previous window.
@@ -470,9 +473,9 @@ Before proceeding, you must understand these core concepts:
       ]
     }
     
-    // Delta (shift operation after sustained team sports experience):
+    // Delta (shift change_type after sustained team sports experience):
     {
-      "op": "shift",
+      "change_type": "shift",
       "preference_name": "exercise_setting",
       "delta": {
         "statement": "Prefers group fitness classes and team sports over solo outdoor activities",
@@ -504,9 +507,9 @@ Before proceeding, you must understand these core concepts:
       ]
     }
     
-    // Delta (refine operation - strengthening):
+    // Delta (refine change_type - strengthening):
     {
-      "op": "refine",
+      "change_type": "refine",
       "preference_name": "investment_focus",
       "delta": {
         "statement": "Strongly prefers long-term buy-and-hold investments in diversified index funds, actively avoiding individual stock picking and any short-term trading",
@@ -533,9 +536,9 @@ Before proceeding, you must understand these core concepts:
         ]
     }
     
-    // Delta (refine operation - weakening):
+    // Delta (refine change_type - weakening):
     {
-      "op": "refine",
+      "change_type": "refine",
       "preference_name": "learning_approach",
       "delta": {
         "statement": "Prefers hands-on projects but now values video tutorials for quick skill acquisition before diving in",
@@ -549,10 +552,10 @@ Before proceeding, you must understand these core concepts:
     }
     ```
   
-  **Note on operations:**
+  **Note on change_type:**
   - **shift** = change preference direction (solo to group, active to passive, A to B)
   - **refine** = same direction, but adjust strength/specificity (prefer to strongly prefer, or vice versa)
-  - Both operations require more than short-term external factors; they need sustained experiences or significant events
+  - Both change_type require more than short-term external factors; they need sustained experiences or significant events
   
 ---
 
@@ -746,9 +749,9 @@ Return strictly valid JSON with this schema (**Dict format, NOT List format**):
       "time_range": ["YYYY-MM-DD", "YYYY-MM-DD"],
       "window_description": "<1–3 sentences describing external + internal drivers>",
       "user_attributes_delta": {
-        "operations": [
+        "changes": [
           {
-            "op": "<modify | add | remove>",
+            "change_type": "<modify | add | remove>",
             "attribute_type": "<singular | collections>",
             "attribute_name": "<singular attribute name | collection name>",
             "delta": "<new concrete value | new items to add | items to remove>",
@@ -758,9 +761,9 @@ Return strictly valid JSON with this schema (**Dict format, NOT List format**):
         ]
       },
       "habits_delta": {
-        "operations": [
+        "changes": [
           {
-            "op": "<acquire | adjust | drop>",
+            "change_type": "<acquire | adjust | drop>",
             "habit_name": "<habit name>",
             "delta": {
               "schedule": {
@@ -780,9 +783,9 @@ Return strictly valid JSON with this schema (**Dict format, NOT List format**):
         ]
       },
       "preferences_delta": {
-        "operations": [
+        "changes": [
           {
-            "op": "shift | refine",
+            "change_type": "shift | refine",
             "preference_name": "<existing preference name>",
             "delta": {
               "statement": "<10–30 word preference statement>",
@@ -833,6 +836,67 @@ def generate_dynamic_profile(
     llm_client: GeminiJSONClient, request: DynamicProfileRequest
 ) -> LLMResult:
     prompt = render_dynamic_profile_prompt(request)
-
-    print(prompt)
     return llm_client.generate_json(prompt)
+
+
+# =============================================================================
+# World Background Generation
+# =============================================================================
+
+@dataclass
+class WorldBackgroundRequest:
+    """Request for generating a personalized world background."""
+    user_basic_profile: Dict[str, Any]
+    domain_name: str
+    domain_scope_definition: str
+
+
+@dataclass
+class WorldBackgroundResult:
+    """Result from world background generation."""
+    world_backgrounds: List[Dict[str, Any]]  # Per-window backgrounds
+    combined_background: str  # Unified narrative for all windows
+    usage: Dict[str, int]
+    prompt: str
+    raw_text: str
+
+
+def render_world_background_prompt(request: WorldBackgroundRequest) -> str:
+    """Render the prompt for world background generation."""
+    import json
+    return WORLD_BACKGROUND_GENERATION_PROMPT.render(
+        user_basic_profile_json=json.dumps(request.user_basic_profile, indent=2, ensure_ascii=False),
+        domain_name=request.domain_name,
+        domain_scope_definition=request.domain_scope_definition,
+    )
+
+
+def generate_world_background(
+    llm_client: GeminiJSONClient,
+    request: WorldBackgroundRequest,
+) -> WorldBackgroundResult:
+    """
+    Generate a personalized world background for a specific user and domain.
+
+    The world background is tailored to:
+    1. The user's geographic location and cultural context
+    2. The specific life domain being simulated
+    3. The predefined 5 time windows (2023-10-01 to 2024-12-31)
+
+    Args:
+        llm_client: The LLM client for generation
+        request: WorldBackgroundRequest containing user profile and domain info
+
+    Returns:
+        WorldBackgroundResult with per-window backgrounds and combined narrative
+    """
+    prompt = render_world_background_prompt(request)
+    result = llm_client.generate_json(prompt)
+
+    return WorldBackgroundResult(
+        world_backgrounds=result.data.get("world_backgrounds", []),
+        combined_background=result.data.get("combined_background", ""),
+        usage=result.usage,
+        prompt=prompt,
+        raw_text=result.raw_text,
+    )

@@ -1,9 +1,11 @@
 import json
 import os
+import time
 from dataclasses import dataclass
 from typing import Any, Dict, Optional, Tuple
 
 import google.generativeai as genai
+from google.api_core import exceptions as google_exceptions
 try:
     from google import genai as genai_client
 except ImportError: 
@@ -83,25 +85,50 @@ class GeminiJSONClient:
         self,
         prompt: str,
         response_schema: Optional[Dict[str, Any]] = None,
+        max_retries: int = 5,
+        retry_wait_seconds: int = 120,
     ) -> LLMResult:
-        if response_schema and self._structured_client is not None:
-            response = self._structured_client.models.generate_content(
-                model=self.model_name,
-                contents=prompt,
-                config={
-                    "response_mime_type": "application/json",
-                    "response_json_schema": response_schema,
-                },
-            )
-        else:
-            response = self.model.generate_content(prompt)
-        raw_text = (response.text or "").strip()
-        try:
-            payload = _parse_json_from_text(raw_text)
-        except json.JSONDecodeError as exc:
-            raise LLMGenerationError(
-                f"Failed to decode JSON from model response: {exc}\nRaw response:\n{raw_text}"
-            ) from exc
-        # import pdb; pdb.set_trace()
-        usage = _extract_usage_metadata(getattr(response, "usage_metadata", None))
-        return LLMResult(data=payload, usage=usage, prompt=prompt, raw_text=raw_text)
+        last_exception = None
+
+        for attempt in range(max_retries):
+            try:
+                if response_schema and self._structured_client is not None:
+                    response = self._structured_client.models.generate_content(
+                        model=self.model_name,
+                        contents=prompt,
+                        config={
+                            "response_mime_type": "application/json",
+                            "response_json_schema": response_schema,
+                        },
+                    )
+                else:
+                    response = self.model.generate_content(prompt, generation_config={
+                        "response_mime_type": "application/json",
+                    })
+                raw_text = (response.text or "").strip()
+                try:
+                    payload = _parse_json_from_text(raw_text)
+                except json.JSONDecodeError as exc:
+                    raise LLMGenerationError(
+                        f"Failed to decode JSON from model response: {exc}\nRaw response:\n{raw_text}"
+                    ) from exc
+                usage = _extract_usage_metadata(getattr(response, "usage_metadata", None))
+                return LLMResult(data=payload, usage=usage, prompt=prompt, raw_text=raw_text)
+
+            except (
+                google_exceptions.ResourceExhausted,
+                google_exceptions.ServiceUnavailable,
+                google_exceptions.InternalServerError,
+                google_exceptions.TooManyRequests,
+            ) as exc:
+                last_exception = exc
+                if attempt < max_retries - 1:
+                    print(f"[LLM] Rate limit or server error (attempt {attempt + 1}/{max_retries}): {exc}")
+                    print(f"[LLM] Waiting {retry_wait_seconds} seconds before retry...")
+                    time.sleep(retry_wait_seconds)
+                else:
+                    print(f"[LLM] Max retries ({max_retries}) exceeded.")
+
+        raise LLMGenerationError(
+            f"Failed after {max_retries} retries due to rate limiting or server errors: {last_exception}"
+        ) from last_exception

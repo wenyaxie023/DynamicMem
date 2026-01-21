@@ -50,16 +50,16 @@ Expected JSON format:
       "time_range": ["YYYY-MM-DD", "YYYY-MM-DD"],
       "window_description": "...",
       "user_attributes_delta": {
-        "operations": [
+        "changes": [
           {
-            "op": "modify",
+            "change_type": "modify",
             "attribute_type": "singular",
             "attribute_name": "...",
             "delta": "<new value string>",
             "reason": "..."
           },
           {
-            "op": "add|remove",
+            "change_type": "add|remove",
             "attribute_type": "collections",
             "collection_name": "...",
             "delta": [
@@ -71,9 +71,9 @@ Expected JSON format:
         ]
       },
       "habits_delta": {
-        "operations": [
+        "changes": [
           {
-            "op": "acquire|adjust|drop",
+            "change_type": "acquire|adjust|drop",
             "habit_name": "...",
             "delta": {
               "schedule": {
@@ -92,9 +92,9 @@ Expected JSON format:
         ]
       },
       "preferences_delta": {
-        "operations": [
+        "changes": [
           {
-            "op": "shift | refine",
+            "change_type": "shift | refine",
             "preference_name": "...",
             "delta": {
               "statement": "<10-30 word concrete preference statement>",
@@ -148,6 +148,8 @@ To keep your fixes reasonable, here is the background:
 
 Life domain: {{ domain_name }}: {{ domain_scope_definition }}
 
+World background: {{ world_background }}
+
 Basic user profile: {{ user_profile }}
 
 =================================================================================
@@ -182,8 +184,8 @@ HOW TO FIX
 1. Add missing keys using "add_key" action
 2. Generate appropriate content based on context
 3. For habit objects, ensure all nested fields are complete
-4. Replace "none" strings with JSON null for drop operations
-5. Consider Cascade Effects: When fixing missing fields, check if your changes affect downstream operations or other fields(e.g., summary) and also fixed them in patches.
+4. Replace "none" strings with JSON null for drop changes
+5. Consider Cascade Effects: When fixing missing fields, check if your changes affect downstream changes or other fields(e.g., summary) and also fixed them in patches.
 
 =================================================================================
 OUTPUT FORMAT
@@ -229,10 +231,10 @@ CRITICAL CONSTRAINTS
 
 rule2_prior_existence_prompt = Template("""You are fixing INVALID OPERATION violations in a dynamic user profile.
 
-Your task: Fix all invalid operations including:
-1. Operations that modify/adjust/drop/shift/refine non-existent items
-2. Invalid operation types for attribute types
-3. Invalid habit adjust operations (only changing priority)
+Your task: Fix all invalid changes including:
+1. Changes that modify/adjust/drop/shift/refine non-existent items
+2. Invalid change types for attribute types
+3. Invalid habit adjust changes (only changing priority)
 
 To keep your fixes reasonable, here is the background:
 
@@ -259,14 +261,14 @@ WHAT TO FIX: RULE 2 VIOLATIONS
   Invalid: modify, adjust, refine on collections
   Valid: add or drop on collections
 
-**RULE 2B: Operations Require Prior Existence**
+**RULE 2B: Changes Require Prior Existence**
 - Singular attributes: "modify" requires attribute exists in initial_state.singular or added earlier
 - Collection attributes: "drop" requires collection exists in initial_state.collections or added earlier
 - Habits: "adjust" and "drop" require habit exists in initial_state.habits_state or acquired earlier
 - Preferences: "shift" and "refine" require preference exists in initial_state.preferences_state
 
 **RULE 2C: Habit Adjust Must Have Structural Changes**
-- Habit "adjust" operations MUST modify at least one of: schedule, timing, location, or context
+- Habit "adjust" changes MUST modify at least one of: schedule, timing, location, or context
 - Adjusting ONLY priority is INVALID (priority changes should be minimal/implicit)
   Invalid: delta: {"priority": "high"} only
   Valid: delta: {"schedule": {...}, "priority": "high"}
@@ -274,10 +276,10 @@ WHAT TO FIX: RULE 2 VIOLATIONS
 
 **Examples of violations:**
 w2: op="add", attribute_type="singular", attribute_name="primary_vehicle"
-→ Invalid operation type: singular only supports "modify"
+→ Invalid change type: singular only supports "modify"
 
 w2: op="modify", attribute_type="collections", collection_name="visited_countries"
-→ Invalid operation type: collections only support "add" or "remove"
+→ Invalid change type: collections only support "add" or "remove"
 
 w2: op="modify", attribute_name="primary_vehicle"
 → "primary_vehicle" never defined in initial_state.singular
@@ -305,22 +307,22 @@ PATCH ACTION GUIDE
 HOW TO FIX
 =================================================================================
 
-**For RULE 2A violations (invalid operation type):**
-- Change the operation to a valid type for that attribute:
+**For RULE 2A violations (invalid change type):**
+- Change the change to a valid type for that attribute:
   * Singular: change to "modify" (or remove if not needed)
   * Collections: change to "add" or "remove" (or remove if not needed)
-- Update the operation structure to match the new operation type
-- Adjust the "reason" field to reflect the corrected operation
+- Update the change structure to match the new change type
+- Adjust the "reason" field to reflect the corrected change
 
 **For RULE 2B violations (prior existence):**
-- If a remove/modify/adjust/drop/shift/refine operation targets a non-existent item:
+- If a remove/modify/adjust/drop/shift/refine change targets a non-existent item:
   * Add the missing item to initial_state with a baseline value
   * Update initial_state summary to mention it
 
 **For RULE 2C violations (habit adjust without structural changes):**
 - Add meaningful structural changes (timing/frequency/location) to the habit delta
 - Keep priority if it makes sense, but ensure it's not the ONLY change
-- If the adjustment is truly trivial, consider removing the operation entirely
+- If the adjustment is truly trivial, consider removing the change entirely
 
 =================================================================================
 CRITICAL CONSTRAINTS
@@ -367,7 +369,7 @@ Return JSON with this EXACT structure:
 
 rule3_essential_initialization_prompt = Template("""You are fixing ESSENTIAL COLLECTION INITIALIZATION violations in a dynamic user profile.
 
-Your task: Fix collections that first appear via 'add' operations instead of being initialized in initial_state.
+Your task: Fix collections that first appear via 'add' changes instead of being initialized in initial_state.
 
 To keep your fixes reasonable, here is the background:
 
@@ -386,18 +388,18 @@ WHAT TO CHECK: COLLECTION ATTRIBUTES MUST BE INITIALIZED BEFORE FIRST 'ADD'
 =================================================================================
 
 **Principle:**
-Collections should be initialized in initial_state before they are modified via 'add' operations.
+Collections should be initialized in initial_state before they are modified via 'add' changes.
 This prevents unrealistic scenarios like a user getting their first smartphone in w3.
 
 **Examples of violations:**
 Scenario 1 (VIOLATION):
 - initial_state.user_attributes_state.collections: {} (no "owned_devices" key)
-- w3: add operation adds {"collection_name": "owned_devices", "delta": ["iPhone 12"]}
+- w3: add change adds {"collection_name": "owned_devices", "delta": ["iPhone 12"]}
 → Violation: User's first device appears in w3, unrealistic for modern adult
 
 Scenario 2 (CORRECT):
 - initial_state.user_attributes_state.collections.owned_devices: ["Samsung Galaxy S10"]
-- w3: add operation adds {"collection_name": "owned_devices", "delta": ["iPad Pro"]}
+- w3: add change adds {"collection_name": "owned_devices", "delta": ["iPad Pro"]}
 → Correct: User already had a phone, now adding a tablet
 
 =================================================================================
@@ -410,8 +412,8 @@ For each detected violation, evaluate if the collection is essential for this us
 1. Initialize the collection in initial_state.user_attributes_state.collections with baseline items
    Example: "owned_devices": ["Samsung Galaxy S10 (purchased 2020)"]
 2. Update initial_state.summary to mention this baseline
-3. **CASCADE:** Modify the first 'add' operation to reflect it's adding TO existing items
-   - Keep the operation, just adjust the reason/context if needed
+3. **CASCADE:** Modify the first 'add' change to reflect it's adding TO existing items
+   - Keep the change, just adjust the reason/context if needed
 
 **If NOT essential or legitimately first-time (e.g., hobby equipment collection):**
 1. Set fix_applied=false
@@ -448,8 +450,8 @@ PATCH ACTION GUIDE
 2. Update initial_state summary:
    {"path": "initial_state.summary", "action": "replace", "value": <updated summary>}
 
-3. Update first add operation's reason:
-   {"path": "time_windows[2].user_attributes_delta.operations[0].reason", "action": "replace", "value": <updated reason>}
+3. Update first add change's reason:
+   {"path": "time_windows[2].user_attributes_delta.changes[0].reason", "action": "replace", "value": <updated reason>}
 
 =================================================================================
 OUTPUT FORMAT
@@ -459,8 +461,8 @@ OUTPUT FORMAT
 - The detected violations come from automatic checks and may include false positives
 - You must judge whether each detected collection is essential for this user
 - Set fix_applied=false if the collection is legitimately first-time (not essential baseline)
-- Include cascade_note to explain how initial_state addition affects later operations
-- When adding collections to initial_state, consider updating the first 'add' operation's context
+- Include cascade_note to explain how initial_state addition affects later changes
+- When adding collections to initial_state, consider updating the first 'add' change's context
 
 Return JSON with this EXACT structure:
 
@@ -472,7 +474,7 @@ Return JSON with this EXACT structure:
       "violation_description": "<string>",  // Description of the collection initialization violation
       "fix_applied": <boolean>,  // true if collection should be in initial_state, false if legitimately first-time
       "fix_description": "<string>",  // Explanation of the fix applied or why no fix needed
-      "cascade_note": "<string>",  // Explanation of how initialization affects later operations
+      "cascade_note": "<string>",  // Explanation of how initialization affects later changes
       "patches": [  // Array of patch objects (empty array if fix_applied is false)
         {
           "path": "<string>",  // JSON path to target location
@@ -512,7 +514,7 @@ WHAT TO CHECK: SHORT-TERM CHANGES MUST HAVE FOLLOW-UPS
 
 **Principle:**
 Changes motivated by SHORT-TERM external factors (seasonal, special events, temporary circumstances) must either:
-1. Be rolled back when the factor ends (drop/adjust/refine/shift/modify/remove operations)
+1. Be rolled back when the factor ends (drop/adjust/refine/shift/modify/remove changes)
 2. OR have explicit reasoning explaining why the change became permanent
 
 **Examples of violations:**
@@ -541,7 +543,7 @@ HOW TO FIX
 =================================================================================
 
 For each detected violation:
-1. Add a rollback operation in an appropriate later window (drop/adjust/shift/refine/modify/remove)
+1. Add a rollback change in an appropriate later window (drop/adjust/shift/refine/modify/remove)
 2. Update that window's summary to mention the rollback
 3. Ensure timeline is realistic (Olympics ~2 weeks, winter ~3 months, seasonal ~3-6 months)
 4. Include ALL cascade effects in your patches
@@ -640,7 +642,7 @@ RESOLUTION STRATEGY (CRITICAL)
 - You must judge whether each detected issue truly needs fixing
 - Set fix_applied=false if the conflict is acceptable or doesn't need resolution
 - When fixing timing in initial/time windows, check if later windows need updates too
-- Include cascade_note to make sure you consider the cascade effects (e.g., modify summary or reason field or later window operations) and update the corresponding fields in patches
+- Include cascade_note to make sure you consider the cascade effects (e.g., modify summary or reason field or later window changes) and update the corresponding fields in patches
 
 =================================================================================
 PATCH ACTION GUIDE
@@ -707,7 +709,7 @@ Your task: Validate the candidate JSON against the generation rules from dynamic
 
 Auto-detected must-fix issues (from programmatic checks):
 - Rule 1 (short-term changes require follow-ups): {{ auto_detected_rule1_issues }}
-- Rule 2 (operation requires prior existence): {{ auto_detected_rule2_issues }}
+- Rule 2 (change requires prior existence): {{ auto_detected_rule2_issues }}
 - Rule 3 (required fields / schema completeness): {{ auto_detected_rule3_issues }}
 - Rule 4 (essential items must be initialized if evolved): {{ auto_detected_rule4_issues }}
 - Rule 5 (temporal feasibility / time conflicts): {{ auto_detected_rule5_issues }}
@@ -717,7 +719,7 @@ You must fix everything listed above. Still perform a full audit across ALL rule
 OPERATION SEMANTICS REFERENCE
 =================================================================================
 
-Before auditing, understand the operation semantics:
+Before auditing, understand the change semantics:
 
 **For user_attributes:**
 
@@ -793,7 +795,7 @@ w2: acquire "evening_olympic_viewing" reason="watch Olympics coverage"
 → w3 (after Olympics): habit still exists, not dropped
 
 **How to fix:**
-- Add a new operation in the appropriate later window to drop/adjust the temporary change
+- Add a new change in the appropriate later window to drop/adjust the temporary change
 - Update the summary to mention the rollback
 - Ensure the timeline is realistic (e.g., Olympics ~2 weeks, winter ~3 months, etc.)
 
@@ -807,7 +809,7 @@ w2: acquire "evening_olympic_viewing" reason="watch Olympics coverage"
 - For PREFERENCES: "shift" and "refine" can ONLY be used if the preference existed in a prior state
 
 **How to detect:**
-- For each modify/adjust/drop/shift/refine operation in window N:
+- For each modify/adjust/drop/shift/refine change in window N:
   * Check if the target exists in initial_state OR was added/acquired in windows 1..N-1
   * If not found, this is a violation
 
@@ -822,10 +824,10 @@ w3: op="shift", preference_name="exercise_style"
 → "exercise_style" never defined in initial_state.preferences_state
 
 **How to fix:**
-- If a modify/adjust/drop/shift/refine operation targets a non-existent item:
+- If a modify/adjust/drop/shift/refine change targets a non-existent item:
   * Add the missing item to initial_state with a baseline value
   * Update initial_state summary to mention it
-- OR change the operation type:
+- OR change the change type:
   * For attributes: change "modify" to "add" (if creating new singular) or use "add" for collections
   * For habits: change "adjust"/"drop" to "acquire" if it never existed
   * For preferences: cannot fix this way - must add to initial_state
@@ -841,14 +843,14 @@ w3: op="shift", preference_name="exercise_style"
 - Habit adjust deltas MUST include an updated "description" AND at least one substantive field change (schedule/timing/context/priority)
 - Dropped habits MUST use JSON null (not string "none")
 - Preferences (initial and deltas) MUST include: "statement" and "signals" (2-4 concrete signals)
-- Every operation MUST include a "reason" explaining the change
+- Every change MUST include a "reason" explaining the change
 
 **How to detect:**
 - Check for missing keys in window objects
-- Validate habit structure in all habits_state and habits_delta operations (including schedule/timing completeness)
-- Check that drop operations set delta to null (not "none", not empty string)
+- Validate habit structure in all habits_state and habits_delta changes (including schedule/timing completeness)
+- Check that drop changes set delta to null (not "none", not empty string)
 - Validate preference objects have both statement and signals arrays (2-4 items)
-- Verify user_attributes_state structure and reasons on operations
+- Verify user_attributes_state structure and reasons on changes
 
 **Examples of violations:**
 time_windows[1] missing "window_description"
@@ -856,11 +858,11 @@ initial_state missing "summary"
 habit object: {"action": "walk_dog", "schedule": {"frequency_type": "daily"}} 
 (Missing: timing, context, priority, description)
 habit adjust: delta only updates "description" without schedule/timing/context/priority change
-drop operation: "delta": "none" 
+drop change: "delta": "none" 
 (Should be: "delta": null)
 initial_state.user_attributes_state missing "collections" key
 preference missing "signals" array
-operation missing "reason"
+change missing "reason"
 
 **How to fix:**
 - Add missing window_description based on window context
@@ -877,7 +879,7 @@ operation missing "reason"
 **What to check:**
 - Identify all items that are:
   * ESSENTIAL for this domain and this user profile (realistic baseline)
-  * EVOLVED in later windows (modify/adjust/shift operations)
+  * EVOLVED in later windows (modify/adjust/shift changes)
 
 - Verify these items exist in initial_state with a baseline value
 
@@ -887,17 +889,17 @@ operation missing "reason"
 - Family & Close Relationships: communication devices if family is not co-located
 
 **How to detect:**
-- Scan all "modify", "adjust", "shift" operations in time_windows
+- Scan all "modify", "adjust", "shift" changes in time_windows
 - For each, check if that attribute/habit/preference exists in initial_state
 - If missing, determine if it's essential (would a realistic person already have it?)
 
 **Examples of violations:**
 initial_state.user_attributes_state.collections.owned_devices: [] (empty)
-→ w3: add operation adds first smartphone
+→ w3: add change adds first smartphone
 (Violation: A modern adult should already own a phone in initial_state)
 
 initial_state.preferences_state: no "exercise_style" preference
-→ w2: shift operation changes "exercise_style"
+→ w2: shift change changes "exercise_style"
 (Violation: Must initialize the preference in initial_state before shifting it)
 
 **How to fix:**
@@ -947,7 +949,7 @@ CRITICAL: CASCADE EFFECTS
 
 2. **Adding collection item to initial_state affects later adds:**
    - Fix: Add "Google Pixel 7" to initial_state.user_attributes_state.collections.owned_devices
-   - Cascade: If w2 has an "add" operation that includes this phone, remove it from the delta
+   - Cascade: If w2 has an "add" change that includes this phone, remove it from the delta
    - Your patches MUST include BOTH the initial_state addition and the w2 modification
 
 3. **Adjusting a habit timing affects overlapping habits:**
@@ -956,11 +958,11 @@ CRITICAL: CASCADE EFFECTS
    - Your patches MUST include BOTH timing changes
 
 4. **Adding a rollback for short-term change affects summary:**
-   - Fix: Add drop operation for "winter_hydration_habit" in w3
+   - Fix: Add drop change for "winter_hydration_habit" in w3
    - Cascade: Update w3's summary to mention the habit was dropped
-   - Your patches MUST include BOTH the operation and summary update
+   - Your patches MUST include BOTH the change and summary update
 
-5. **Changing operation type affects later references:**
+5. **Changing change type affects later references:**
    - Fix: Change w1's "adjust" to "acquire" for a habit
    - Cascade: If w2 references this habit with "adjust", verify it's still valid
    - Your patches MUST verify and fix any downstream references
@@ -969,33 +971,33 @@ CRITICAL: CASCADE EFFECTS
 - After identifying a fix, scan ALL subsequent windows for items that reference or depend on the changed item
 - Include patches for ALL affected locations in the same violation's patches array
 - Patches will be applied in array order, so order them from earliest to latest window
-- Always update summaries when you add/modify operations in a window
+- Always update summaries when you add/modify changes in a window
 
 =================================================================================
 PATCH FORMAT GUIDE
 =================================================================================
 
 **Path format:**
-- Use dot notation with array indices: "time_windows[0].habits_delta.operations[1].delta.timing.start_time"
+- Use dot notation with array indices: "time_windows[0].habits_delta.changes[1].delta.timing.start_time"
 - Path should point to the MINIMAL unit that needs to change
 
 **Action types:**
-Choose the most appropriate action type for the operation.
+Choose the most appropriate action type for the change.
 
 1. **"remove"** - Delete an element from array or key from object
-   Example: Remove an invalid operation
+   Example: Remove an invalid change
    {
-     "path": "time_windows[1].habits_delta.operations[3]",
+     "path": "time_windows[1].habits_delta.changes[3]",
      "action": "remove"
    }
 
 2. **"append"** - Add to the end of an array
-   Example: Add a new operation to habits_delta
+   Example: Add a new change to habits_delta
    {
-     "path": "time_windows[2].habits_delta.operations",
+     "path": "time_windows[2].habits_delta.changes",
      "action": "append",
      "value": {
-       "op": "drop",
+       "change_type": "drop",
        "habit_name": "winter_hydration",
        "delta": null,
        "reason": "Summer humidity makes aggressive hydration unnecessary"
@@ -1012,7 +1014,7 @@ Choose the most appropriate action type for the operation.
 3. **"replace"** - Replace an existing value
    Example: Change a timing object
    {
-     "path": "time_windows[0].habits_delta.operations[1].delta.timing",
+     "path": "time_windows[0].habits_delta.changes[1].delta.timing",
      "action": "replace",
      "value": {
        "start_time": "08:45",
@@ -1020,9 +1022,9 @@ Choose the most appropriate action type for the operation.
      }
    }
    
-   Example: Change operation from adjust to acquire
+   Example: Change change from adjust to acquire
    {
-     "path": "time_windows[1].habits_delta.operations[0].op",
+     "path": "time_windows[1].habits_delta.changes[0].op",
      "action": "replace",
      "value": "acquire"
    }
@@ -1074,16 +1076,16 @@ Return a JSON object with this structure:
 {
   "violations_and_fixes": [
     {
-      "violation_type": "short_term_followups" | "operation_without_prior_existence" | "required_fields_violation" | "essential_items_violation" | "temporal_feasibility_violation",
-      "location": "time_windows[2].habits_delta.operations[0]",
+      "violation_type": "short_term_followups" | "change_without_prior_existence" | "required_fields_violation" | "essential_items_violation" | "temporal_feasibility_violation",
+      "location": "time_windows[2].habits_delta.changes[0]",
       "violation_description": "Short-term habit 'daily_hydration' acquired in winter (w1) but not adjusted in summer (w3)",
       "cascade_note": "Must also update w3 summary to reflect the habit adjustment",
       "patches": [
         {
-          "path": "time_windows[2].habits_delta.operations",
+          "path": "time_windows[2].habits_delta.changes",
           "action": "append",
           "value": {
-            "op": "adjust",
+            "change_type": "adjust",
             "habit_name": "daily_hydration",
             "delta": {
               "schedule": {"frequency_type": "weekly", "days_of_week": [0, 2, 4]},
@@ -1103,7 +1105,7 @@ Return a JSON object with this structure:
 }
 
 **CRITICAL REQUIREMENTS:**
-- Each violation's patches array MUST include ALL cascading changes (operations + affected summaries)
+- Each violation's patches array MUST include ALL cascading changes (changes + affected summaries)
 - Patches are applied in array order, so order them chronologically (initial_state first, then w1, w2, etc.)
 - Always include "cascade_note" field explaining what downstream effects your fix has
 - If a fix has no cascade effects, set "cascade_note": "No downstream changes needed"
@@ -1125,7 +1127,7 @@ CANDIDATE JSON TO AUDIT
 
 Now perform the audit step by step:
 1. Check RULE 1 (short-term followups)
-2. Check RULE 2 (operation without prior existence)  
+2. Check RULE 2 (change without prior existence)  
 3. Check RULE 3 (required fields)
 4. Check RULE 4 (essential items violation)
 5. Check RULE 5 (temporal feasibility)
@@ -1181,6 +1183,148 @@ BASIC_PROFILE_PROMPT = Template("""You are creating a concrete user profile for 
   "risk_tolerance": "<Risk_Averse|Neutral|Risk_Seeking>"
 }
 
+""")
+
+
+WORLD_BACKGROUND_GENERATION_PROMPT = Template("""You are an expert world-builder for behavioral simulation. Generate a comprehensive world background tailored to a specific user and life domain.
+
+### Your Task
+Create a world background that captures the texture of daily life during the simulation period, narrated in third-person and focused on the world itself. The background should be grounded in the user's geographic and cultural context and relevant to the given life domain, but it should not describe the user's actions, feelings, or choices.
+
+### Input Information
+
+**User Basic Profile:**
+{{ user_basic_profile_json }}
+
+**Life Domain:**
+{{ domain_name }}: {{ domain_scope_definition }}
+
+**Predefined Time Windows:**
+- w0: 2023-10-01 to 2023-12-31 (Q4 2023)
+- w1: 2024-01-01 to 2024-03-31 (Q1 2024)
+- w2: 2024-04-01 to 2024-07-01 (Q2 2024)
+- w3: 2024-07-02 to 2024-09-30 (Q3 2024)
+- w4: 2024-10-01 to 2024-12-31 (Q4 2024)
+
+---
+
+### World Background Components
+
+Your world background must incorporate:
+
+1. **Physical Environment**
+   - Seasonal changes appropriate to the user's location and hemisphere
+   - Weather patterns and their impact on daily life
+   - Local geography and its influence on activities
+
+2. **Social Rhythms**
+   - Festivals, holidays, and cultural events relevant to the user's location and culture
+   - Academic calendars (if applicable to user's situation)
+   - Local customs and periodic social patterns
+
+3. **Key Events**
+   - Major world events during the period (political, sports, cultural milestones)
+   - **Prioritize events relevant to the user's region and cultural context**
+   - Regional/national events that would affect someone in the user's location
+   - Industry-specific events relevant to the user's occupation (if applicable to the domain)
+
+4. **Prevailing Trends**
+   - Public sentiment and zeitgeist
+   - Technological trends affecting daily life
+   - Economic conditions relevant to the user's situation
+   - Domain-specific trends (e.g., job market trends for Work & Education, health trends for Health & Self-care)
+
+---
+
+### Critical Requirements
+
+1. **Narrator Perspective**
+   - Write in a third-person narrator voice that describes the world and its conditions
+   - Do NOT describe the user, the user's actions, or use second-person language ("you")
+   - Keep the focus on external context in the user's location (events, seasons, public sentiment, local rhythms)
+   - If the user is Dutch, focus on Dutch and European events; if Japanese, focus on Japanese and Asian events
+   - Include local holidays and cultural events (e.g., King's Day for Netherlands, Golden Week for Japan)
+   - Reference local weather patterns and seasons appropriate to the location
+
+2. **Domain Relevance**
+   - Focus on aspects of the world that would directly impact the specified life domain
+   - For "Work & Education": emphasize job market trends, industry events, academic calendars
+   - For "Health & Self-care": emphasize health trends, fitness events, seasonal health considerations
+   - For "Family & Close Relationships": emphasize family-oriented holidays, social events
+   - For "Finances & Material Living": emphasize economic conditions, consumer trends, housing market
+   - For "Leisure & Media Consumption": emphasize entertainment releases, cultural events, travel trends
+   - For "Social & Community": emphasize community events, social movements, civic activities
+
+3. **Temporal Coherence**
+   - Each time window should have a distinct character
+   - Maintain continuity between windows (ongoing events, seasonal transitions)
+   - Include both recurring patterns (seasons, holidays) and unique historical moments
+
+4. **Concrete Details**
+   - Include specific dates for major events
+   - Reference real events, trends, and cultural phenomena from the simulation period
+   - Avoid vague or placeholder descriptions
+
+---
+
+### Output Format (JSON)
+
+Return a JSON object with world backgrounds for each of the 5 predefined time windows:
+
+```json
+{
+  "world_backgrounds": [
+    {
+      "window_id": "w0",
+      "time_range": ["2023-10-01", "2023-12-31"],
+      "background": "<2-4 paragraph rich description of the world during this period, in third-person narrator voice and relevant to the domain>"
+    },
+    {
+      "window_id": "w1",
+      "time_range": ["2024-01-01", "2024-03-31"],
+      "background": "<2-4 paragraph description>"
+    },
+    {
+      "window_id": "w2",
+      "time_range": ["2024-04-01", "2024-07-01"],
+      "background": "<2-4 paragraph description>"
+    },
+    {
+      "window_id": "w3",
+      "time_range": ["2024-07-02", "2024-09-30"],
+      "background": "<2-4 paragraph description>"
+    },
+    {
+      "window_id": "w4",
+      "time_range": ["2024-10-01", "2024-12-31"],
+      "background": "<2-4 paragraph description>"
+    }
+  ]
+}
+```
+
+### Example Output Structure
+
+For a Dutch user in the "Work & Education" domain:
+
+```json
+{
+  "world_backgrounds": [
+    {
+      "window_id": "w0",
+      "time_range": ["2023-10-01", "2023-12-31"],
+      "background": "Autumn settles over the Netherlands as the academic year enters full swing. The Dutch tech sector continues its recovery post-pandemic, with Amsterdam's startup ecosystem showing renewed vigor despite economic headwinds in the broader EU. October brings the traditional herfstvakantie (autumn break), offering a brief respite before the intense final push toward year-end deadlines. Sint Maarten on November 11th sees children with lanterns, while Sinterklaas season dominates December, culminating in Pakjesavond on December 5th. The Israel-Hamas conflict that erupted in October creates ripples through Dutch society, sparking workplace discussions and affecting colleagues with ties to the region. As winter darkness descends with sunset before 17:00, the gezelligheid culture intensifies—colleagues gather for borrels and Christmas drinks. The tech job market remains competitive, with AI and sustainability roles in particular demand."
+    },
+    {
+      "window_id": "w1",
+      "time_range": ["2024-01-01", "2024-03-31"],
+      "background": "..."
+    }
+  ],
+}
+```
+
+Now generate the world background for the given user and domain.
 """)
 
 
@@ -1349,14 +1493,14 @@ Generate constraint deltas (additions, modifications, suspensions) that apply ON
 
 ---
 
-## Delta Operations
+## Delta Changes
 
 ### 1. CAPABILITY Deltas
 
 #### Time Budget Modifications
 ```json
 {
-  "op": "suspend|modify|add",
+  "change_type": "suspend|modify|add",
   "target": "work_core|sleep|free_evening|free_weekend",
   "effective_dates": ["2024-07-15", "2024-07-20"], // specific date range, or null for entire window
   "new_state": {
@@ -1377,7 +1521,7 @@ Generate constraint deltas (additions, modifications, suspensions) that apply ON
 #### Mobility Changes
 ```json
 {
-  "op": "add_temporary_location|modify_edge",
+  "change_type": "add_temporary_location|modify_edge",
   "details": {
     "location_id": "vacation_destination",
     "location_type": "temporary_residence",
@@ -1399,7 +1543,7 @@ Generate constraint deltas (additions, modifications, suspensions) that apply ON
 #### Place Access Changes
 ```json
 {
-  "op": "add|suspend|modify",
+  "change_type": "add|suspend|modify",
   "place_id": "office|gym|new_venue",
   "effective_dates": ["2024-12-24", "2024-12-26"],
   "modification": {
@@ -1420,7 +1564,7 @@ Generate constraint deltas (additions, modifications, suspensions) that apply ON
 #### Commitment Suspensions
 ```json
 {
-  "op": "suspend|reschedule|add",
+  "change_type": "suspend|reschedule|add",
   "commitment_id": "date_night|board_game",
   "effective_dates": ["2024-08-01", "2024-08-14"],
   "modification": {
@@ -1437,7 +1581,7 @@ Generate constraint deltas (additions, modifications, suspensions) that apply ON
 #### Temporary Coordination Rules
 ```json
 {
-  "op": "add",
+  "change_type": "add",
   "temporary_rule": {
     "activity_tag": "olympics_viewing",
     "participants": ["friend:*"],
@@ -1549,7 +1693,7 @@ Fix timing conflicts in the CURRENT window/state by generating patches to modify
 - The focus habit is already selected for you (the habit with the most conflicts)
 - Each conflict has an ID (e.g., "cross_domain_000") that you must reference in your fix
 - You receive the FULL dynamic profiles (initial_state + all time_windows), but your task is to resolve conflicts ONLY in the current window
-- When modifying habits, ensure your timing adjustments align with existing narrative context (operation reasons, window summaries)
+- When modifying habits, ensure your timing adjustments align with existing narrative context (change reasons, window summaries)
 
 =================================================================================
 DEFINITIONS
@@ -1607,10 +1751,10 @@ Each patch must include:
    Format: `initial_state.habits_state.<habit_name>.<field>`
    Example: `initial_state.habits_state.morning_jog.timing.start_time`
 
-2. For operations in time windows:
-   Format: `time_windows[window_id=<id>].habits_delta.operations[<index>].<field>`
-   Example: `time_windows[window_id=w3].habits_delta.operations[0].delta.timing.start_time`
-   To remove entire operation: `time_windows[window_id=w3].habits_delta.operations[0]`
+2. For changes in time windows:
+   Format: `time_windows[window_id=<id>].habits_delta.changes[<index>].<field>`
+   Example: `time_windows[window_id=w3].habits_delta.changes[0].delta.timing.start_time`
+   To remove entire change: `time_windows[window_id=w3].habits_delta.changes[0]`
 
 3. For window-level fields:
    Summary: `time_windows[window_id=<id>].summary`
@@ -1620,9 +1764,9 @@ Each patch must include:
 1. patch.fix_reason - Technical explanation of why this patch is needed
    Example: "Move dinner_prep start earlier by 45 minutes to avoid 19:30-20:00 overlap with evening_yoga"
 
-2. operation.reason (the value being patched) - Narrative justification for the habit change in user's life
+2. change.reason (the value being patched) - Narrative justification for the habit change in user's life
    Example: "Started meal prep earlier (18:30-19:15) to accommodate evening yoga schedule"
-   When patching operation.reason, you're updating the story to match the new timing
+   When patching change.reason, you're updating the story to match the new timing
 
 =================================================================================
 INPUT DATA
@@ -1647,7 +1791,7 @@ RESOLUTION STRATEGIES & CONSIDERATIONS
 3. **Minimal Changes**: Prefer the smallest adjustment that resolves all conflicts
 4. **Current Window Scope**: Only patch the current window (initial_state or the specified time_window)
 5. **Schema Integrity**: Keep data types and schemas intact
-6. **Semantic Consistency**: Update operation.reason and window.summary when timing changes would contradict existing narratives
+6. **Semantic Consistency**: Update change.reason and window.summary when timing changes would contradict existing narratives
 7. **Location Awareness**: When adjusting timing, respect location-based conflict rules:
    - For same location: ensure no time overlap
    - For different locations: ensure at least 30-minute gap for travel time
@@ -1667,16 +1811,16 @@ RESOLUTION STRATEGIES & CONSIDERATIONS
 2. **drop_habit** (USE WITH EXTREME CAUTION):
    - Remove the habit entirely from the current window
    - **CRITICAL CASCADE WARNING**: Dropping a habit creates cascade effects in later windows
-     * If you drop a habit in initial_state or early window, later windows may have operations (adjust/drop) that reference the now-deleted habit
-     * These orphaned operations will become invalid and cause errors
+     * If you drop a habit in initial_state or early window, later windows may have changes (adjust/drop) that reference the now-deleted habit
+     * These orphaned changes will become invalid and cause errors
    - **ONLY use when**:
      * The habit is truly incompatible and cannot be rescheduled
      * The habit represents a failed short-term experiment
      * A permanent life change makes the habit impossible
    - **IF you must drop**:
      * Clearly document in fix_description that this habit is permanently removed
-     * Search the FULL dynamic profiles for ALL operations in later windows that reference this habit
-     * Remove or update ALL such operations and their related summaries to prevent cascade errors
+     * Search the FULL dynamic profiles for ALL changes in later windows that reference this habit
+     * Remove or update ALL such changes and their related summaries to prevent cascade errors
 
 3. **other**:
    - Any other creative solution that resolves the conflict while maintaining data integrity
@@ -1684,14 +1828,14 @@ RESOLUTION STRATEGIES & CONSIDERATIONS
 **Cascade Effect Handling:**
 When using drop_habit strategy, you MUST:
 - Scan ALL time_windows (not just current) in the dynamic profiles
-- Identify ALL operations that reference the dropped habit
-- Remove those operations (they become invalid once the habit is dropped)
+- Identify ALL changes that reference the dropped habit
+- Remove those changes (they become invalid once the habit is dropped)
 - Update ALL affected window summaries to remove references to the dropped habit
 - Document the cascade effect clearly in fix_description
 
 **Important Notes:**
-- When modifying operations in a time_window, also update that window's summary field
-- If timing changes conflict with existing operation.reason, update the reason field to maintain coherence
+- When modifying changes in a time_window, also update that window's summary field
+- If timing changes conflict with existing change.reason, update the reason field to maintain coherence
 - Prefer timing adjustments that naturally fit the existing narrative
 
 =================================================================================
@@ -1728,7 +1872,7 @@ Resolution:
     ]
 }
 
-**Example 2: Adjusting time window operation with narrative updates**
+**Example 2: Adjusting time window change with narrative updates**
 
 Conflict scenario (window w2):
 - Operation[0]: adjusts evening_coding_session to 19:00-21:00 (priority: medium, reason: "personal project sprint")
@@ -1743,24 +1887,24 @@ Resolution:
     "patches": [
         {
             "domain": "Work & Education",
-            "path": "time_windows[window_id=w2].habits_delta.operations[0].delta.timing.start_time",
+            "path": "time_windows[window_id=w2].habits_delta.changes[0].delta.timing.start_time",
             "action": "replace",
             "value": "20:00",
             "fix_reason": "Push coding session later so dinner (19:30-20:00) finishes before it begins"
         },
         {
             "domain": "Work & Education",
-            "path": "time_windows[window_id=w2].habits_delta.operations[0].delta.timing.end_time",
+            "path": "time_windows[window_id=w2].habits_delta.changes[0].delta.timing.end_time",
             "action": "replace",
             "value": "22:00",
             "fix_reason": "Preserve two-hour duration while starting after dinner"
         },
         {
             "domain": "Work & Education",
-            "path": "time_windows[window_id=w2].habits_delta.operations[0].reason",
+            "path": "time_windows[window_id=w2].habits_delta.changes[0].reason",
             "action": "replace",
             "value": "Shifted coding to 20:00-22:00 to avoid clashing with family dinner while keeping the nightly project block intact.",
-            "fix_reason": "Align operation.reason with the new timing and conflict rationale"
+            "fix_reason": "Align change.reason with the new timing and conflict rationale"
         },
         {
             "domain": "Work & Education",
@@ -1776,20 +1920,20 @@ Resolution:
 
 Conflict scenario:
 - Current window w1: morning_jog conflicts with new early_meeting (irreconcilable)
-- Later window w2: has operation[1] to adjust morning_jog timing
-- Later window w3: has operation[0] to drop morning_jog (seasonal change)
+- Later window w2: has change[1] to adjust morning_jog timing
+- Later window w3: has change[0] to drop morning_jog (seasonal change)
 - Focus habit: morning_jog in w1
 
 Resolution (with cascade handling):
 {
     "strategy": "drop_habit",
-    "fix_description": "Dropped morning_jog from w1 due to irreconcilable conflict with new early_meeting schedule. CASCADE HANDLING: Removed invalid operations in w2 (adjust morning_jog) and w3 (drop morning_jog) since the habit no longer exists after w1. Updated all affected window summaries.",
+    "fix_description": "Dropped morning_jog from w1 due to irreconcilable conflict with new early_meeting schedule. CASCADE HANDLING: Removed invalid changes in w2 (adjust morning_jog) and w3 (drop morning_jog) since the habit no longer exists after w1. Updated all affected window summaries.",
     "patches": [
         {
             "domain": "Health & Self-care",
-            "path": "time_windows[window_id=w1].habits_delta.operations[2]",
+            "path": "time_windows[window_id=w1].habits_delta.changes[2]",
             "action": "remove",
-            "fix_reason": "Remove the acquire operation that introduced morning_jog, eliminating the habit from this window forward"
+            "fix_reason": "Remove the acquire change that introduced morning_jog, eliminating the habit from this window forward"
         },
         {
             "domain": "Health & Self-care",
@@ -1800,9 +1944,9 @@ Resolution (with cascade handling):
         },
         {
             "domain": "Health & Self-care",
-            "path": "time_windows[window_id=w2].habits_delta.operations[1]",
+            "path": "time_windows[window_id=w2].habits_delta.changes[1]",
             "action": "remove",
-            "fix_reason": "CASCADE EFFECT: Remove invalid adjust operation for morning_jog since it was dropped in w1 and no longer exists"
+            "fix_reason": "CASCADE EFFECT: Remove invalid adjust change for morning_jog since it was dropped in w1 and no longer exists"
         },
         {
             "domain": "Health & Self-care",
@@ -1813,9 +1957,9 @@ Resolution (with cascade handling):
         },
         {
             "domain": "Health & Self-care",
-            "path": "time_windows[window_id=w3].habits_delta.operations[0]",
+            "path": "time_windows[window_id=w3].habits_delta.changes[0]",
             "action": "remove",
-            "fix_reason": "CASCADE EFFECT: Remove invalid drop operation for morning_jog since it was already dropped in w1"
+            "fix_reason": "CASCADE EFFECT: Remove invalid drop change for morning_jog since it was already dropped in w1"
         },
         {
             "domain": "Health & Self-care",
@@ -1827,7 +1971,7 @@ Resolution (with cascade handling):
     ]
 }
 
-**KEY TAKEAWAY from Example 3**: When dropping a habit, scan the FULL dynamic profiles (all windows) and remove/update ALL operations that reference the dropped habit. This is why adjust_schedule_and_timing is STRONGLY PREFERRED.
+**KEY TAKEAWAY from Example 3**: When dropping a habit, scan the FULL dynamic profiles (all windows) and remove/update ALL changes that reference the dropped habit. This is why adjust_schedule_and_timing is STRONGLY PREFERRED.
 
 =================================================================================
 OUTPUT FORMAT
@@ -1875,6 +2019,14 @@ Alignment Rules:
 4. If domains have different attribute types (singular vs collection) for same concept, note this in the mapping
 5. When specifying original_key, use the full path including attribute_type (e.g., "singular.primary_job" or "collections.owned_devices")
 
+Strictness:
+- Only align keys when they are strict synonyms AND have the same scope/granularity
+- Do NOT align broad categories with specific subtypes (e.g., "insurance_policies" vs "primary_health_insurance")
+- Do NOT align different attribute types (singular vs collections); if types differ, skip alignment
+- Only output mappings that involve >= 2 DISTINCT domains (no within-domain alignment)
+- Use Basic Profile only for disambiguation; do NOT include it as a domain in mappings
+- If unsure, return no mapping for that candidate (empty mapping is acceptable)
+
 Examples of what TO align:
 - Domain A has "singular.primary_vehicle", Domain B has "singular.main_car" → canonical: "primary_vehicle"
 - Domain A has "collections.electronic_devices", Domain B has "collections.owned_devices" → canonical: "owned_devices"
@@ -1882,6 +2034,8 @@ Examples of what TO align:
 Examples of what NOT to align:
 - "singular.primary_residence" vs "collections.owned_properties" (different semantics: one primary vs multiple items)
 - "collections.close_friends" vs "collections.professional_contacts" (different relationship types)
+- "singular.wearable_device" vs "singular.primary_sleep_tracker" (subtype vs general)
+- "singular.primary_health_insurance" vs "collections.insurance_policies" (single item vs broad set)
 
 Output format (JSON only):
 {
@@ -2014,6 +2168,9 @@ Output strict JSON:
 
 **Important**: Only include conflicts that genuinely need resolution. If a shared attribute has the same values across domains, or collections have no overlaps, do NOT treat it as a conflict.
 """)
+
+
+"""Updated app_log_prompt with corrected API names aligned with app_catalog."""
 
 
 app_log_prompt = Template("""## Task Overview
@@ -2345,18 +2502,18 @@ Example chain coherence:
 
 ---
 
-### Example 2: LLM.Chat
+### Example 2: LLM Assistant.ContinueConversation
 
 **Context:**
 - User: Senior Software Engineer, expertise in C++ embedded systems
 - Intent: "Change reason awareness: exploring how AI tools handle legacy C++ codebases"
 - Timestamp: 2024-01-03 20:45:00
-- App State: `{"conversation_history": []}`
+- App State: `{"conversations": [{"conversation_id": "conv_001", "messages": []}]}`
 
 **API Schema:**
 ```json
 {
-  "input": {"message": "string"},
+  "input": {"conversation_id": "string", "message": "string"},
   "output": {"response": "string"}
 }
 ```
@@ -2365,6 +2522,7 @@ Example chain coherence:
 ```json
 {
   "input": {
+    "conversation_id": "conv_001",
     "message": "How well do AI coding tools like Copilot and ChatGPT handle legacy C++ codebases with C++17/20 mixed usage?"
   },
   "output": {
@@ -2380,22 +2538,23 @@ Example chain coherence:
 - Response specifically addresses embedded systems (from user profile)
 - Provides practical, actionable information
 - Tone is professional but conversational
+- Includes conversation_id for proper API usage
 
 ---
 
-### Example 3: SimpleNote.CreateNote
+### Example 3: Notion.CreatePage
 
 **Context:**
 - User: Senior Software Engineer, methodical and prefers documentation
 - Intent: "Post-acquisition usage: documenting Python analysis script for recurring telemetry review"
 - Timestamp: 2024-02-09 13:45:00
-- App State: `{"notes": [{"title": "AI Tool Evaluation", "tags": ["work", "tools"]}]}`
+- App State: `{"pages": [{"title": "AI Tool Evaluation", "tags": ["work", "tools"]}]}`
 
 **API Schema:**
 ```json
 {
   "input": {"title": "string", "content": "string", "tags": ["string"]},
-  "output": {"note_id": "string", "title": "string", "created_at": "string", "tags": ["string"]}
+  "output": {"page_id": "string", "title": "string", "created_at": "string", "tags": ["string"]}
 }
 ```
 
@@ -2408,7 +2567,7 @@ Example chain coherence:
     "tags": ["work", "python", "automation"]
   },
   "output": {
-    "note_id": "note_1707484700",
+    "page_id": "page_1707484700",
     "title": "Telemetry Analysis Script - Python",
     "created_at": "2024-02-09 13:45:00",
     "tags": ["work", "python", "automation"]
@@ -2421,7 +2580,7 @@ Example chain coherence:
 - Content is technical but concise (not over-polished)
 - Includes code snippet in a realistic format
 - "Quick reference" tone matches the "documenting for recurring use" intent
-- Tags are relevant and consistent with existing notes
+- Tags are relevant and consistent with existing pages
 - Note structure reflects how a developer actually documents
 - Mentions domain-specific terms (motor, telemetry, rpm)
 
@@ -2527,7 +2686,7 @@ Example chain coherence:
 
 ---
 
-### Example 6: Fitness.LogWorkout (Habit Execution with Timestamp Variation)
+### Example 6: Fitbit.LogWorkout (Habit Execution with Timestamp Variation)
 
 **Context:**
 - User: Mid-30s professional, building morning workout habit
@@ -2582,39 +2741,39 @@ Example chain coherence:
 
 ## Common Pitfalls to Avoid
 
-❌ **Over-formal or artificial input**
+**Over-formal or artificial input**
 - Bad: `"I would like to inquire about high-quality noise cancellation headphones"`
 - Good: `"noise canceling headphones"`
 
-❌ **Generic or template-like output**
+**Generic or template-like output**
 - Bad: All products have identical generic descriptions
 - Good: Each product has unique, relevant details
 
-❌ **Ignoring user profile**
+**Ignoring user profile**
 - Bad: Recommending beginner tutorials to an expert
 - Good: Content matches user's expertise level
 
-❌ **Inconsistent references**
+**Inconsistent references**
 - Bad: Adding product to cart that was never searched/viewed
 - Good: Cart contains product from previous ShowProduct call
 
-❌ **Unrealistic data**
+**Unrealistic data**
 - Bad: Product priced at $10,000 or rated 5.0 with 2 million reviews
 - Good: Plausible prices and realistic rating distributions
 
-❌ **Ignoring user intent**
+**Ignoring user intent**
 - Bad: Generic search results when intent specifies acquisition for specific purpose
 - Good: Results and descriptions aligned with stated intent
 
-❌ **Overly precise timestamps**
+**Overly precise timestamps**
 - Bad: Using exactly "07:00:00" when time_specification says "07:00:00" (too robotic)
 - Good: Using "07:08:23" or "06:54:17" (realistic human variation)
 
-❌ **Breaking temporal logic**
+**Breaking temporal logic**
 - Bad: Timestamps going backwards within a session
 - Good: Timestamps progress logically (start < end, sequential events ordered)
 
-❌ **Missing semantic richness**
+**Missing semantic richness**
 - Bad: Product description: `"Good headphones"`
 - Good: Product description: `"Industry-leading noise cancellation with 30-hour battery. Perfect for focused work..."`
 
@@ -2655,7 +2814,4 @@ Based on all the context provided, generate the API call log as a valid JSON obj
 - Use **"output"** for API output (NOT "response")
 - Do NOT include any other top-level keys (no "event_id", "timestamp", "app_name", etc.)
 - The "input" and "output" values should match the API schema provided above
-
 """)
-
-

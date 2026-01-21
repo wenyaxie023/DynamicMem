@@ -694,13 +694,13 @@ def _materialize_habit_snapshots_for_conflicts(domain: Dict[str, Any]) -> List[D
 
     for w_idx, window in enumerate(domain.get("time_windows") or []):
         window_id = window.get("window_id") or f"w{w_idx}"
-        for op in (window.get("habits_delta") or {}).get("operations") or []:
+        for op in _get_delta_changes(window.get("habits_delta")):
             name = op.get("habit_name") or "unnamed_habit"
-            op_type = (op.get("op") or "").lower()
+            op_type = (op.get("change_type") or op.get("op") or "").lower()
             delta = op.get("delta")
             if op_type == "acquire" and isinstance(delta, dict):
                 current[name] = deepcopy(delta)
-                habit_sources[name] = f"time_windows[{w_idx}].habits_delta.operations[?habit_name='{name}']"
+                habit_sources[name] = f"time_windows[{w_idx}].habits_delta.changes[?habit_name='{name}']"
             elif op_type == "adjust" and isinstance(delta, dict):
                 existing = current.get(name, {})
                 if not isinstance(existing, dict):
@@ -710,7 +710,7 @@ def _materialize_habit_snapshots_for_conflicts(domain: Dict[str, Any]) -> List[D
                 current[name] = merged
                 # For adjust, the habit was defined earlier, but we track the latest modification
                 if name not in habit_sources:
-                    habit_sources[name] = f"time_windows[{w_idx}].habits_delta.operations[?habit_name='{name}']"
+                    habit_sources[name] = f"time_windows[{w_idx}].habits_delta.changes[?habit_name='{name}']"
             elif op_type == "drop":
                 current.pop(name, None)
                 habit_sources.pop(name, None)
@@ -1220,9 +1220,9 @@ def _detect_rule2_prior_existence_issues(profile: Dict) -> List[Dict[str, str]]:
     for w_idx, window in enumerate(time_windows):
         window_id = window.get("window_id") or f"w{w_idx + 1}"
 
-        attr_ops = (window.get("user_attributes_delta") or {}).get("operations") or []
+        attr_ops = _get_delta_changes(window.get("user_attributes_delta"))
         for op_idx, op in enumerate(attr_ops):
-            op_type = op.get("op")
+            op_type = op.get("change_type") or op.get("op")
             attr_type = op.get("attribute_type")
 
             # Check 1: singular attributes can ONLY use "modify"
@@ -1230,7 +1230,7 @@ def _detect_rule2_prior_existence_issues(profile: Dict) -> List[Dict[str, str]]:
                 name = op.get("attribute_name")
                 _append_issue(
                     issues,
-                    f"time_windows[{w_idx}].user_attributes_delta.operations[{op_idx}]",
+                    f"time_windows[{w_idx}].user_attributes_delta.changes[{op_idx}]",
                     f"invalid operation '{op_type}' on singular attribute '{name}' (singular only supports 'modify')",
                     window_id,
                 )
@@ -1240,7 +1240,7 @@ def _detect_rule2_prior_existence_issues(profile: Dict) -> List[Dict[str, str]]:
                 name = op.get("collection_name")
                 _append_issue(
                     issues,
-                    f"time_windows[{w_idx}].user_attributes_delta.operations[{op_idx}]",
+                    f"time_windows[{w_idx}].user_attributes_delta.changes[{op_idx}]",
                     f"invalid operation '{op_type}' on collection '{name}' (collections only support 'add' or 'drop')",
                     window_id,
                 )
@@ -1251,7 +1251,7 @@ def _detect_rule2_prior_existence_issues(profile: Dict) -> List[Dict[str, str]]:
                 if name and name not in known_singular:
                     _append_issue(
                         issues,
-                        f"time_windows[{w_idx}].user_attributes_delta.operations[{op_idx}]",
+                        f"time_windows[{w_idx}].user_attributes_delta.changes[{op_idx}]",
                         f"modify '{name}' before it exists in prior state",
                         window_id,
                     )
@@ -1269,14 +1269,14 @@ def _detect_rule2_prior_existence_issues(profile: Dict) -> List[Dict[str, str]]:
                 if name and name not in known_collections:
                     _append_issue(
                         issues,
-                        f"time_windows[{w_idx}].user_attributes_delta.operations[{op_idx}]",
+                        f"time_windows[{w_idx}].user_attributes_delta.changes[{op_idx}]",
                         f"drop collection '{name}' before it exists",
                         window_id,
                     )
 
-        habit_ops = (window.get("habits_delta") or {}).get("operations") or []
+        habit_ops = _get_delta_changes(window.get("habits_delta"))
         for op_idx, op in enumerate(habit_ops):
-            op_type = op.get("op")
+            op_type = op.get("change_type") or op.get("op")
             habit_name = op.get("habit_name")
             if op_type == "acquire":
                 if habit_name:
@@ -1285,7 +1285,7 @@ def _detect_rule2_prior_existence_issues(profile: Dict) -> List[Dict[str, str]]:
                 if habit_name and habit_name not in known_habits:
                     _append_issue(
                         issues,
-                        f"time_windows[{w_idx}].habits_delta.operations[{op_idx}]",
+                        f"time_windows[{w_idx}].habits_delta.changes[{op_idx}]",
                         f"{op_type} '{habit_name}' before it exists in prior state",
                         window_id,
                     )
@@ -1302,7 +1302,7 @@ def _detect_rule2_prior_existence_issues(profile: Dict) -> List[Dict[str, str]]:
                         if not has_structural_change and "priority" in delta:
                             _append_issue(
                                 issues,
-                                f"time_windows[{w_idx}].habits_delta.operations[{op_idx}]",
+                                f"time_windows[{w_idx}].habits_delta.changes[{op_idx}]",
                                 f"adjust '{habit_name}' only modifies priority (must modify at least one of: schedule, timing, location, context)",
                                 window_id,
                             )
@@ -1310,15 +1310,15 @@ def _detect_rule2_prior_existence_issues(profile: Dict) -> List[Dict[str, str]]:
                 if op_type == "drop" and habit_name in known_habits:
                     known_habits.remove(habit_name)
 
-        pref_ops = (window.get("preferences_delta") or {}).get("operations") or []
+        pref_ops = _get_delta_changes(window.get("preferences_delta"))
         for op_idx, op in enumerate(pref_ops):
-            op_type = op.get("op")
+            op_type = op.get("change_type") or op.get("op")
             pref_name = op.get("preference_name")
             if op_type in {"shift", "refine"} and pref_name:
                 if pref_name not in known_preferences:
                     _append_issue(
                         issues,
-                        f"time_windows[{w_idx}].preferences_delta.operations[{op_idx}]",
+                        f"time_windows[{w_idx}].preferences_delta.changes[{op_idx}]",
                         f"{op_type} '{pref_name}' before it exists in prior state",
                         window_id,
                     )
@@ -1403,12 +1403,12 @@ def _detect_rule1_required_field_issues(profile: Dict) -> List[Dict[str, str]]:
                 window_id,
             )
 
-        attr_ops = (window.get("user_attributes_delta") or {}).get("operations") or []
+        attr_ops = _get_delta_changes(window.get("user_attributes_delta"))
         for op_idx, op in enumerate(attr_ops):
-            op_path = f"time_windows[{w_idx}].user_attributes_delta.operations[{op_idx}]"
-            op_type = op.get("op")
+            op_path = f"time_windows[{w_idx}].user_attributes_delta.changes[{op_idx}]"
+            op_type = op.get("change_type") or op.get("op")
             if not op_type:
-                _append_issue(issues, op_path, "operation missing op", window_id)
+                _append_issue(issues, op_path, "operation missing change_type", window_id)
             if not op.get("reason"):
                 _append_issue(issues, f"{op_path}.reason", "reason missing", window_id)
             attr_type = op.get("attribute_type")
@@ -1442,12 +1442,12 @@ def _detect_rule1_required_field_issues(profile: Dict) -> List[Dict[str, str]]:
                         window_id,
                     )
 
-        habit_ops = (window.get("habits_delta") or {}).get("operations") or []
+        habit_ops = _get_delta_changes(window.get("habits_delta"))
         for op_idx, op in enumerate(habit_ops):
-            op_path = f"time_windows[{w_idx}].habits_delta.operations[{op_idx}]"
-            op_type = op.get("op")
+            op_path = f"time_windows[{w_idx}].habits_delta.changes[{op_idx}]"
+            op_type = op.get("change_type") or op.get("op")
             if not op_type:
-                _append_issue(issues, op_path, "operation missing op", window_id)
+                _append_issue(issues, op_path, "operation missing change_type", window_id)
             if not op.get("reason"):
                 _append_issue(issues, f"{op_path}.reason", "reason missing", window_id)
 
@@ -1511,12 +1511,12 @@ def _detect_rule1_required_field_issues(profile: Dict) -> List[Dict[str, str]]:
                         window_id,
                     )
 
-        pref_ops = (window.get("preferences_delta") or {}).get("operations") or []
+        pref_ops = _get_delta_changes(window.get("preferences_delta"))
         for op_idx, op in enumerate(pref_ops):
-            op_path = f"time_windows[{w_idx}].preferences_delta.operations[{op_idx}]"
-            op_type = op.get("op")
+            op_path = f"time_windows[{w_idx}].preferences_delta.changes[{op_idx}]"
+            op_type = op.get("change_type") or op.get("op")
             if not op_type:
-                _append_issue(issues, op_path, "operation missing op", window_id)
+                _append_issue(issues, op_path, "operation missing change_type", window_id)
             if not op.get("reason"):
                 _append_issue(issues, f"{op_path}.reason", "reason missing", window_id)
             pref_name = op.get("preference_name")
@@ -1579,9 +1579,9 @@ def _detect_rule4_short_term_issues(profile: Dict) -> List[Dict[str, str]]:
         window_id = window.get("window_id") or f"w{w_idx + 1}"
 
         # Check habits_delta operations
-        habit_ops = (window.get("habits_delta") or {}).get("operations") or []
+        habit_ops = _get_delta_changes(window.get("habits_delta"))
         for op_idx, op in enumerate(habit_ops):
-            op_type = op.get("op")
+            op_type = op.get("change_type") or op.get("op")
             habit_name = op.get("habit_name")
             reason = (op.get("reason") or "").lower()
 
@@ -1594,9 +1594,9 @@ def _detect_rule4_short_term_issues(profile: Dict) -> List[Dict[str, str]]:
                     ))
 
         # Check user_attributes_delta operations
-        attr_ops = (window.get("user_attributes_delta") or {}).get("operations") or []
+        attr_ops = _get_delta_changes(window.get("user_attributes_delta"))
         for op_idx, op in enumerate(attr_ops):
-            op_type = op.get("op")
+            op_type = op.get("change_type") or op.get("op")
             reason = (op.get("reason") or "").lower()
 
             if op_type in {"modify", "add"} and reason:
@@ -1617,11 +1617,11 @@ def _detect_rule4_short_term_issues(profile: Dict) -> List[Dict[str, str]]:
             window = time_windows[check_w_idx]
 
             if change_type == "habit":
-                habit_ops = (window.get("habits_delta") or {}).get("operations") or []
+                habit_ops = _get_delta_changes(window.get("habits_delta"))
                 for op in habit_ops:
                     if op.get("habit_name") == change_name:
                         # Found a follow-up operation (adjust or drop)
-                        if op.get("op") in {"adjust", "drop"}:
+                        if (op.get("change_type") or op.get("op")) in {"adjust", "drop"}:
                             has_followup = True
                             break
                         # Or explicit reasoning about permanence
@@ -1631,12 +1631,12 @@ def _detect_rule4_short_term_issues(profile: Dict) -> List[Dict[str, str]]:
                             break
 
             elif change_type == "attribute":
-                attr_ops = (window.get("user_attributes_delta") or {}).get("operations") or []
+                attr_ops = _get_delta_changes(window.get("user_attributes_delta"))
                 for op in attr_ops:
                     attr_name = op.get("attribute_name") or op.get("collection_name")
                     if attr_name == change_name:
                         # Found a follow-up operation (modify or remove)
-                        if op.get("op") in {"modify", "remove"}:
+                        if (op.get("change_type") or op.get("op")) in {"modify", "remove"}:
                             has_followup = True
                             break
                         reason = (op.get("reason") or "").lower()
@@ -1690,9 +1690,9 @@ def _detect_rule3_first_add_issues(profile: Dict) -> List[Dict[str, str]]:
         window_id = window.get("window_id") or f"w{w_idx + 1}"
 
         # Check user_attributes_delta for 'add' operations
-        attr_ops = (window.get("user_attributes_delta") or {}).get("operations") or []
+        attr_ops = _get_delta_changes(window.get("user_attributes_delta"))
         for op_idx, op in enumerate(attr_ops):
-            op_type = op.get("op")
+            op_type = op.get("change_type") or op.get("op")
 
             # Check for first 'add' to a collection
             if op_type == "add":
@@ -1702,7 +1702,7 @@ def _detect_rule3_first_add_issues(profile: Dict) -> List[Dict[str, str]]:
                 if collection_name and collection_name not in known_collections:
                     _append_issue(
                         issues,
-                        f"time_windows[{w_idx}].user_attributes_delta.operations[{op_idx}]",
+                        f"time_windows[{w_idx}].user_attributes_delta.changes[{op_idx}]",
                         f"Collection '{collection_name}' first appears via 'add' operation in {window_id}. "
                         f"If this is an essential collection for the user, it should be initialized in initial_state "
                         f"with realistic baseline items.",
@@ -2327,6 +2327,7 @@ def _map_world_background_to_windows(
     """
     Map world background to each window. Supports:
       - dict mapping window_id -> text (with optional "default")
+      - dict with "world_backgrounds" array of {"window_id": "w0", "background": "..."} objects
       - JSON string that can be parsed into such a dict (common when loading from disk)
       - plain text split into sequential segments (aligned by index to window_ids)
       - fallback: same text for all windows
@@ -2347,6 +2348,18 @@ def _map_world_background_to_windows(
                 return mapped
 
     if isinstance(world_background, dict):
+        # Handle {"world_backgrounds": [{"window_id": "w0", "background": "..."}, ...]} format
+        if "world_backgrounds" in world_background and isinstance(world_background["world_backgrounds"], list):
+            for entry in world_background["world_backgrounds"]:
+                if isinstance(entry, dict) and "window_id" in entry and "background" in entry:
+                    mapped[entry["window_id"]] = entry["background"]
+            # Fill in any missing window_ids with empty string
+            for window_id in window_ids:
+                if window_id not in mapped:
+                    mapped[window_id] = ""
+            return mapped
+
+        # Handle {window_id: text} format
         default_text = world_background.get("default", "")
         for window_id in window_ids:
             mapped[window_id] = world_background.get(window_id, default_text)
@@ -2628,7 +2641,7 @@ def _set_attribute_in_window(
         if window.get("window_id") != window_id:
             continue
         delta = window.setdefault("user_attributes_delta", {}).setdefault(
-            "operations", []
+            "changes", []
         )
         attr_type = (
             "collections"
@@ -2656,7 +2669,7 @@ def _set_attribute_in_window(
         if not updated:
             delta.append(
                 {
-                    "op": "modify" if attr_type == "singular" else "add",
+                    "change_type": "modify" if attr_type == "singular" else "add",
                     "attribute_type": attr_type,
                     name_field: attribute_name,
                     "delta": new_value,
@@ -2668,12 +2681,10 @@ def _set_attribute_in_window(
 
 def _update_attribute_deltas(profile: Dict, attribute_name: str, new_value: object) -> None:
     for window in profile.get("time_windows", []):
-        operations = (
-            (window.get("user_attributes_delta") or {}).get("operations") or []
-        )
-        for op in operations:
+        changes = _get_delta_changes(window.get("user_attributes_delta"))
+        for op in changes:
             target_name = op.get("attribute_name") or op.get("collection_name")
-            if target_name == attribute_name and op.get("op") in {"add", "modify"}:
+            if target_name == attribute_name and (op.get("change_type") or op.get("op")) in {"add", "modify"}:
                 op["delta"] = new_value
                 if "new_state" in op:
                     op["new_state"] = new_value
@@ -2818,9 +2829,9 @@ def _apply_key_alignment(
             renamed = _rename_initial_entries(initial_state.get("initial"), mapping)
             initial_state["initial"] = _drop_prefixed_duplicates(renamed, mapping)
 
-        # Rename in each window's user_attributes_delta.operations
+        # Rename in each window's user_attributes_delta.changes
         for window in profile.get("time_windows", []):
-            delta_ops = _get_delta_operations(
+            delta_ops = _get_delta_changes(
                 (window.get("user_attributes_delta") or {})
             )
             for op in delta_ops:
@@ -2862,8 +2873,8 @@ def _apply_conflict_resolution_to_profiles(
 
     def _parse_path_tokens(path: str | None) -> List[object]:
         """
-        Split a dotted path like "habits_delta.operations[0].new_state.timing"
-        into ["habits_delta", "operations", 0, "new_state", "timing"].
+        Split a dotted path like "habits_delta.changes[0].new_state.timing"
+        into ["habits_delta", "changes", 0, "new_state", "timing"].
         Supports selectors: [window_id=w3] or [habit_name=foo] → {"_selector_key": "...", "_selector_value": "..."}.
         """
         if not isinstance(path, str):
@@ -3257,49 +3268,50 @@ def _extract_initial_state_entries(
     return state
 
 
-def _get_delta_operations(delta_section: Dict | None) -> List[Dict[str, object]]:
+def _get_delta_changes(delta_section: Dict | None) -> List[Dict[str, object]]:
+    """Get changes from delta section, supporting both 'changes' and legacy 'operations' field names."""
     if isinstance(delta_section, dict):
-        operations = delta_section.get("operations")
-        if isinstance(operations, list):
-            return operations
+        changes = delta_section.get("changes") or delta_section.get("operations")
+        if isinstance(changes, list):
+            return changes
     return []
 
 
-def _apply_delta_operations(
+def _apply_delta_changes(
     state: Dict[str, Dict[str, object]],
-    operations: List[Dict[str, object]] | None,
+    changes_list: List[Dict[str, object]] | None,
     *,
     name_field: str,
 ) -> Dict[str, Dict[str, object]]:
     """
-    Apply delta operations to state and return a dict of changes.
-    
+    Apply delta changes to state and return a dict of changes.
+
     Returns:
-        Dict mapping key to change info: {"previous_value": ..., "change_reason": ..., "op": ...}
+        Dict mapping key to change info: {"previous_value": ..., "change_reason": ..., "change_type": ...}
     """
     changes: Dict[str, Dict[str, object]] = {}
-    if not operations:
+    if not changes_list:
         return changes
 
-    for operation in operations:
-        key = operation.get(name_field)
+    for change in changes_list:
+        key = change.get(name_field)
         if not key:
             continue
 
-        op_type = (operation.get("op") or "").lower()
+        op_type = (change.get("change_type") or change.get("op") or "").lower()
         # Support both the old schema (before/after) and the new schema (new_state)
         # Previous value is always taken from the current state snapshot
         prev_entry = state.get(key) or {}
         prev_value = prev_entry.get("current_value")
 
         new_value = None
-        if "delta" in operation:
-            new_value = operation.get("delta")
-        if new_value is None and "new_state" in operation:
-            new_value = operation.get("new_state")
+        if "delta" in change:
+            new_value = change.get("delta")
+        if new_value is None and "new_state" in change:
+            new_value = change.get("new_state")
         if new_value is None:
-            before = operation.get("before") or {}
-            after = operation.get("after") or {}
+            before = change.get("before") or {}
+            after = change.get("after") or {}
             # Old schema stores the new value under after["value"]
             new_value = after.get("value")
 
@@ -3308,7 +3320,7 @@ def _apply_delta_operations(
             if new_value is None:
                 candidate = {
                     k: v
-                    for k, v in operation.items()
+                    for k, v in change.items()
                     if k
                     not in {
                         name_field,
@@ -3323,18 +3335,18 @@ def _apply_delta_operations(
                 if candidate:
                     new_value = candidate
 
-        reason = operation.get("reason", "")
+        reason = change.get("reason", "")
         
         # Record the change information
         changes[key] = {
             "previous_value": prev_value,
             "change_reason": reason,
-            "op": op_type,
+            "change_type": op_type,
         }
 
         # We keep a tombstone entry for remove/drop so that semantic-event
         # generation can still see the op on this field.
-        if op_type in {"remove", "drop"} and "new_state" not in operation and "delta" not in operation:
+        if op_type in {"remove", "drop"} and "new_state" not in change and "delta" not in change:
             # Old schema remove/drop: no explicit new_state, treat as cleared.
             state[key] = {"current_value": None}
         else:
@@ -3375,9 +3387,9 @@ def _init_user_attributes_state(
     return attrs
 
 
-def _apply_user_attribute_operations(
+def _apply_user_attribute_changes(
     state: Dict[str, Dict[str, object]],
-    operations: List[Dict[str, object]] | None,
+    changes_list: List[Dict[str, object]] | None,
 ) -> tuple[Dict[str, Dict[str, object]], Dict[tuple[str, str], Dict[str, object]]]:
     """
     Apply attribute deltas using the new singular/collections semantics.
@@ -3387,25 +3399,25 @@ def _apply_user_attribute_operations(
         "collections": deepcopy(state.get("collections") or {}),
     }
     changes: Dict[tuple[str, str], Dict[str, object]] = {}
-    if not operations:
+    if not changes_list:
         return updated, changes
 
-    for operation in operations:
-        if not isinstance(operation, dict):
+    for change in changes_list:
+        if not isinstance(change, dict):
             continue
-        raw_attr_type = (operation.get("attribute_type") or "").lower()
-        inferred_type = "collections" if operation.get("collection_name") else "singular"
+        raw_attr_type = (change.get("attribute_type") or "").lower()
+        inferred_type = "collections" if change.get("collection_name") else "singular"
         attr_type = "collections" if raw_attr_type in {"collection", "collections"} else raw_attr_type or inferred_type
-        name = operation.get("attribute_name") or operation.get("collection_name")
+        name = change.get("attribute_name") or change.get("collection_name")
         if not name:
             continue
 
-        op_type = (operation.get("op") or "").lower()
-        reason = operation.get("reason", "")
+        op_type = (change.get("change_type") or change.get("op") or "").lower()
+        reason = change.get("reason", "")
         prev_value = deepcopy(updated.get(attr_type, {}).get(name))
-        delta_payload = operation.get("delta")
+        delta_payload = change.get("delta")
         if delta_payload is None:
-            delta_payload = operation.get("new_state")
+            delta_payload = change.get("new_state")
 
         if attr_type == "collections":
             prev_list = (
@@ -3448,7 +3460,7 @@ def _apply_user_attribute_operations(
         changes[(attr_type, name)] = {
             "previous_value": prev_value,
             "change_reason": reason,
-            "op": op_type,
+            "change_type": op_type,
             "attribute_type": attr_type,
         }
 
@@ -3474,7 +3486,7 @@ def _user_attributes_state_to_list(
             }
             change = changes.get((attr_type, name))
             if change:
-                item["op"] = change.get("op")
+                item["change_type"] = change.get("change_type") or change.get("op")
                 if "previous_value" in change:
                     item["previous_value"] = change.get("previous_value")
                 if change.get("change_reason"):
@@ -3494,39 +3506,40 @@ def _init_generic_state(entries: Dict[str, object] | None) -> Dict[str, Dict[str
     return state
 
 
-def _apply_habit_operations(
+def _apply_habit_changes(
     state: Dict[str, Dict[str, object]],
-    operations: List[Dict[str, object]] | None,
+    changes_list: List[Dict[str, object]] | None,
 ) -> tuple[Dict[str, Dict[str, object]], Dict[str, Dict[str, object]]]:
     """
     Apply habit deltas; adjust merges partial fields into the previous habit.
     """
     updated = deepcopy(state)
     changes: Dict[str, Dict[str, object]] = {}
-    if not operations:
+    if not changes_list:
         return updated, changes
 
-    for operation in operations:
-        if not isinstance(operation, dict):
+    for change in changes_list:
+        if not isinstance(change, dict):
             continue
-        name = operation.get("habit_name")
+        name = change.get("habit_name")
         if not name:
             continue
 
-        op_type = (operation.get("op") or "").lower()
-        reason = operation.get("reason", "")
+        op_type = (change.get("change_type") or change.get("op") or "").lower()
+        reason = change.get("reason", "")
         prev_value = deepcopy((updated.get(name) or {}).get("current_value"))
-        delta_payload = operation.get("delta")
+        delta_payload = change.get("delta")
         if delta_payload is None:
-            delta_payload = operation.get("new_state")
+            delta_payload = change.get("new_state")
 
         if delta_payload is None:
             candidate = {
                 k: v
-                for k, v in operation.items()
+                for k, v in change.items()
                 if k
                 not in {
                     "habit_name",
+                    "change_type",
                     "op",
                     "reason",
                     "before",
@@ -3559,36 +3572,36 @@ def _apply_habit_operations(
         changes[name] = {
             "previous_value": prev_value,
             "change_reason": reason,
-            "op": op_type,
+            "change_type": op_type,
         }
 
     return updated, changes
 
 
-def _apply_preference_operations(
+def _apply_preference_changes(
     state: Dict[str, Dict[str, object]],
-    operations: List[Dict[str, object]] | None,
+    changes_list: List[Dict[str, object]] | None,
 ) -> tuple[Dict[str, Dict[str, object]], Dict[str, Dict[str, object]]]:
     """
     Apply preference deltas with the new delta field.
     """
     updated = deepcopy(state)
     changes: Dict[str, Dict[str, object]] = {}
-    if not operations:
+    if not changes_list:
         return updated, changes
 
-    for operation in operations:
-        if not isinstance(operation, dict):
+    for change in changes_list:
+        if not isinstance(change, dict):
             continue
-        name = operation.get("preference_name")
+        name = change.get("preference_name")
         if not name:
             continue
-        op_type = (operation.get("op") or "").lower()
-        reason = operation.get("reason", "")
+        op_type = (change.get("change_type") or change.get("op") or "").lower()
+        reason = change.get("reason", "")
         prev_value = deepcopy((updated.get(name) or {}).get("current_value"))
-        delta_payload = operation.get("delta")
+        delta_payload = change.get("delta")
         if delta_payload is None:
-            delta_payload = operation.get("new_state")
+            delta_payload = change.get("new_state")
 
         if op_type in {"drop", "remove"}:
             new_value = None
@@ -3601,7 +3614,7 @@ def _apply_preference_operations(
         changes[name] = {
             "previous_value": prev_value,
             "change_reason": reason,
-            "op": op_type,
+            "change_type": op_type,
         }
 
     return updated, changes
@@ -3616,7 +3629,7 @@ def _state_dict_to_list(
     
     Args:
         state: Current state dict
-        changes: Optional dict of changes (from _apply_delta_operations)
+        changes: Optional dict of changes (from _apply_delta_changes)
     """
     if changes is None:
         changes = {}
@@ -3638,7 +3651,7 @@ def _state_dict_to_list(
             change_info = changes[key]
             item["previous_value"] = change_info.get("previous_value")
             item["change_reason"] = change_info.get("change_reason")
-            item["op"] = change_info.get("op")
+            item["change_type"] = change_info.get("change_type") or change_info.get("op")
         
         result.append(item)
 
@@ -3648,7 +3661,7 @@ def _state_dict_to_list(
         item = {
             "name": key,
             "current_value": None,
-            "op": change_info.get("op"),
+            "change_type": change_info.get("change_type") or change_info.get("op"),
         }
         if "previous_value" in change_info:
             item["previous_value"] = change_info.get("previous_value")
@@ -3686,7 +3699,7 @@ def _resolve_window_states(dynamic_profile_data: Dict) -> List[Dict]:
         entries = current_attributes.get(attr_type) or {}
         for name, value in entries.items():
             w0_attributes_changes[(attr_type, name)] = {
-                "op": "acquire",
+                "change_type": "acquire",
                 "previous_value": None,
                 "change_reason": "Initial state at the start of tracking period.",
             }
@@ -3694,7 +3707,7 @@ def _resolve_window_states(dynamic_profile_data: Dict) -> List[Dict]:
     w0_habits_changes: Dict[str, Dict[str, object]] = {}
     for name, entry in current_habits.items():
         w0_habits_changes[name] = {
-            "op": "acquire",
+            "change_type": "acquire",
             "previous_value": None,
             "change_reason": "Initial habit at the start of tracking period.",
         }
@@ -3702,7 +3715,7 @@ def _resolve_window_states(dynamic_profile_data: Dict) -> List[Dict]:
     w0_preferences_changes: Dict[str, Dict[str, object]] = {}
     for name, entry in current_preferences.items():
         w0_preferences_changes[name] = {
-            "op": "acquire",
+            "change_type": "acquire",
             "previous_value": None,
             "change_reason": "Initial preference at the start of tracking period.",
         }
@@ -3735,19 +3748,19 @@ def _resolve_window_states(dynamic_profile_data: Dict) -> List[Dict]:
             continue
 
         # Track changes for each state type
-        attributes_snapshot, attributes_changes = _apply_user_attribute_operations(
+        attributes_snapshot, attributes_changes = _apply_user_attribute_changes(
             current_attributes,
-            _get_delta_operations(window.get("user_attributes_delta")),
+            _get_delta_changes(window.get("user_attributes_delta")),
         )
 
-        habits_snapshot, habits_changes = _apply_habit_operations(
+        habits_snapshot, habits_changes = _apply_habit_changes(
             current_habits,
-            _get_delta_operations(window.get("habits_delta")),
+            _get_delta_changes(window.get("habits_delta")),
         )
 
-        preferences_snapshot, preferences_changes = _apply_preference_operations(
+        preferences_snapshot, preferences_changes = _apply_preference_changes(
             current_preferences,
-            _get_delta_operations(window.get("preferences_delta")),
+            _get_delta_changes(window.get("preferences_delta")),
         )
 
         resolved.append(
@@ -3823,7 +3836,7 @@ def _identify_stable_states(resolved_windows: List[Dict]) -> Dict[str, Dict[str,
                 record["entries"].append(
                     {"window_id": window_id, "value": item.get("current_value")}
                 )
-                if item.get("op"):
+                if item.get("change_type") or item.get("op"):
                     record["has_op"] = True
 
     for state_type, states in tracker.items():
@@ -6057,9 +6070,9 @@ class GenerationPipeline:
                     next_items = next_window_state.get(state_type) or []
                     for item in next_items:
                         name = item.get("name")
-                        item_op = (item.get("op") or "").lower()
-                        # If the item has an operation in the next window, it means it will change
-                        if name and item_op and item_op not in {"", "stable"}:
+                        item_change_type = (item.get("change_type") or item.get("op") or "").lower()
+                        # If the item has a change_type in the next window, it means it will change
+                        if name and item_change_type and item_change_type not in {"", "stable"}:
                             next_window_changing_items.add((state_type, name))
 
             # import pdb; pdb.set_trace()
@@ -6072,11 +6085,11 @@ class GenerationPipeline:
                     if not name:
                         continue
 
-                    item_op = item.get("op")
+                    item_change_type = item.get("change_type") or item.get("op")
                     change_reason = item.get("change_reason")
                     previous_value = item.get("previous_value")
                     current_value = item.get("current_value")
-                    item_op_lower = (item_op or "").lower()
+                    item_change_type_lower = (item_change_type or "").lower()
 
                     # import pdb; pdb.set_trace()
 
@@ -6084,7 +6097,7 @@ class GenerationPipeline:
                     if (
                         state_type == "user_attributes_state"
                         and isinstance(current_value, list)
-                        and item_op_lower in {"remove", "modify", "replace", "set", "drop"}
+                        and item_change_type_lower in {"remove", "modify", "replace", "set", "drop"}
                     ):
                         metadata = {
                             "updated_this_window": True,
@@ -6096,7 +6109,7 @@ class GenerationPipeline:
                         change_entry: Dict[str, object] = {
                             "name": name,
                             "current_value": current_value,
-                            "change_type": item_op,
+                            "change_type": item_change_type,
                             "metadata": metadata,
                         }
                         if change_reason:
@@ -6162,13 +6175,13 @@ class GenerationPipeline:
                             entry: Dict[str, object] = {
                                 "name": name,
                                 "current_value": val_for_prompt,
-                                "change_type": item_op if freshness and item_op else "unchanged",
+                                "change_type": item_change_type if freshness and item_change_type else "unchanged",
                                 "metadata": metadata,
                             }
                             if updated_this_window and change_reason:
                                 entry["change_reason"] = change_reason
                             if updated_this_window:
-                                if item_op_lower in {"add", "acquire"}:
+                                if item_change_type_lower in {"add", "acquire"}:
                                     entry["previous_value"] = None
                                 elif previous_value is not None:
                                     prev_value = previous_value
@@ -6533,7 +6546,6 @@ def example_usage() -> None:
     api_key = os.getenv("GOOGLE_API_KEY")
     client = GeminiJSONClient(api_key=api_key)
     base_dir = Path(__file__).resolve().parent
-    # base_dir = "/export/scratch_large/wenya/mem_bench/behavior_and_conversation"
     domains_path = base_dir / "domains.json"
     domains = load_domains_from_file(domains_path)
     # selected, selection_meta = select_domains_for_user(domains, optional_probability=0.5, seed=42)
@@ -7582,10 +7594,7 @@ def debug_generate_real_data(cutoff_date: Optional[str] = None) -> None:
     print("\nDone!")
 
 def debug_cross_domain_conflict_resolution_temporal() -> None:
-    ## use /export/scratch_large/wenya/mem_bench/behavior_and_conversation/generated_outputs_debug_v11/gemini_3_flash_preview/cross_domain_conflict_resolution_temporal_claude.json
-    ## apply resolution to dynamic profiles
-    ## save the resolved dynamic profiles to /export/scratch_large/wenya/mem_bench/behavior_and_conversation/generated_outputs_debug_v11/gemini_3_flash_preview/cross_domain_conflict_resolution_temporal_iter1.json
-    base_dir = Path(__file__).resolve().parent
+   base_dir = Path(__file__).resolve().parent
     model_name = "gemini-3-flash-preview"
     output_dir = base_dir / "generated_outputs_debug_v11" / _slugify(model_name)
     with open(output_dir / "cross_domain_conflict_resolution_temporal_claude.json", "r") as f:

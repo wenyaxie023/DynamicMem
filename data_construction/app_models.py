@@ -662,7 +662,7 @@ class ShowWishlistOutput(BaseModel):
     
 class CheckoutInput(BaseModel):
     pass
-    
+
 class CheckoutOutput(BaseModel):
     order_id: str
     order_items: List[OrderItem]
@@ -670,6 +670,22 @@ class CheckoutOutput(BaseModel):
     order_date: datetime
     estimated_delivery: date = Field(description="Estimated delivery date")
     prime_member: bool
+
+class AddToWishlistInput(BaseModel):
+    product_id: str
+
+class AddToWishlistOutput(BaseModel):
+    wishlist: List[WishlistItem]
+
+class WriteReviewInput(BaseModel):
+    product_id: str
+    rating: int = Field(ge=1, le=5, description="Rating from 1 to 5 stars")
+    review_text: str = Field(description="Review content")
+
+class WriteReviewOutput(BaseModel):
+    review: ProductReview
+    product_id: str
+    reviewed_at: datetime
 
 # ==================== Spotify APIs ====================
 class SearchSongsInput(BaseModel):
