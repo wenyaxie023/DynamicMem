@@ -7,3 +7,12 @@ env
 *.log
 *.txt
 
+# HippoRAG Cache and Outputs
+*.sqlite
+*.sqlite-shm
+*.sqlite-wal
+*.pickle
+*.parquet
+*.sqlite.lock
+
+
