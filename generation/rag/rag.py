@@ -1,6 +1,8 @@
+import argparse
 import json
 import time
-from typing import List, Callable
+from pathlib import Path
+from typing import Callable, Dict, List
 from abc import ABC, abstractmethod
 
 import numpy as np
@@ -8,8 +10,13 @@ import torch
 from tqdm import tqdm
 from jinja2 import Template
 from transformers import AutoTokenizer, AutoModel
+from openai import OpenAI
 
 from client import LLMClient
+from dotenv import load_dotenv
+
+load_dotenv()
+
 
 # =========================
 # Config
@@ -24,7 +31,9 @@ class RAGConfig:
         output_path: str = "data/rag_results.json",
         chunk_size: int = 500,   # -1 => AppLogChunker
         top_k: int = 3,
-        retriever_type: str = "contriever",   # "contriever" | "qwen"
+        retrieval_top_k: int = 20,
+        retrieval_output_paths: Dict[int, str] | None = None,
+        retriever_type: str = "contriever",   # "contriever" | "qwen" | "openai"
         retriever_model: str = None,
         llm_provider: str = "openai",
         llm_model: str = "gpt-5-mini",
@@ -35,6 +44,8 @@ class RAGConfig:
 
         self.chunk_size = chunk_size
         self.top_k = top_k
+        self.retrieval_top_k = retrieval_top_k
+        self.retrieval_output_paths = retrieval_output_paths or {}
 
         self.retriever_type = retriever_type
         self.retriever_model = retriever_model
@@ -71,13 +82,39 @@ class AppLogChunker(Chunker):
     """
 
     def chunk(self, text: str) -> List[str]:
+        try:
+            import tiktoken
+        except Exception as exc:
+            raise RuntimeError(
+                "Token-based chunking requires tiktoken. "
+                "Install it with `pip install tiktoken`."
+            ) from exc
+
+        enc = tiktoken.get_encoding("cl100k_base")
+        max_tokens = 8000
+
         data = json.loads(text)
 
-        logs = data.get("app_logs", [])
-        return [
-            json.dumps(log, ensure_ascii=False)
-            for log in logs
-        ]
+        if isinstance(data, list):
+            logs = data
+        else:
+            logs = data.get("app_logs", [])
+        chunks: List[dict] = []
+        for log in logs:
+            raw = json.dumps(log, ensure_ascii=False)
+            tokens = enc.encode(raw)
+            if len(tokens) <= max_tokens:
+                chunks.append(log)
+                continue
+            # Split by tokens to avoid embedding context limits.
+            for i in range(0, len(tokens), max_tokens):
+                chunks.append(
+                    {
+                        "app_log_id": log.get("app_log_id"),
+                        "chunk": enc.decode(tokens[i: i + max_tokens]),
+                    }
+                )
+        return chunks
 
 
 # =========================
@@ -100,22 +137,53 @@ class BruteForceRetriever(Retriever):
     embeddings must be L2-normalized.
     """
 
-    def __init__(self, embed_fn: Callable[[List[str]], np.ndarray]):
+    def __init__(
+        self,
+        embed_fn: Callable[[List[str]], np.ndarray],
+        *,
+        batch_size: int = 1,
+    ):
         self.embed_fn = embed_fn
+        self.batch_size = batch_size
         self.documents: List[str] = []
         self.embeddings: np.ndarray | None = None
 
     def build_index(self, documents: List[str]):
         self.documents = documents
-        self.embeddings = self.embed_fn(documents)  # (N, D)
+        if not documents:
+            self.embeddings = np.empty((0, 0), dtype="float32")
+            return
 
-    def retrieve(self, query: str, top_k: int) -> str:
+        texts: List[str] = []
+        for doc in documents:
+            if isinstance(doc, str):
+                texts.append(doc)
+            else:
+                texts.append(json.dumps(doc, ensure_ascii=False))
+
+        batches = []
+        for i in tqdm(
+            range(0, len(texts), self.batch_size),
+            desc="Embedding",
+        ):
+            batch = texts[i: i + self.batch_size]
+            batches.append(self.embed_fn(batch))
+        self.embeddings = np.vstack(batches)  # (N, D)
+
+    def retrieve_docs(self, query: str, top_k: int) -> List[dict | str]:
         q_emb = self.embed_fn([query])[0]           # (D,)
         scores = self.embeddings @ q_emb            # (N,)
 
         top_idx = np.argsort(scores)[::-1][:top_k]
 
-        return "\n<->\n".join(self.documents[i] for i in top_idx)
+        return [self.documents[i] for i in top_idx]
+
+    def retrieve(self, query: str, top_k: int) -> str:
+        docs = self.retrieve_docs(query, top_k)
+        return "\n<->\n".join(
+            doc if isinstance(doc, str) else json.dumps(doc, ensure_ascii=False)
+            for doc in docs
+        )
 
 
 # =========================
@@ -182,6 +250,90 @@ class QwenEmbeddingEmbedder(BaseEmbedder):
         return emb
 
 
+class OpenAIEmbeddingEmbedder(BaseEmbedder):
+    def __init__(
+        self,
+        model_name: str,
+        *,
+        max_batch_texts: int = 32,
+        max_batch_chars: int = 8000,
+        max_text_tokens: int = 8000,
+    ):
+        self.client = OpenAI()
+        self.model_name = model_name
+        self.max_batch_texts = max_batch_texts
+        self.max_batch_chars = max_batch_chars
+        self.max_text_tokens = max_text_tokens
+
+        try:
+            import tiktoken
+        except Exception as exc:
+            raise RuntimeError(
+                "OpenAI embeddings require tiktoken for token truncation. "
+                "Install it with `pip install tiktoken`."
+            ) from exc
+
+        try:
+            self._encoder = tiktoken.encoding_for_model(model_name)
+        except KeyError:
+            self._encoder = tiktoken.get_encoding("cl100k_base")
+
+    def _truncate_texts(self, texts: List[str]) -> List[str]:
+        truncated: List[str] = []
+        for text in texts:
+            tokens = self._encoder.encode(text)
+            if len(tokens) > self.max_text_tokens:
+                tokens = tokens[: self.max_text_tokens]
+                truncated.append(self._encoder.decode(tokens))
+            else:
+                truncated.append(text)
+        return truncated
+
+    def embed(self, texts: List[str]) -> np.ndarray:
+        if not texts:
+            return np.empty((0, 0), dtype="float32")
+
+        texts = self._truncate_texts(texts)
+
+        batches: List[List[str]] = []
+        current: List[str] = []
+        current_chars = 0
+
+        for text in texts:
+            text_len = len(text)
+            if (
+                current
+                and (
+                    len(current) >= self.max_batch_texts
+                    or current_chars + text_len > self.max_batch_chars
+                )
+            ):
+                batches.append(current)
+                current = []
+                current_chars = 0
+            current.append(text)
+            current_chars += text_len
+
+        if current:
+            batches.append(current)
+
+        all_embs: List[np.ndarray] = []
+        for batch in batches:
+            response = self.client.embeddings.create(
+                model=self.model_name,
+                input=batch,
+            )
+            batch_emb = np.array(
+                [item.embedding for item in response.data],
+                dtype="float32",
+            )
+            all_embs.append(batch_emb)
+
+        emb = np.vstack(all_embs)
+        emb /= np.linalg.norm(emb, axis=1, keepdims=True)
+        return emb
+
+
 # =========================
 # RAG Manager
 # =========================
@@ -216,6 +368,10 @@ class RAGManager:
             embedder = QwenEmbeddingEmbedder(
                 cfg.retriever_model or "Qwen/Qwen3-Embedding-8B"
             )
+        elif cfg.retriever_type == "openai":
+            embedder = OpenAIEmbeddingEmbedder(
+                cfg.retriever_model or "text-embedding-3-large"
+            )
         else:
             embedder = ContrieverEmbedder(
                 cfg.retriever_model or "facebook/contriever"
@@ -243,45 +399,141 @@ class RAGManager:
         return self.llm.ask(prompt, response_type="text")
 
     def run(self):
-        # ---- schema ----
-        schema_text = self.load_schema_as_text()
-        chunks = self.chunker.chunk(schema_text)
-        self.retriever.build_index(chunks)
+        return self.run_two_stage(skip_retrieve=False)
 
-        # ---- QA ----
+    def _load_qa_list(self) -> List[dict]:
+        print("[RAG] Loading QA list...")
         with open(self.cfg.qa_path, "r", encoding="utf-8") as f:
             qa_list = json.load(f)
+        print(f"[RAG] Loaded {len(qa_list)} QA items.")
+        return qa_list
 
-        results = []
+    def _build_index(self) -> None:
+        print("[RAG] Loading schema...")
+        schema_text = self.load_schema_as_text()
+        chunks = self.chunker.chunk(schema_text)
+        print(f"[RAG] Chunked schema into {len(chunks)} chunks.")
+        print("[RAG] Building index (embedding corpus)...")
+        self.retriever.build_index(chunks)
+        print("[RAG] Index built.")
 
-        for q in tqdm(qa_list, desc="Answering"):
+    def _retrieve_all(self, qa_list: List[dict]) -> List[dict]:
+        retrieval_items: List[dict] = []
+        for q in tqdm(qa_list, desc="Retrieving"):
             t1 = time.time()
-            context = self.retriever.retrieve(
-                q["query"], self.cfg.top_k
+            docs = self.retriever.retrieve_docs(
+                q["query"], self.cfg.retrieval_top_k
             )
             t2 = time.time()
 
-            t3 = time.time()
-            raw = self.answer(q["query"], context)
-            prediction = json.loads(raw)["answer"]
-            evidence = json.loads(raw)["evidence"]
-            t4 = time.time()
+            contexts = {
+                k: docs[:k]
+                for k in sorted(self.cfg.retrieval_output_paths)
+            }
 
-            results.append(
+            retrieval_items.append(
                 {
                     "id": q.get("id"),
                     "query": q["query"],
                     "reference": q.get("reference"),
+                    "metadata": q.get("metadata") or {},
+                    "contexts": contexts,
+                    "search_time": t2 - t1,
+                }
+            )
+
+        return retrieval_items
+
+    def _write_retrieval_outputs(self, retrieval_items: List[dict]) -> None:
+        for k, path in self.cfg.retrieval_output_paths.items():
+            output_items = []
+            for item in retrieval_items:
+                output_items.append(
+                    {
+                        "id": item.get("id"),
+                        "query": item["query"],
+                        "reference": item.get("reference"),
+                        "metadata": item.get("metadata") or {},
+                        "context": item["contexts"][k],
+                        "search_time": item["search_time"],
+                    }
+                )
+
+            with open(path, "w", encoding="utf-8") as f:
+                json.dump(output_items, f, indent=2, ensure_ascii=False)
+
+    def _load_retrieval_output(self, path: str) -> List[dict]:
+        print(f"[RAG] Loading retrieval file: {path}")
+        with open(path, "r", encoding="utf-8") as f:
+            return json.load(f)
+
+    def _generate(self, items: List[dict]) -> List[dict]:
+        results = []
+        for item in tqdm(items, desc="Answering"):
+            t1 = time.time()
+            context = item["context"]
+            if isinstance(context, list):
+                context = "\n<->\n".join(
+                    c if isinstance(c, str) else json.dumps(c, ensure_ascii=False)
+                    for c in context
+                )
+            raw = self.answer(item["query"], context)
+            prediction = json.loads(raw)["answer"]
+            evidence = json.loads(raw)["evidence"]
+            t2 = time.time()
+
+            results.append(
+                {
+                    "id": item.get("id"),
+                    "query": item["query"],
+                    "reference": item.get("reference"),
                     "prediction": prediction,
                     "metadata": {
-                        **(q.get("metadata") or {}),
+                        **(item.get("metadata") or {}),
                         "context": context,
-                        "search_time": t2 - t1,
-                        "response_time": t4 - t3,
+                        "search_time": item.get("search_time"),
+                        "response_time": t2 - t1,
                         "evidence_prediction": evidence,
                     },
                 }
             )
+        return results
+
+    def run_two_stage(
+        self,
+        *,
+        skip_retrieve: bool = False,
+        retrieve_only: bool = False,
+    ) -> List[dict]:
+        if skip_retrieve and retrieve_only:
+            raise ValueError("Cannot use --skip-retrieve with --retrieve-only.")
+        if skip_retrieve:
+            retrieval_path = self.cfg.retrieval_output_paths.get(self.cfg.top_k)
+            if not retrieval_path:
+                raise ValueError(
+                    f"No retrieval file configured for top_k={self.cfg.top_k}"
+                )
+            retrieval_items = self._load_retrieval_output(retrieval_path)
+        else:
+            self._build_index()
+            qa_list = self._load_qa_list()
+            retrieval_items = self._retrieve_all(qa_list)
+            self._write_retrieval_outputs(retrieval_items)
+            if retrieve_only:
+                return []
+            retrieval_items = [
+                {
+                    "id": item.get("id"),
+                    "query": item["query"],
+                    "reference": item.get("reference"),
+                    "metadata": item.get("metadata") or {},
+                    "context": item["contexts"][self.cfg.top_k],
+                    "search_time": item["search_time"],
+                }
+                for item in retrieval_items
+            ]
+
+        results = self._generate(retrieval_items)
 
         with open(self.cfg.output_path, "w", encoding="utf-8") as f:
             json.dump(results, f, indent=2, ensure_ascii=False)
@@ -294,20 +546,111 @@ class RAGManager:
 # =========================
 
 if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description="Two-stage RAG pipeline")
+    parser.add_argument(
+        "--user-idx",
+        required=True,
+        help="User index (e.g. 1/2/3) or full directory name like 001_user_001",
+    )
+    parser.add_argument(
+        "--root-dir",
+        type=Path,
+        default=Path(
+            "/users/4/xie00470/mem_bench/behavior_and_conversation/"
+            "data_construction/generated_outputs/gemini_3_flash_preview"
+        ),
+        help="Root directory containing user subdirectories",
+    )
+    parser.add_argument(
+        "--gen-topk",
+        type=int,
+        choices=[5, 10, 20],
+        default=5,
+        help="Top-k context size for generation",
+    )
+    parser.add_argument(
+        "--skip-retrieve",
+        action="store_true",
+        help="Skip retrieval and load saved contexts",
+    )
+    parser.add_argument(
+        "--retrieve-only",
+        action="store_true",
+        help="Run retrieval and save contexts only",
+    )
+    parser.add_argument(
+        "--chunk-size",
+        type=int,
+        default=-1,
+        help="Chunk size for schema (use -1 for AppLogChunker)",
+    )
+    parser.add_argument(
+        "--log-size",
+        type=str,
+        choices=["small", "medium", "large"],
+        default="large",
+        help="Which app_log size to use (small/medium/large)",
+    )
+    parser.add_argument(
+        "--retriever-type",
+        type=str,
+        default="openai",
+        choices=["contriever", "qwen", "openai"],
+    )
+    parser.add_argument(
+        "--retriever-model",
+        type=str,
+        default="text-embedding-3-large",
+    )
+    parser.add_argument(
+        "--llm-provider",
+        type=str,
+        default="openai",
+    )
+    parser.add_argument(
+        "--llm-model",
+        type=str,
+        default="gpt-5-mini",
+    )
+
+    args = parser.parse_args()
+
+    def _normalize_user_dir(user_idx: str) -> str:
+        if user_idx.isdigit():
+            idx = int(user_idx)
+            return f"{idx:03d}_user_{idx:03d}"
+        return user_idx
+
+    user_dir = args.root_dir / _normalize_user_dir(args.user_idx)
+    user_dir.mkdir(parents=True, exist_ok=True)
+
+    schema_path = user_dir / f"app_log_{args.log_size}.json"
+    qa_path = user_dir / "QA.json"
+
+    retrieval_output_paths = {
+        5: str(user_dir / f"rag_retrieval_{args.log_size}_top5.json"),
+        10: str(user_dir / f"rag_retrieval_{args.log_size}_top10.json"),
+        20: str(user_dir / f"rag_retrieval_{args.log_size}_top20.json"),
+    }
+
+    output_path = user_dir / f"rag_results_{args.log_size}_top{args.gen_topk}.json"
+
     cfg = RAGConfig(
-        schema_path="vannila-rag/data/schema.json",
-        qa_path="vannila-rag/data/QA.json",
-        output_path="vannila-rag/data/rag_results.json",
-
-        chunk_size=-1,
-        top_k=5,
-
-        retriever_type="qwen",
-        retriever_model=None,
-
-        llm_provider="openai",
-        llm_model="gpt-5-mini",
+        schema_path=str(schema_path),
+        qa_path=str(qa_path),
+        output_path=str(output_path),
+        chunk_size=args.chunk_size,
+        top_k=args.gen_topk,
+        retrieval_top_k=20,
+        retrieval_output_paths=retrieval_output_paths,
+        retriever_type=args.retriever_type,
+        retriever_model=args.retriever_model,
+        llm_provider=args.llm_provider,
+        llm_model=args.llm_model,
     )
 
     rag = RAGManager(cfg)
-    rag.run()
+    rag.run_two_stage(
+        skip_retrieve=args.skip_retrieve,
+        retrieve_only=args.retrieve_only,
+    )
