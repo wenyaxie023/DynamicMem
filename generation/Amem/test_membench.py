@@ -74,7 +74,8 @@ class MemBenchAgent:
         sglang_port: int = 30000,
     ):
         self.memory_system = AgenticMemorySystem(
-            model_name="all-MiniLM-L6-v2",
+            model_name="text-embedding-3-large",
+            embedding_backend="litellm",
             llm_backend=backend,
             llm_model=model,
             sglang_host=sglang_host,

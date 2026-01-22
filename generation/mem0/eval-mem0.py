@@ -55,6 +55,12 @@ def setup_logger(log_file: Path) -> logging.Logger:
 import os
 def build_mem0_config(collection_name: str, host: str, port: int) -> Dict[str, Any]:
     return {
+        # "embedder": {
+        #     "provider": "openai",
+        #     "config": {
+        #         "model": "text-embedding-3-large"
+        #     }
+        # },
         "llm": {
             "provider": "openai",
             "config": {

@@ -14,7 +14,7 @@ from nltk.tokenize import word_tokenize
 import pickle
 from pathlib import Path
 
-from litellm import completion
+from litellm import completion, embedding as litellm_embedding
 import requests
 import json as json_lib
 import time
@@ -402,6 +402,174 @@ class MemoryNote:
                 "tags": []
             }
 
+_EMBEDDING_MODEL_ALIASES = {
+    "minilm-l6-v2": "all-MiniLM-L6-v2",
+    "qwen3-embedding-8b": "Qwen/Qwen3-Embedding-8B",
+    "contriever": "facebook/contriever",
+    "contriever-msmarco": "facebook/contriever-msmarco",
+}
+
+def _normalize_embedding_model_name(model_name: str) -> str:
+    if not model_name:
+        return model_name
+    key = model_name.strip()
+    alias = _EMBEDDING_MODEL_ALIASES.get(key)
+    if alias:
+        return alias
+    alias = _EMBEDDING_MODEL_ALIASES.get(key.lower())
+    return alias or model_name
+
+def _infer_embedding_backend(model_name: str) -> str:
+    name = model_name.lower()
+    if "contriever" in name:
+        return "contriever"
+    if name.startswith("text-embedding-") or name.startswith("openai/"):
+        return "litellm"
+    return "sentence-transformers"
+
+def _normalize_embedding_backend(embedding_backend: Optional[str], model_name: str) -> str:
+    backend = embedding_backend or _infer_embedding_backend(model_name)
+    backend = backend.lower()
+    if backend in {"sentence_transformers", "sentence-transformer", "st"}:
+        return "sentence-transformers"
+    if backend in {"openai"}:
+        return "litellm"
+    if backend in {"hf", "huggingface"}:
+        return "contriever"
+    return backend
+
+class BaseEmbeddingModel(ABC):
+    def __init__(self, model_name: str):
+        self.model_name = model_name
+
+    @abstractmethod
+    def encode(self, texts: List[str]) -> np.ndarray:
+        """Encode input texts into embeddings."""
+        pass
+
+class SentenceTransformerEmbeddingModel(BaseEmbeddingModel):
+    def __init__(self, model_name: str):
+        super().__init__(model_name)
+        self.model = SentenceTransformer(model_name)
+
+    def encode(self, texts: List[str]) -> np.ndarray:
+        if isinstance(texts, str):
+            texts = [texts]
+        if not texts:
+            return np.array([])
+        return self.model.encode(texts, convert_to_numpy=True)
+
+class LiteLLMEmbeddingModel(BaseEmbeddingModel):
+    def __init__(self, model_name: str, api_base: Optional[str] = None, api_key: Optional[str] = None):
+        super().__init__(model_name)
+        self.api_base = api_base
+        self.api_key = api_key
+
+    def encode(self, texts: List[str]) -> np.ndarray:
+        if isinstance(texts, str):
+            texts = [texts]
+        if not texts:
+            return np.array([])
+
+        request_args = {
+            "model": self.model_name,
+            "input": texts,
+        }
+        if self.api_base:
+            request_args["api_base"] = self.api_base
+        if self.api_key:
+            request_args["api_key"] = self.api_key
+
+        response = litellm_embedding(**request_args)
+        data = getattr(response, "data", None)
+        if data is None and isinstance(response, dict):
+            data = response.get("data")
+        if not data:
+            return np.array([])
+
+        embeddings = []
+        indexed = True
+        for item in data:
+            if isinstance(item, dict):
+                embedding = item.get("embedding")
+                index = item.get("index")
+            else:
+                embedding = getattr(item, "embedding", None)
+                index = getattr(item, "index", None)
+            if index is None:
+                indexed = False
+            embeddings.append((index, embedding))
+
+        if indexed:
+            embeddings.sort(key=lambda pair: pair[0])
+
+        return np.array([embedding for _, embedding in embeddings], dtype=np.float32)
+
+class ContrieverEmbeddingModel(BaseEmbeddingModel):
+    def __init__(self, model_name: str, device: Optional[str] = None):
+        super().__init__(model_name)
+        try:
+            import torch
+        except ImportError as e:
+            raise ImportError(
+                "torch is required for Contriever embeddings. Install it with: pip install torch"
+            ) from e
+        self.torch = torch
+        self.tokenizer = AutoTokenizer.from_pretrained(model_name)
+        self.model = AutoModel.from_pretrained(model_name)
+        self.model.eval()
+        if device is None:
+            device = "cuda" if torch.cuda.is_available() else "cpu"
+        self.device = device
+        self.model.to(self.device)
+
+    def _mean_pooling(self, model_output, attention_mask):
+        token_embeddings = model_output[0]
+        input_mask_expanded = attention_mask.unsqueeze(-1).expand(token_embeddings.size()).float()
+        sum_embeddings = (token_embeddings * input_mask_expanded).sum(dim=1)
+        sum_mask = input_mask_expanded.sum(dim=1).clamp(min=1e-9)
+        return sum_embeddings / sum_mask
+
+    def encode(self, texts: List[str]) -> np.ndarray:
+        if isinstance(texts, str):
+            texts = [texts]
+        if not texts:
+            return np.array([])
+
+        torch = self.torch
+        batch_size = 32
+        all_embeddings = []
+        for start in range(0, len(texts), batch_size):
+            batch = texts[start:start + batch_size]
+            inputs = self.tokenizer(batch, padding=True, truncation=True, return_tensors="pt")
+            inputs = {key: value.to(self.device) for key, value in inputs.items()}
+            with torch.no_grad():
+                model_output = self.model(**inputs)
+            embeddings = self._mean_pooling(model_output, inputs["attention_mask"])
+            embeddings = torch.nn.functional.normalize(embeddings, p=2, dim=1)
+            all_embeddings.append(embeddings.cpu().numpy())
+
+        return np.vstack(all_embeddings)
+
+def build_embedding_model(
+    model_name: str,
+    embedding_backend: Optional[str] = None,
+    api_key: Optional[str] = None,
+    api_base: Optional[str] = None,
+) -> BaseEmbeddingModel:
+    resolved_name = _normalize_embedding_model_name(model_name)
+    resolved_backend = _normalize_embedding_backend(embedding_backend, resolved_name)
+
+    if resolved_backend == "sentence-transformers":
+        return SentenceTransformerEmbeddingModel(resolved_name)
+    if resolved_backend == "litellm":
+        input("YES!")
+        return LiteLLMEmbeddingModel(resolved_name, api_base=api_base, api_key=api_key)
+    if resolved_backend == "contriever":
+        return ContrieverEmbeddingModel(resolved_name)
+
+    raise ValueError(f"Unsupported embedding backend: {resolved_backend}")
+
 class HybridRetriever:
     """Hybrid retrieval system combining BM25 and semantic search."""
     
@@ -553,16 +721,79 @@ class HybridRetriever:
         top_k_indices = np.argsort(hybrid_scores)[-k:][::-1]
         return top_k_indices.tolist()
 
+class BM25Retriever:
+    """Retrieval system using BM25 only."""
+
+    def __init__(self):
+        self.bm25 = None
+        self.corpus = []
+        self.document_ids = {}  # Map document content to its index
+
+    @staticmethod
+    def _tokenize(text: str) -> List[str]:
+        return text.lower().split()
+
+    def add_documents(self, documents: List[str]):
+        """Add documents to the BM25 retriever."""
+        if not documents:
+            return
+
+        start_idx = len(self.corpus)
+        self.corpus.extend(documents)
+        for idx, doc in enumerate(documents):
+            self.document_ids[doc] = start_idx + idx
+
+        tokenized_docs = [self._tokenize(doc) for doc in documents]
+        if self.bm25 is None:
+            self.bm25 = BM25Okapi(tokenized_docs)
+            return
+
+        add_document = getattr(self.bm25, "add_document", None)
+        if callable(add_document):
+            for doc_tokens in tokenized_docs:
+                add_document(doc_tokens)
+        else:
+            all_tokenized = [self._tokenize(doc) for doc in self.corpus]
+            self.bm25 = BM25Okapi(all_tokenized)
+
+    def search(self, query: str, k: int = 5) -> List[int]:
+        """Search for relevant documents using BM25."""
+        if not self.corpus or self.bm25 is None:
+            return []
+
+        tokenized_query = self._tokenize(query)
+        scores = np.array(self.bm25.get_scores(tokenized_query))
+        k = min(k, len(self.corpus))
+        top_k_indices = np.argsort(scores)[-k:][::-1]
+        return top_k_indices.tolist()
+
 class SimpleEmbeddingRetriever:
     """Simple retrieval system using only text embeddings."""
     
-    def __init__(self, model_name: str = 'all-MiniLM-L6-v2'):
+    def __init__(
+        self,
+        model_name: str = 'all-MiniLM-L6-v2',
+        embedding_backend: Optional[str] = None,
+        api_key: Optional[str] = None,
+        api_base: Optional[str] = None,
+    ):
         """Initialize the simple embedding retriever.
         
         Args:
-            model_name: Name of the SentenceTransformer model to use
+            model_name: Name of the embedding model to use
+            embedding_backend: Embedding backend (sentence-transformers, litellm, contriever)
         """
-        self.model = SentenceTransformer(model_name)
+        self.api_key = api_key
+        self.api_base = api_base
+        self.embedder = build_embedding_model(
+            model_name,
+            embedding_backend=embedding_backend,
+            api_key=api_key,
+            api_base=api_base,
+        )
+        self.model_name = self.embedder.model_name
+        self.embedding_backend = _normalize_embedding_backend(embedding_backend, self.model_name)
+        self.model = getattr(self.embedder, "model", None)
         self.corpus = []
         self.embeddings = None
         self.document_ids = {}  # Map document content to its index
@@ -573,13 +804,13 @@ class SimpleEmbeddingRetriever:
         if not self.corpus:
             self.corpus = documents
             # print("documents", documents, len(documents))
-            self.embeddings = self.model.encode(documents)
+            self.embeddings = self.embedder.encode(documents)
             self.document_ids = {doc: idx for idx, doc in enumerate(documents)}
         else:
             # Append new documents
             start_idx = len(self.corpus)
             self.corpus.extend(documents)
-            new_embeddings = self.model.encode(documents)
+            new_embeddings = self.embedder.encode(documents)
             if self.embeddings is None:
                 self.embeddings = new_embeddings
             else:
@@ -601,7 +832,7 @@ class SimpleEmbeddingRetriever:
             return []
         # print("corpus", len(self.corpus), self.corpus)
         # Encode query
-        query_embedding = self.model.encode([query])[0]
+        query_embedding = self.embedder.encode([query])[0]
         
         # Calculate cosine similarities
         similarities = cosine_similarity([query_embedding], self.embeddings)[0]
@@ -620,7 +851,9 @@ class SimpleEmbeddingRetriever:
         # Save other attributes
         state = {
             'corpus': self.corpus,
-            'document_ids': self.document_ids
+            'document_ids': self.document_ids,
+            'model_name': self.model_name,
+            'embedding_backend': self.embedding_backend,
         }
         with open(retriever_cache_file, 'wb') as f:
             pickle.dump(state, f)
@@ -644,6 +877,23 @@ class SimpleEmbeddingRetriever:
                 state = pickle.load(f)
                 self.corpus = state['corpus']
                 self.document_ids = state['document_ids']
+                loaded_model_name = state.get('model_name')
+                loaded_backend = state.get('embedding_backend')
+                if loaded_model_name or loaded_backend:
+                    resolved_backend = _normalize_embedding_backend(
+                        loaded_backend,
+                        loaded_model_name or self.model_name,
+                    )
+                    if loaded_model_name != self.model_name or resolved_backend != self.embedding_backend:
+                        self.embedder = build_embedding_model(
+                            loaded_model_name or self.model_name,
+                            embedding_backend=resolved_backend,
+                            api_key=self.api_key,
+                            api_base=self.api_base,
+                        )
+                        self.model_name = self.embedder.model_name
+                        self.embedding_backend = resolved_backend
+                        self.model = getattr(self.embedder, "model", None)
                 print(f"Loaded corpus with {len(self.corpus)} documents")
         else:
             print(f"Corpus file not found: {retriever_cache_file}")
@@ -651,7 +901,14 @@ class SimpleEmbeddingRetriever:
         return self
 
     @classmethod
-    def load_from_local_memory(cls, memories: Dict, model_name: str) -> 'SimpleEmbeddingRetriever':
+    def load_from_local_memory(
+        cls,
+        memories: Dict,
+        model_name: str,
+        embedding_backend: Optional[str] = None,
+        api_key: Optional[str] = None,
+        api_base: Optional[str] = None,
+    ) -> 'SimpleEmbeddingRetriever':
         """Load retriever state from memory"""
         # Create documents combining content and metadata for each memory
         all_docs = []
@@ -661,7 +918,12 @@ class SimpleEmbeddingRetriever:
             all_docs.append(doc)
             
         # Create and initialize retriever
-        retriever = cls(model_name)
+        retriever = cls(
+            model_name,
+            embedding_backend=embedding_backend,
+            api_key=api_key,
+            api_base=api_base,
+        )
         retriever.add_documents(all_docs)
         return retriever
 
@@ -675,9 +937,18 @@ class AgenticMemorySystem:
                  api_key: Optional[str] = None,
                  api_base: Optional[str] = None,
                  sglang_host: str = "http://localhost",
-                 sglang_port: int = 30000):
+                 sglang_port: int = 30000,
+                 retriever_type: Optional[str] = None,
+                 embedding_backend: Optional[str] = None):
         self.memories = {}  # id -> MemoryNote
-        self.retriever = SimpleEmbeddingRetriever(model_name)
+        if retriever_type is None:
+            retriever_type = "bm25" if model_name.lower() == "bm25" else "embedding"
+        self.retriever_type = retriever_type
+        self.retriever_model_name = model_name
+        self.embedding_backend = embedding_backend
+        self.embedding_api_key = api_key
+        self.embedding_api_base = api_base
+        self.retriever = self._build_retriever()
         self.llm_controller = LLMController(llm_backend, llm_model, api_key, api_base, sglang_host, sglang_port)
         self.evolution_system_prompt = '''
                                 You are an AI memory evolution agent responsible for managing and evolving a knowledge base.
@@ -713,6 +984,19 @@ class AgenticMemorySystem:
         self.evo_cnt = 0 
         self.evo_threshold = evo_threshold
 
+    def _build_retriever(self):
+        retriever_type = (self.retriever_type or "embedding").lower()
+        if retriever_type == "bm25":
+            return BM25Retriever()
+        if retriever_type == "embedding":
+            return SimpleEmbeddingRetriever(
+                self.retriever_model_name,
+                embedding_backend=self.embedding_backend,
+                api_key=self.embedding_api_key,
+                api_base=self.embedding_api_base,
+            )
+        raise ValueError(f"Unsupported retriever type: {self.retriever_type}")
+
     def add_note(self, content: str, time: str = None, **kwargs) -> str:
         """Add a new memory note"""
         note = MemoryNote(content=content, llm_controller=self.llm_controller, timestamp=time, **kwargs)
@@ -735,15 +1019,8 @@ class AgenticMemorySystem:
         including their context, keywords, and tags to ensure the retrieval system has the
         latest state of all memories.
         """
-        # Reset the retriever with the same model
-        try:
-            # Try to get model name through get_config_dict if available
-            model_name = self.retriever.model.get_config_dict()['model_name']
-        except (AttributeError, KeyError):
-            # Fallback: use the model name from the class initialization
-            model_name = 'all-MiniLM-L6-v2'
-        
-        self.retriever = SimpleEmbeddingRetriever(model_name)
+        # Reset the retriever with the same configuration
+        self.retriever = self._build_retriever()
         
         # Re-add all memory documents with their metadata
         for memory in self.memories.values():
