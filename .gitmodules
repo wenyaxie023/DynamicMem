@@ -1,3 +1,7 @@
 [submodule "generation/HippoRAG2/HippoRAG"]
 	path = generation/HippoRAG2/HippoRAG
 	url = https://github.com/OSU-NLP-Group/HippoRAG.git
+
+[submodule "generation/MemAgent/MemAgent"]
+	path = generation/MemAgent/MemAgent
+	url = https://github.com/BytedTsinghua-SIA/MemAgent.git

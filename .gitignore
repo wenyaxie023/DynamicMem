@@ -15,4 +15,13 @@ env
 *.parquet
 *.sqlite.lock
 
+# MemAgent specific (Dual-Env)
+generation/MemAgent/venv-vllm/
+generation/MemAgent/venv-memagent/
+generation/MemAgent/results_logs/
+generation/MemAgent/benchmark_data/
+generation/MemAgent/*.result.json
+generation/MemAgent/benchmark_main.log
+
+
 
