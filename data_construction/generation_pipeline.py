@@ -7594,7 +7594,7 @@ def debug_generate_real_data(cutoff_date: Optional[str] = None) -> None:
     print("\nDone!")
 
 def debug_cross_domain_conflict_resolution_temporal() -> None:
-   base_dir = Path(__file__).resolve().parent
+    base_dir = Path(__file__).resolve().parent
     model_name = "gemini-3-flash-preview"
     output_dir = base_dir / "generated_outputs_debug_v11" / _slugify(model_name)
     with open(output_dir / "cross_domain_conflict_resolution_temporal_claude.json", "r") as f:

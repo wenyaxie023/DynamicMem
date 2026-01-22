@@ -30,7 +30,7 @@ from elite_persona_sampler import (
     load_sampled_personas,
     sample_elite_personas,
 )
-from llm_client import GeminiJSONClient
+from llm_client import GeminiJSONClient, OpenAICompatibleClient, create_client, LLMProvider
 from logging_utils import setup_logger, get_logger
 from stages import DynamicProfileStage, EventsChainStage, AppLogsStage
 from stages.stage1_dynamic_profile import Domain, TimelineConfig
@@ -170,6 +170,11 @@ class RunConfig:
     output_dir: Path = Path("./generated_outputs")
     model_name: str = "gemini-3-flash-preview"
 
+    # LLM provider settings
+    provider: str = "google"  # "google", "openai", "aimlapi", "custom"
+    base_url: Optional[str] = None  # Custom base URL (optional)
+    api_key: Optional[str] = None  # API key (optional, falls back to env var)
+
     # Debug mode - saves all intermediate outputs
     debug_mode: bool = True
 
@@ -233,11 +238,14 @@ class BatchGenerationRunner:
     def __init__(
         self,
         config: RunConfig,
-        llm_client: Optional[GeminiJSONClient] = None,
+        llm_client: Optional[GeminiJSONClient | OpenAICompatibleClient] = None,
     ):
         self.config = config
-        self.llm_client = llm_client or GeminiJSONClient(
-            model_name=config.model_name
+        self.llm_client = llm_client or create_client(
+            provider=config.provider,
+            model_name=config.model_name,
+            api_key=config.api_key,
+            base_url=config.base_url,
         )
         self.domains = self._load_domains()
 
@@ -435,8 +443,8 @@ class BatchGenerationRunner:
                 user_basic_profile=user_basic_profile,
                 user_id=self.config.user_id,
                 cutoff_date=self.config.cutoff_date,
-                # resume_from_existing=True,
-                clear_checkpoint_on_start=True,
+                resume_from_existing=True,
+                # clear_checkpoint_on_start=True,
             )
 
 
@@ -539,6 +547,25 @@ def main():
         type=str,
         default="gemini-3-flash-preview",
         help="LLM model name to use",
+    )
+    parser.add_argument(
+        "--provider",
+        type=str,
+        default="google",
+        choices=["google", "openai", "aimlapi", "custom"],
+        help="LLM provider to use (google, openai, aimlapi, custom)",
+    )
+    parser.add_argument(
+        "--base-url",
+        type=str,
+        default=None,
+        help="Custom base URL for the LLM API (optional)",
+    )
+    parser.add_argument(
+        "--api-key",
+        type=str,
+        default=None,
+        help="API key for the LLM provider (optional, falls back to env var)",
     )
     parser.add_argument(
         "--debug",
@@ -685,6 +712,9 @@ def main():
         config = RunConfig(
             output_dir=user_output_dir,
             model_name=args.model,
+            provider=args.provider,
+            base_url=args.base_url,
+            api_key=args.api_key,
             debug_mode=args.debug,
             skip_stage1=args.skip_stage1,
             skip_stage2=args.skip_stage2,

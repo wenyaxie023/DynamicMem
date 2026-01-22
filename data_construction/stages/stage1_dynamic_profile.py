@@ -998,7 +998,11 @@ class DynamicProfileStage:
         This is an iterative process that resolves conflicts window by window.
         """
 
-        resolved_profiles = deepcopy(dynamic_profiles)
+        # Try to load from the latest iteration cache
+        resolved_profiles, start_iteration = self._load_latest_temporal_iteration_cache(dynamic_profiles)
+        if start_iteration > 0:
+            self.logger.info(f"Resuming temporal conflict resolution from iteration {start_iteration}")
+
         aggregate_usage: Dict[str, Any] = {}
         all_payloads: Dict[str, Any] = {}
         all_conflicts: List[Dict] = []
@@ -1021,7 +1025,7 @@ class DynamicProfileStage:
         # Get window order
         window_order = self._get_window_resolution_order(resolved_profiles)
 
-        iteration_counter = 0
+        iteration_counter = start_iteration
 
         for window_label in window_order:
             if not window_label or window_label == "unknown":
@@ -1128,3 +1132,61 @@ class DynamicProfileStage:
                 _add(window.get("window_id"))
 
         return ordered
+
+    def _load_latest_temporal_iteration_cache(
+        self,
+        fallback_profiles: Dict[str, Dict],
+    ) -> Tuple[Dict[str, Dict], int]:
+        """
+        Load the latest temporal iteration cache if available.
+
+        Scans debug directory for files matching 'profiles_after_iter_*.json'
+        and returns the one with the highest iteration number.
+
+        Args:
+            fallback_profiles: Profiles to return if no cache is found
+
+        Returns:
+            Tuple of (profiles dict, iteration number). If no cache found,
+            returns (fallback_profiles, 0).
+        """
+        if not self.debug_mode or not hasattr(self, 'debug_dir'):
+            return deepcopy(fallback_profiles), 0
+
+        # Find all iteration cache files
+        pattern = "profiles_after_iter_*.json"
+        cache_files = list(self.debug_dir.glob(pattern))
+
+        if not cache_files:
+            return deepcopy(fallback_profiles), 0
+
+        # Parse iteration numbers from filenames
+        # Format: profiles_after_iter_{iteration}_{window_label}.json
+        max_iter = 0
+        latest_file: Path | None = None
+
+        for cache_file in cache_files:
+            # Extract iteration number from filename
+            filename = cache_file.stem  # e.g., "profiles_after_iter_5_w1"
+            parts = filename.split("_")
+            # Find the part after "iter"
+            try:
+                iter_idx = parts.index("iter")
+                if iter_idx + 1 < len(parts):
+                    iter_num = int(parts[iter_idx + 1])
+                    if iter_num > max_iter:
+                        max_iter = iter_num
+                        latest_file = cache_file
+            except (ValueError, IndexError):
+                continue
+
+        if latest_file is None or max_iter == 0:
+            return deepcopy(fallback_profiles), 0
+
+        try:
+            self.logger.info(f"Loading temporal iteration cache from {latest_file.name}")
+            cached_profiles = json.loads(latest_file.read_text())
+            return cached_profiles, max_iter
+        except (json.JSONDecodeError, IOError) as e:
+            self.logger.warning(f"Failed to load cache {latest_file}: {e}")
+            return deepcopy(fallback_profiles), 0

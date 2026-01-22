@@ -150,8 +150,11 @@ class AppLogsStage:
             self.debug_dir = self.output_dir / "debug" / "stage3_app_logs"
             _ensure_dir(self.debug_dir)
 
-        # Checkpoint file path
-        self.checkpoint_path = self.output_dir / "stage3_checkpoint.json"
+        # Checkpoint file path - now supports multiple checkpoints
+        self.checkpoint_dir = self.output_dir / "checkpoints"
+        _ensure_dir(self.checkpoint_dir)
+        self.checkpoint_path = self.output_dir / "stage3_checkpoint.json"  # Legacy, for backwards compat
+        self.max_checkpoints = 10  # Keep last N checkpoints
 
         # Pydantic models for validation
         self._setup_pydantic()
@@ -162,6 +165,12 @@ class AppLogsStage:
             self.checkpoint_path.unlink()
             self.logger.info(f"[Checkpoint] Cleared: {self.checkpoint_path}")
 
+        # Clear all checkpoints in checkpoint_dir
+        if self.checkpoint_dir.exists():
+            for ckpt_file in self.checkpoint_dir.glob("checkpoint_*.json"):
+                ckpt_file.unlink()
+                self.logger.info(f"[Checkpoint] Cleared: {ckpt_file}")
+
         intermediate_path = self.output_dir / "app_logs_intermediate.json"
         if intermediate_path.exists():
             intermediate_path.unlink()
@@ -169,16 +178,54 @@ class AppLogsStage:
 
     def has_checkpoint(self) -> bool:
         """Check if a checkpoint exists."""
+        # Check for new-style checkpoints first
+        if self.checkpoint_dir.exists():
+            checkpoints = list(self.checkpoint_dir.glob("checkpoint_*.json"))
+            if checkpoints:
+                return True
+        # Fallback to legacy checkpoint
         return self.checkpoint_path.exists()
+
+    def _get_latest_checkpoint_path(self) -> Optional[Path]:
+        """Get path to the latest checkpoint file."""
+        # Check for new-style checkpoints first
+        if self.checkpoint_dir.exists():
+            checkpoints = sorted(self.checkpoint_dir.glob("checkpoint_*.json"))
+            if checkpoints:
+                return checkpoints[-1]
+        # Fallback to legacy checkpoint
+        if self.checkpoint_path.exists():
+            return self.checkpoint_path
+        return None
+
+    def list_checkpoints(self) -> List[Dict[str, Any]]:
+        """List all available checkpoints with their info."""
+        checkpoints = []
+        if self.checkpoint_dir.exists():
+            for ckpt_path in sorted(self.checkpoint_dir.glob("checkpoint_*.json")):
+                try:
+                    data = json.loads(ckpt_path.read_text())
+                    checkpoints.append({
+                        "path": str(ckpt_path),
+                        "filename": ckpt_path.name,
+                        "last_processed_index": data.get("last_processed_index"),
+                        "app_log_counter": data.get("app_log_counter"),
+                        "last_processed_event_id": data.get("last_processed_event_id"),
+                    })
+                except Exception:
+                    pass
+        return checkpoints
 
     def get_checkpoint_info(self) -> Optional[Dict[str, Any]]:
         """Get information about current checkpoint without loading full data."""
-        if not self.checkpoint_path.exists():
+        ckpt_path = self._get_latest_checkpoint_path()
+        if ckpt_path is None:
             return None
 
         try:
-            data = json.loads(self.checkpoint_path.read_text())
+            data = json.loads(ckpt_path.read_text())
             return {
+                "checkpoint_path": str(ckpt_path),
                 "last_processed_event_id": data.get("last_processed_event_id"),
                 "last_processed_index": data.get("last_processed_index"),
                 "app_log_counter": data.get("app_log_counter"),
@@ -214,6 +261,7 @@ class AppLogsStage:
         cutoff_date: Optional[str] = None,
         resume_from_existing: bool = False,
         resume_from_event_id: Optional[str] = None,
+        resume_from_checkpoint: Optional[str] = None,
         clear_checkpoint_on_start: bool = False,
     ) -> Stage3Result:
         """
@@ -226,22 +274,26 @@ class AppLogsStage:
             cutoff_date: Optional cutoff date (YYYY-MM-DD format)
             resume_from_existing: If True, reuse checkpoint/existing logs to resume
             resume_from_event_id: If set, continue generation starting from this event_id (inclusive)
+            resume_from_checkpoint: If set, resume from a specific checkpoint file path or filename
+                                   (e.g., "checkpoint_001000.json" or full path)
             clear_checkpoint_on_start: If True, clear any existing checkpoint before starting
 
         Returns:
             Stage3Result with generated app logs
 
         Resume Behavior:
-            1. If resume_from_existing=True and checkpoint exists:
+            1. If resume_from_checkpoint is specified:
+               - Loads that specific checkpoint file
+            2. If resume_from_existing=True and checkpoint exists:
                - Loads checkpoint with full state (chain_logs_history, app_states)
                - Continues from last_processed_index + 1
-            2. If resume_from_existing=True but no checkpoint:
+            3. If resume_from_existing=True but no checkpoint:
                - Falls back to loading existing logs
                - Rebuilds chain_logs_history and app_states by replaying logs
-            3. If resume_from_event_id is specified:
+            4. If resume_from_event_id is specified:
                - Overrides start position to that specific event
-            4. Checkpoints are saved every checkpoint_interval logs (default: 10)
-            5. On error, checkpoint is saved for recovery
+            5. Checkpoints are saved every checkpoint_interval logs (default: 10)
+            6. On error, checkpoint is saved for recovery
         """
         self.logger.info("=== Stage 3: App Logs Generation ===")
 
@@ -279,6 +331,7 @@ class AppLogsStage:
             user_id=user_id,
             resume_from_existing=resume_from_existing,
             resume_from_event_id=resume_from_event_id,
+            resume_from_checkpoint=resume_from_checkpoint,
         )
 
         # Save results
@@ -508,8 +561,19 @@ class AppLogsStage:
         checkpoint: Stage3Checkpoint,
         app_logs: List[Dict[str, Any]],
     ) -> None:
-        """Save checkpoint to file for resuming later."""
+        """Save checkpoint to file for resuming later.
+
+        Saves a new checkpoint file with timestamp suffix and cleans up old checkpoints,
+        keeping only the most recent max_checkpoints files.
+        """
         checkpoint_data = checkpoint.to_dict()
+
+        # Save to new checkpoint file with index suffix
+        checkpoint_filename = f"checkpoint_{checkpoint.last_processed_index:06d}.json"
+        checkpoint_path = self.checkpoint_dir / checkpoint_filename
+        _write_json(checkpoint_path, checkpoint_data)
+
+        # Also save to legacy path for backwards compatibility
         _write_json(self.checkpoint_path, checkpoint_data)
 
         # Also save intermediate app_logs
@@ -518,20 +582,49 @@ class AppLogsStage:
             _json_safe({"app_logs": app_logs}),
         )
 
+        # Clean up old checkpoints, keeping only the most recent ones
+        self._cleanup_old_checkpoints()
+
         if self.debug_mode:
             self.logger.debug(f"[Checkpoint] Saved at event {checkpoint.last_processed_event_id} "
                   f"(index {checkpoint.last_processed_index}, {len(app_logs)} logs)")
 
-    def _load_checkpoint(self) -> Optional[Stage3Checkpoint]:
-        """Load checkpoint from file if exists."""
-        if not self.checkpoint_path.exists():
+    def _cleanup_old_checkpoints(self) -> None:
+        """Remove old checkpoints, keeping only the most recent max_checkpoints."""
+        if not self.checkpoint_dir.exists():
+            return
+
+        checkpoints = sorted(self.checkpoint_dir.glob("checkpoint_*.json"))
+        if len(checkpoints) > self.max_checkpoints:
+            # Remove oldest checkpoints
+            for old_ckpt in checkpoints[:-self.max_checkpoints]:
+                try:
+                    old_ckpt.unlink()
+                    self.logger.debug(f"[Checkpoint] Removed old checkpoint: {old_ckpt.name}")
+                except Exception as e:
+                    self.logger.warning(f"Failed to remove old checkpoint {old_ckpt}: {e}")
+
+    def _load_checkpoint(self, checkpoint_path: Optional[Path] = None) -> Optional[Stage3Checkpoint]:
+        """Load checkpoint from file if exists.
+
+        Args:
+            checkpoint_path: Optional specific checkpoint path to load.
+                           If None, loads the latest checkpoint.
+        """
+        if checkpoint_path is None:
+            checkpoint_path = self._get_latest_checkpoint_path()
+
+        if checkpoint_path is None or not checkpoint_path.exists():
             return None
 
         try:
-            data = json.loads(self.checkpoint_path.read_text())
+            data = json.loads(checkpoint_path.read_text())
             checkpoint = Stage3Checkpoint.from_dict(data)
-            self.logger.info(f"[Checkpoint] Loaded: last event {checkpoint.last_processed_event_id}, "
-                  f"{len(checkpoint.processed_event_ids)} events processed")
+            self.logger.info(f"[Checkpoint] Loaded from {checkpoint_path.name}: "
+                  f"last event {checkpoint.last_processed_event_id}, "
+                  f"index {checkpoint.last_processed_index}, "
+                  f"{len(checkpoint.processed_event_ids)} events processed, "
+                  f"app_log_counter={checkpoint.app_log_counter}")
             return checkpoint
         except Exception as e:
             self.logger.warning(f"[Checkpoint] Failed to load: {e}")
@@ -586,12 +679,29 @@ class AppLogsStage:
         # Restore usage
         aggregate_usage = deepcopy(checkpoint.aggregate_usage)
 
-        # Get counter and processed IDs
-        app_log_counter = checkpoint.app_log_counter
-        processed_event_ids = set(checkpoint.processed_event_ids)
+        # IMPORTANT: Derive app_log_counter from actual app_logs, not checkpoint
+        # This ensures consistency even if checkpoint was saved at a different point
+        if app_logs:
+            app_log_counter = self._max_app_log_counter(app_logs)
+            self.logger.info(f"[Resume] Derived app_log_counter={app_log_counter} from {len(app_logs)} logs "
+                  f"(checkpoint had {checkpoint.app_log_counter})")
+        else:
+            app_log_counter = checkpoint.app_log_counter
+
+        # Build processed_event_ids from actual app_logs to ensure consistency
+        # This is more reliable than using checkpoint.processed_event_ids
+        processed_event_ids = set()
+        for log in app_logs:
+            atomic_id = log.get("atomic_event_id") or log.get("event_id")
+            if atomic_id:
+                processed_event_ids.add(atomic_id)
+
+        # Also add any from checkpoint that might have been skipped (no log generated)
+        for event_id in checkpoint.processed_event_ids:
+            processed_event_ids.add(event_id)
 
         self.logger.info(f"[Resume] Restored {len(app_logs)} logs, {len(chain_logs_history)} chains, "
-              f"{len(checkpoint.app_states)} app states")
+              f"{len(checkpoint.app_states)} app states, {len(processed_event_ids)} processed event IDs")
 
         return app_logs, chain_logs_history, aggregate_usage, app_log_counter, processed_event_ids
 
@@ -621,6 +731,7 @@ class AppLogsStage:
         user_id: str,
         resume_from_existing: bool = False,
         resume_from_event_id: Optional[str] = None,
+        resume_from_checkpoint: Optional[str] = None,
     ) -> Tuple[List[Dict[str, Any]], Dict[str, Any]]:
         """Generate app logs for all events with checkpoint support.
 
@@ -628,9 +739,10 @@ class AppLogsStage:
         Each app_log is traceable back to its source event and state items.
 
         Supports resuming from:
-        1. Checkpoint file (recommended) - preserves chain history and app states
-        2. Existing logs (fallback) - rebuilds state from logs
-        3. Specific event_id - start from a particular event
+        1. Specific checkpoint file (if resume_from_checkpoint is set)
+        2. Latest checkpoint file (if resume_from_existing=True)
+        3. Existing logs (fallback) - rebuilds state from logs
+        4. Specific event_id - start from a particular event
         """
         from tqdm import tqdm
 
@@ -642,9 +754,25 @@ class AppLogsStage:
         app_log_counter = 0
         processed_event_ids: set[str] = set()
         start_index = 0
+        last_processed_index = -1  # Track the last processed index (including skipped events)
 
-        # Try to resume from checkpoint first
-        checkpoint = self._load_checkpoint() if resume_from_existing else None
+        # Determine which checkpoint to load
+        checkpoint: Optional[Stage3Checkpoint] = None
+        if resume_from_checkpoint:
+            # Load specific checkpoint
+            ckpt_path = Path(resume_from_checkpoint)
+            if not ckpt_path.is_absolute():
+                # Try checkpoint_dir first, then output_dir
+                if (self.checkpoint_dir / resume_from_checkpoint).exists():
+                    ckpt_path = self.checkpoint_dir / resume_from_checkpoint
+                elif (self.output_dir / resume_from_checkpoint).exists():
+                    ckpt_path = self.output_dir / resume_from_checkpoint
+            checkpoint = self._load_checkpoint(ckpt_path)
+            if checkpoint is None:
+                self.logger.warning(f"Could not load checkpoint from {resume_from_checkpoint}, starting fresh")
+        elif resume_from_existing:
+            # Load latest checkpoint
+            checkpoint = self._load_checkpoint()
 
         if checkpoint:
             # Full restore from checkpoint
@@ -652,7 +780,23 @@ class AppLogsStage:
              app_log_counter, processed_event_ids) = self._restore_from_checkpoint(
                 checkpoint, app_registry, user_id
             )
-            start_index = checkpoint.last_processed_index + 1
+            # Resume from the last processed index + 1
+            # All events up to last_processed_index are considered "processed" (including skipped ones)
+            if checkpoint.last_processed_index >= 0:
+                start_index = checkpoint.last_processed_index + 1
+                last_processed_index = checkpoint.last_processed_index
+            else:
+                # last_processed_index is -1, need to find the start_index by scanning events
+                # Find the first event that hasn't been processed
+                start_index = 0
+                for idx, event in enumerate(events):
+                    atomic_event_id = event.get("atomic_event_id") or event.get("event_id")
+                    if atomic_event_id not in processed_event_ids:
+                        start_index = idx
+                        break
+                last_processed_index = start_index - 1
+                self.logger.info(f"[Resume] Scanned events to find start_index={start_index} "
+                      f"(skipping {start_index} already processed events)")
 
         elif resume_from_existing:
             # Fallback: rebuild from existing logs
@@ -711,16 +855,18 @@ class AppLogsStage:
                         initial=start_index, total=total_events):
             event = events[idx]
 
-            # Validate required fields
-            if any(field not in event for field in required_fields):
-                self.logger.warning(f"Skipping event {event.get('event_id')} - missing required fields")
-                continue
-
             event_id = event.get("event_id")
             atomic_event_id = event.get("atomic_event_id") or event_id or f"idx_{idx:05d}"
 
             # Skip already processed events
             if atomic_event_id in processed_event_ids:
+                continue
+
+            # Validate required fields - mark as processed even if skipped
+            if any(field not in event for field in required_fields):
+                self.logger.warning(f"Skipping event {event.get('event_id')} - missing required fields")
+                processed_event_ids.add(atomic_event_id)
+                last_processed_index = idx
                 continue
 
             app_log_counter += 1
@@ -736,9 +882,12 @@ class AppLogsStage:
                     app_log_id=app_log_id,
                 )
 
+                # Mark as processed regardless of success (None means skipped due to missing app/API)
+                processed_event_ids.add(atomic_event_id)
+                last_processed_index = idx
+
                 if log:
                     app_logs.append(log)
-                    processed_event_ids.add(atomic_event_id)
                     logs_since_checkpoint += 1
 
                     # Update usage
@@ -755,7 +904,7 @@ class AppLogsStage:
 
                         checkpoint = Stage3Checkpoint(
                             last_processed_event_id=atomic_event_id,
-                            last_processed_index=idx,
+                            last_processed_index=last_processed_index,
                             app_log_counter=app_log_counter,
                             chain_logs_history=deepcopy(chain_logs_history),
                             app_states=app_states,
@@ -764,9 +913,13 @@ class AppLogsStage:
                         )
                         self._save_checkpoint(checkpoint, app_logs)
                         logs_since_checkpoint = 0
+                else:
+                    # log is None means skipped (missing app/API), revert counter
+                    app_log_counter -= 1
 
             except Exception as e:
                 # Save checkpoint on error for recovery
+                # Don't mark this event as processed since it failed with exception
                 app_states = {}
                 for (app_name, uid), app in app_registry.apps.items():
                     if uid == user_id:
@@ -774,7 +927,7 @@ class AppLogsStage:
 
                 checkpoint = Stage3Checkpoint(
                     last_processed_event_id=atomic_event_id,
-                    last_processed_index=idx - 1,  # Last successful index
+                    last_processed_index=last_processed_index,  # Last successfully processed index
                     app_log_counter=app_log_counter - 1,  # Revert counter
                     chain_logs_history=deepcopy(chain_logs_history),
                     app_states=app_states,
@@ -794,11 +947,10 @@ class AppLogsStage:
                 if uid == user_id:
                     app_states[app_name] = deepcopy(app.state)
 
-            final_event = events[-1] if events else {}
             final_checkpoint = Stage3Checkpoint(
-                last_processed_event_id=final_event.get("atomic_event_id")
-                or final_event.get("event_id", ""),
-                last_processed_index=len(events) - 1,
+                last_processed_event_id=app_logs[-1].get("atomic_event_id", "")
+                if app_logs else "",
+                last_processed_index=last_processed_index,
                 app_log_counter=app_log_counter,
                 chain_logs_history=deepcopy(chain_logs_history),
                 app_states=app_states,
@@ -927,6 +1079,11 @@ class AppLogsStage:
                 app_name, api_name, normalized
             )
 
+            # print(request_payload)
+            # print(response_payload)
+
+            # import pdb; pdb.set_trace()
+
         except Exception as exc:
             self.logger.warning(f"Failed to generate app log for {event_id}: {exc}")
             if self.debug_mode:
@@ -938,7 +1095,9 @@ class AppLogsStage:
                         "event": _json_safe(event),
                     },
                 )
-            return None
+            # Re-raise the exception so it can be handled by the caller
+            # This allows retry logic and proper checkpoint handling for transient errors (e.g., 429)
+            raise
 
         # Record API call to app state
         app.record_api_call(event, request_payload, response_payload)
