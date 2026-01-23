@@ -30,6 +30,53 @@ def exact_match_metric(samples: List[Any]) -> List[float]:
     return [1.0 if p == r else 0.0 for p, r in zip(preds, refs)]
 
 
+@register_metric("evidence_recall")
+def evidence_recall_metric(samples: List[Any]) -> Dict[str, List[float]]:
+    """
+    Calculate evidence recall: |predicted ∩ golden| / |golden|
+
+    - reference_app_logs: golden evidence (list of dicts with 'app_log_id')
+    - evidence_prediction: predicted evidence (list of dicts with 'app_log_id')
+    """
+    recalls: List[float] = []
+    precisions: List[float] = []
+    f1s: List[float] = []
+
+    for sample in samples:
+        golden_logs = sample.reference_app_logs or []
+        pred_logs = sample.evidence_prediction or []
+
+        # Extract app_log_ids
+        golden_ids = set(log.get("app_log_id") for log in golden_logs if log.get("app_log_id"))
+        pred_ids = set(log.get("app_log_id") for log in pred_logs if log.get("app_log_id"))
+
+        # Calculate metrics
+        if len(golden_ids) == 0:
+            recall = 1.0 if len(pred_ids) == 0 else 0.0
+        else:
+            recall = len(golden_ids & pred_ids) / len(golden_ids)
+
+        if len(pred_ids) == 0:
+            precision = 1.0 if len(golden_ids) == 0 else 0.0
+        else:
+            precision = len(golden_ids & pred_ids) / len(pred_ids)
+
+        if precision + recall == 0:
+            f1 = 0.0
+        else:
+            f1 = 2 * precision * recall / (precision + recall)
+
+        recalls.append(recall)
+        precisions.append(precision)
+        f1s.append(f1)
+
+    return {
+        "evidence_recall": recalls,
+        "evidence_precision": precisions,
+        "evidence_f1": f1s,
+    }
+
+
 @register_metric("rouge")
 def rouge_metric(samples: List[Any]) -> Dict[str, List[float]]:
     rouge = evaluate.load("rouge")

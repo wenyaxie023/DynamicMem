@@ -21,6 +21,9 @@ class EvalSample:
     id: Optional[str] = None
     metadata: Optional[Dict] = None
     scores: Optional[Dict[str, float]] = None
+    # Evidence fields for retrieval evaluation
+    reference_app_logs: Optional[List[Dict]] = None  # golden evidence
+    evidence_prediction: Optional[List[Dict]] = None  # predicted evidence
 
 
 @dataclass
@@ -45,13 +48,19 @@ def load_data_preview(json_path):
 
         samples = []
         for i, item in enumerate(raw_data):
+            # Extract evidence_prediction from metadata if present
+            metadata = item.get("metadata", {})
+            evidence_prediction = metadata.pop("evidence_prediction", None) if metadata else None
+
             sample = EvalSample(
                 id=item.get("id"),
                 query=item["query"],
                 reference=item["reference"],
                 prediction=item.get("prediction", ""),
-                metadata=item.get("metadata", {}),
-                scores={}
+                metadata=metadata,
+                scores={},
+                reference_app_logs=item.get("reference_app_logs"),
+                evidence_prediction=evidence_prediction,
             )
             samples.append(sample)
 
