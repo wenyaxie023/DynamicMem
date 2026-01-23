@@ -29,5 +29,17 @@ class RegistryEntry:
     qa_output_path: str
     sample_count: int
     flush_size: int | None = None
-    prompt: str = NOW_TEMPLATE
+    prompt_name: str = "NOW_TEMPLATE"
     suffix: str | None = None
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "tag": self.tag,
+            "max_window": self.max_window,
+            "atoms_path": self.atoms_path,
+            "qa_output_path": self.qa_output_path,
+            "sample_count": self.sample_count,
+            "flush_size": self.flush_size,
+            "prompt_name": self.prompt_name,
+            "suffix": self.suffix,
+        }

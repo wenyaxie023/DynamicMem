@@ -10,7 +10,7 @@ from client import LLMClient
 from config import QAConfig
 from context_fetch_by_anchor import fetch_context_by_anchor
 from logger import setup_logger
-from prompts import NOW_TEMPLATE
+import prompts
 from shared import RegistryEntry, atom_uid, atomic_write_json
 
 
@@ -193,7 +193,10 @@ def generate_qas(registry: List[RegistryEntry], config: QAConfig | None = None) 
         flush_size = entry.flush_size
         if not flush_size or flush_size <= 0:
             raise ValueError(f"Invalid flush_size for tag {tag}: {flush_size}")
-        prompt_template = entry.prompt or NOW_TEMPLATE
+        prompt_name = entry.prompt_name or "NOW_TEMPLATE"
+        if not hasattr(prompts, prompt_name):
+            raise ValueError(f"Unknown prompt name for tag {tag}: {prompt_name}")
+        prompt_template = getattr(prompts, prompt_name)
 
         print(f"\nGenerating QAs for window group: {tag} (max_window={max_window})")
 

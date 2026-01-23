@@ -2,6 +2,7 @@ import argparse
 import json
 import math
 import time
+from pprint import pprint
 
 try:
     import yaml
@@ -80,6 +81,8 @@ def run_pipeline(
                 entry.flush_size = flush_size
             if output_suffix:
                 entry.suffix = output_suffix
+        # for entry in registry:
+        #     pprint(entry.to_dict())
         generate_qas(registry, config)
         elapsed = time.perf_counter() - start
         print(f"Step 4/4: generate QA done in {elapsed:.2f}s")
