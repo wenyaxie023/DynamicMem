@@ -49,16 +49,6 @@ atoms:
     key: '#.'
     value: '#*.'
     path: '#@.'
-- id: state.previous
-  match: <domain>.*.event_chains.*.state_refs.*.resolved_items.*.previous_value
-  emit:
-    anchor: '#*.././name'
-    anchor_target: '#@../../../../..'
-    domain: '#*../../../state_category'
-    time_window: '#*../../../../../../../window_id'
-    key: '#.'
-    value: '#*.'
-    path: '#@.'
 - id: state.current
   match: <domain>.*.event_chains.*.state_refs.*.resolved_items.*.current_value
   emit:

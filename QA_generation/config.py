@@ -9,16 +9,15 @@ from typing import Dict
 class QAConfig:
     root: Path = field(default_factory=lambda: Path(__file__).resolve().parent.parent)
     qa_dir: Path = field(default_factory=lambda: Path(__file__).resolve().parent)
-
     gen_provider: str = "gemini"
     gen_model_name: str = "gemini-3-flash-preview"
     llm_max_workers: int = 5
     experiment_name: str = "MemBench_Evaluation_01"
     enable_logging: bool = False
 
-    sample_n: int = 100
+    sample_n: int = 10
     sample_seed: int = 42
-    flush_every: int = 8
+    flush_rate: float = 0.05
 
     window_presets: Dict[str, str] = field(
         default_factory=lambda: {
@@ -28,13 +27,12 @@ class QAConfig:
         }
     )
 
-    batch_sample_count: int = 10
-    batch_offset: int = 5
-    batch_seed: int = 42
-    batch_output_relpath: str = "eval/data/sample_atomQA.json"
-
-    ez_target_index: int = 0
-    bind_target_indices: tuple[int, int] = (300, 500)
+    # batch_sample_count: int = 10
+    # batch_offset: int = 5
+    # batch_seed: int = 42
+    # batch_output_relpath: str = "/data/sample_atomQA.json"
+    # ez_target_index: int = 0
+    # bind_target_indices: tuple[int, int] = (300, 500)
 
     macros_filename: str = "atom_macros.yaml"
     ir_filename: str = "atom_ir.yaml"
@@ -43,14 +41,14 @@ class QAConfig:
 
     @property
     def data_dir(self) -> Path:
-        return self.root / "eval" / "data"
+        return self.root / "data"
 
     @property
     def history_dir(self) -> Path:
         return self.data_dir / "history"
 
     @property
-    def bg_path(self) -> Path:
+    def schema_path(self) -> Path:
         return self.data_dir / self.schema_filename
 
     @property
@@ -58,28 +56,12 @@ class QAConfig:
         return self.data_dir / "QA.json"
 
     @property
-    def gen_output_path(self) -> Path:
-        return self.data_dir / "QA_all_answered.json"
-
-    @property
-    def eval_input_path(self) -> Path:
-        return self.data_dir / "rag_results.json"
-
-    @property
-    def eval_output_path(self) -> Path:
-        return self.data_dir / "eval_results_rag.json"
-
-    @property
-    def eval_table_path(self) -> Path:
-        return self.data_dir / "eval_table_rag.csv"
-
-    @property
     def real_atoms_path(self) -> Path:
         return self.data_dir / self.atoms_filename
 
     @property
     def log_dir(self) -> Path:
-        return self.root / "eval" / "logs"
+        return self.data_dir /  "logs"
 
     @property
     def macros_path(self) -> Path:
@@ -95,8 +77,6 @@ class QAConfig:
     def qa_output_path_for(self, tag: str) -> Path:
         return self.data_dir / f"qa_{tag}.json"
 
-    @property
-    def batch_output_path(self) -> Path:
-        return self.root / self.batch_output_relpath
-
-
+    # @property
+    # def batch_output_path(self) -> Path:
+    #     return self.root / self.batch_output_relpath
