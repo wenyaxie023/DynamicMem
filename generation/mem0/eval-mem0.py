@@ -12,7 +12,7 @@ from openai import OpenAI
 
 
 GENERATION_DIR = Path(__file__).resolve().parent.parent
-MOCK_DATA_DIR = GENERATION_DIR / "mock_data"
+DATA_DIR = GENERATION_DIR / "data"
 if str(GENERATION_DIR) not in sys.path:
     sys.path.append(str(GENERATION_DIR))
 
@@ -55,12 +55,12 @@ def setup_logger(log_file: Path) -> logging.Logger:
 import os
 def build_mem0_config(collection_name: str, host: str, port: int) -> Dict[str, Any]:
     return {
-        # "embedder": {
-        #     "provider": "openai",
-        #     "config": {
-        #         "model": "text-embedding-3-large"
-        #     }
-        # },
+        "embedder": {
+            "provider": "openai",
+            "config": {
+                "model": "text-embedding-3-small"
+            }
+        },
         "llm": {
             "provider": "openai",
             "config": {
@@ -226,7 +226,7 @@ class Mem0MemBenchAgent:
 
 def evaluate_membench_with_mem0(
     app_log_path: Path,
-    qa_path: Path,
+    qa_path: Optional[Path],
     mem0_config: Dict[str, Any],
     user_id: Optional[str],
     llm_model: str,
@@ -235,27 +235,15 @@ def evaluate_membench_with_mem0(
     log_dir: Path,
     max_events: Optional[int],
     reset_memories: bool,
+    size: str,
+    sample_filter: Optional[str],
 ) -> Dict[str, Any]:
     timestamp = datetime.now().strftime("%Y-%m-%d-%H-%M")
     log_dir.mkdir(parents=True, exist_ok=True)
     log_file = log_dir / f"eval_mem0_{timestamp}.log"
     logger = setup_logger(log_file)
 
-    sample = load_membench_dataset(app_log_path, qa_path)
-    user_id = user_id or sample.sample_id
-    logger.info(
-        f"Loaded MemBench sample_id={sample.sample_id} "
-        f"events={len(sample.app_logs)} qa={len(sample.qa)} user_id={user_id}"
-    )
-
     memory = Memory.from_config(mem0_config)
-    agent = Mem0MemBenchAgent(
-        memory=memory,
-        llm_client=OpenAI(),
-        model=llm_model,
-        user_id=user_id,
-        temperature=temperature,
-    )
     if reset_memories:
         try:
             memory.delete_all_memories()
@@ -263,8 +251,41 @@ def evaluate_membench_with_mem0(
         except Exception as e:
             logger.warning(f"Could not reset mem0 memories: {e}")
 
-    added = add_app_logs_to_memory(memory, sample, user_id, logger, max_events=max_events)
-    logger.info(f"Added {added} events to mem0 memory")
+    summaries: List[Dict[str, Any]] = []
+    for sample in load_membench_dataset(app_log_path, qa_path, size=size):
+        if sample_filter and sample.sample_id != sample_filter:
+            continue
+        sample_user_id = user_id or sample.sample_id
+        logger.info(
+            f"Loaded MemBench sample_id={sample.sample_id} "
+            f"events={len(sample.app_logs)} qa={len(sample.qa)} user_id={sample_user_id}"
+        )
+
+        agent = Mem0MemBenchAgent(
+            memory=memory,
+            llm_client=OpenAI(),
+            model=llm_model,
+            user_id=sample_user_id,
+            temperature=temperature,
+        )
+
+        added = add_app_logs_to_memory(
+            memory,
+            sample,
+            sample_user_id,
+            logger,
+            max_events=max_events,
+        )
+        logger.info(f"Added {added} events to mem0 memory")
+        summaries.append(
+            {
+                "sample_id": sample.sample_id,
+                "user_id": sample_user_id,
+                "events": len(sample.app_logs),
+                "qa": len(sample.qa),
+                "added": added,
+            }
+        )
 
     total = 0
     correct = 0
@@ -315,13 +336,30 @@ def evaluate_membench_with_mem0(
         with open(output_path, "w", encoding="utf-8") as f:
             json.dump(summary, f, indent=2, ensure_ascii=False)
 
-    return summary
+    # return summary
+    return {"samples": summaries}
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Evaluate Mem0 on MemBench app-log dataset")
-    parser.add_argument("--app-log", type=str, default="../mock_data/app_log_518.json", help="Path to app log JSON")
-    parser.add_argument("--qa", type=str, default="../mock_data/qa_samples.json", help="Path to QA JSON")
+    parser.add_argument(
+        "--app-log",
+        type=str,
+        default="",
+    )
+    parser.add_argument("--qa", type=str, default=None, help="Optional path to QA JSON")
+    parser.add_argument(
+        "--size",
+        type=str,
+        default="small",
+        help="Dataset size: small|medium|large (or s|m|l)",
+    )
+    parser.add_argument(
+        "--user-folder",
+        type=str,
+        default=None,
+        help="Optional sample id to filter when loading a data directory",
+    )
     parser.add_argument(
         "--collection-name",
         type=str,
@@ -356,16 +394,12 @@ def main() -> None:
 
     app_log_path = Path(args.app_log)
     if not app_log_path.is_absolute():
-        if app_log_path.exists():
-            app_log_path = app_log_path.resolve()
-        else:
-            app_log_path = MOCK_DATA_DIR / app_log_path.name
-    qa_path = Path(args.qa)
-    if not qa_path.is_absolute():
-        if qa_path.exists():
-            qa_path = qa_path.resolve()
-        else:
-            qa_path = MOCK_DATA_DIR / qa_path.name
+        app_log_path = DATA_DIR / app_log_path
+    qa_path: Optional[Path] = None
+    if args.qa:
+        qa_path = Path(args.qa)
+        if not qa_path.is_absolute():
+            qa_path = DATA_DIR / qa_path
     output_path = Path(args.output) if args.output else None
 
     mem0_config = load_mem0_config(
@@ -374,6 +408,8 @@ def main() -> None:
         host=args.qdrant_host,
         port=args.qdrant_port,
     )
+    print("app_log_path: ", app_log_path)
+    input("Hey!")
     summary = evaluate_membench_with_mem0(
         app_log_path=app_log_path,
         qa_path=qa_path,
@@ -385,8 +421,13 @@ def main() -> None:
         log_dir=Path(args.log_dir),
         max_events=args.max_events,
         reset_memories=args.reset_memories,
+        size=args.size,
+        sample_filter=args.user_folder,
     )
-    print(f"Accuracy: {summary['accuracy']:.4f} ({summary['correct']}/{summary['total_questions']})")
+    if "accuracy" in summary:
+        print(f"Accuracy: {summary['accuracy']:.4f} ({summary['correct']}/{summary['total_questions']})")
+    else:
+        print("Evaluation complete.")
 
 
 if __name__ == "__main__":

@@ -1,5 +1,5 @@
 import json
-from typing import Dict, List, Optional, Union
+from typing import Dict, Iterator, List, Optional, Union
 import os
 from dataclasses import dataclass
 from datetime import datetime
@@ -277,24 +277,34 @@ def _normalize_membench_size(size: str) -> str:
         return normalized
     raise ValueError(f"Invalid size '{size}'. Expected small, medium, or large.")
 
-def _resolve_membench_app_log_path(
-    app_log_path: Path,
-    size: str,
-    user_folder: Optional[str],
-) -> tuple[Path, bool]:
+def _iter_membench_app_log_paths(app_log_path: Path, size: str) -> Iterator[tuple[Path, str]]:
+    if app_log_path.is_file():
+        yield app_log_path, app_log_path.stem
+        return
+    if not app_log_path.exists():
+        raise FileNotFoundError(f"App log path not found at {app_log_path}")
     if not app_log_path.is_dir():
-        return app_log_path, False
+        raise ValueError(f"Invalid app log path: {app_log_path}")
 
-    base_dir = app_log_path
-    if user_folder:
-        base_dir = base_dir / user_folder
-    if not base_dir.is_dir():
-        raise FileNotFoundError(f"User folder not found at {base_dir}")
+    pattern = f"app_log_{size}.json"
+    found = False
+    direct_file = app_log_path / pattern
+    if direct_file.exists():
+        found = True
+        yield direct_file, direct_file.stem
 
-    candidate = base_dir / f"app_log_{size}.json"
-    if not candidate.exists():
-        raise FileNotFoundError(f"App log file not found at {candidate}")
-    return candidate, True
+    for entry in sorted(app_log_path.iterdir()):
+        if not entry.is_dir():
+            continue
+        candidate = entry / pattern
+        if candidate.exists():
+            found = True
+            yield candidate, entry.name
+
+    if not found:
+        raise FileNotFoundError(
+            f"No '{pattern}' found under {app_log_path}"
+        )
 
 def _is_timestamp_key(key: str) -> bool:
     return bool(_TIMESTAMP_KEY_RE.search(key))
@@ -376,65 +386,63 @@ def load_membench_dataset(
     qa_path: Optional[Union[str, Path]] = None,
     *,
     size: str = "small",
-    user_folder: Optional[str] = None,
-) -> MemBenchSample:
+) -> Iterator[MemBenchSample]:
     """
-    Load a MemBench dataset sample from:
-    - `app_log_path`: JSON file with an app log list, or a directory containing app_log_{size}.json.
-      If a directory is provided and contains user folders, set `user_folder` to choose the user.
+    Load MemBench dataset samples from:
+    - `app_log_path`: JSON file with an app log list, or a directory containing user subfolders.
+      When a directory is provided, each subfolder is expected to contain app_log_{size}.json.
     - `qa_path` (optional): JSON file containing `{"qa": [...]}`.
       If omitted, tries to read `qa` from `app_log_path` (if present).
+
+    Returns a lazy iterator over MemBenchSample objects.
     """
     app_log_path = Path(app_log_path)
     size = _normalize_membench_size(size)
-    app_log_path, resolved_from_dir = _resolve_membench_app_log_path(
-        app_log_path,
-        size,
-        user_folder,
-    )
-    if not app_log_path.exists():
-        raise FileNotFoundError(f"App log file not found at {app_log_path}")
 
-    with open(app_log_path, "r", encoding="utf-8") as f:
-        raw = json.load(f)
-
-    raw_app_logs = raw.get("app_logs") if isinstance(raw, dict) else raw
-    if not isinstance(raw_app_logs, list):
-        raise ValueError("Invalid app log format: expected list or object with 'app_logs' list.")
-
-    if qa_path is None and isinstance(raw, dict) and "qa" in raw:
-        raw_qa = raw["qa"]
-    elif qa_path is not None:
+    qa_list_from_path: Optional[List[QA]] = None
+    if qa_path is not None:
         qa_path = Path(qa_path)
         if not qa_path.exists():
             raise FileNotFoundError(f"QA file not found at {qa_path}")
         with open(qa_path, "r", encoding="utf-8") as f:
             raw_qa = json.load(f)
-    else:
-        raw_qa = None
+        qa_list_from_path = _parse_qa_list(raw_qa)
 
-    qa_list = _parse_qa_list(raw_qa)
+    for app_log_file, sample_id in _iter_membench_app_log_paths(app_log_path, size):
+        with open(app_log_file, "r", encoding="utf-8") as f:
+            raw = json.load(f)
 
-    events: List[MemBenchEvent] = []
-    for ev in raw_app_logs:
-        if not isinstance(ev, dict):
-            continue
-        event_id = ev.get("app_log_id", ev.get("event_id", ""))
-        events.append(
-            MemBenchEvent(
-                event_id=str(event_id),
-                timestamp=ev.get("timestamp"),
-                app_name=str(ev.get("app_name", "")),
-                api_name=str(ev.get("api_name", "")),
-                request=ev.get("request"),
-                response=ev.get("response"),
+        raw_app_logs = raw.get("app_logs") if isinstance(raw, dict) else raw
+        if not isinstance(raw_app_logs, list):
+            raise ValueError(
+                f"Invalid app log format in {app_log_file}: "
+                "expected list or object with 'app_logs' list."
             )
-        )
 
-    sample_id = app_log_path.stem
-    if resolved_from_dir:
-        sample_id = app_log_path.parent.name
-    return MemBenchSample(sample_id=sample_id, qa=qa_list, app_logs=events)
+        if qa_list_from_path is not None:
+            qa_list = list(qa_list_from_path)
+        elif isinstance(raw, dict) and "qa" in raw:
+            qa_list = _parse_qa_list(raw["qa"])
+        else:
+            qa_list = []
+
+        events: List[MemBenchEvent] = []
+        for ev in raw_app_logs:
+            if not isinstance(ev, dict):
+                continue
+            event_id = ev.get("app_log_id", ev.get("event_id", ""))
+            events.append(
+                MemBenchEvent(
+                    event_id=str(event_id),
+                    timestamp=ev.get("timestamp"),
+                    app_name=str(ev.get("app_name", "")),
+                    api_name=str(ev.get("api_name", "")),
+                    request=ev.get("request"),
+                    response=ev.get("response"),
+                )
+            )
+
+        yield MemBenchSample(sample_id=sample_id, qa=qa_list, app_logs=events)
 
 if __name__ == "__main__":
     # Example usage

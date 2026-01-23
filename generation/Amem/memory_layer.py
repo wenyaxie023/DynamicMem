@@ -18,6 +18,7 @@ from litellm import completion, embedding as litellm_embedding
 import requests
 import json as json_lib
 import time
+import re
 
 def simple_tokenize(text):
     return word_tokenize(text)
@@ -563,7 +564,6 @@ def build_embedding_model(
     if resolved_backend == "sentence-transformers":
         return SentenceTransformerEmbeddingModel(resolved_name)
     if resolved_backend == "litellm":
-        input("YES!")
         return LiteLLMEmbeddingModel(resolved_name, api_base=api_base, api_key=api_key)
     if resolved_backend == "contriever":
         return ContrieverEmbeddingModel(resolved_name)
@@ -1033,7 +1033,7 @@ class AgenticMemorySystem:
         """Process a memory note and return an evolution label"""
         neighbor_memory, indices = self.find_related_memories(note.content, k=5)
         prompt_memory = self.evolution_system_prompt.format(context=note.context, content=note.content, keywords=note.keywords, nearest_neighbors_memories=neighbor_memory,neighbor_number=len(indices))
-        print("prompt_memory", prompt_memory)
+        # print("prompt_memory", prompt_memory)
         response = self.llm_controller.llm.get_completion(
             prompt_memory,response_format={"type": "json_schema", "json_schema": {
                         "name": "response",
@@ -1084,7 +1084,7 @@ class AgenticMemorySystem:
                     }}
         )
         try:
-            print("response", response, type(response))
+            # print("response", response, type(response))
             # Clean the response in case there's extra text
             response_cleaned = response.strip()
             # Try to find JSON content if wrapped in other text
@@ -1098,7 +1098,7 @@ class AgenticMemorySystem:
                     response_cleaned = response_cleaned[:end_idx+1]
             
             response_json = json.loads(response_cleaned)
-            print("response_json", response_json, type(response_json))
+            # print("response_json", response_json, type(response_json))
         except json.JSONDecodeError as e:
             print(f"JSON parsing error: {e}")
             print(f"Raw response: {response}")
@@ -1118,7 +1118,7 @@ class AgenticMemorySystem:
                     new_tags_neighborhood = response_json["new_tags_neighborhood"]
                     noteslist = list(self.memories.values())
                     notes_id = list(self.memories.keys())
-                    print("indices", indices)
+                    # print("indices", indices)
                     # if slms output less than the number of neighbors, use the sequential order of new tags and context.
                     for i in range(min(len(indices), len(new_tags_neighborhood))):
                         # find some memory
