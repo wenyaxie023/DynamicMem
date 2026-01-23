@@ -5,18 +5,24 @@ set -euo pipefail
 
 PYTHON_BIN="python"
 ROOT_DIR="/users/4/xie00470/mem_bench/behavior_and_conversation/data_construction/generated_outputs/gemini_3_flash_preview"
-USERS=("1")
-SIZES=("medium" "large")
+USERS=("3")
+# USERS=("1")
+SIZES=("small")
 TOPKS=("5" "10" "20")
 # MODE="all" # all | retrieve | generate
-# MODE="retrieve"
-MODE="all"
-SKIP_RETRIEVE="false"
-
+MODE="generate"
+# MODE="all"
+SKIP_RETRIEVE="true"
+WRITE_EACH="true"
 # Extra args forwarded to rag.py (e.g. --retriever-type openai --llm-model gpt-5-mini)
 EXTRA_ARGS=()
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+WRITE_EACH_FLAG=()
+if [[ "$WRITE_EACH" == "true" ]]; then
+  WRITE_EACH_FLAG=(--write-each)
+fi
 
 for user in "${USERS[@]}"; do
   for size in "${SIZES[@]}"; do
@@ -27,6 +33,7 @@ for user in "${USERS[@]}"; do
         --log-size "$size" \
         --retrieve-only \
         --root-dir "$ROOT_DIR" \
+        "${WRITE_EACH_FLAG[@]}" \
         "${EXTRA_ARGS[@]}"
     fi
 
@@ -40,6 +47,7 @@ for user in "${USERS[@]}"; do
             --gen-topk "$topk" \
             --skip-retrieve \
             --root-dir "$ROOT_DIR" \
+            "${WRITE_EACH_FLAG[@]}" \
             "${EXTRA_ARGS[@]}"
         else
           "$PYTHON_BIN" "$SCRIPT_DIR/rag.py" \
@@ -47,6 +55,7 @@ for user in "${USERS[@]}"; do
             --log-size "$size" \
             --gen-topk "$topk" \
             --root-dir "$ROOT_DIR" \
+            "${WRITE_EACH_FLAG[@]}" \
             "${EXTRA_ARGS[@]}"
         fi
       done

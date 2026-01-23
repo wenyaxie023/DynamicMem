@@ -338,17 +338,16 @@ class OpenAIEmbeddingEmbedder(BaseEmbedder):
 # RAG Manager
 # =========================
 
-PROMPT = """
-# Question:
+PROMPT = """# Question:
 {{ question }}
 
-# Context:
+# User App Logs:
 {{ context }}
 
 Return JSON only, with this schema:
 {
+  "evidence": [{"app_log_id": string, "supporting_content": string}],  # List of dicts; supporting_content should preserve key supporting content as faithfully as possible, and should be the exact content of the app log
   "answer": string
-  "evidence": List[string]  # List of event IDs(not log IDs) from the context that support the answer
 }
 """
 
@@ -467,7 +466,13 @@ class RAGManager:
         with open(path, "r", encoding="utf-8") as f:
             return json.load(f)
 
-    def _generate(self, items: List[dict]) -> List[dict]:
+    def _generate(
+        self,
+        items: List[dict],
+        *,
+        output_path: str | None = None,
+        write_each: bool = False,
+    ) -> List[dict]:
         results = []
         for item in tqdm(items, desc="Answering"):
             t1 = time.time()
@@ -497,6 +502,9 @@ class RAGManager:
                     },
                 }
             )
+            if write_each and output_path:
+                with open(output_path, "w", encoding="utf-8") as f:
+                    json.dump(results, f, indent=2, ensure_ascii=False)
         return results
 
     def run_two_stage(
@@ -504,6 +512,7 @@ class RAGManager:
         *,
         skip_retrieve: bool = False,
         retrieve_only: bool = False,
+        write_each: bool = False,
     ) -> List[dict]:
         if skip_retrieve and retrieve_only:
             raise ValueError("Cannot use --skip-retrieve with --retrieve-only.")
@@ -533,7 +542,11 @@ class RAGManager:
                 for item in retrieval_items
             ]
 
-        results = self._generate(retrieval_items)
+        results = self._generate(
+            retrieval_items,
+            output_path=self.cfg.output_path,
+            write_each=write_each,
+        )
 
         with open(self.cfg.output_path, "w", encoding="utf-8") as f:
             json.dump(results, f, indent=2, ensure_ascii=False)
@@ -556,8 +569,7 @@ if __name__ == "__main__":
         "--root-dir",
         type=Path,
         default=Path(
-            "/users/4/xie00470/mem_bench/behavior_and_conversation/"
-            "data_construction/generated_outputs/gemini_3_flash_preview"
+            "generation/rag/results"
         ),
         help="Root directory containing user subdirectories",
     )
@@ -592,6 +604,11 @@ if __name__ == "__main__":
         help="Which app_log size to use (small/medium/large)",
     )
     parser.add_argument(
+        "--write-each",
+        action="store_true",
+        help="Write output JSON after each answer",
+    )
+    parser.add_argument(
         "--retriever-type",
         type=str,
         default="openai",
@@ -621,19 +638,36 @@ if __name__ == "__main__":
             return f"{idx:03d}_user_{idx:03d}"
         return user_idx
 
+    def _select_qa_path(user_dir: Path, log_size: str) -> Path:
+        # New naming convention: small->qa_w0, medium->qa_w0_w1, large->qa_w0_w4.
+        legacy = user_dir / "QA.json"
+        if legacy.exists():
+            return legacy
+        qa_suffix_by_size = {
+            "small": "qa_w0_with_app_logs.json",
+            "medium": "qa_w0_w1_with_app_logs.json",
+            "large": "qa_w0_w4_with_app_logs.json",
+        }
+        return user_dir / qa_suffix_by_size[log_size]
+
     user_dir = args.root_dir / _normalize_user_dir(args.user_idx)
     user_dir.mkdir(parents=True, exist_ok=True)
 
     schema_path = user_dir / f"app_log_{args.log_size}.json"
-    qa_path = user_dir / "QA.json"
+    qa_path = _select_qa_path(user_dir, args.log_size)
+
+    retrieval_dir = user_dir / "memory"
+    prediction_dir = user_dir / "prediction"
+    retrieval_dir.mkdir(parents=True, exist_ok=True)
+    prediction_dir.mkdir(parents=True, exist_ok=True)
 
     retrieval_output_paths = {
-        5: str(user_dir / f"rag_retrieval_{args.log_size}_top5.json"),
-        10: str(user_dir / f"rag_retrieval_{args.log_size}_top10.json"),
-        20: str(user_dir / f"rag_retrieval_{args.log_size}_top20.json"),
+        5: str(retrieval_dir / f"rag_retrieval_{args.log_size}_top5.json"),
+        10: str(retrieval_dir / f"rag_retrieval_{args.log_size}_top10.json"),
+        20: str(retrieval_dir / f"rag_retrieval_{args.log_size}_top20.json"),
     }
 
-    output_path = user_dir / f"rag_results_{args.log_size}_top{args.gen_topk}.json"
+    output_path = prediction_dir / f"rag_results_{args.log_size}_top{args.gen_topk}.json"
 
     cfg = RAGConfig(
         schema_path=str(schema_path),
@@ -653,4 +687,5 @@ if __name__ == "__main__":
     rag.run_two_stage(
         skip_retrieve=args.skip_retrieve,
         retrieve_only=args.retrieve_only,
+        write_each=args.write_each,
     )
