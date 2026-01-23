@@ -245,6 +245,7 @@ def get_dataset_statistics(samples: List[LoCoMoSample]) -> Dict:
 @dataclass
 class MemBenchEvent:
     event_id: str
+    timestamp: Optional[str]
     app_name: str
     api_name: str
     request: Optional[dict]
@@ -257,7 +258,43 @@ class MemBenchSample:
     qa: List[QA]
     app_logs: List[MemBenchEvent]
 
-_TIMESTAMP_KEY_RE = re.compile(r"(timestamp|created_at|updated_at)", re.IGNORECASE)
+_TIMESTAMP_KEY_RE = re.compile(r"(timestamp|created_at|updated_at|last_updated)", re.IGNORECASE)
+_MEMBENCH_SIZE_ALIASES = {
+    "s": "small",
+    "small": "small",
+    "m": "medium",
+    "med": "medium",
+    "medium": "medium",
+    "l": "large",
+    "lg": "large",
+    "large": "large",
+}
+
+def _normalize_membench_size(size: str) -> str:
+    size_key = (size or "small").strip().lower()
+    normalized = _MEMBENCH_SIZE_ALIASES.get(size_key)
+    if normalized:
+        return normalized
+    raise ValueError(f"Invalid size '{size}'. Expected small, medium, or large.")
+
+def _resolve_membench_app_log_path(
+    app_log_path: Path,
+    size: str,
+    user_folder: Optional[str],
+) -> tuple[Path, bool]:
+    if not app_log_path.is_dir():
+        return app_log_path, False
+
+    base_dir = app_log_path
+    if user_folder:
+        base_dir = base_dir / user_folder
+    if not base_dir.is_dir():
+        raise FileNotFoundError(f"User folder not found at {base_dir}")
+
+    candidate = base_dir / f"app_log_{size}.json"
+    if not candidate.exists():
+        raise FileNotFoundError(f"App log file not found at {candidate}")
+    return candidate, True
 
 def _is_timestamp_key(key: str) -> bool:
     return bool(_TIMESTAMP_KEY_RE.search(key))
@@ -291,7 +328,7 @@ def build_membench_memory_from_event(event: MemBenchEvent) -> tuple[str, Optiona
 
     Rules:
     - Only `response` content is added as memory payload.
-    - Any `*timestamp*` or `created_at` fields are extracted as the memory `time`.
+    - Use the event-level timestamp when present; otherwise fallback to timestamp fields in response.
     - Timestamp fields are removed from the text payload; everything else is concatenated.
     """
     if isinstance(event, tuple) and len(event) == 2 and isinstance(event[1], MemBenchEvent):
@@ -299,7 +336,7 @@ def build_membench_memory_from_event(event: MemBenchEvent) -> tuple[str, Optiona
     response_obj = event.response or {}
     timestamps: List[str] = []
     _collect_timestamps(response_obj, timestamps)
-    time_str = timestamps[0] if timestamps else None
+    time_str = event.timestamp or (timestamps[0] if timestamps else None)
 
     response_without_timestamps = _strip_timestamp_fields(deepcopy(response_obj))
     response_text = json.dumps(response_without_timestamps, ensure_ascii=False, sort_keys=True)
@@ -337,14 +374,24 @@ def _parse_qa_list(raw_qa: object) -> List[QA]:
 def load_membench_dataset(
     app_log_path: Union[str, Path],
     qa_path: Optional[Union[str, Path]] = None,
+    *,
+    size: str = "small",
+    user_folder: Optional[str] = None,
 ) -> MemBenchSample:
     """
     Load a MemBench dataset sample from:
-    - `app_log_path`: JSON file containing top-level `app_logs` list (or the list itself).
+    - `app_log_path`: JSON file with an app log list, or a directory containing app_log_{size}.json.
+      If a directory is provided and contains user folders, set `user_folder` to choose the user.
     - `qa_path` (optional): JSON file containing `{"qa": [...]}`.
       If omitted, tries to read `qa` from `app_log_path` (if present).
     """
     app_log_path = Path(app_log_path)
+    size = _normalize_membench_size(size)
+    app_log_path, resolved_from_dir = _resolve_membench_app_log_path(
+        app_log_path,
+        size,
+        user_folder,
+    )
     if not app_log_path.exists():
         raise FileNotFoundError(f"App log file not found at {app_log_path}")
 
@@ -372,9 +419,11 @@ def load_membench_dataset(
     for ev in raw_app_logs:
         if not isinstance(ev, dict):
             continue
+        event_id = ev.get("app_log_id", ev.get("event_id", ""))
         events.append(
             MemBenchEvent(
-                event_id=str(ev.get("event_id", "")),
+                event_id=str(event_id),
+                timestamp=ev.get("timestamp"),
                 app_name=str(ev.get("app_name", "")),
                 api_name=str(ev.get("api_name", "")),
                 request=ev.get("request"),
@@ -383,6 +432,8 @@ def load_membench_dataset(
         )
 
     sample_id = app_log_path.stem
+    if resolved_from_dir:
+        sample_id = app_log_path.parent.name
     return MemBenchSample(sample_id=sample_id, qa=qa_list, app_logs=events)
 
 if __name__ == "__main__":
