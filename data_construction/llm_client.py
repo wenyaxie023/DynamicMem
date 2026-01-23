@@ -1,5 +1,6 @@
 import json
 import os
+import re
 import time
 from dataclasses import dataclass
 from enum import Enum
@@ -10,8 +11,10 @@ import google.generativeai as genai
 from google.api_core import exceptions as google_exceptions
 try:
     from google import genai as genai_client
+    from google.genai import errors as genai_errors
 except ImportError:
     genai_client = None
+    genai_errors = None
 
 
 class LLMProvider(Enum):
@@ -323,10 +326,17 @@ class GeminiJSONClient:
                         f"Empty response from model: {e}"
                     ) from e
 
+                # Treat empty response as retryable error
+                if not raw_text:
+                    raise google_exceptions.InternalServerError(
+                        "Empty response from model (no content returned)"
+                    )
+
                 try:
                     payload = _parse_json_from_text(raw_text)
                 except json.JSONDecodeError as exc:
-                    raise LLMGenerationError(
+                    # If JSON parsing fails, it might be a transient issue - make it retryable
+                    raise google_exceptions.InternalServerError(
                         f"Failed to decode JSON from model response: {exc}\nRaw response:\n{raw_text}"
                     ) from exc
                 usage = _extract_usage_metadata(getattr(response, "usage_metadata", None))
@@ -338,6 +348,7 @@ class GeminiJSONClient:
                 google_exceptions.InternalServerError,
                 google_exceptions.TooManyRequests,
                 google_exceptions.DeadlineExceeded,
+                google_exceptions.GoogleAPICallError,  # Base class for API errors
             ) as exc:
                 last_exception = exc
                 if attempt < max_retries - 1:
@@ -346,6 +357,24 @@ class GeminiJSONClient:
                     time.sleep(retry_wait_seconds)
                 else:
                     print(f"[LLM] Max retries ({max_retries}) exceeded.")
+            except Exception as exc:
+                # Catch other exceptions that might be retryable (e.g., from google.genai SDK)
+                exc_str = str(exc)
+                is_retryable = any(keyword in exc_str for keyword in [
+                    "503", "UNAVAILABLE", "overloaded", "429", "rate limit",
+                    "500", "502", "504", "RESOURCE_EXHAUSTED", "DEADLINE_EXCEEDED"
+                ])
+                if is_retryable:
+                    last_exception = exc
+                    if attempt < max_retries - 1:
+                        print(f"[LLM] Retryable error (attempt {attempt + 1}/{max_retries}): {exc}")
+                        print(f"[LLM] Waiting {retry_wait_seconds} seconds before retry...")
+                        time.sleep(retry_wait_seconds)
+                    else:
+                        print(f"[LLM] Max retries ({max_retries}) exceeded.")
+                else:
+                    # Non-retryable error, raise immediately
+                    raise
 
         raise LLMGenerationError(
             f"Failed after {max_retries} retries due to rate limiting or server errors: {last_exception}"
