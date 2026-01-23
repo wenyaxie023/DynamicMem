@@ -37,6 +37,7 @@ class RAGConfig:
         retriever_model: str = None,
         llm_provider: str = "openai",
         llm_model: str = "gpt-5-mini",
+        llm_max_workers: int = 4,
     ):
         self.schema_path = schema_path
         self.qa_path = qa_path
@@ -52,6 +53,7 @@ class RAGConfig:
 
         self.llm_provider = llm_provider
         self.llm_model = llm_model
+        self.llm_max_workers = llm_max_workers
 
 
 # =========================
@@ -382,6 +384,7 @@ class RAGManager:
         self.llm = LLMClient(
             provider=cfg.llm_provider,
             model_name=cfg.llm_model,
+            max_workers=cfg.llm_max_workers,
         )
         self.template = Template(PROMPT)
 
@@ -474,15 +477,34 @@ class RAGManager:
         write_each: bool = False,
     ) -> List[dict]:
         results = []
-        for item in tqdm(items, desc="Answering"):
-            t1 = time.time()
+        prompts: List[str] = []
+        contexts: List[str] = []
+        start_times: List[float] = []
+
+        for item in items:
             context = item["context"]
             if isinstance(context, list):
                 context = "\n<->\n".join(
                     c if isinstance(c, str) else json.dumps(c, ensure_ascii=False)
                     for c in context
                 )
-            raw = self.answer(item["query"], context)
+            prompt = self.template.render(
+                question=item["query"],
+                context=context,
+            )
+            prompts.append(prompt)
+            contexts.append(context)
+            start_times.append(time.time())
+
+        raw_results = self.llm.ask_many(prompts, response_type="text")
+
+        for item, context, t1, raw in tqdm(
+            zip(items, contexts, start_times, raw_results),
+            total=len(items),
+            desc="Answering",
+        ):
+            if isinstance(raw, Exception):
+                raise raw
             prediction = json.loads(raw)["answer"]
             evidence = json.loads(raw)["evidence"]
             t2 = time.time()
@@ -629,6 +651,12 @@ if __name__ == "__main__":
         type=str,
         default="gpt-5-mini",
     )
+    parser.add_argument(
+        "--llm-max-workers",
+        type=int,
+        default=4,
+        help="Max parallel LLM requests.",
+    )
 
     args = parser.parse_args()
 
@@ -681,6 +709,7 @@ if __name__ == "__main__":
         retriever_model=args.retriever_model,
         llm_provider=args.llm_provider,
         llm_model=args.llm_model,
+        llm_max_workers=args.llm_max_workers,
     )
 
     rag = RAGManager(cfg)
