@@ -3,7 +3,7 @@ import json
 from pprint import pprint
 
 from client import LLMClient
-from config import BG_PATH, LLM_MAX_WORKERS, REAL_ATOMS_PATH
+from config import QAConfig
 from context_fetch_by_anchor import fetch_context_by_anchor
 
 QUESTION7_PROMPT_TEMPLATE = """You are an automatic question writer based on an atomic fact (“atom”) and a supporting context (“context”).
@@ -677,13 +677,14 @@ context = {CONTEXT_TEXT}
 """
 
 
-def ez_test():
+def ez_test(config: QAConfig | None = None):
+    config = config or QAConfig()
     # ---------- load atoms ----------
-    with open(REAL_ATOMS_PATH, "r", encoding="utf-8") as f:
+    with open(config.real_atoms_path, "r", encoding="utf-8") as f:
         atoms = json.load(f)
 
     # ---------- load schema ----------
-    with open(BG_PATH, "r", encoding="utf-8") as f:
+    with open(config.bg_path, "r", encoding="utf-8") as f:
         schema = json.load(f)
 
     # ---------- pick the 5th atom ----------
@@ -693,7 +694,7 @@ def ez_test():
     #     None
     # )
     print(f"Total atoms loaded: {len(atoms)}")
-    target_atom = atoms[0]
+    target_atom = atoms[config.ez_target_index]
     print("\n========== TARGET ATOM ==========\n")
     pprint(target_atom)
 
@@ -708,9 +709,9 @@ def ez_test():
     pprint(context)
 
     llm = LLMClient(
-        provider="gemini",
-        model_name="gemini-3-flash-preview",
-        max_workers=LLM_MAX_WORKERS,
+        provider=config.gen_provider,
+        model_name=config.gen_model_name,
+        max_workers=config.llm_max_workers,
     )
 
     print("\n========== LLM RESPONSE ==========\n")
@@ -725,13 +726,14 @@ def ez_test():
 
     print("\n========== END ==========\n")
 
-def bind_test():
+def bind_test(config: QAConfig | None = None):
+    config = config or QAConfig()
     # ---------- load atoms ----------
-    with open(REAL_ATOMS_PATH, "r", encoding="utf-8") as f:
+    with open(config.real_atoms_path, "r", encoding="utf-8") as f:
         atoms = json.load(f)
 
     # ---------- load schema ----------
-    with open(BG_PATH, "r", encoding="utf-8") as f:
+    with open(config.bg_path, "r", encoding="utf-8") as f:
         schema = json.load(f)
 
     # ---------- pick the 5th atom ----------
@@ -741,8 +743,8 @@ def bind_test():
     #     None
     # )
 
-    target_atom1 = atoms[300]
-    target_atom2 = atoms[500]
+    target_atom1 = atoms[config.bind_target_indices[0]]
+    target_atom2 = atoms[config.bind_target_indices[1]]
     print("\n========== TARGET ATOM ==========\n")
     pprint(target_atom1)
 
@@ -761,9 +763,9 @@ def bind_test():
     pprint(context2)
 
     llm = LLMClient(
-        provider="gemini",
-        model_name="gemini-3-flash-preview",
-        max_workers=LLM_MAX_WORKERS,
+        provider=config.gen_provider,
+        model_name=config.gen_model_name,
+        max_workers=config.llm_max_workers,
     )
 
     print("\n========== LLM RESPONSE ==========\n")

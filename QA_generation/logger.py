@@ -12,7 +12,17 @@ def setup_logger(
     name: str,
     log_dir: Path,
     level=logging.INFO,
+    *,
+    enabled: bool = True,
 ) -> logging.Logger:
+    logger = logging.getLogger(name)
+    logger.setLevel(level)
+    if not enabled:
+        if not logger.handlers:
+            logger.addHandler(logging.NullHandler())
+        logger.propagate = False
+        return logger
+
     log_dir.mkdir(parents=True, exist_ok=True)
 
     ts = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -35,8 +45,6 @@ def setup_logger(
         root.addHandler(ch)
         root.addHandler(fh)
 
-    logger = logging.getLogger(name)
-    logger.setLevel(level)
     logger.propagate = True
     return logger
 

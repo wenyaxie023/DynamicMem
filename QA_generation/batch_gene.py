@@ -1,11 +1,12 @@
 import json
 import logging
 import random
+from pathlib import Path
 from typing import List, Dict, Any
 
 from client import LLMClient
 from context_fetch import fetch_context
-from config import BG_PATH, REAL_ATOMS_PATH, LLM_MAX_WORKERS, LOG_DIR
+from config import QAConfig
 
 from test import (
     QUESTION1_TEMPLATE,
@@ -13,19 +14,34 @@ from test import (
 )
 
 
-def _get_logger() -> logging.Logger:
+def _get_logger(
+    log_dir: str | None = None,
+    *,
+    enabled: bool = True,
+) -> logging.Logger:
     logger = logging.getLogger("batch_gene")
     if logger.handlers:
         return logger
 
-    LOG_DIR.mkdir(parents=True, exist_ok=True)
+    if not enabled:
+        logger.addHandler(logging.NullHandler())
+        logger.setLevel(logging.INFO)
+        logger.propagate = False
+        return logger
+
+    if log_dir is None:
+        raise ValueError("log_dir is required")
+    Path(log_dir).mkdir(parents=True, exist_ok=True)
     logger.setLevel(logging.INFO)
 
     formatter = logging.Formatter(
         fmt="%(asctime)s [%(levelname)s] %(message)s",
         datefmt="%Y-%m-%d %H:%M:%S",
     )
-    file_handler = logging.FileHandler(LOG_DIR / "batch_gene.log", encoding="utf-8")
+    file_handler = logging.FileHandler(
+        Path(log_dir) / "batch_gene.log",
+        encoding="utf-8",
+    )
     file_handler.setFormatter(formatter)
     logger.addHandler(file_handler)
 
@@ -72,30 +88,34 @@ def extract_qa(llm_response: Any) -> Dict[str, str]:
 
 
 def generate_batch_questions(
-    output_path: str,
+    *,
+    config: QAConfig,
+    output_path: str | None = None,
     seed: int | None = None,
 ):
-    logger = _get_logger()
+    logger = _get_logger(str(config.log_dir), enabled=config.enable_logging)
     if seed is not None:
         random.seed(seed)
+    elif config.batch_seed is not None:
+        random.seed(config.batch_seed)
 
     # ---------- load data ----------
-    with open(REAL_ATOMS_PATH, "r", encoding="utf-8") as f:
+    with open(config.real_atoms_path, "r", encoding="utf-8") as f:
         atoms = json.load(f)
 
-    with open(BG_PATH, "r", encoding="utf-8") as f:
+    with open(config.bg_path, "r", encoding="utf-8") as f:
         schema = json.load(f)
 
     llm = LLMClient(
-        provider="gemini",
-        model_name="gemini-3-flash-preview",
-        max_workers=LLM_MAX_WORKERS,
+        provider=config.gen_provider,
+        model_name=config.gen_model_name,
+        max_workers=config.llm_max_workers,
     )
 
     results = []
 
     # ---------- 1–10: random single-atom questions ----------
-    sample_count = min(10, len(atoms))
+    sample_count = min(config.batch_sample_count, len(atoms))
     sampled_atoms = random.sample(atoms, sample_count)
     prompts = []
 
@@ -118,7 +138,7 @@ def generate_batch_questions(
         results.append(qa)
 
     # ---------- 11: bound question ----------
-    atom1, atom2 = pick_offset_atoms(atoms, offset=5)
+    atom1, atom2 = pick_offset_atoms(atoms, offset=config.batch_offset)
 
     context1 = fetch_context(atom=atom1, schema=schema)
     context2 = fetch_context(atom=atom2, schema=schema)
@@ -172,12 +192,10 @@ def generate_batch_questions(
     results.append(bind_qa)
 
     # ---------- save ----------
+    output_path = output_path or str(config.batch_output_path)
     with open(output_path, "w", encoding="utf-8") as f:
         json.dump(results, f, ensure_ascii=False, indent=2)
 
     return results
 if __name__ == "__main__":
-    generate_batch_questions(
-        output_path="eval/data/sample_atomQA.json",
-        seed=42,
-    )
+    generate_batch_questions(config=QAConfig())
