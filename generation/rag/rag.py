@@ -10,6 +10,7 @@ import torch
 from tqdm import tqdm
 from jinja2 import Template
 from transformers import AutoTokenizer, AutoModel
+from sentence_transformers import SentenceTransformer
 from openai import OpenAI
 
 from client import LLMClient
@@ -33,7 +34,7 @@ class RAGConfig:
         top_k: int = 3,
         retrieval_top_k: int = 20,
         retrieval_output_paths: Dict[int, str] | None = None,
-        retriever_type: str = "contriever",   # "contriever" | "qwen" | "openai"
+        retriever_type: str = "contriever",   # "contriever" | "qwen" | "openai" | "sentence_transformers"
         retriever_model: str = None,
         llm_provider: str = "openai",
         llm_model: str = "gpt-5-mini",
@@ -336,6 +337,21 @@ class OpenAIEmbeddingEmbedder(BaseEmbedder):
         return emb
 
 
+class SentenceTransformerEmbedder(BaseEmbedder):
+    def __init__(self, model_name: str):
+        self.model = SentenceTransformer(model_name)
+
+    def embed(self, texts: List[str]) -> np.ndarray:
+        if not texts:
+            return np.empty((0, 0), dtype="float32")
+        emb = self.model.encode(
+            texts,
+            convert_to_numpy=True,
+            normalize_embeddings=True,
+        ).astype("float32")
+        return emb
+
+
 # =========================
 # RAG Manager
 # =========================
@@ -368,6 +384,10 @@ class RAGManager:
         if cfg.retriever_type == "qwen":
             embedder = QwenEmbeddingEmbedder(
                 cfg.retriever_model or "Qwen/Qwen3-Embedding-8B"
+            )
+        elif cfg.retriever_type == "sentence_transformers":
+            embedder = SentenceTransformerEmbedder(
+                cfg.retriever_model or "sentence-transformers/all-MiniLM-L6-v2"
             )
         elif cfg.retriever_type == "openai":
             embedder = OpenAIEmbeddingEmbedder(
@@ -634,7 +654,7 @@ if __name__ == "__main__":
         "--retriever-type",
         type=str,
         default="openai",
-        choices=["contriever", "qwen", "openai"],
+        choices=["contriever", "qwen", "openai", "sentence_transformers"],
     )
     parser.add_argument(
         "--retriever-model",
