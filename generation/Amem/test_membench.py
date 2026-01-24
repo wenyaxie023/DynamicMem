@@ -215,7 +215,7 @@ def evaluate_membench(
             sglang_host=sglang_host,
             sglang_port=sglang_port,
         )
-        max_events = 5
+        # max_events = 5
         retriever = agent.memory_system.retriever
         if isinstance(retriever, SimpleEmbeddingRetriever):
             cache_prefix = f"retriever_{sample.sample_id}_{size}"
@@ -229,12 +229,11 @@ def evaluate_membench(
                 for idx, event in enumerate(sample.app_logs):
                     content, time_str = build_membench_memory_from_event(event)
                     agent.add_memory(content, time=time_str)
-                    if idx + 1 >= max_events:
-                        break
+                    # if idx + 1 >= max_events:
+                    #     break
                 logger.info(
                     "Added %d events to memory (max_events=%d)",
-                    min(len(sample.app_logs), max_events),
-                    max_events,
+                    len(sample.app_logs)
                 )
                 retriever.save(cache_file, cache_embeddings)
                 retriever.load(cache_file, cache_embeddings)
@@ -243,12 +242,11 @@ def evaluate_membench(
             for idx, event in enumerate(sample.app_logs):
                 content, time_str = build_membench_memory_from_event(event)
                 agent.add_memory(content, time=time_str)
-                if idx + 1 >= max_events:
-                    break
+                # if idx + 1 >= max_events:
+                #     break
             logger.info(
                 "Added %d events to memory (max_events=%d)",
-                min(len(sample.app_logs), max_events),
-                max_events,
+                len(sample.app_logs)
             )
             logger.info(
                 "Retriever type %s does not support save/load",
