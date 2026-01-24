@@ -121,6 +121,8 @@ class MemBenchAgent:
         self.memory_system = AgenticMemorySystem(
             model_name="text-embedding-3-large",
             embedding_backend="litellm",
+            api_base="https://api.aimlapi.com/v1",
+            api_key=os.getenv("AIML_API_KEY"),
             llm_backend=backend,
             llm_model=model,
             sglang_host=sglang_host,
@@ -129,7 +131,8 @@ class MemBenchAgent:
         self.llm = LLMController(
             backend=backend,
             model=model,
-            api_key=None,
+            api_base="https://api.aimlapi.com/v1",
+            api_key=os.getenv("AIML_API_KEY"),
             sglang_host=sglang_host,
             sglang_port=sglang_port,
         )
@@ -138,6 +141,10 @@ class MemBenchAgent:
 
     def add_memory(self, content: str, time: Optional[str] = None) -> None:
         self.memory_system.add_note(content, time=time)
+
+    def add_memory_batch(self, items: list[tuple[str, Optional[str]]]) -> None:
+        messages = [{"content": content, "time": time} for content, time in items]
+        self.memory_system.add(messages)
 
     def retrieve_memory(self, query: str) -> str:
         return self.memory_system.find_related_memories_raw(query, k=self.retrieve_k)
@@ -183,6 +190,7 @@ def evaluate_membench(
     backend: str,
     retrieve_k: int,
     temperature: float,
+    batch_size: int,
     output_path: Optional[str],
     sglang_host: str,
     sglang_port: int,
@@ -196,6 +204,9 @@ def evaluate_membench(
     logger = setup_logger(os.path.join(log_dir, log_filename))
     cache_dir = Path(log_dir) / "retriever_cache"
     cache_dir.mkdir(parents=True, exist_ok=True)
+
+    if batch_size <= 0:
+        raise ValueError("batch_size must be a positive integer")
 
     total = 0
     correct = 0
@@ -226,11 +237,16 @@ def evaluate_membench(
                 _hydrate_memories_from_retriever(agent.memory_system, retriever)
                 logger.info("Loaded retriever cache: %s (skipped ingest)", cache_prefix)
             else:
+                batch: list[tuple[str, Optional[str]]] = []
                 for idx, event in enumerate(sample.app_logs):
                     content, time_str = build_membench_memory_from_event(event)
-                    agent.add_memory(content, time=time_str)
-                    # if idx + 1 >= max_events:
-                    #     break
+                    batch.append((content, time_str))
+                    if len(batch) >= batch_size:
+                        agent.add_memory_batch(batch)
+                        batch = []
+                    print(f"idx: {idx}")
+                if batch:
+                    agent.add_memory_batch(batch)
                 logger.info(
                     "Added %d events to memory (max_events=%d)",
                     len(sample.app_logs)
@@ -239,9 +255,15 @@ def evaluate_membench(
                 retriever.load(cache_file, cache_embeddings)
                 logger.info("Saved and reloaded retriever cache: %s", cache_prefix)
         else:
+            batch: list[tuple[str, Optional[str]]] = []
             for idx, event in enumerate(sample.app_logs):
                 content, time_str = build_membench_memory_from_event(event)
-                agent.add_memory(content, time=time_str)
+                batch.append((content, time_str))
+                if len(batch) >= batch_size:
+                    agent.add_memory_batch(batch)
+                    batch = []
+            if batch:
+                agent.add_memory_batch(batch)
                 # if idx + 1 >= max_events:
                 #     break
             logger.info(
@@ -295,6 +317,7 @@ def evaluate_membench(
         "backend": backend,
         "retrieve_k": retrieve_k,
         "temperature": temperature,
+        "batch_size": batch_size,
         "total_questions": total,
         "correct": correct,
         "accuracy": accuracy,
@@ -319,6 +342,7 @@ def main() -> None:
     parser.add_argument("--backend", type=str, default="sglang", help="Backend (openai, ollama, sglang)")
     parser.add_argument("--retrieve-k", type=int, default=10, help="Number of retrieved memories")
     parser.add_argument("--temperature", type=float, default=0.2, help="LLM temperature")
+    parser.add_argument("--batch-size", type=int, default=8, help="Batch size for ingesting app logs")
     parser.add_argument("--output", type=str, default=None, help="Write JSON results to this path")
     parser.add_argument("--sglang-host", type=str, default="http://localhost", help="SGLang server host")
     parser.add_argument("--sglang-port", type=int, default=30000, help="SGLang server port")
@@ -345,6 +369,7 @@ def main() -> None:
         backend=args.backend,
         retrieve_k=args.retrieve_k,
         temperature=args.temperature,
+        batch_size=args.batch_size,
         output_path=output_path,
         sglang_host=args.sglang_host,
         sglang_port=args.sglang_port,

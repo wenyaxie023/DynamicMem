@@ -19,6 +19,8 @@ import requests
 import json as json_lib
 import time
 import re
+import litellm
+# litellm._turn_on_debug()
 
 def simple_tokenize(text):
     return word_tokenize(text)
@@ -30,7 +32,12 @@ class BaseLLMController(ABC):
         pass
 
 class OpenAIController(BaseLLMController):
-    def __init__(self, model: str = "gpt-4", api_key: Optional[str] = None):
+    def __init__(
+        self,
+        model: str = "gpt-4",
+        api_key: Optional[str] = None,
+        base_url: Optional[str] = None,
+    ):
         try:
             from openai import OpenAI
             self.model = model
@@ -38,11 +45,16 @@ class OpenAIController(BaseLLMController):
                 api_key = os.getenv('OPENAI_API_KEY')
             if api_key is None:
                 raise ValueError("OpenAI API key not found. Set OPENAI_API_KEY environment variable.")
-            self.client = OpenAI(api_key=api_key)
+            client_args = {"api_key": api_key}
+            if base_url:
+                client_args["base_url"] = base_url
+            self.client = OpenAI(**client_args)
         except ImportError:
             raise ImportError("OpenAI package not found. Install it with: pip install openai")
     
     def get_completion(self, prompt: str, response_format: dict, temperature: float = 0.7) -> str:
+        if "gpt-5-mini" in self.model.lower():
+            temperature = 1.0
         response = self.client.chat.completions.create(
             model=self.model,
             messages=[
@@ -210,6 +222,8 @@ class LiteLLMController(BaseLLMController):
 
     def get_completion(self, prompt: str, response_format: dict, temperature: float = 0.7) -> str:
         try:
+            if "gpt-5-mini" in self.model.lower():
+                temperature = 1.0
             # Prepare completion arguments
             completion_args = {
                 "model": self.model,
@@ -244,7 +258,7 @@ class LLMController:
                  sglang_host: str = "http://localhost",
                  sglang_port: int = 30000):
         if backend == "openai":
-            self.llm = OpenAIController(model, api_key)
+            self.llm = OpenAIController(model, api_key, api_base)
         elif backend == "ollama":
             # Use LiteLLM to control Ollama with JSON output
             # ollama_model = f"ollama/{model}" if not model.startswith("ollama/") else model
@@ -339,6 +353,7 @@ class MemoryNote:
             Content for analysis:
             """ + content
         try:
+            print("prompt: ", prompt)
             response = llm_controller.llm.get_completion(prompt,response_format={"type": "json_schema", "json_schema": {
                         "name": "response",
                         "schema": {
@@ -366,23 +381,25 @@ class MemoryNote:
                         "strict": True
                 }
             })
-            
-            # try:
-            #     # Clean the response in case there's extra text
-            #     response_cleaned = response.strip()
-            #     # Try to find JSON content if wrapped in other text
-            #     if not response_cleaned.startswith('{'):
-            #         start_idx = response_cleaned.find('{')
-            #         if start_idx != -1:
-            #             response_cleaned = response_cleaned[start_idx:]
-            #     if not response_cleaned.endswith('}'):
-            #         end_idx = response_cleaned.rfind('}')
-            #         if end_idx != -1:
-            #             response_cleaned = response_cleaned[:end_idx+1]
-            try:        
-                response = re.sub(r'^```json\s*|\s*```$', '', response, flags=re.MULTILINE).strip()
+            print("-" * 20, "response", "-" * 20,)
+            print("response:", response)
+            print("-" * 20)
+               
+            try:      
+                 # Clean the response in case there's extra text
+                response_cleaned = response.strip()
+                # Try to find JSON content if wrapped in other text
+                if not response_cleaned.startswith('{'):
+                    start_idx = response_cleaned.find('{')
+                    if start_idx != -1:
+                        response_cleaned = response_cleaned[start_idx:]
+                if not response_cleaned.endswith('}'):
+                    end_idx = response_cleaned.rfind('}')
+                    if end_idx != -1:
+                        response_cleaned = response_cleaned[:end_idx+1]  
+                response = re.sub(r'^```json\s*|\s*```$', '', response_cleaned, flags=re.MULTILINE).strip()
                 analysis = json.loads(response)
-            except:
+            except Exception as e:
                 print(f"JSON parsing error in analyze_content: {e}")
                 print(f"Raw response: {response}")
                 analysis = {
@@ -390,6 +407,7 @@ class MemoryNote:
                     "context": "General",
                     "tags": []
                 }
+            input("checkpoint")
             
             return analysis
             
@@ -475,12 +493,12 @@ class LiteLLMEmbeddingModel(BaseEmbeddingModel):
         request_args = {
             "model": self.model_name,
             "input": texts,
+            "encoding_format": "float",
         }
         if self.api_base:
             request_args["api_base"] = self.api_base
         if self.api_key:
             request_args["api_key"] = self.api_key
-
         response = litellm_embedding(**request_args)
         data = getattr(response, "data", None)
         if data is None and isinstance(response, dict):
@@ -1011,6 +1029,37 @@ class AgenticMemorySystem:
             if self.evo_cnt % self.evo_threshold == 0:
                 self.consolidate_memories()
         return note.id
+
+    def add(self, messages: List[Dict[str, Any]]) -> List[str]:
+        """Add a batch of memory notes from message dicts."""
+        if not messages:
+            return []
+
+        added_ids: List[str] = []
+        documents: List[str] = []
+
+        for message in messages:
+            content = message.get("content")
+            if content is None:
+                raise ValueError("Message missing 'content'")
+            time_str = message.get("time")
+            note = MemoryNote(content=content, llm_controller=self.llm_controller, timestamp=time_str)
+            evo_label, note = self.process_memory(note)
+            self.memories[note.id] = note
+            documents.append(
+                "content:" + note.content +
+                " context:" + note.context +
+                " keywords: " + ", ".join(note.keywords) +
+                " tags: " + ", ".join(note.tags)
+            )
+            if evo_label == True:
+                self.evo_cnt += 1
+                if self.evo_cnt % self.evo_threshold == 0:
+                    self.consolidate_memories()
+            added_ids.append(note.id)
+
+        self.retriever.add_documents(documents)
+        return added_ids
     
     def consolidate_memories(self):
         """Consolidate memories: update retriever with new documents
