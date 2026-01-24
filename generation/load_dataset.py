@@ -337,25 +337,32 @@ def build_membench_memory_from_event(event: MemBenchEvent) -> tuple[str, Optiona
     Convert a MemBench event into memory content + time.
 
     Rules:
-    - Only `response` content is added as memory payload.
-    - Use the event-level timestamp when present; otherwise fallback to timestamp fields in response.
-    - Timestamp fields are removed from the text payload; everything else is concatenated.
+    - The entire event is dumped as JSON for the memory payload.
+    - Use the event-level timestamp when present; otherwise fallback to timestamp fields.
+    - No fields are stripped from the payload.
     """
     if isinstance(event, tuple) and len(event) == 2 and isinstance(event[1], MemBenchEvent):
         event = event[1]
-    response_obj = event.response or {}
+    if isinstance(event, dict):
+        payload = event
+        event_timestamp = event.get("timestamp")
+    else:
+        payload = {
+            "app_log_id": event.event_id,
+            "timestamp": event.timestamp,
+            "app_name": event.app_name,
+            "api_name": event.api_name,
+            "request": event.request,
+            "response": event.response,
+        }
+        event_timestamp = event.timestamp
+
     timestamps: List[str] = []
-    _collect_timestamps(response_obj, timestamps)
-    time_str = event.timestamp or (timestamps[0] if timestamps else None)
-
-    response_without_timestamps = _strip_timestamp_fields(deepcopy(response_obj))
-    response_text = json.dumps(response_without_timestamps, ensure_ascii=False, sort_keys=True)
-
-    content = (
-        f"Event {event.event_id} | App: {event.app_name} | API: {event.api_name} | "
-        f"Response: {response_text}"
-    )
-
+    _collect_timestamps(payload, timestamps)
+    time_str = event_timestamp or (timestamps[0] if timestamps else None)
+    payload_with_time = dict(payload)
+    payload_with_time["memory_timestamp"] = time_str
+    content = json.dumps(payload_with_time, ensure_ascii=False, sort_keys=True)
     return content, time_str
 
 def _parse_qa_list(raw_qa: object) -> List[QA]:
