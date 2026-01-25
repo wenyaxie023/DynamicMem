@@ -7,6 +7,7 @@ import sys
 from pathlib import Path
 from datetime import datetime
 from typing import Optional, Any
+from datetime import datetime
 
 import nltk
 
@@ -244,7 +245,7 @@ def evaluate_membench(
                     if len(batch) >= batch_size:
                         agent.add_memory_batch(batch)
                         batch = []
-                    print(f"idx: {idx}")
+                    print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] idx: {idx}")
                 if batch:
                     agent.add_memory_batch(batch)
                 logger.info(

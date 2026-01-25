@@ -20,10 +20,39 @@ import json as json_lib
 import time
 import re
 import litellm
+import random
 # litellm._turn_on_debug()
 
 def simple_tokenize(text):
     return word_tokenize(text)
+
+def _extract_status_code(err: Exception) -> Optional[int]:
+    for attr in ("status_code", "status", "http_status"):
+        value = getattr(err, attr, None)
+        if isinstance(value, int):
+            return value
+    response = getattr(err, "response", None)
+    if response is not None:
+        value = getattr(response, "status_code", None)
+        if isinstance(value, int):
+            return value
+    return None
+
+def _is_retryable_5xx(err: Exception) -> bool:
+    status_code = _extract_status_code(err)
+    if status_code is not None:
+        return 500 <= status_code < 600
+    msg = str(err)
+    if any(code in msg for code in (" 500", " 502", " 503", " 504")):
+        return True
+    if any(term in msg for term in ("Bad gateway", "Internal Server Error", "Service Unavailable", "Gateway Timeout")):
+        return True
+    return False
+
+def _retry_delay_seconds(attempt: int, base: float, max_delay: float) -> float:
+    delay = min(base * (2 ** attempt), max_delay)
+    jitter = random.uniform(0, delay * 0.1)
+    return delay + jitter
 
 class BaseLLMController(ABC):
     @abstractmethod
@@ -37,10 +66,16 @@ class OpenAIController(BaseLLMController):
         model: str = "gpt-4",
         api_key: Optional[str] = None,
         base_url: Optional[str] = None,
+        max_retries: int = 3,
+        retry_backoff: float = 1.0,
+        retry_max_backoff: float = 8.0,
     ):
         try:
             from openai import OpenAI
             self.model = model
+            self.max_retries = max_retries
+            self.retry_backoff = retry_backoff
+            self.retry_max_backoff = retry_max_backoff
             if api_key is None:
                 api_key = os.getenv('OPENAI_API_KEY')
             if api_key is None:
@@ -55,17 +90,28 @@ class OpenAIController(BaseLLMController):
     def get_completion(self, prompt: str, response_format: dict, temperature: float = 0.7) -> str:
         if "gpt-5-mini" in self.model.lower():
             temperature = 1.0
-        response = self.client.chat.completions.create(
-            model=self.model,
-            messages=[
-                {"role": "system", "content": "You must respond with a JSON object."},
-                {"role": "user", "content": prompt}
-            ],
-            response_format=response_format,
-            temperature=temperature,
-            max_tokens=1000
-        )
-        return response.choices[0].message.content
+        last_error = None
+        for attempt in range(self.max_retries + 1):
+            try:
+                response = self.client.chat.completions.create(
+                    model=self.model,
+                    messages=[
+                        {"role": "system", "content": "You must respond with a JSON object."},
+                        {"role": "user", "content": prompt}
+                    ],
+                    response_format=response_format,
+                    temperature=temperature,
+                    max_tokens=1000
+                )
+                return response.choices[0].message.content
+            except Exception as e:
+                last_error = e
+                if not _is_retryable_5xx(e) or attempt >= self.max_retries:
+                    raise
+                delay = _retry_delay_seconds(attempt, self.retry_backoff, self.retry_max_backoff)
+                print(f"OpenAIController retrying after {delay:.2f}s due to 5xx: {e}")
+                time.sleep(delay)
+        raise last_error
 
 class OllamaController(BaseLLMController):
     def __init__(self, model: str = "llama2"):
@@ -188,10 +234,21 @@ class SGLangController(BaseLLMController):
 
 class LiteLLMController(BaseLLMController):
     """LiteLLM controller for universal LLM access including Ollama and SGLang"""
-    def __init__(self, model: str, api_base: Optional[str] = None, api_key: Optional[str] = None):
+    def __init__(
+        self,
+        model: str,
+        api_base: Optional[str] = None,
+        api_key: Optional[str] = None,
+        max_retries: int = 3,
+        retry_backoff: float = 1.0,
+        retry_max_backoff: float = 8.0,
+    ):
         self.model = model
         self.api_base = api_base
         self.api_key = api_key
+        self.max_retries = max_retries
+        self.retry_backoff = retry_backoff
+        self.retry_max_backoff = retry_max_backoff
     
     def _generate_empty_value(self, schema_type: str, schema_items: dict = None) -> Any:
         if schema_type == "array":
@@ -221,32 +278,39 @@ class LiteLLMController(BaseLLMController):
         return result
 
     def get_completion(self, prompt: str, response_format: dict, temperature: float = 0.7) -> str:
-        try:
-            if "gpt-5-mini" in self.model.lower():
-                temperature = 1.0
-            # Prepare completion arguments
-            completion_args = {
-                "model": self.model,
-                "messages": [
-                    {"role": "system", "content": "You must respond with a JSON object."},
-                    {"role": "user", "content": prompt}
-                ],
-                "response_format": response_format,
-                "temperature": temperature
-            }
-            
-            # Add API base and key if provided
-            if self.api_base:
-                completion_args["api_base"] = self.api_base
-            if self.api_key:
-                completion_args["api_key"] = self.api_key
-            response = completion(**completion_args)
-            return response.choices[0].message.content
-            
-        except Exception as e:
-            print(f"LiteLLM completion error: {e}")
-            empty_response = self._generate_empty_response(response_format)
-            return json.dumps(empty_response)
+        if "gpt-5-mini" in self.model.lower():
+            temperature = 1.0
+        last_error = None
+        for attempt in range(self.max_retries + 1):
+            try:
+                # Prepare completion arguments
+                completion_args = {
+                    "model": self.model,
+                    "messages": [
+                        {"role": "system", "content": "You must respond with a JSON object."},
+                        {"role": "user", "content": prompt}
+                    ],
+                    "response_format": response_format,
+                    "temperature": temperature
+                }
+                
+                # Add API base and key if provided
+                if self.api_base:
+                    completion_args["api_base"] = self.api_base
+                if self.api_key:
+                    completion_args["api_key"] = self.api_key
+                response = completion(**completion_args)
+                return response.choices[0].message.content
+            except Exception as e:
+                last_error = e
+                if _is_retryable_5xx(e) and attempt < self.max_retries:
+                    delay = _retry_delay_seconds(attempt, self.retry_backoff, self.retry_max_backoff)
+                    print(f"LiteLLMController retrying after {delay:.2f}s due to 5xx: {e}")
+                    time.sleep(delay)
+                    continue
+                print(f"LiteLLM completion error: {e}")
+                empty_response = self._generate_empty_response(response_format)
+                return json.dumps(empty_response)
 
 class LLMController:
     """LLM-based controller for memory metadata generation"""
@@ -354,33 +418,42 @@ class MemoryNote:
             """ + content
         try:
             print("prompt: ", prompt)
-            response = llm_controller.llm.get_completion(prompt,response_format={"type": "json_schema", "json_schema": {
-                        "name": "response",
-                        "schema": {
-                            "type": "object",
-                            "properties": {
-                                "keywords": {
-                                    "type": "array",
-                                    "items": {
-                                        "type": "string"
-                                    }
-                                },
-                                "context": {
-                                    "type": "string",
-                                },
-                                "tags": {
-                                    "type": "array",
-                                    "items": {
-                                        "type": "string"
-                                    }
-                                },
-                            },
-                            "required": ["keywords", "context", "tags"],
-                            "additionalProperties": False
+            response_format = {"type": "json_schema", "json_schema": {
+                "name": "response",
+                "schema": {
+                    "type": "object",
+                    "properties": {
+                        "keywords": {
+                            "type": "array",
+                            "items": {
+                                "type": "string"
+                            }
                         },
-                        "strict": True
-                }
-            })
+                        "context": {
+                            "type": "string",
+                        },
+                        "tags": {
+                            "type": "array",
+                            "items": {
+                                "type": "string"
+                            }
+                        },
+                    },
+                    "required": ["keywords", "context", "tags"],
+                    "additionalProperties": False
+                },
+                "strict": True
+            }}
+            response = ""
+            max_empty_retries = 2
+            for attempt in range(max_empty_retries + 1):
+                response = llm_controller.llm.get_completion(prompt, response_format=response_format)
+                if response is not None and response.strip():
+                    break
+                if attempt < max_empty_retries:
+                    delay = _retry_delay_seconds(attempt, 0.5, 2.0)
+                    print(f"Empty LLM response, retrying after {delay:.2f}s")
+                    time.sleep(delay)
             print("-" * 20, "response", "-" * 20,)
             print("response:", response)
             print("-" * 20)
@@ -407,7 +480,6 @@ class MemoryNote:
                     "context": "General",
                     "tags": []
                 }
-            input("checkpoint")
             
             return analysis
             
