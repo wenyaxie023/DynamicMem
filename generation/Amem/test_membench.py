@@ -4,6 +4,7 @@ import os
 import re
 import logging
 import sys
+import shutil
 from pathlib import Path
 from datetime import datetime
 from typing import Optional, Any
@@ -89,6 +90,26 @@ def _parse_cached_document(doc: str) -> dict:
                 tags = [item.strip() for item in tags_part.split(",") if item.strip()]
 
     return {"content": content, "context": context, "keywords": keywords, "tags": tags}
+
+
+def _normalize_size(size: str) -> str:
+    normalized = (size or "").strip().lower()
+    if normalized in {"s", "small"}:
+        return "small"
+    if normalized in {"m", "medium"}:
+        return "medium"
+    if normalized in {"l", "large"}:
+        return "large"
+    return size
+
+
+def _get_base_size(size: str) -> Optional[str]:
+    normalized = _normalize_size(size)
+    if normalized == "medium":
+        return "small"
+    if normalized == "large":
+        return "medium"
+    return None
 
 
 def _hydrate_memories_from_retriever(
@@ -216,6 +237,19 @@ def evaluate_membench(
     correct = 0
     results = []
     sample_summaries = []
+    base_event_count_cache: dict[tuple[str, str], int] = {}
+
+    def get_event_count_for_size(sample_id: str, size_name: str) -> int:
+        key = (sample_id, size_name)
+        if key in base_event_count_cache:
+            return base_event_count_cache[key]
+        count = 0
+        for base_sample in load_membench_dataset(app_log_path, qa_path, size=size_name):
+            if base_sample.sample_id == sample_id:
+                count = len(base_sample.app_logs)
+                break
+        base_event_count_cache[key] = count
+        return count
 
     for sample in load_membench_dataset(app_log_path, qa_path, size=size):
         if sample_id and sample.sample_id != sample_id:
@@ -243,21 +277,42 @@ def evaluate_membench(
                 _hydrate_memories_from_retriever(agent.memory_system, retriever)
                 logger.info("Loaded retriever cache: %s (skipped ingest)", cache_prefix)
             else:
+                skip_events = 0
+                base_size = _get_base_size(size)
+                if base_size:
+                    base_cache_prefix = f"retriever_{sample.sample_id}_{base_size}"
+                    base_cache_file = cache_dir / f"{base_cache_prefix}.pkl"
+                    base_cache_embeddings = cache_dir / f"{base_cache_prefix}.npy"
+                    if base_cache_file.exists() and base_cache_embeddings.exists():
+                        shutil.copy2(base_cache_file, cache_file)
+                        shutil.copy2(base_cache_embeddings, cache_embeddings)
+                        retriever.load(cache_file, cache_embeddings)
+                        _hydrate_memories_from_retriever(agent.memory_system, retriever)
+                        skip_events = get_event_count_for_size(sample.sample_id, base_size)
+                        skip_events = min(skip_events, len(sample.app_logs))
+                        logger.info(
+                            "Bootstrapped retriever cache from %s; skipping first %d events",
+                            base_cache_prefix,
+                            skip_events,
+                        )
                 batch: list[tuple[str, Optional[str]]] = []
-                for idx, event in enumerate(sample.app_logs):
+                processed = 0
+                for idx, event in enumerate(sample.app_logs[skip_events:], start=skip_events):
                     content, time_str = build_membench_memory_from_event(event)
                     batch.append((content, time_str))
                     if len(batch) >= batch_size:
                         agent.add_memory_batch(batch)
                         batch = []
+                    processed += 1
                     print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] idx: {idx}")
-                    if idx % 10 == 0:
+                    if processed % 10 == 0:
                         retriever.save(cache_file, cache_embeddings)
                 if batch:
                     agent.add_memory_batch(batch)
                 logger.info(
-                    "Added %d events to memory (max_events=%d)",
-                    len(sample.app_logs)
+                    "Added %d events to memory (skipped=%d)",
+                    len(sample.app_logs) - skip_events,
+                    skip_events,
                 )
                 retriever.save(cache_file, cache_embeddings)
                 retriever.load(cache_file, cache_embeddings)
@@ -275,7 +330,7 @@ def evaluate_membench(
                 # if idx + 1 >= max_events:
                 #     break
             logger.info(
-                "Added %d events to memory (max_events=%d)",
+                "Added %d events to memory",
                 len(sample.app_logs)
             )
             logger.info(
