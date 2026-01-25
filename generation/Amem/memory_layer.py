@@ -101,7 +101,7 @@ class OpenAIController(BaseLLMController):
                     ],
                     response_format=response_format,
                     temperature=temperature,
-                    max_tokens=1000
+                    # max_tokens=1000
                 )
                 return response.choices[0].message.content
             except Exception as e:

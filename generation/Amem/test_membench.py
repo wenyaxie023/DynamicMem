@@ -124,6 +124,7 @@ class MemBenchAgent:
             embedding_backend="litellm",
             api_base="https://api.aimlapi.com/v1",
             api_key=os.getenv("AIML_API_KEY"),
+            # api_key=os.getenv("OPENAI_API_KEY"),
             llm_backend=backend,
             llm_model=model,
             sglang_host=sglang_host,
@@ -134,6 +135,7 @@ class MemBenchAgent:
             model=model,
             api_base="https://api.aimlapi.com/v1",
             api_key=os.getenv("AIML_API_KEY"),
+            # api_key=os.getenv("OPENAI_API_KEY"),
             sglang_host=sglang_host,
             sglang_port=sglang_port,
         )
@@ -187,6 +189,7 @@ def evaluate_membench(
     app_log_path: str,
     qa_path: str,
     size: str,
+    sample_id: Optional[str],
     model: str,
     backend: str,
     retrieve_k: int,
@@ -215,6 +218,8 @@ def evaluate_membench(
     sample_summaries = []
 
     for sample in load_membench_dataset(app_log_path, qa_path, size=size):
+        if sample_id and sample.sample_id != sample_id:
+            continue
         logger.info(
             f"Loaded MemBench sample_id={sample.sample_id} "
             f"events={len(sample.app_logs)} qa={len(sample.qa)}"
@@ -246,6 +251,8 @@ def evaluate_membench(
                         agent.add_memory_batch(batch)
                         batch = []
                     print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] idx: {idx}")
+                    if idx % 10 == 0:
+                        retriever.save(cache_file, cache_embeddings)
                 if batch:
                     agent.add_memory_batch(batch)
                 logger.info(
@@ -276,62 +283,63 @@ def evaluate_membench(
                 type(retriever).__name__,
             )
 
-        sample_total = 0
-        sample_correct = 0
-        for qa in sample.qa:
-            if not qa.question:
-                continue
-            sample_total += 1
-            total += 1
-            prediction, prompt, raw_context = agent.answer_question(qa.question)
-            is_correct = normalize_answer(prediction) == normalize_answer(qa.answer)
-            if is_correct:
-                sample_correct += 1
-                correct += 1
-            qa_log = {
-                "sample_id": sample.sample_id,
-                "question": qa.question,
-                "prediction": prediction,
-                "reference": qa.answer,
-                "evidence": qa.evidence,
-                "correct": is_correct,
-                "prompt": prompt,
-                "raw_context": raw_context,
-            }
-            logger.info(f"QA {total}: {json.dumps(qa_log, ensure_ascii=False)}")
-            results.append(qa_log)
+    #     sample_total = 0
+    #     sample_correct = 0
+    #     for qa in sample.qa:
+    #         if not qa.question:
+    #             continue
+    #         sample_total += 1
+    #         total += 1
+    #         prediction, prompt, raw_context = agent.answer_question(qa.question)
+    #         is_correct = normalize_answer(prediction) == normalize_answer(qa.answer)
+    #         if is_correct:
+    #             sample_correct += 1
+    #             correct += 1
+    #         qa_log = {
+    #             "sample_id": sample.sample_id,
+    #             "question": qa.question,
+    #             "prediction": prediction,
+    #             "reference": qa.answer,
+    #             "evidence": qa.evidence,
+    #             "correct": is_correct,
+    #             "prompt": prompt,
+    #             "raw_context": raw_context,
+    #         }
+    #         logger.info(f"QA {total}: {json.dumps(qa_log, ensure_ascii=False)}")
+    #         results.append(qa_log)
 
-        sample_accuracy = (sample_correct / sample_total) if sample_total else 0.0
-        sample_summaries.append(
-            {
-                "sample_id": sample.sample_id,
-                "total_questions": sample_total,
-                "correct": sample_correct,
-                "accuracy": sample_accuracy,
-            }
-        )
+    #     sample_accuracy = (sample_correct / sample_total) if sample_total else 0.0
+    #     sample_summaries.append(
+    #         {
+    #             "sample_id": sample.sample_id,
+    #             "total_questions": sample_total,
+    #             "correct": sample_correct,
+    #             "accuracy": sample_accuracy,
+    #         }
+    #     )
 
-    accuracy = (correct / total) if total else 0.0
-    summary = {
-        "dataset": {"app_log_path": app_log_path, "qa_path": qa_path, "size": size},
-        "model": model,
-        "backend": backend,
-        "retrieve_k": retrieve_k,
-        "temperature": temperature,
-        "batch_size": batch_size,
-        "total_questions": total,
-        "correct": correct,
-        "accuracy": accuracy,
-        "samples": sample_summaries,
-        "results": results,
-    }
-    # logger.info(f"Accuracy: {accuracy:.4f} ({correct}/{total})")
+    # accuracy = (correct / total) if total else 0.0
+    # summary = {
+    #     "dataset": {"app_log_path": app_log_path, "qa_path": qa_path, "size": size},
+    #     "model": model,
+    #     "backend": backend,
+    #     "retrieve_k": retrieve_k,
+    #     "temperature": temperature,
+    #     "batch_size": batch_size,
+    #     "total_questions": total,
+    #     "correct": correct,
+    #     "accuracy": accuracy,
+    #     "samples": sample_summaries,
+    #     "results": results,
+    # }
+    # # logger.info(f"Accuracy: {accuracy:.4f} ({correct}/{total})")
 
-    if output_path:
-        with open(output_path, "w", encoding="utf-8") as f:
-            json.dump(summary, f, indent=2, ensure_ascii=False)
+    # if output_path:
+    #     with open(output_path, "w", encoding="utf-8") as f:
+    #         json.dump(summary, f, indent=2, ensure_ascii=False)
 
-    return summary
+    # return summary
+    return {}
 
 
 def main() -> None:
@@ -339,6 +347,7 @@ def main() -> None:
     parser.add_argument("--app-log", type=str, default="", help="Path to app log JSON")
     parser.add_argument("--qa", type=str, default="data/qa_samples.json", help="Path to QA JSON")
     parser.add_argument("--size", type=str, default="small", help="Dataset size: small|medium|large")
+    parser.add_argument("--sample-id", type=str, default="", help="Sample id to evaluate (empty for all)")
     parser.add_argument("--model", type=str, default="gpt-4o-mini", help="Model name")
     parser.add_argument("--backend", type=str, default="sglang", help="Backend (openai, ollama, sglang)")
     parser.add_argument("--retrieve-k", type=int, default=10, help="Number of retrieved memories")
@@ -366,6 +375,7 @@ def main() -> None:
         app_log_path=DATA_DIR,
         qa_path=qa_path,
         size=args.size,
+        sample_id=args.sample_id or None,
         model=args.model,
         backend=args.backend,
         retrieve_k=args.retrieve_k,
@@ -375,7 +385,8 @@ def main() -> None:
         sglang_host=args.sglang_host,
         sglang_port=args.sglang_port,
     )
-    print(f"Accuracy: {summary['accuracy']:.4f} ({summary['correct']}/{summary['total_questions']})")
+    # print(f"Accuracy: {summary['accuracy']:.4f} ({summary['correct']}/{summary['total_questions']})")
+    print("Done")
 
 
 if __name__ == "__main__":
