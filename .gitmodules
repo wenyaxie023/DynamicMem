@@ -2,6 +2,6 @@
 	path = generation/HippoRAG2/HippoRAG
 	url = https://github.com/OSU-NLP-Group/HippoRAG.git
 
-[submodule "generation/MemAgent/MemAgent"]
-	path = generation/MemAgent/MemAgent
+[submodule "generation/MemAgent/MemAgent_src"]
+	path = generation/MemAgent/MemAgent_src
 	url = https://github.com/BytedTsinghua-SIA/MemAgent.git

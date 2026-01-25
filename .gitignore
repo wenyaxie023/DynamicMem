@@ -15,6 +15,12 @@ env
 *.parquet
 *.sqlite.lock
 
+# HippoRAG2 paths
+generation/HippoRAG2/hf_cache/
+generation/HippoRAG2/logs*/
+generation/HippoRAG2/outputs/
+generation/HippoRAG2/HippoRAG/
+
 # MemAgent specific (Dual-Env)
 generation/MemAgent/venv-vllm/
 generation/MemAgent/venv-memagent/

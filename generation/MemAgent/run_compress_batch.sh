@@ -76,8 +76,8 @@ find "$DATA_ROOT" -name "app_log_*.json" | sort | while read -r FILEPATH; do
     echo "Target User: $USER_ID | Size: $SIZE"
     
     if [ -f "$OUTPUT_JSON" ]; then
-        echo "[Skip] Result already exists: $OUTPUT_JSON"
-        continue
+        echo "[Resume] Result file exists, checking for completion or resume: $OUTPUT_JSON"
+        # Just proceed, the python script handles the resume logic now
     fi
     
     echo "[Running] Compressing..."
