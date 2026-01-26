@@ -72,6 +72,8 @@ class ChromaRetriever:
             name=collection_name, embedding_function=self.embedding_function
         )
 
+
+
     def add_document(self, document: str, metadata: Dict, doc_id: str):
         """Add a document to ChromaDB.
 
@@ -89,7 +91,6 @@ class ChromaRetriever:
                 processed_metadata[key] = json.dumps(value)
             else:
                 processed_metadata[key] = str(value)
-
         self.collection.add(
             documents=[document], metadatas=[processed_metadata], ids=[doc_id]
         )
@@ -200,7 +201,9 @@ class PersistentChromaRetriever(ChromaRetriever):
             raise ValueError(f'Error accessing directory: {e}')        
 
         # Use PersistentClient instead of regular Client
-        self.client = chromadb.PersistentClient(path=str(directory))
+        self.client = chromadb.PersistentClient(
+            path=str(directory),
+        )
         if embedding_backend == "openai":
             self.embedding_function = embedding_functions.OpenAIEmbeddingFunction(
                 api_key=openai_api_key,

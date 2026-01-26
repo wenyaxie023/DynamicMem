@@ -5,6 +5,7 @@ import sys
 from datetime import datetime
 from pathlib import Path
 from typing import Optional
+from datetime import datetime
 
 import nltk
 
@@ -54,6 +55,7 @@ def evaluate_membench(
     size: str = "small",
     model_name: str = "all-MiniLM-L6-v2",
     embedding_backend: Optional[str] = None,
+    collection_name: str = "memories",
     llm_backend: str = "openai",
     llm_model: str = "gpt-4o-mini",
     sglang_host: str = "http://localhost",
@@ -69,6 +71,7 @@ def evaluate_membench(
     logger = setup_logger(log_dir / f"membench_amem_{user_id}_{timestamp}.log")
 
     memory_system = AgenticMemorySystem(
+        collection_name=collection_name,
         model_name=model_name,
         embedding_backend=embedding_backend,
         llm_backend=llm_backend,
@@ -93,7 +96,7 @@ def evaluate_membench(
             content, time_str = build_membench_memory_from_event(event)
             memory_system.add_note(content, time=time_str)
             processed += 1
-        break
+            print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] {processed} processed")
 
     if not found:
         raise ValueError(f"User id not found in dataset: {user_id}")
@@ -113,6 +116,7 @@ def main() -> None:
     parser.add_argument("--size", type=str, default="small", help="Dataset size: small|medium|large")
     parser.add_argument("--model-name", type=str, default="text-embedding-3-large", help="Embedding model")
     parser.add_argument("--embedding-backend", type=str, default="openai", help="Embedding backend")
+    parser.add_argument("--collection-name", type=str, default="memories", help="ChromaDB collection name")
     parser.add_argument("--llm-backend", type=str, default="openai", help="LLM backend")
     parser.add_argument("--llm-model", type=str, default="gpt-4o-mini", help="LLM model")
     parser.add_argument("--sglang-host", type=str, default="http://localhost", help="SGLang host")
@@ -125,6 +129,7 @@ def main() -> None:
         size=args.size,
         model_name=args.model_name,
         embedding_backend=args.embedding_backend or None,
+        collection_name=args.collection_name,
         llm_backend=args.llm_backend,
         llm_model=args.llm_model,
         sglang_host=args.sglang_host,
