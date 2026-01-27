@@ -100,6 +100,8 @@ class AgenticMemorySystem:
                  api_key: Optional[str] = None,
                  openai_api_base: Optional[str] = None,
                  llm_base_url: Optional[str] = None,
+                 embedding_api_key: Optional[str] = None,
+                 embedding_api_base: Optional[str] = None,
                  reset_collection: bool = True):  
         """Initialize the memory system.
         
@@ -121,6 +123,8 @@ class AgenticMemorySystem:
         self.api_key = api_key
         self.openai_api_base = openai_api_base
         self.llm_base_url = llm_base_url
+        self.embedding_api_key = embedding_api_key or api_key
+        self.embedding_api_base = embedding_api_base or openai_api_base
         # Initialize ChromaDB retriever with empty collection (optional)
         if reset_collection:
             try:
@@ -129,8 +133,8 @@ class AgenticMemorySystem:
                     collection_name=collection_name,
                     model_name=self.model_name,
                     embedding_backend=self.embedding_backend,
-                    openai_api_key=self.api_key,
-                    openai_api_base=self.openai_api_base,
+                    openai_api_key=self.embedding_api_key,
+                    openai_api_base=self.embedding_api_base,
                     extend=True,
                 )
                 try:
@@ -147,8 +151,8 @@ class AgenticMemorySystem:
             collection_name=self.collection_name,
             model_name=self.model_name,
             embedding_backend=self.embedding_backend,
-            openai_api_key=self.api_key,
-            openai_api_base=self.openai_api_base,
+            openai_api_key=self.embedding_api_key,
+            openai_api_base=self.embedding_api_base,
             extend=True,
         )
         
@@ -216,8 +220,8 @@ class AgenticMemorySystem:
             collection_name=self.collection_name,
             model_name=self.model_name,
             embedding_backend=self.embedding_backend,
-            openai_api_key=self.api_key,
-            openai_api_base=self.openai_api_base,
+            openai_api_key=self.embedding_api_key,
+            openai_api_base=self.embedding_api_base,
             extend=True,
         )
 
@@ -710,112 +714,145 @@ class AgenticMemorySystem:
             neighbor_number=len(indices)
         )
         
-        try:
-            response = self.llm_controller.llm.get_completion(
-                prompt,
-                response_format={"type": "json_schema", "json_schema": {
-                    "name": "response",
-                    "schema": {
-                        "type": "object",
-                        "properties": {
-                            "should_evolve": {
-                                "type": "boolean"
-                            },
-                            "actions": {
-                                "type": "array",
-                                "items": {
-                                    "type": "string"
-                                }
-                            },
-                            "suggested_connections": {
-                                "type": "array",
-                                "items": {
-                                    "type": "string"
-                                }
-                            },
-                            "new_context_neighborhood": {
-                                "type": "array",
-                                "items": {
-                                    "type": "string"
-                                }
-                            },
-                            "tags_to_update": {
-                                "type": "array",
-                                "items": {
-                                    "type": "string"
-                                }
-                            },
-                            "new_tags_neighborhood": {
-                                "type": "array",
-                                "items": {
-                                    "type": "array",
-                                    "items": {
-                                        "type": "string"
-                                    }
-                                }
-                            }
-                        },
-                        "required": ["should_evolve", "actions", "suggested_connections", 
-                                    "tags_to_update", "new_context_neighborhood", "new_tags_neighborhood"],
-                        "additionalProperties": False
+        response_format = {"type": "json_schema", "json_schema": {
+            "name": "response",
+            "schema": {
+                "type": "object",
+                "properties": {
+                    "should_evolve": {
+                        "type": "boolean"
                     },
-                    "strict": True
-                }}
-            )
-            
-            response_json = json.loads(response)
-            print("response:", response)
-            should_evolve = response_json["should_evolve"]
-            
-            if should_evolve:
-                actions = response_json["actions"]
-                for action in actions:
-                    if action == "strengthen":
-                        suggest_connections = response_json["suggested_connections"]
-                        new_tags = response_json["tags_to_update"]
-                        note.links.extend(suggest_connections)
-                        note.tags = new_tags
-                    elif action == "update_neighbor":
-                        new_context_neighborhood = response_json["new_context_neighborhood"]
-                        new_tags_neighborhood = response_json["new_tags_neighborhood"]
-                        noteslist = list(self.memories.values())
-                        notes_id = list(self.memories.keys())
-                        
-                        for i in range(min(len(indices), len(new_tags_neighborhood))):
-                            # Skip if we don't have enough neighbors
-                            if i >= len(indices):
-                                continue
-                                
-                            tag = new_tags_neighborhood[i]
-                            if i < len(new_context_neighborhood):
-                                context = new_context_neighborhood[i]
-                            else:
-                                # Since indices are just numbers now, we need to find the memory
-                                # In memory list using its index number
-                                if i < len(noteslist):
-                                    context = noteslist[i].context
-                                else:
+                    "actions": {
+                        "type": "array",
+                        "items": {
+                            "type": "string"
+                        }
+                    },
+                    "suggested_connections": {
+                        "type": "array",
+                        "items": {
+                            "type": "string"
+                        }
+                    },
+                    "new_context_neighborhood": {
+                        "type": "array",
+                        "items": {
+                            "type": "string"
+                        }
+                    },
+                    "tags_to_update": {
+                        "type": "array",
+                        "items": {
+                            "type": "string"
+                        }
+                    },
+                    "new_tags_neighborhood": {
+                        "type": "array",
+                        "items": {
+                            "type": "array",
+                            "items": {
+                                "type": "string"
+                            }
+                        }
+                    }
+                },
+                "required": ["should_evolve", "actions", "suggested_connections",
+                            "tags_to_update", "new_context_neighborhood", "new_tags_neighborhood"],
+                "additionalProperties": False
+            },
+            "strict": True
+        }}
+
+        required_keys = {
+            "should_evolve",
+            "actions",
+            "suggested_connections",
+            "tags_to_update",
+            "new_context_neighborhood",
+            "new_tags_neighborhood",
+        }
+
+        max_retries = 2
+        for attempt in range(max_retries + 1):
+            try:
+                response = self.llm_controller.llm.get_completion(
+                    prompt,
+                    response_format=response_format,
+                )
+                if not isinstance(response, str):
+                    raise ValueError("LLM response is not a string")
+
+                response_json = json.loads(response)
+                missing = required_keys - set(response_json.keys())
+                if missing:
+                    raise KeyError(f"Missing keys in response: {sorted(missing)}")
+
+                print("response:", response)
+                should_evolve = response_json["should_evolve"]
+
+                if should_evolve:
+                    actions = response_json["actions"]
+                    for action in actions:
+                        if action == "strengthen":
+                            suggest_connections = response_json["suggested_connections"]
+                            new_tags = response_json["tags_to_update"]
+                            note.links.extend(suggest_connections)
+                            note.tags = new_tags
+                        elif action == "update_neighbor":
+                            new_context_neighborhood = response_json["new_context_neighborhood"]
+                            new_tags_neighborhood = response_json["new_tags_neighborhood"]
+                            noteslist = list(self.memories.values())
+                            notes_id = list(self.memories.keys())
+
+                            for i in range(min(len(indices), len(new_tags_neighborhood))):
+                                # Skip if we don't have enough neighbors
+                                if i >= len(indices):
                                     continue
-                                    
-                            # Get index from the indices list
-                            if i < len(indices):
-                                memorytmp_idx = indices[i]
-                                # Make sure the index is valid
-                                if memorytmp_idx < len(noteslist):
-                                    notetmp = noteslist[memorytmp_idx]
-                                    notetmp.tags = tag
-                                    notetmp.context = context
+
+                                tag = new_tags_neighborhood[i]
+                                if i < len(new_context_neighborhood):
+                                    context = new_context_neighborhood[i]
+                                else:
+                                    # Since indices are just numbers now, we need to find the memory
+                                    # In memory list using its index number
+                                    if i < len(noteslist):
+                                        context = noteslist[i].context
+                                    else:
+                                        continue
+
+                                # Get index from the indices list
+                                if i < len(indices):
+                                    memorytmp_idx = indices[i]
                                     # Make sure the index is valid
-                                    if memorytmp_idx < len(notes_id):
-                                        self.memories[notes_id[memorytmp_idx]] = notetmp
-                            
-            return should_evolve, note
-            
-        except (json.JSONDecodeError, KeyError, Exception) as e:
-            logger.error(f"Error in memory evolution: {str(e)}")
-            return False, note
-                
-        except Exception as e:
-            # For testing purposes, catch all exceptions and return the original note
-            logger.error(f"Error in process_memory: {str(e)}")
-            return False, note
+                                    if memorytmp_idx < len(noteslist):
+                                        notetmp = noteslist[memorytmp_idx]
+                                        notetmp.tags = tag
+                                        notetmp.context = context
+                                        # Make sure the index is valid
+                                        if memorytmp_idx < len(notes_id):
+                                            self.memories[notes_id[memorytmp_idx]] = notetmp
+
+                return should_evolve, note
+
+            except (json.JSONDecodeError, KeyError, ValueError) as e:
+                if attempt < max_retries:
+                    logger.warning(
+                        "Invalid memory evolution response (attempt %d/%d): %s",
+                        attempt + 1,
+                        max_retries + 1,
+                        str(e),
+                    )
+                    continue
+                logger.error(f"Error in memory evolution: {str(e)}")
+                return False, note
+            except Exception as e:
+                if attempt < max_retries:
+                    logger.warning(
+                        "Error in memory evolution (attempt %d/%d): %s",
+                        attempt + 1,
+                        max_retries + 1,
+                        str(e),
+                    )
+                    continue
+                logger.error(f"Error in process_memory: {str(e)}")
+                return False, note
