@@ -31,9 +31,9 @@ Each `prediction/*.json` must be a **JSON array** with items like the following 
     "id": "...",           // optional
     "query": "...",        // required
     "reference": "...",    // required
-    "prediction": "...",   // required
+    "prediction": "...",   // required [this is the answer predicted by the model]
+    "predicted_evidence": [{...}] // list of dict [required]
     "metadata": {           // optional
-      "evidence_prediction": "..." // used by evidence-recall metrics
     }
   }
 ]
