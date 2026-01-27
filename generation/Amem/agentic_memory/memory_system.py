@@ -99,7 +99,8 @@ class AgenticMemorySystem:
                  collection_name: str = "memories",
                  api_key: Optional[str] = None,
                  openai_api_base: Optional[str] = None,
-                 llm_base_url: Optional[str] = None):  
+                 llm_base_url: Optional[str] = None,
+                 reset_collection: bool = True):  
         """Initialize the memory system.
         
         Args:
@@ -120,20 +121,26 @@ class AgenticMemorySystem:
         self.api_key = api_key
         self.openai_api_base = openai_api_base
         self.llm_base_url = llm_base_url
-        # Initialize ChromaDB retriever with empty collection
-        try:
-            # First try to reset the collection if it exists
-            temp_retriever = PersistentChromaRetriever(
-                collection_name=collection_name,
-                model_name=self.model_name,
-                embedding_backend=self.embedding_backend,
-                openai_api_key=self.api_key,
-                openai_api_base=self.openai_api_base,
-                extend=True,
-            )
-            temp_retriever.client.reset()
-        except Exception as e:
-            logger.warning(f"Could not reset ChromaDB collection: {e}")
+        # Initialize ChromaDB retriever with empty collection (optional)
+        if reset_collection:
+            try:
+                # Attempt to remove only the target collection (safer than client.reset()).
+                temp_retriever = PersistentChromaRetriever(
+                    collection_name=collection_name,
+                    model_name=self.model_name,
+                    embedding_backend=self.embedding_backend,
+                    openai_api_key=self.api_key,
+                    openai_api_base=self.openai_api_base,
+                    extend=True,
+                )
+                try:
+                    existing = [col.name for col in temp_retriever.client.list_collections()]
+                    if collection_name in existing:
+                        temp_retriever.client.delete_collection(collection_name)
+                except Exception:
+                    temp_retriever.client.delete_collection(collection_name)
+            except Exception as e:
+                logger.warning(f"Could not reset ChromaDB collection: {e}")
             
         # Create a fresh retriever instance
         self.retriever = PersistentChromaRetriever(
@@ -182,6 +189,53 @@ class AgenticMemorySystem:
                                     "new_tags_neighborhood": [["tag_1",...,"tag_n"],...["tag_1",...,"tag_n"]],
                                 }}
                                 '''
+
+    def save_state(self, path: Path) -> None:
+        """Persist in-memory notes to disk for resuming runs."""
+        path = Path(path)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp_path = path.with_suffix(path.suffix + ".tmp")
+        with tmp_path.open("wb") as f:
+            pickle.dump(self.memories, f, protocol=pickle.HIGHEST_PROTOCOL)
+        os.replace(tmp_path, path)
+
+    def load_state(self, path: Path) -> None:
+        """Load previously saved in-memory notes."""
+        path = Path(path)
+        with path.open("rb") as f:
+            self.memories = pickle.load(f)
+
+    def rebuild_retriever(self) -> None:
+        """Rebuild retriever from in-memory notes to ensure sync."""
+        try:
+            self.retriever.client.delete_collection(self.collection_name)
+        except Exception:
+            pass
+
+        self.retriever = PersistentChromaRetriever(
+            collection_name=self.collection_name,
+            model_name=self.model_name,
+            embedding_backend=self.embedding_backend,
+            openai_api_key=self.api_key,
+            openai_api_base=self.openai_api_base,
+            extend=True,
+        )
+
+        for memory in self.memories.values():
+            metadata = {
+                "id": memory.id,
+                "content": memory.content,
+                "keywords": memory.keywords,
+                "links": memory.links,
+                "retrieval_count": memory.retrieval_count,
+                "timestamp": memory.timestamp,
+                "last_accessed": memory.last_accessed,
+                "context": memory.context,
+                "evolution_history": memory.evolution_history,
+                "category": memory.category,
+                "tags": memory.tags
+            }
+            self.retriever.add_document(memory.content, metadata, memory.id)
         
     def analyze_content(self, content: str) -> Dict:            
         """Analyze content using LLM to extract semantic metadata.
@@ -293,7 +347,11 @@ class AgenticMemorySystem:
     def consolidate_memories(self):
         """Consolidate memories: update retriever with new documents"""
         # Reset ChromaDB collection
-        
+        try:
+            self.retriever.client.delete_collection(self.collection_name)
+        except Exception:
+            pass
+
         self.retriever = PersistentChromaRetriever(
             collection_name=self.collection_name,
             model_name=self.model_name,
