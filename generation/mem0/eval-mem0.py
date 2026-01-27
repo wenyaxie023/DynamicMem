@@ -21,6 +21,7 @@ from load_dataset import MemBenchSample, build_membench_memory_from_event, load_
 
 _PUNCT_RE = re.compile(r"[^0-9a-zA-Z]+")
 _ARTICLES_RE = re.compile(r"\b(a|an|the)\b", re.IGNORECASE)
+_SAFE_FILENAME_RE = re.compile(r"[^0-9A-Za-z._-]+")
 
 
 def normalize_answer(text: Any) -> str:
@@ -92,6 +93,67 @@ def load_mem0_config(
     return build_mem0_config(collection_name, host, port)
 
 
+def _safe_filename(text: str) -> str:
+    cleaned = _SAFE_FILENAME_RE.sub("_", str(text)).strip("._-")
+    return cleaned or "default"
+
+
+def _checkpoint_path(
+    checkpoint_dir: Path,
+    collection_name: str,
+    sample_id: str,
+    user_id: str,
+) -> Path:
+    parts = [
+        _safe_filename(collection_name),
+        _safe_filename(sample_id),
+        _safe_filename(user_id),
+    ]
+    return checkpoint_dir / f"checkpoint_{'_'.join(parts)}.json"
+
+
+def _load_checkpoint(path: Path) -> int:
+    if not path.exists():
+        return 0
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        next_index = int(data.get("next_index", 0))
+        return max(next_index, 0)
+    except Exception:
+        return 0
+
+
+def _save_checkpoint(
+    path: Path,
+    sample_id: str,
+    user_id: str,
+    collection_name: str,
+    next_index: int,
+    total_events: int,
+) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "sample_id": sample_id,
+        "user_id": user_id,
+        "collection_name": collection_name,
+        "next_index": max(next_index, 0),
+        "total_events": total_events,
+        "updated_at": datetime.now().isoformat(),
+    }
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(payload, f, indent=2, ensure_ascii=False)
+
+
+def _clear_checkpoint(path: Path, logger: logging.Logger) -> None:
+    try:
+        if path.exists():
+            path.unlink()
+            logger.info(f"Cleared checkpoint {path}")
+    except Exception as exc:
+        logger.warning(f"Failed to clear checkpoint {path}: {exc}")
+
+
 def _format_mem0_context(results: Any) -> str:
     def _coerce(entry: Any) -> str:
         if isinstance(entry, dict):
@@ -150,15 +212,50 @@ def add_app_logs_to_memory(
     user_id: str,
     logger: logging.Logger,
     max_events: Optional[int] = None,
+    start_index: int = 0,
+    checkpoint_path: Optional[Path] = None,
+    collection_name: str = "",
 ) -> int:
     added = 0
-    for idx, event in enumerate(sample.app_logs):
-        if max_events is not None and added >= max_events:
-            break
+    total_events = len(sample.app_logs)
+    if start_index < 0:
+        start_index = 0
+    end_index = total_events
+    if max_events is not None:
+        end_index = min(end_index, max_events)
+    if start_index >= end_index:
+        return 0
+
+    for idx in range(start_index, end_index):
+        event = sample.app_logs[idx]
         content, time_str = build_membench_memory_from_event(event)
-        memory.add([{"role": "user", "content": content}], metadata={"time": time_str}, user_id=user_id)
+        try:
+            memory.add([{"role": "user", "content": content}], metadata={"time": time_str}, user_id=user_id)
+        except Exception as exc:
+            logger.exception(
+                f"Failed to add event {idx + 1}/{total_events} for user_id={user_id}: {exc}"
+            )
+            if checkpoint_path:
+                _save_checkpoint(
+                    checkpoint_path,
+                    sample.sample_id,
+                    user_id,
+                    collection_name,
+                    idx,
+                    total_events,
+                )
+            raise
         added += 1
-        logger.info(f"Added event {idx + 1}/{len(sample.app_logs)} to mem0 memory")
+        if checkpoint_path:
+            _save_checkpoint(
+                checkpoint_path,
+                sample.sample_id,
+                user_id,
+                collection_name,
+                idx + 1,
+                total_events,
+            )
+        logger.info(f"Added event {idx + 1}/{total_events} to mem0 memory")
     return added
 
 
@@ -237,6 +334,8 @@ def evaluate_membench_with_mem0(
     reset_memories: bool,
     size: str,
     sample_filter: Optional[str],
+    checkpoint_dir: Optional[Path],
+    start_index_override: Optional[int],
 ) -> Dict[str, Any]:
     timestamp = datetime.now().strftime("%Y-%m-%d-%H-%M")
     log_dir.mkdir(parents=True, exist_ok=True)
@@ -244,6 +343,14 @@ def evaluate_membench_with_mem0(
     logger = setup_logger(log_file)
 
     memory = Memory.from_config(mem0_config)
+    collection_name = (
+        mem0_config.get("vector_store", {})
+        .get("config", {})
+        .get("collection_name", "membench_mem0")
+    )
+    if checkpoint_dir:
+        checkpoint_dir.mkdir(parents=True, exist_ok=True)
+        logger.info(f"Using checkpoint dir: {checkpoint_dir}")
     if reset_memories:
         try:
             memory.delete_all_memories()
@@ -261,6 +368,31 @@ def evaluate_membench_with_mem0(
             f"events={len(sample.app_logs)} qa={len(sample.qa)} user_id={sample_user_id}"
         )
 
+        checkpoint_path = None
+        start_index = 0
+        if checkpoint_dir:
+            checkpoint_path = _checkpoint_path(
+                checkpoint_dir,
+                collection_name,
+                sample.sample_id,
+                sample_user_id,
+            )
+            if reset_memories:
+                _clear_checkpoint(checkpoint_path, logger)
+            else:
+                start_index = _load_checkpoint(checkpoint_path)
+                if start_index:
+                    logger.info(
+                        f"Resuming from checkpoint for sample_id={sample.sample_id} "
+                        f"user_id={sample_user_id} next_index={start_index}"
+                    )
+        if start_index_override is not None:
+            start_index = start_index_override
+            logger.info(
+                f"Using start index override for sample_id={sample.sample_id} "
+                f"user_id={sample_user_id} start_index={start_index}"
+            )
+
         agent = Mem0MemBenchAgent(
             memory=memory,
             llm_client=OpenAI(),
@@ -269,14 +401,30 @@ def evaluate_membench_with_mem0(
             temperature=temperature,
         )
 
-        added = add_app_logs_to_memory(
-            memory,
-            sample,
-            sample_user_id,
-            logger,
-            max_events=max_events,
-        )
-        logger.info(f"Added {added} events to mem0 memory")
+        total_events = len(sample.app_logs)
+        end_index = total_events
+        if max_events is not None:
+            end_index = min(end_index, max_events)
+        if start_index >= end_index:
+            logger.info(
+                f"Skipping ingestion for sample_id={sample.sample_id} user_id={sample_user_id} "
+                f"(start_index={start_index} end_index={end_index})"
+            )
+            added = 0
+        else:
+            added = add_app_logs_to_memory(
+                memory,
+                sample,
+                sample_user_id,
+                logger,
+                max_events=max_events,
+                start_index=start_index,
+                checkpoint_path=checkpoint_path,
+                collection_name=collection_name,
+            )
+            logger.info(
+                f"Added {added} events to mem0 memory (start_index={start_index}, end_index={end_index})"
+            )
         summaries.append(
             {
                 "sample_id": sample.sample_id,
@@ -284,6 +432,7 @@ def evaluate_membench_with_mem0(
                 "events": len(sample.app_logs),
                 "qa": len(sample.qa),
                 "added": added,
+                "start_index": start_index,
             }
         )
 
@@ -291,53 +440,54 @@ def evaluate_membench_with_mem0(
     correct = 0
     results: List[Dict[str, Any]] = []
 
-    for idx, qa in enumerate(sample.qa):
-        if not qa.question:
-            continue
-        total += 1
-        prediction, prompt, context = agent.answer_question(qa.question)
-        search_results = agent.last_search_results
-        reference = qa.final_answer if qa.final_answer is not None else qa.answer
-        is_correct = normalize_answer(prediction) == normalize_answer(reference)
-        if is_correct:
-            correct += 1
-        qa_log = {
-            "idx": idx,
-            "question": qa.question,
-            "prediction": prediction,
-            "reference": reference,
-            "evidence": qa.evidence,
-            "correct": is_correct,
-            "prompt": prompt,
-            "context": context,
-            "search_results": _serialize_for_json(search_results),
-        }
-        logger.info(f"QA {total}: {json.dumps(qa_log, ensure_ascii=False)}")
-        results.append(qa_log)
+    # for idx, qa in enumerate(sample.qa):
+    #     if not qa.question:
+    #         continue
+    #     total += 1
+    #     prediction, prompt, context = agent.answer_question(qa.question)
+    #     search_results = agent.last_search_results
+    #     reference = qa.final_answer if qa.final_answer is not None else qa.answer
+    #     is_correct = normalize_answer(prediction) == normalize_answer(reference)
+    #     if is_correct:
+    #         correct += 1
+    #     qa_log = {
+    #         "idx": idx,
+    #         "question": qa.question,
+    #         "prediction": prediction,
+    #         "reference": reference,
+    #         "evidence": qa.evidence,
+    #         "correct": is_correct,
+    #         "prompt": prompt,
+    #         "context": context,
+    #         "search_results": _serialize_for_json(search_results),
+    #     }
+    #     logger.info(f"QA {total}: {json.dumps(qa_log, ensure_ascii=False)}")
+    #     results.append(qa_log)
 
-    accuracy = (correct / total) if total else 0.0
-    summary = {
-        "dataset": {
-            "app_log_path": str(app_log_path),
-            "qa_path": str(qa_path),
-            "sample_id": sample.sample_id,
-        },
-        "user_id": user_id,
-        "llm_model": llm_model,
-        "temperature": temperature,
-        "total_questions": total,
-        "correct": correct,
-        "accuracy": accuracy,
-        "results": results,
-    }
+    # accuracy = (correct / total) if total else 0.0
+    # summary = {
+    #     "dataset": {
+    #         "app_log_path": str(app_log_path),
+    #         "qa_path": str(qa_path),
+    #         "sample_id": sample.sample_id,
+    #     },
+    #     "user_id": user_id,
+    #     "llm_model": llm_model,
+    #     "temperature": temperature,
+    #     "total_questions": total,
+    #     "correct": correct,
+    #     "accuracy": accuracy,
+    #     "results": results,
+    # }
 
-    if output_path:
-        output_path.parent.mkdir(parents=True, exist_ok=True)
-        with open(output_path, "w", encoding="utf-8") as f:
-            json.dump(summary, f, indent=2, ensure_ascii=False)
+    # if output_path:
+    #     output_path.parent.mkdir(parents=True, exist_ok=True)
+    #     with open(output_path, "w", encoding="utf-8") as f:
+    #         json.dump(summary, f, indent=2, ensure_ascii=False)
 
-    # return summary
-    return {"samples": summaries}
+    # # return summary
+    # return {"samples": summaries}
+    return {}
 
 
 def main() -> None:
@@ -384,6 +534,18 @@ def main() -> None:
         default=str(Path(__file__).resolve().parent / "logs"),
         help="Directory for eval logs",
     )
+    parser.add_argument(
+        "--checkpoint-dir",
+        type=str,
+        default=str(Path(__file__).resolve().parent / "checkpoints"),
+        help="Directory for per-sample checkpoint files (set to empty string to disable)",
+    )
+    parser.add_argument(
+        "--start-index",
+        type=int,
+        default=None,
+        help="Optional starting event index for ingestion (0-based). Overrides checkpoints if set.",
+    )
     parser.add_argument("--max-events", type=int, default=None, help="Limit number of app log events to ingest")
     parser.add_argument(
         "--reset-memories",
@@ -401,6 +563,7 @@ def main() -> None:
         if not qa_path.is_absolute():
             qa_path = DATA_DIR / qa_path
     output_path = Path(args.output) if args.output else None
+    checkpoint_dir = Path(args.checkpoint_dir) if args.checkpoint_dir else None
 
     mem0_config = load_mem0_config(
         config_path=args.config,
@@ -423,11 +586,13 @@ def main() -> None:
         reset_memories=args.reset_memories,
         size=args.size,
         sample_filter=args.user_folder,
+        checkpoint_dir=checkpoint_dir,
+        start_index_override=args.start_index,
     )
-    if "accuracy" in summary:
-        print(f"Accuracy: {summary['accuracy']:.4f} ({summary['correct']}/{summary['total_questions']})")
-    else:
-        print("Evaluation complete.")
+    # if "accuracy" in summary:
+    #     print(f"Accuracy: {summary['accuracy']:.4f} ({summary['correct']}/{summary['total_questions']})")
+    # else:
+    #     print("Evaluation complete.")
 
 
 if __name__ == "__main__":
