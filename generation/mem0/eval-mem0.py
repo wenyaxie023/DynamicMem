@@ -54,21 +54,37 @@ def setup_logger(log_file: Path) -> logging.Logger:
     return logger
 
 import os
-def build_mem0_config(collection_name: str, host: str, port: int) -> Dict[str, Any]:
+def build_mem0_config(
+    collection_name: str,
+    host: str,
+    port: int,
+    embedder_api_key: Optional[str] = None,
+    embedder_api_base: Optional[str] = None,
+    llm_api_key: Optional[str] = None,
+    llm_api_base: Optional[str] = None,
+    embedder_model: Optional[str] = None,
+    llm_model: Optional[str] = None,
+) -> Dict[str, Any]:
+    embedder_config: Dict[str, Any] = {"model": embedder_model or "text-embedding-3-small"}
+    if embedder_api_key:
+        embedder_config["api_key"] = embedder_api_key
+    if embedder_api_base:
+        embedder_config["api_base"] = embedder_api_base
+
+    llm_config: Dict[str, Any] = {"model": llm_model or "gpt-4o-mini"}
+    if llm_api_key:
+        llm_config["api_key"] = llm_api_key
+    if llm_api_base:
+        llm_config["api_base"] = llm_api_base
+
     return {
         "embedder": {
             "provider": "openai",
-            "config": {
-                "model": "text-embedding-3-small"
-            }
+            "config": embedder_config,
         },
         "llm": {
             "provider": "openai",
-            "config": {
-                "model": "gpt-4o-mini",
-                # "api_key":os.getenv("GEMINI_API_KEY")
-                
-            }
+            "config": llm_config,
         },
         "vector_store": {
             "provider": "qdrant",
@@ -77,7 +93,7 @@ def build_mem0_config(collection_name: str, host: str, port: int) -> Dict[str, A
                 "host": host,
                 "port": port,
             },
-        }
+        },
     }
 
 
@@ -86,11 +102,43 @@ def load_mem0_config(
     collection_name: str,
     host: str,
     port: int,
+    embedder_api_key: Optional[str],
+    embedder_api_base: Optional[str],
+    llm_api_key: Optional[str],
+    llm_api_base: Optional[str],
+    embedder_model: Optional[str],
+    llm_model: Optional[str],
 ) -> Dict[str, Any]:
     if config_path:
         with open(config_path, "r", encoding="utf-8") as f:
-            return json.load(f)
-    return build_mem0_config(collection_name, host, port)
+            config = json.load(f)
+    else:
+        config = build_mem0_config(
+            collection_name,
+            host,
+            port,
+            embedder_api_key=embedder_api_key,
+            embedder_api_base=embedder_api_base,
+            llm_api_key=llm_api_key,
+            llm_api_base=llm_api_base,
+            embedder_model=embedder_model,
+            llm_model=llm_model,
+        )
+
+    if embedder_model:
+        config.setdefault("embedder", {}).setdefault("config", {})["model"] = embedder_model
+    if llm_model:
+        config.setdefault("llm", {}).setdefault("config", {})["model"] = llm_model
+    if embedder_api_key:
+        config.setdefault("embedder", {}).setdefault("config", {})["api_key"] = embedder_api_key
+    if embedder_api_base:
+        config.setdefault("embedder", {}).setdefault("config", {})["api_base"] = embedder_api_base
+    if llm_api_key:
+        config.setdefault("llm", {}).setdefault("config", {})["api_key"] = llm_api_key
+    if llm_api_base:
+        config.setdefault("llm", {}).setdefault("config", {})["api_base"] = llm_api_base
+
+    return config
 
 
 def _safe_filename(text: str) -> str:
@@ -525,8 +573,14 @@ def main() -> None:
         help="Optional path to a mem0 config JSON (overrides default qdrant config)",
     )
     parser.add_argument("--user-id", type=str, default=None, help="User id to use inside mem0 (defaults to sample id)")
-    parser.add_argument("--model", type=str, default="gpt-4o-mini", help="OpenAI chat model for answering")
+    parser.add_argument("--model", type=str, default="gpt-4o-mini", help="(Deprecated) LLM model for answering")
+    parser.add_argument("--llm-model", type=str, default=None, help="LLM model for answering")
+    parser.add_argument("--embedder-model", type=str, default=None, help="Embedding model name")
     parser.add_argument("--temperature", type=float, default=0.2, help="LLM temperature")
+    parser.add_argument("--embedder-api-key", type=str, default=None, help="API key for embedder provider")
+    parser.add_argument("--embedder-api-base", type=str, default=None, help="API base URL for embedder provider")
+    parser.add_argument("--llm-api-key", type=str, default=None, help="API key for LLM provider")
+    parser.add_argument("--llm-api-base", type=str, default=None, help="API base URL for LLM provider")
     parser.add_argument("--output", type=str, default=None, help="Write JSON results to this path")
     parser.add_argument(
         "--log-dir",
@@ -565,20 +619,26 @@ def main() -> None:
     output_path = Path(args.output) if args.output else None
     checkpoint_dir = Path(args.checkpoint_dir) if args.checkpoint_dir else None
 
+    llm_model = args.llm_model or args.model
+
     mem0_config = load_mem0_config(
         config_path=args.config,
         collection_name=args.collection_name,
         host=args.qdrant_host,
         port=args.qdrant_port,
+        embedder_api_key=args.embedder_api_key,
+        embedder_api_base=args.embedder_api_base,
+        llm_api_key=args.llm_api_key,
+        llm_api_base=args.llm_api_base,
+        embedder_model=args.embedder_model,
+        llm_model=llm_model,
     )
-    print("app_log_path: ", app_log_path)
-    input("Hey!")
     summary = evaluate_membench_with_mem0(
         app_log_path=app_log_path,
         qa_path=qa_path,
         mem0_config=mem0_config,
         user_id=args.user_id,
-        llm_model=args.model,
+        llm_model=llm_model,
         temperature=args.temperature,
         output_path=output_path,
         log_dir=Path(args.log_dir),
