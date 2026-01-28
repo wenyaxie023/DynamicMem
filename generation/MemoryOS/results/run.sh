@@ -1,0 +1,1 @@
+for i in 002 003 004 005 006 007 008 009 010; do mkdir -p ${i}_user_${i}/prediction; done
