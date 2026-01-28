@@ -377,16 +377,44 @@ def _parse_qa_list(raw_qa: object) -> List[QA]:
     for qa in raw_qa:
         if not isinstance(qa, dict):
             continue
+        question = qa.get("question") or qa.get("query") or ""
+        answer = qa.get("answer")
+        if answer is None:
+            if "prediction" in qa:
+                answer = qa.get("prediction")
+            else:
+                answer = qa.get("reference")
+        evidence = qa.get("evidence")
+        if evidence is None:
+            metadata = qa.get("metadata")
+            if isinstance(metadata, dict):
+                evidence = metadata.get("reference_evidence")
+        evidence_list = list(evidence) if evidence is not None else []
         qa_list.append(
             QA(
-                question=str(qa.get("question", "")),
-                answer=qa.get("answer"),
-                evidence=list(qa.get("evidence", [])) if qa.get("evidence") is not None else [],
+                question=str(question),
+                answer=answer,
+                evidence=evidence_list,
                 category=qa.get("category"),
                 adversarial_answer=qa.get("adversarial_answer"),
             )
         )
     return qa_list
+
+def _find_user_qa_file(app_log_file: Path, sample_id: str) -> Optional[Path]:
+    parent = app_log_file.parent
+    direct = parent / f"qa_human_{sample_id}.json"
+    if direct.exists():
+        return direct
+    digits = re.findall(r"\\d+", sample_id)
+    if digits:
+        candidate = parent / f"qa_human_{digits[-1]}.json"
+        if candidate.exists():
+            return candidate
+    matches = sorted(parent.glob("qa_human_*.json"))
+    if len(matches) == 1:
+        return matches[0]
+    return None
 
 def load_membench_dataset(
     app_log_path: Union[str, Path],
@@ -399,7 +427,7 @@ def load_membench_dataset(
     - `app_log_path`: JSON file with an app log list, or a directory containing user subfolders.
       When a directory is provided, each subfolder is expected to contain app_log_{size}.json.
     - `qa_path` (optional): JSON file containing `{"qa": [...]}`.
-      If omitted, tries to read `qa` from `app_log_path` (if present).
+      If omitted, tries to read per-user `qa_human_*.json` or `qa` from app logs.
 
     Returns a lazy iterator over MemBenchSample objects.
     """
@@ -428,10 +456,15 @@ def load_membench_dataset(
 
         if qa_list_from_path is not None:
             qa_list = list(qa_list_from_path)
-        elif isinstance(raw, dict) and "qa" in raw:
-            qa_list = _parse_qa_list(raw["qa"])
         else:
-            qa_list = []
+            qa_file = _find_user_qa_file(app_log_file, sample_id)
+            if qa_file is not None:
+                with open(qa_file, "r", encoding="utf-8") as f:
+                    qa_list = _parse_qa_list(json.load(f))
+            elif isinstance(raw, dict) and "qa" in raw:
+                qa_list = _parse_qa_list(raw["qa"])
+            else:
+                qa_list = []
 
         events: List[MemBenchEvent] = []
         for ev in raw_app_logs:
