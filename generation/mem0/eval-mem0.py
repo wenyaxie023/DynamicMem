@@ -69,13 +69,13 @@ def build_mem0_config(
     if embedder_api_key:
         embedder_config["api_key"] = embedder_api_key
     if embedder_api_base:
-        embedder_config["api_base"] = embedder_api_base
+        embedder_config["openai_base_url"] = embedder_api_base
 
     llm_config: Dict[str, Any] = {"model": llm_model or "gpt-4o-mini"}
     if llm_api_key:
         llm_config["api_key"] = llm_api_key
     if llm_api_base:
-        llm_config["api_base"] = llm_api_base
+        llm_config["openai_base_url"] = llm_api_base
 
     return {
         "embedder": {
@@ -132,11 +132,11 @@ def load_mem0_config(
     if embedder_api_key:
         config.setdefault("embedder", {}).setdefault("config", {})["api_key"] = embedder_api_key
     if embedder_api_base:
-        config.setdefault("embedder", {}).setdefault("config", {})["api_base"] = embedder_api_base
+        config.setdefault("embedder", {}).setdefault("config", {})["openai_base_url"] = embedder_api_base
     if llm_api_key:
         config.setdefault("llm", {}).setdefault("config", {})["api_key"] = llm_api_key
     if llm_api_base:
-        config.setdefault("llm", {}).setdefault("config", {})["api_base"] = llm_api_base
+        config.setdefault("llm", {}).setdefault("config", {})["openai_base_url"] = llm_api_base
 
     return config
 
@@ -381,7 +381,6 @@ def evaluate_membench_with_mem0(
     max_events: Optional[int],
     reset_memories: bool,
     size: str,
-    sample_filter: Optional[str],
     checkpoint_dir: Optional[Path],
     start_index_override: Optional[int],
 ) -> Dict[str, Any]:
@@ -389,8 +388,10 @@ def evaluate_membench_with_mem0(
     log_dir.mkdir(parents=True, exist_ok=True)
     log_file = log_dir / f"eval_mem0_{timestamp}.log"
     logger = setup_logger(log_file)
-
     memory = Memory.from_config(mem0_config)
+    llm_config = mem0_config.get("llm", {}).get("config", {})
+    llm_api_key = llm_config.get("api_key")
+    llm_api_base = llm_config.get("api_base") or llm_config.get("base_url")
     collection_name = (
         mem0_config.get("vector_store", {})
         .get("config", {})
@@ -408,7 +409,7 @@ def evaluate_membench_with_mem0(
 
     summaries: List[Dict[str, Any]] = []
     for sample in load_membench_dataset(app_log_path, qa_path, size=size):
-        if sample_filter and sample.sample_id != sample_filter:
+        if user_id and sample.sample_id != user_id:
             continue
         sample_user_id = user_id or sample.sample_id
         logger.info(
@@ -443,7 +444,16 @@ def evaluate_membench_with_mem0(
 
         agent = Mem0MemBenchAgent(
             memory=memory,
-            llm_client=OpenAI(),
+            llm_client=OpenAI(
+                **{
+                    k: v
+                    for k, v in {
+                        "api_key": llm_api_key,
+                        "base_url": llm_api_base,
+                    }.items()
+                    if v
+                }
+            ),
             model=llm_model,
             user_id=sample_user_id,
             temperature=temperature,
@@ -553,12 +563,6 @@ def main() -> None:
         help="Dataset size: small|medium|large (or s|m|l)",
     )
     parser.add_argument(
-        "--user-folder",
-        type=str,
-        default=None,
-        help="Optional sample id to filter when loading a data directory",
-    )
-    parser.add_argument(
         "--collection-name",
         type=str,
         default="membench_mem0",
@@ -645,7 +649,6 @@ def main() -> None:
         max_events=args.max_events,
         reset_memories=args.reset_memories,
         size=args.size,
-        sample_filter=args.user_folder,
         checkpoint_dir=checkpoint_dir,
         start_index_override=args.start_index,
     )
