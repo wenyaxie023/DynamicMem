@@ -6,6 +6,7 @@ env
 *DS_Store
 *.log
 *.txt
+.env
 
 # HippoRAG Cache and Outputs
 *.sqlite

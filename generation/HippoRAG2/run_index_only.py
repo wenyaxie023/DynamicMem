@@ -3,6 +3,10 @@ import os
 import json
 import sys
 import os
+from dotenv import load_dotenv
+
+# Load .env file to get correct API key
+load_dotenv(override=True)
 
 # Aggressive Monkeypatch to bypass torch.load vulnerability check
 try:
@@ -23,11 +27,46 @@ from tqdm import tqdm
 
 from hipporag import HippoRAG
 
+class _TimestampedWriter:
+    def __init__(self, stream):
+        self.stream = stream
+        self._buf = ""
+
+    def write(self, s):
+        if not s:
+            return
+        self._buf += s
+        while "\n" in self._buf:
+            line, self._buf = self._buf.split("\n", 1)
+            ts = time.strftime("%Y-%m-%d %H:%M:%S")
+            self.stream.write(f"[{ts}] {line}\n")
+
+    def flush(self):
+        if self._buf:
+            ts = time.strftime("%Y-%m-%d %H:%M:%S")
+            self.stream.write(f"[{ts}] {self._buf}")
+            self._buf = ""
+        self.stream.flush()
+
+def _setup_log_file(log_file):
+    if not log_file:
+        return
+    os.makedirs(os.path.dirname(log_file), exist_ok=True)
+    f = open(log_file, "a", buffering=1, encoding="utf-8", errors="ignore")
+    sys.stdout = _TimestampedWriter(f)
+    sys.stderr = _TimestampedWriter(f)
+
+def _timing_line(tag, payload):
+    # Single-line timing logs for easy grep/parse in nohup output.
+    ts = time.strftime("%Y-%m-%d %H:%M:%S")
+    items = " ".join(f"{k}={v}" for k, v in payload.items())
+    print(f"[TIMING] {ts} {tag} {items}", flush=True)
+
 def format_event_for_indexing(event):
     # Index the formatted JSON string of the event
     return json.dumps(event, ensure_ascii=False)
 
-def run_indexing(data_path, save_dir, reasoner_url, embedding_model_name, llm_model_name, limit=None):
+def run_indexing(data_path, save_dir, reasoner_url, embedding_model_name, llm_model_name, limit=None, openai_api_key=None, batch_size=1, extraction_only=False, start_idx=None, end_idx=None, embedding_base_url=None):
     print(f"Loading data from {data_path}...")
     if not os.path.exists(data_path):
         print(f"[Error] Data file not found: {data_path}")
@@ -48,63 +87,114 @@ def run_indexing(data_path, save_dir, reasoner_url, embedding_model_name, llm_mo
 
     # Limit processing if requested
     total_events = len(app_logs)
-    if limit:
-        app_logs = app_logs[:limit]
-        print(f"Limiting processing to first {limit} events (out of {total_events})")
+    
+    # Range processing
+    if start_idx is not None:
+        start_index = start_idx
     else:
-        print(f"Processing all {total_events} events")
-
-    # Checkpoint logic
-    checkpoint_file = os.path.join(save_dir, "indexing_checkpoint.json")
-    start_index = 0
-    if os.path.exists(checkpoint_file):
-        try:
-            with open(checkpoint_file, 'r') as f:
-                checkpoint = json.load(f)
-                start_index = checkpoint.get("last_processed_index", -1) + 1
-                if start_index > 0:
+        # Checkpoint logic (only if start_idx not provided)
+        checkpoint_file = os.path.join(save_dir, "indexing_checkpoint.json")
+        start_index = 0
+        if os.path.exists(checkpoint_file):
+            try:
+                with open(checkpoint_file, 'r') as f:
+                    checkpoint = json.load(f)
+                    start_index = checkpoint.get("last_processed_index", -1) + 1
                     print(f"[*] Resuming indexing from index {start_index}")
-        except Exception as e:
-            print(f"[!] Error reading checkpoint: {e}. Starting from 0.")
+            except Exception as e:
+                print(f"[!] Warning: Could not read checkpoint file: {e}")
+    
+    if end_idx is not None:
+        actual_end = min(end_idx, total_events)
     else:
-        os.makedirs(save_dir, exist_ok=True)
-
-    if start_index >= len(app_logs):
-        print("All requested events already indexed. Exiting.")
+        actual_end = total_events
+    
+    print(f"Processing range [{start_index}, {actual_end}) out of {total_events} events")
+    
+    app_logs_slice = app_logs[start_index:actual_end]
+    if not app_logs_slice:
+        print("Nothing to process in this range.")
         return
 
-    print(f"Initializing HippoRAG in {save_dir}...")
+    os.makedirs(save_dir, exist_ok=True)
+
+    # Determine if OpenAI
+    openie_mode = "Transformers-offline" # default to loading embedding model
+    if any(k in llm_model_name.lower() for k in ["gpt-", "o3-", "openai/"]):
+        print(f"Detected OpenAI model: {llm_model_name}. Switching to Online OpenIE.")
+        openie_mode = "online"
+        
+    print(f"Initializing HippoRAG in {save_dir} with mode {openie_mode}...")
     hipporag = HippoRAG(
         save_dir=save_dir,
         llm_model_name=llm_model_name,
         llm_base_url=reasoner_url,
         embedding_model_name=embedding_model_name,
+        embedding_base_url=embedding_base_url,
+        openie_mode=openie_mode
     )
 
-    print(f"Starting indexing loop from {start_index}...")
     
-    for i in tqdm(range(start_index, len(app_logs))):
-        event_data = app_logs[i]
+    # Force inject OpenAI key if needed
+    if openie_mode == 'online' and openai_api_key:
+        os.environ["OPENAI_API_KEY"] = openai_api_key
+
+    print(f"Starting indexing loop from {start_index} in batches of {batch_size}...")
+    i = 0
+    pbar = tqdm(total=len(app_logs_slice), desc="Extraction" if extraction_only else "Indexing")
+    
+    checkpoint_file = os.path.join(save_dir, "indexing_checkpoint.json")
+
+    while i < len(app_logs_slice):
+        batch_end = min(i + batch_size, len(app_logs_slice))
+        batch = app_logs_slice[i:batch_end]
         
-        # Format and Index
-        doc_to_index = format_event_for_indexing(event_data)
+        current_abs_start = start_index + i
+        current_abs_end = start_index + batch_end
+        
         try:
-            hipporag.index(docs=[doc_to_index])
+            _timing_line("batch_start", {"start": current_abs_start, "end": current_abs_end - 1, "bs": len(batch)})
+            t_batch_start = time.perf_counter()
+            docs = [format_event_for_indexing(e) for e in batch]
+            t_docs_ready = time.perf_counter()
+            if len(docs) > 0:
+                if extraction_only:
+                    hipporag.global_config.save_openie = False
+                    hipporag.pre_openie(docs=docs)
+                else:
+                    hipporag.index(docs=docs)
+            t_index_done = time.perf_counter()
             
-            # Update Checkpoint
-            # We save every step or every N steps. Saving every step is safer for resume but slower IO.
-            # Given the scale, saving every step is fine for now, or we can optimize to every 10.
-            if i % 10 == 0: 
+            # Update checkpoint (only if not extraction_only, or we can update a separate one)
+            if not extraction_only:
                 with open(checkpoint_file, 'w') as f:
-                    json.dump({"last_processed_index": i}, f)
+                    json.dump({"last_processed_index": current_abs_end - 1}, f)
+            
+            pbar.update(len(batch))
+            i = batch_end
+
+            _timing_line(
+                "batch",
+                {
+                    "start": i - len(batch),
+                    "end": batch_end - 1,
+                    "bs": len(batch),
+                    "format_s": f"{(t_docs_ready - t_batch_start):.3f}",
+                    "index_s": f"{(t_index_done - t_docs_ready):.3f}",
+                    "total_s": f"{(t_index_done - t_batch_start):.3f}",
+                },
+            )
                 
         except Exception as e:
-            print(f"[!] Indexing failed at index {i}: {e}")
-            # We continue to next event, assuming transient or data specific error
+            print(f"[!] Indexing failed at index range {i}-{batch_end}: {e}")
+            # We move on to next batch or stop? 
+            # If we stop, we might block everything.
+            # Ideally we skip the problematic batch or item, but for now let's just skip the batch and log it.
+            # But the 'i' needs to increment.
+            i = batch_end
+            pbar.update(len(batch))
 
-    # Final checkpoint update
-    with open(checkpoint_file, 'w') as f:
-        json.dump({"last_processed_index": len(app_logs) - 1}, f)
+    pbar.close()
 
     print("Indexing completed.")
 
@@ -114,20 +204,48 @@ if __name__ == "__main__":
     parser.add_argument("--save_dir", type=str, required=True, help="Directory to save HippoRAG state")
     parser.add_argument("--reasoner_port", type=int, default=8000)
     parser.add_argument("--limit", type=int, default=None, help="Number of events to process")
+    parser.add_argument("--openai_api_key", type=str, default=None, help="OpenAI API Key")
+    parser.add_argument("--model", type=str, default="Qwen/Qwen2.5-7B-Instruct", help="LLM Model Name")
+    parser.add_argument("--batch_size", type=int, default=1, help="Number of items to index per batch")
+    parser.add_argument("--log_file", type=str, default=None, help="Optional log file path")
+    parser.add_argument('--extraction_only', action='store_true', help='Only perform triple extraction, no graph building')
+    parser.add_argument('--start_idx', type=int, default=None, help='Starting index in the data file')
+    parser.add_argument('--end_idx', type=int, default=None, help='Ending index in the data file')
+    
+    parser.add_argument("--embedding_model", type=str, default="Transformers/BAAI/bge-m3", help="Embedding Model Name")
     
     args = parser.parse_args()
+
+    # Pass the api key to environment if provided
+    if args.openai_api_key:
+        os.environ["OPENAI_API_KEY"] = args.openai_api_key
+
+    _setup_log_file(args.log_file)
     
-    reasoner_url = f"http://localhost:{args.reasoner_port}/v1"
+    reasoner_url = None
+    if "gpt-" not in args.model.lower() and "o3-" not in args.model.lower():
+        reasoner_url = f"http://localhost:{args.reasoner_port}/v1"
+    else:
+        # Allow override for OpenAI-compatible endpoints (e.g., Azure) via env.
+        env_base = os.getenv("OPENAI_BASE_URL")
+        if env_base:
+            reasoner_url = env_base
     
     # Global Configs
-    llm_model_name="Qwen/Qwen2.5-7B-Instruct" 
-    embedding_model_name="Transformers/BAAI/bge-m3"
+    llm_model_name=args.model
+    # embedding_model_name="Transformers/BAAI/bge-m3" # Replaced by args
 
     run_indexing(
-        args.data_path, 
-        args.save_dir, 
-        reasoner_url, 
-        embedding_model_name,
-        llm_model_name,
-        args.limit
+        data_path=args.data_path,
+        save_dir=args.save_dir,
+        reasoner_url=reasoner_url,
+        embedding_model_name=args.embedding_model,
+        llm_model_name=args.model,
+        limit=args.limit,
+        openai_api_key=args.openai_api_key,
+        batch_size=args.batch_size,
+        extraction_only=args.extraction_only,
+        start_idx=args.start_idx,
+        end_idx=args.end_idx,
+        embedding_base_url=reasoner_url # Pass the same base URL for embedding
     )
