@@ -48,14 +48,16 @@ def setup_logger(log_file: Path) -> logging.Logger:
     return logger
 
 
-def _load_checkpoint(path: Path, logger: logging.Logger) -> int:
+def _load_checkpoint(path: Path, logger: logging.Logger) -> tuple[int, int]:
     try:
         with path.open("r") as f:
             payload = json.load(f)
-        return int(payload.get("last_event_idx", -1))
+        last_event_idx = int(payload.get("last_event_idx", -1))
+        events_processed = int(payload.get("events_processed", last_event_idx + 1))
+        return last_event_idx, events_processed
     except Exception as e:
         logger.warning("Failed to load checkpoint %s: %s", path, e)
-        return -1
+        return -1, 0
 
 
 def _write_checkpoint(path: Path, last_event_idx: int, processed: int) -> None:
@@ -71,6 +73,12 @@ def _write_checkpoint(path: Path, last_event_idx: int, processed: int) -> None:
     os.replace(tmp_path, path)
 
 
+def _checkpoint_paths(ckpt_dir: Path, user_id: str, size_label: str) -> tuple[Path, Path]:
+    state_path = ckpt_dir / f"membench_amem_{user_id}_{size_label}.pkl"
+    checkpoint_path = ckpt_dir / f"membench_amem_{user_id}_{size_label}.json"
+    return state_path, checkpoint_path
+
+
 def evaluate_membench(
     user_id: str,
     *,
@@ -84,8 +92,11 @@ def evaluate_membench(
     sglang_host: str = "http://localhost",
     sglang_port: int = 30000,
     resume: bool = False,
+    resume_from_size: Optional[str] = None,
     checkpoint_dir: Optional[str] = None,
     save_every: int = 50,
+    embedding_api_key: Optional[str] = None,
+    embedding_api_base: Optional[str] = None,
 ) -> dict:
     _ensure_nltk()
 
@@ -97,13 +108,39 @@ def evaluate_membench(
     logger = setup_logger(log_dir / f"membench_amem_{user_id}_{timestamp}.log")
 
     ckpt_dir = Path(checkpoint_dir) if checkpoint_dir else (Path(__file__).resolve().parent / "checkpoints")
-    state_path = ckpt_dir / f"membench_amem_{user_id}_{size}.pkl"
-    checkpoint_path = ckpt_dir / f"membench_amem_{user_id}_{size}.json"
+    state_path, checkpoint_path = _checkpoint_paths(ckpt_dir, user_id, size)
+    resume_state_path = state_path
+    resume_checkpoint_path = checkpoint_path
+    resume_label = size
 
-    resume_enabled = resume and state_path.exists() and checkpoint_path.exists()
+    if resume_from_size:
+        resume_state_path, resume_checkpoint_path = _checkpoint_paths(
+            ckpt_dir, user_id, resume_from_size
+        )
+        resume_label = resume_from_size
+
+    resume_requested = resume or resume_from_size is not None
+    resume_enabled = False
     start_index = 0
+    processed = 0
+    if resume_from_size:
+        if not resume_state_path.exists() or not resume_checkpoint_path.exists():
+            missing = []
+            if not resume_state_path.exists():
+                missing.append(str(resume_state_path))
+            if not resume_checkpoint_path.exists():
+                missing.append(str(resume_checkpoint_path))
+            raise FileNotFoundError(
+                "Resume checkpoint not found for size "
+                f"'{resume_from_size}': {', '.join(missing)}"
+            )
+        resume_enabled = True
+    elif resume and resume_state_path.exists() and resume_checkpoint_path.exists():
+        resume_enabled = True
+
     if resume_enabled:
-        start_index = _load_checkpoint(checkpoint_path, logger) + 1
+        last_event_idx, processed = _load_checkpoint(resume_checkpoint_path, logger)
+        start_index = last_event_idx + 1
         if start_index < 0:
             start_index = 0
 
@@ -113,18 +150,33 @@ def evaluate_membench(
         embedding_backend=embedding_backend,
         llm_backend=llm_backend,
         llm_model=llm_model,
+        
         api_key=os.environ.get("AIML_API_KEY"),
         openai_api_base=os.environ.get("API_BASE_URL"),
+        # openai_api_base="https://openrouter.ai/api/v1",
+        # llm_base_url="https://openrouter.ai/api/v1",
         llm_base_url=os.environ.get("API_BASE_URL"),
+
+        embedding_api_key=os.environ.get("AIML_API_KEY"),
+        embedding_api_base="https://api.aimlapi.com/v1",
         reset_collection=not resume_enabled,
     )
 
     if resume_enabled:
-        memory_system.load_state(state_path)
+        memory_system.load_state(resume_state_path)
         memory_system.rebuild_retriever()
-        logger.info("Resuming from checkpoint: start_index=%d", start_index)
+        if resume_label != size:
+            logger.info(
+                "Resuming from checkpoint size=%s -> target size=%s: start_index=%d",
+                resume_label,
+                size,
+                start_index,
+            )
+        else:
+            logger.info("Resuming from checkpoint: start_index=%d", start_index)
 
-    processed = start_index
+    if processed <= 0:
+        processed = start_index
     found = False
     for sample in load_membench_dataset(resolved_app_log_path, size=size):
         if sample.sample_id != user_id:
@@ -146,14 +198,14 @@ def evaluate_membench(
                 processed += 1
                 last_event_idx = idx
                 print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] {processed} processed")
-                if resume and save_every > 0 and processed % save_every == 0:
+                if resume_requested and save_every > 0 and processed % save_every == 0:
                     memory_system.save_state(state_path)
                     _write_checkpoint(checkpoint_path, last_event_idx, processed)
         except BaseException as exc:
             interrupted_exc = exc
             logger.warning("Run interrupted (%s). Saving checkpoint.", type(exc).__name__)
         finally:
-            if resume and last_event_idx >= 0:
+            if resume_requested and last_event_idx >= 0:
                 memory_system.save_state(state_path)
                 _write_checkpoint(checkpoint_path, last_event_idx, processed)
         if interrupted_exc is not None:
@@ -183,8 +235,16 @@ def main() -> None:
     parser.add_argument("--sglang-host", type=str, default="http://localhost", help="SGLang host")
     parser.add_argument("--sglang-port", type=int, default=30000, help="SGLang port")
     parser.add_argument("--resume", action="store_true", help="Resume from last checkpoint if available")
+    parser.add_argument(
+        "--resume-from-size",
+        type=str,
+        default=None,
+        help="Resume from a checkpoint generated with a different dataset size (e.g. small)",
+    )
     parser.add_argument("--checkpoint-dir", type=str, default=None, help="Checkpoint directory")
     parser.add_argument("--save-every", type=int, default=50, help="Save checkpoint every N events")
+    parser.add_argument("--embedding-api-key", type=str, default=None, help="Embedding API key")
+    parser.add_argument("--embedding-api-base", type=str, default=None, help="Embedding API base URL")
     args = parser.parse_args()
 
     summary = evaluate_membench(
@@ -199,8 +259,11 @@ def main() -> None:
         sglang_host=args.sglang_host,
         sglang_port=args.sglang_port,
         resume=args.resume,
+        resume_from_size=args.resume_from_size,
         checkpoint_dir=args.checkpoint_dir,
         save_every=args.save_every,
+        embedding_api_key=args.embedding_api_key,
+        embedding_api_base=args.embedding_api_base,
     )
     print(f"Done (events={summary['events_processed']})")
 
