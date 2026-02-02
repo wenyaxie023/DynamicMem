@@ -8,8 +8,11 @@ from typing import Optional
 from datetime import datetime
 
 import nltk
+from dotenv import load_dotenv
 
 from agentic_memory.memory_system import AgenticMemorySystem
+
+load_dotenv(Path(__file__).resolve().parent / ".env")
 
 GENERATION_DIR = Path(__file__).resolve().parent.parent
 DATA_DIR = GENERATION_DIR / "data"
@@ -17,6 +20,23 @@ if str(GENERATION_DIR) not in sys.path:
     sys.path.append(str(GENERATION_DIR))
 
 from load_dataset import build_membench_memory_from_event, load_membench_dataset  # type: ignore
+
+
+def _env_value(*keys: str) -> Optional[str]:
+    for key in keys:
+        value = os.getenv(key)
+        if value is None:
+            continue
+        value = value.strip()
+        if not value:
+            continue
+        if value.endswith(","):
+            value = value[:-1].rstrip()
+        if len(value) >= 2 and value[0] == value[-1] and value[0] in {"'", '"'}:
+            value = value[1:-1]
+        if value:
+            return value
+    return None
 
 
 def _ensure_nltk() -> None:
@@ -84,11 +104,13 @@ def evaluate_membench(
     *,
     app_log_path: Optional[str] = None,
     size: str = "small",
-    model_name: str = "all-MiniLM-L6-v2",
+    embedding_model_name: str = "all-MiniLM-L6-v2",
     embedding_backend: Optional[str] = None,
     collection_name: str = "memories",
-    llm_backend: str = "openai",
-    llm_model: str = "gpt-4o-mini",
+    llm_controller_backend: str = "openai",
+    llm_controller_model_name: str = "gpt-4o-mini",
+    llm_controller_api_key: Optional[str] = None,
+    llm_controller_api_base_url: Optional[str] = None,
     sglang_host: str = "http://localhost",
     sglang_port: int = 30000,
     resume: bool = False,
@@ -96,9 +118,27 @@ def evaluate_membench(
     checkpoint_dir: Optional[str] = None,
     save_every: int = 50,
     embedding_api_key: Optional[str] = None,
-    embedding_api_base: Optional[str] = None,
+    embedding_api_base_url: Optional[str] = None,
 ) -> dict:
     _ensure_nltk()
+
+    embedding_api_key = embedding_api_key or _env_value("embedding_api_key", "EMBEDDING_API_KEY")
+    embedding_api_base_url = embedding_api_base_url or _env_value(
+        "embedding_api_base_url",
+        "EMBEDDING_API_BASE_URL",
+        "embedding_api_base",
+        "EMBEDDING_API_BASE",
+    )
+    llm_controller_api_key = llm_controller_api_key or _env_value(
+        "llm_controller_api_key",
+        "LLM_CONTROLLER_API_KEY",
+    )
+    llm_controller_api_base_url = llm_controller_api_base_url or _env_value(
+        "llm_controller_api_base_url",
+        "LLM_CONTROLLER_API_BASE_URL",
+        "llm_controller_base_url",
+        "LLM_CONTROLLER_BASE_URL",
+    )
 
     resolved_app_log_path = Path(app_log_path) if app_log_path else DATA_DIR
 
@@ -146,19 +186,14 @@ def evaluate_membench(
 
     memory_system = AgenticMemorySystem(
         collection_name=collection_name,
-        model_name=model_name,
+        embedding_model_name=embedding_model_name,
         embedding_backend=embedding_backend,
-        llm_backend=llm_backend,
-        llm_model=llm_model,
-        
-        api_key=os.environ.get("AIML_API_KEY"),
-        openai_api_base=os.environ.get("API_BASE_URL"),
-        # openai_api_base="https://openrouter.ai/api/v1",
-        # llm_base_url="https://openrouter.ai/api/v1",
-        llm_base_url=os.environ.get("API_BASE_URL"),
-
-        embedding_api_key=os.environ.get("AIML_API_KEY"),
-        embedding_api_base="https://api.aimlapi.com/v1",
+        embedding_api_key=embedding_api_key,
+        embedding_api_base_url=embedding_api_base_url,
+        llm_controller_backend=llm_controller_backend,
+        llm_controller_model_name=llm_controller_model_name,
+        llm_controller_api_key=llm_controller_api_key,
+        llm_controller_api_base_url=llm_controller_api_base_url,
         reset_collection=not resume_enabled,
     )
 
@@ -198,7 +233,7 @@ def evaluate_membench(
                 processed += 1
                 last_event_idx = idx
                 print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] {processed} processed")
-                if resume_requested and save_every > 0 and processed % save_every == 0:
+                if save_every > 0 and processed % save_every == 0:
                     memory_system.save_state(state_path)
                     _write_checkpoint(checkpoint_path, last_event_idx, processed)
         except BaseException as exc:
@@ -227,11 +262,20 @@ def main() -> None:
     parser.add_argument("--user-id", required=True, help="User/sample id to ingest")
     parser.add_argument("--app-log", type=str, default=str(DATA_DIR), help="App log path")
     parser.add_argument("--size", type=str, default="small", help="Dataset size: small|medium|large")
-    parser.add_argument("--model-name", type=str, default="text-embedding-3-large", help="Embedding model")
+    parser.add_argument("--embedding-model-name", "--model-name", dest="embedding_model_name", type=str, default="openrouter/openai/text-embedding-3-large", help="Embedding model")
     parser.add_argument("--embedding-backend", type=str, default="openai", help="Embedding backend")
     parser.add_argument("--collection-name", type=str, default="memories", help="ChromaDB collection name")
-    parser.add_argument("--llm-backend", type=str, default="openai", help="LLM backend")
-    parser.add_argument("--llm-model", type=str, default="gpt-4o-mini", help="LLM model")
+    parser.add_argument("--llm-controller-backend", "--llm-backend", dest="llm_controller_backend", type=str, default="openai", help="LLM backend")
+    parser.add_argument("--llm-controller-model-name", "--llm-model", dest="llm_controller_model_name", type=str, default="openrouter/openai/gpt-5-mini", help="LLM model")
+    parser.add_argument("--llm-controller-api-key", type=str, default=None, help="LLM API key")
+    parser.add_argument(
+        "--llm-controller-api-base-url",
+        "--llm-controller-base-url",
+        dest="llm_controller_api_base_url",
+        type=str,
+        default=None,
+        help="LLM API base URL",
+    )
     parser.add_argument("--sglang-host", type=str, default="http://localhost", help="SGLang host")
     parser.add_argument("--sglang-port", type=int, default=30000, help="SGLang port")
     parser.add_argument("--resume", action="store_true", help="Resume from last checkpoint if available")
@@ -244,18 +288,27 @@ def main() -> None:
     parser.add_argument("--checkpoint-dir", type=str, default=None, help="Checkpoint directory")
     parser.add_argument("--save-every", type=int, default=50, help="Save checkpoint every N events")
     parser.add_argument("--embedding-api-key", type=str, default=None, help="Embedding API key")
-    parser.add_argument("--embedding-api-base", type=str, default=None, help="Embedding API base URL")
+    parser.add_argument(
+        "--embedding-api-base-url",
+        "--embedding-api-base",
+        dest="embedding_api_base_url",
+        type=str,
+        default=None,
+        help="Embedding API base URL",
+    )
     args = parser.parse_args()
 
     summary = evaluate_membench(
         user_id=args.user_id,
         app_log_path=args.app_log,
         size=args.size,
-        model_name=args.model_name,
+        embedding_model_name=args.embedding_model_name,
         embedding_backend=args.embedding_backend or None,
         collection_name=args.collection_name,
-        llm_backend=args.llm_backend,
-        llm_model=args.llm_model,
+        llm_controller_backend=args.llm_controller_backend,
+        llm_controller_model_name=args.llm_controller_model_name,
+        llm_controller_api_key=args.llm_controller_api_key,
+        llm_controller_api_base_url=args.llm_controller_api_base_url,
         sglang_host=args.sglang_host,
         sglang_port=args.sglang_port,
         resume=args.resume,
@@ -263,7 +316,7 @@ def main() -> None:
         checkpoint_dir=args.checkpoint_dir,
         save_every=args.save_every,
         embedding_api_key=args.embedding_api_key,
-        embedding_api_base=args.embedding_api_base,
+        embedding_api_base_url=args.embedding_api_base_url,
     )
     print(f"Done (events={summary['events_processed']})")
 

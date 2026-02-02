@@ -91,50 +91,53 @@ class AgenticMemorySystem:
     """
     
     def __init__(self, 
-                 model_name: str = 'all-MiniLM-L6-v2',
-                 embedding_backend: str = "sentence-transformers",
-                 llm_backend: str = "openai",
-                 llm_model: str = "gpt-4o-mini",
-                 evo_threshold: int = 100,
-                 collection_name: str = "memories",
-                 api_key: Optional[str] = None,
-                 openai_api_base: Optional[str] = None,
-                 llm_base_url: Optional[str] = None,
-                 embedding_api_key: Optional[str] = None,
-                 embedding_api_base: Optional[str] = None,
-                 reset_collection: bool = True):  
+                embedding_model_name: str = 'all-MiniLM-L6-v2',
+                embedding_backend: str = "sentence-transformers",
+                embedding_api_key: Optional[str] = None,
+                embedding_api_base_url: Optional[str] = None,
+                
+                llm_controller_backend: str = "openai",
+                llm_controller_model_name: str = "gpt-4o-mini",
+                llm_controller_api_key: Optional[str] = None,
+                llm_controller_api_base_url: Optional[str] = None,
+                
+                evo_threshold: int = 100,
+                collection_name: str = "memories",
+                reset_collection: bool = True):  
         """Initialize the memory system.
         
         Args:
-            model_name: Name of the embedding model
+            embedding_model_name: Name of the embedding model
             embedding_backend: Embedding backend (sentence-transformers/openai)
+            embedding_api_key: API key for embedding provider (optional)
+            embedding_api_base_url: Base URL for embedding provider (optional)
             collection_name: ChromaDB collection name
-            llm_backend: LLM backend to use (openai/ollama)
-            llm_model: Name of the LLM model
+            llm_controller_backend: LLM backend to use (openai/ollama)
+            llm_controller_model_name: Name of the LLM model
+            llm_controller_api_key: API key for the LLM service (optional)
+            llm_controller_api_base_url: Base URL for the LLM provider (optional)
             evo_threshold: Number of memories before triggering evolution
-            api_key: API key for the LLM service
-            openai_api_base: OpenAI-compatible API base URL for embeddings
-            llm_base_url: Base URL for the LLM provider
         """
         self.memories = {}
-        self.model_name = model_name
+        self.embedding_model_name = embedding_model_name
         self.embedding_backend = embedding_backend
         self.collection_name = collection_name
-        self.api_key = api_key
-        self.openai_api_base = openai_api_base
-        self.llm_base_url = llm_base_url
-        self.embedding_api_key = embedding_api_key or api_key
-        self.embedding_api_base = embedding_api_base or openai_api_base
+        self.embedding_api_key = embedding_api_key
+        self.embedding_api_base_url = embedding_api_base_url
+        self.llm_controller_backend = llm_controller_backend
+        self.llm_controller_model_name = llm_controller_model_name
+        self.llm_controller_api_key = llm_controller_api_key or embedding_api_key
+        self.llm_controller_api_base_url = llm_controller_api_base_url or embedding_api_base_url
         # Initialize ChromaDB retriever with empty collection (optional)
         if reset_collection:
             try:
                 # Attempt to remove only the target collection (safer than client.reset()).
                 temp_retriever = PersistentChromaRetriever(
                     collection_name=collection_name,
-                    model_name=self.model_name,
+                    model_name=self.embedding_model_name,
                     embedding_backend=self.embedding_backend,
                     openai_api_key=self.embedding_api_key,
-                    openai_api_base=self.embedding_api_base,
+                    openai_api_base=self.embedding_api_base_url,
                     extend=True,
                 )
                 try:
@@ -149,15 +152,20 @@ class AgenticMemorySystem:
         # Create a fresh retriever instance
         self.retriever = PersistentChromaRetriever(
             collection_name=self.collection_name,
-            model_name=self.model_name,
+            model_name=self.embedding_model_name,
             embedding_backend=self.embedding_backend,
             openai_api_key=self.embedding_api_key,
-            openai_api_base=self.embedding_api_base,
+            openai_api_base=self.embedding_api_base_url,
             extend=True,
         )
         
         # Initialize LLM controller
-        self.llm_controller = LLMController(llm_backend, llm_model, api_key, llm_base_url)
+        self.llm_controller = LLMController(
+            self.llm_controller_backend,
+            self.llm_controller_model_name,
+            self.llm_controller_api_key,
+            self.llm_controller_api_base_url,
+        )
         self.evo_cnt = 0
         self.evo_threshold = evo_threshold
 
@@ -218,10 +226,10 @@ class AgenticMemorySystem:
 
         self.retriever = PersistentChromaRetriever(
             collection_name=self.collection_name,
-            model_name=self.model_name,
+            model_name=self.embedding_model_name,
             embedding_backend=self.embedding_backend,
             openai_api_key=self.embedding_api_key,
-            openai_api_base=self.embedding_api_base,
+            openai_api_base=self.embedding_api_base_url,
             extend=True,
         )
 
@@ -358,10 +366,10 @@ class AgenticMemorySystem:
 
         self.retriever = PersistentChromaRetriever(
             collection_name=self.collection_name,
-            model_name=self.model_name,
+            model_name=self.embedding_model_name,
             embedding_backend=self.embedding_backend,
-            openai_api_key=self.api_key,
-            openai_api_base=self.openai_api_base,
+            openai_api_key=self.embedding_api_key,
+            openai_api_base=self.embedding_api_base_url,
             extend=True,
         )
         

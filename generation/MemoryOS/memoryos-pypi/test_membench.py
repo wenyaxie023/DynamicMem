@@ -7,7 +7,7 @@ import sys
 import time
 from datetime import datetime
 from pathlib import Path
-from typing import Optional
+from typing import Optional, Union
 
 from memoryos import Memoryos
 
@@ -27,8 +27,9 @@ DEFAULT_BATCH_SIZE = 4
 ASSISTANT_ID = "assistant"
 API_KEY =  os.getenv("AIML_API_KEY")  # Replace with your key
 # API_KEY = os.getenv("OPENAI_API_KEY")
-BASE_URL = "https://api.aimlapi.com"  # Optional: if using a custom OpenAI endpoint
-# BASE_URL = ""
+# BASE_URL = "https://xie00-mkwwieck-eastus2.cognitiveservices.azure.com/openai/v1/"  # Optional: if using a custom OpenAI endpoint
+# BASE_URL = "https://openrouter.ai/api/v1"
+BASE_URL = "https://api.openai.com/v1"
 DATA_STORAGE_PATH = ""
 LLM_MODEL = "gpt-5-mini-2025-08-07"
 DATA_ROOT = GENERATION_DIR / "data"
@@ -63,7 +64,7 @@ Return a single JSON object with this schema:
 # Missing-field policy
 - If you don't know the app_log_id / timestamp / app_name / api_name, you should set them to null.
 """
-RETRY_EMPTY_RESPONSES = 3
+RETRY_EMPTY_RESPONSES = 10
 RETRY_SLEEP_SECONDS = 1
 
 _SIZE_ALIASES = {
@@ -178,6 +179,35 @@ def _is_empty_response(response: object) -> bool:
         return response.strip() == ""
     return False
 
+def _is_empty_prediction(value: object) -> bool:
+    if value is None:
+        return True
+    if isinstance(value, str):
+        return value.strip() == ""
+    return False
+
+def _load_existing_results(path: Optional[Union[str, Path]]) -> dict[str, dict]:
+    if not path:
+        return {}
+    p = Path(path)
+    if not p.exists():
+        raise FileNotFoundError(f"Existing results file not found: {p}")
+    with p.open("r", encoding="utf-8") as f:
+        raw = json.load(f)
+    if isinstance(raw, dict):
+        raw = raw.get("results", [])
+    if not isinstance(raw, list):
+        return {}
+    out: dict[str, dict] = {}
+    for item in raw:
+        if not isinstance(item, dict):
+            continue
+        rid = item.get("id")
+        if rid is None:
+            continue
+        out[str(rid)] = item
+    return out
+
 def _find_sample_qa_file(sample_dir: Path, sample_id: str) -> Optional[Path]:
     direct = sample_dir / f"qa_human_{sample_id}.json"
     if direct.exists():
@@ -202,7 +232,12 @@ def _load_raw_qa_list(sample_dir: Path, sample_id: str) -> list[dict]:
         raw = raw["qa"]
     return raw if isinstance(raw, list) else []
 
-def simple_demo(dataset_size: str, target_sample_id: str, batch_size: int):
+def simple_demo(
+    dataset_size: str,
+    target_sample_id: str,
+    batch_size: int,
+    existing_results_path: Optional[str] = None,
+):
     print("MemoryOS Simple Demo")
     dataset_size = _normalize_membench_size(dataset_size)
     user_id = f"{target_sample_id}_{dataset_size}" if target_sample_id else f"demo_{dataset_size}"
@@ -240,7 +275,8 @@ def simple_demo(dataset_size: str, target_sample_id: str, batch_size: int):
             embedding_model_kwargs={
                 "embedding_backend": "openai",
                 "api_key": API_KEY,
-                "api_base": "https://api.aimlapi.com/v1",
+                # "api_base": "https://xie00-mkwwieck-eastus2.cognitiveservices.azure.com/openai/v1/",
+                'api_base': BASE_URL,
                 "max_input_tokens": 8000,
                 "truncate_from": "end",
                 # "embedding_backend": "sentence-transformers",
@@ -317,6 +353,7 @@ def simple_demo(dataset_size: str, target_sample_id: str, batch_size: int):
 
     sample_dir = DATA_ROOT / sample.sample_id
     raw_qa_list = _load_raw_qa_list(sample_dir, sample.sample_id)
+    existing_answer_map = _load_existing_results(existing_results_path)
 
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
     timestamp = datetime.now().strftime("%Y-%m-%d-%H-%M")
@@ -333,53 +370,78 @@ def simple_demo(dataset_size: str, target_sample_id: str, batch_size: int):
                 existing_results = existing
         except Exception:
             existing_results = []
+    existing_by_id: dict[str, dict] = {}
+    existing_no_id: list[dict] = []
+    for item in existing_results:
+        if not isinstance(item, dict):
+            continue
+        rid = item.get("id")
+        if rid is None:
+            existing_no_id.append(item)
+        else:
+            existing_by_id[str(rid)] = item
     for idx, qa in enumerate(sample.qa):
         test_query = qa.question
         print(f"[{idx + 1}/{len(sample.qa)}] {test_query}")
-        retrieval = memo.retriever.retrieve_context(user_query=test_query, user_id=memo.user_id)
-        context = _build_context_from_retrieval(retrieval)
-        prompt = PROMPT.replace("{{ question }}", test_query).replace("{{ context }}", context)
-        print("prompt:", prompt)
-        response = ""
-        for attempt in range(1, RETRY_EMPTY_RESPONSES + 1):
-            response = memo.client.chat_completion(
-                model="gpt-5-mini-2025-08-07",
-                messages=[{"role": "user", "content": prompt}],
-            )
-            if not _is_empty_response(response):
-                break
-            print(f"Empty response (attempt {attempt}). Retrying...")
-            time.sleep(RETRY_SLEEP_SECONDS)
-        print("response:", response)
-        parsed = _maybe_parse_json(response)
-        record = {
-            "idx": idx,
-            "question": test_query,
-            "response": response,
-            "parsed_response": parsed,
-            "reference": qa.final_answer,
-            "evidence": qa.evidence,
-        }
-
         raw_qa = raw_qa_list[idx] if idx < len(raw_qa_list) and isinstance(raw_qa_list[idx], dict) else {}
-        prediction = parsed.get("answer") if isinstance(parsed, dict) else None
-        predicted_evidence = parsed.get("evidence") if isinstance(parsed, dict) else []
-        if not isinstance(predicted_evidence, list):
-            predicted_evidence = []
-        result_item = {
-            "id": raw_qa.get("id"),
-            "query": raw_qa.get("query") or test_query,
-            "reference": raw_qa.get("reference") or qa.final_answer,
-            "prediction": prediction,
-            "predicted_evidence": predicted_evidence,
-        }
-        metadata = raw_qa.get("metadata")
-        if isinstance(metadata, dict) and metadata:
-            result_item["metadata"] = metadata
-        existing_results.append(result_item)
+        qa_id = raw_qa.get("id")
+        existing_answer = existing_answer_map.get(str(qa_id)) if qa_id is not None else None
+
+        if existing_answer and not _is_empty_prediction(existing_answer.get("prediction")):
+            existing_predicted_evidence = existing_answer.get("predicted_evidence") or []
+            if not isinstance(existing_predicted_evidence, list):
+                existing_predicted_evidence = []
+            result_item = {
+                "id": existing_answer.get("id", qa_id),
+                "query": existing_answer.get("query") or raw_qa.get("query") or test_query,
+                "reference": existing_answer.get("reference") or raw_qa.get("reference") or qa.final_answer,
+                "prediction": existing_answer.get("prediction"),
+                "predicted_evidence": existing_predicted_evidence,
+            }
+            metadata = existing_answer.get("metadata") or raw_qa.get("metadata")
+            if isinstance(metadata, dict) and metadata:
+                result_item["metadata"] = metadata
+            print(f"Skipping LLM call for id={qa_id}: prediction already present.")
+        else:
+            retrieval = memo.retriever.retrieve_context(user_query=test_query, user_id=memo.user_id)
+            context = _build_context_from_retrieval(retrieval)
+            prompt = PROMPT.replace("{{ question }}", test_query).replace("{{ context }}", context)
+            print("prompt:", prompt)
+            response = ""
+            for attempt in range(1, RETRY_EMPTY_RESPONSES + 1):
+                response = memo.client.chat_completion(
+                    model="gpt-5.1-chat-latest",
+                    messages=[{"role": "user", "content": prompt}],
+                )
+                if not _is_empty_response(response):
+                    break
+                print(f"Empty response (attempt {attempt}). Retrying...")
+                time.sleep(RETRY_SLEEP_SECONDS)
+            print("response:", response)
+            parsed = _maybe_parse_json(response)
+            prediction = parsed.get("answer") if isinstance(parsed, dict) else None
+            predicted_evidence = parsed.get("evidence") if isinstance(parsed, dict) else []
+            if not isinstance(predicted_evidence, list):
+                predicted_evidence = []
+            result_item = {
+                "id": qa_id,
+                "query": raw_qa.get("query") or test_query,
+                "reference": raw_qa.get("reference") or qa.final_answer,
+                "prediction": prediction,
+                "predicted_evidence": predicted_evidence,
+            }
+            metadata = raw_qa.get("metadata")
+            if isinstance(metadata, dict) and metadata:
+                result_item["metadata"] = metadata
+
+        if qa_id is None:
+            existing_no_id.append(result_item)
+        else:
+            existing_by_id[str(qa_id)] = result_item
         with results_path.open("w", encoding="utf-8") as f:
-            json.dump(existing_results, f, ensure_ascii=False, indent=2)
-        print(f"Updated {results_path} ({len(existing_results)} records)")
+            ordered = list(existing_by_id.values()) + existing_no_id
+            json.dump(ordered, f, ensure_ascii=False, indent=2)
+        print(f"Updated {results_path} ({len(existing_by_id) + len(existing_no_id)} records)")
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="MemoryOS MemBench demo")
@@ -391,9 +453,15 @@ if __name__ == "__main__":
         help="Sample id to load (empty to take the first sample)",
     )
     parser.add_argument("--batch-size", type=int, default=DEFAULT_BATCH_SIZE, help="Batch size for app log ingest")
+    parser.add_argument(
+        "--existing-results-path",
+        type=str,
+        default=None,
+        help="Path to a memoryos_results.json file with prior predictions to skip non-empty entries",
+    )
     args = parser.parse_args()
 
     if args.batch_size <= 0:
         raise ValueError("batch_size must be a positive integer")
 
-    simple_demo(args.size, args.sample_id, args.batch_size)
+    simple_demo(args.size, args.sample_id, args.batch_size, args.existing_results_path)
