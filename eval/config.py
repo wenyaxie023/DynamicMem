@@ -30,7 +30,10 @@ GEN_MODEL_NAME = "gemini-3-flash-preview"   # or "gpt-5-mini"
 
 # Concurrency
 LLM_MAX_WORKERS = 5
+LLM_JUDGE_PROVIDERS = ["gpt"]  # options: "gpt", "gemini"
+LLM_JUDGE_GPT_PROVIDER = "openai"  # "openai" or "azure"
+LLM_JUDGE_GPT_MODEL = "gpt-5-mini"
+LLM_JUDGE_GEMINI_MODEL = "gemini-3-flash-preview"
+LLM_JUDGE_MAX_RETRIES = 3
 
 EXPERIMENT_NAME = "MemBench_Evaluation_01"
-
-

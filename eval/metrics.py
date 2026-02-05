@@ -124,30 +124,83 @@ def bert_score_metric(samples: List[Any]) -> Dict[str, List[float]]:
 
 
 from .client import LLMClient
-from .config import LLM_MAX_WORKERS
+from . import config
 from .prompts import BASIC_JUDGE_PROMPT
+
+
+def _is_valid_judge_output(out: Any) -> bool:
+    if isinstance(out, Exception) or not isinstance(out, dict):
+        return False
+    if "score" not in out:
+        return False
+    try:
+        score = float(out["score"])
+    except Exception:
+        return False
+    return 1.0 <= score <= 10.0
+
+
+def _collect_with_retries(
+    client: LLMClient,
+    prompts: List[str],
+    *,
+    max_retries: int,
+    provider_label: str,
+) -> List[Any]:
+    results: List[Any] = [None] * len(prompts)
+    remaining = list(range(len(prompts)))
+    attempt = 0
+    while remaining:
+        futures = [client.ask_async(prompts[i]) for i in remaining]
+        batch = client.collect(futures)
+        next_remaining = []
+        for idx, out in zip(remaining, batch):
+            if _is_valid_judge_output(out):
+                results[idx] = out
+            else:
+                if attempt < max_retries:
+                    next_remaining.append(idx)
+                else:
+                    results[idx] = out
+        if next_remaining and attempt < max_retries:
+            logger.warning(
+                f"{provider_label} judge retrying {len(next_remaining)} items "
+                f"(attempt {attempt + 1}/{max_retries})"
+            )
+        remaining = next_remaining
+        attempt += 1
+        if attempt > max_retries:
+            break
+    return results
+
+
 @register_metric("llm_judge")
 def llm_judge_metric(samples: List[Any]) -> Dict[str, List[float]]:
-    gpt = LLMClient(
-        provider="openai",
-        model_name="gpt-5-mini",
-        max_workers=LLM_MAX_WORKERS,
-    )
-    gemini = LLMClient(
-        provider="gemini",
-        model_name="gemini-3-flash-preview",
-        max_workers=LLM_MAX_WORKERS,
-    )
+    gpt = None
+    gemini = None
+    providers = {p.lower() for p in config.LLM_JUDGE_PROVIDERS}
+    if "gpt" in providers:
+        gpt = LLMClient(
+            provider=config.LLM_JUDGE_GPT_PROVIDER,
+            model_name=config.LLM_JUDGE_GPT_MODEL,
+            max_workers=config.LLM_MAX_WORKERS,
+        )
+    if "gemini" in providers:
+        gemini = LLMClient(
+            provider="gemini",
+            model_name=config.LLM_JUDGE_GEMINI_MODEL,
+            max_workers=config.LLM_MAX_WORKERS,
+        )
 
     gpt_scores: List[float] = []
     gemini_scores: List[float] = []
+    gpt_reasons: List[str] = []
+    gemini_reasons: List[str] = []
 
     preds = [sample.prediction for sample in samples]
     refs = [sample.reference for sample in samples]
     querys = [sample.query for sample in samples]
 
-    gpt_futures = []
-    gemini_futures = []
     prompts: List[str] = []
 
     for query, pred, ref in zip(querys, preds, refs):
@@ -157,37 +210,59 @@ def llm_judge_metric(samples: List[Any]) -> Dict[str, List[float]]:
             reference=ref
         )
         prompts.append(prompt)
-        gpt_futures.append(gpt.ask_async(prompt))
-        gemini_futures.append(gemini.ask_async(prompt))
 
-    gpt_results = gpt.collect(gpt_futures)
-    for idx, out_gpt in enumerate(gpt_results):
-        if isinstance(out_gpt, Exception):
-            logger.warning(f"GPT judge failed at index {idx}: {out_gpt}")
-            gpt_scores.append(0.0)
-            continue
-        try:
-            gpt_scores.append(float(out_gpt["score"]))
-        except Exception as e:
-            logger.warning(f"GPT judge parse failed at index {idx}: {e}")
-            gpt_scores.append(0.0)
+    max_retries = getattr(config, "LLM_JUDGE_MAX_RETRIES", 3)
 
-    gemini_results = gemini.collect(gemini_futures)
-    for idx, out_gem in enumerate(gemini_results):
-        if isinstance(out_gem, Exception):
-            logger.warning(f"Gemini judge failed at index {idx}: {out_gem}")
-            gemini_scores.append(0.0)
-            continue
-        try:
-            gemini_scores.append(float(out_gem["score"]))
-        except Exception as e:
-            logger.warning(f"Gemini judge parse failed at index {idx}: {e}")
-            gemini_scores.append(0.0)
+    if gpt is not None:
+        gpt_results = _collect_with_retries(
+            gpt,
+            prompts,
+            max_retries=max_retries,
+            provider_label="GPT",
+        )
+        for idx, out_gpt in enumerate(gpt_results):
+            if isinstance(out_gpt, Exception):
+                logger.warning(f"GPT judge failed at index {idx}: {out_gpt}")
+                gpt_scores.append(0.0)
+                gpt_reasons.append("")
+                continue
+            try:
+                gpt_scores.append(float(out_gpt["score"]))
+                gpt_reasons.append(str(out_gpt.get("reason", "")))
+            except Exception as e:
+                logger.warning(f"GPT judge parse failed at index {idx}: {e}")
+                gpt_scores.append(0.0)
+                gpt_reasons.append("")
 
-    return {
-        "llm_gpt_score": gpt_scores,
-        "llm_gemini_score": gemini_scores,
-    }
+    if gemini is not None:
+        gemini_results = _collect_with_retries(
+            gemini,
+            prompts,
+            max_retries=max_retries,
+            provider_label="Gemini",
+        )
+        for idx, out_gem in enumerate(gemini_results):
+            if isinstance(out_gem, Exception):
+                logger.warning(f"Gemini judge failed at index {idx}: {out_gem}")
+                gemini_scores.append(0.0)
+                gemini_reasons.append("")
+                continue
+            try:
+                gemini_scores.append(float(out_gem["score"]))
+                gemini_reasons.append(str(out_gem.get("reason", "")))
+            except Exception as e:
+                logger.warning(f"Gemini judge parse failed at index {idx}: {e}")
+                gemini_scores.append(0.0)
+                gemini_reasons.append("")
+
+    results: Dict[str, List[float]] = {}
+    if gpt is not None:
+        results["llm_gpt_score"] = gpt_scores
+        results["llm_gpt_reason"] = gpt_reasons
+    if gemini is not None:
+        results["llm_gemini_score"] = gemini_scores
+        results["llm_gemini_reason"] = gemini_reasons
+    return results
 
 
 class EvaluationManager:
@@ -198,7 +273,10 @@ class EvaluationManager:
         for i, score in enumerate(scores):
             if samples[i].scores is None:
                 samples[i].scores = {}
-            samples[i].scores[key] = round(float(score), 4)
+            if isinstance(score, (int, float)) and not isinstance(score, bool):
+                samples[i].scores[key] = round(float(score), 4)
+            else:
+                samples[i].scores[key] = score
 
     def evaluate(self, samples: List[Any]) -> List[Any]:
         for metric_name in self.active_metrics:
