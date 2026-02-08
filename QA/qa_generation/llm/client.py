@@ -1,10 +1,11 @@
-import os
+﻿from __future__ import annotations
+
 import json
+import os
 from concurrent.futures import Future, ThreadPoolExecutor
 from typing import Dict, Iterable, List, Optional, Union
 
 from openai import OpenAI
-from google import genai
 
 
 class LLMClient:
@@ -14,7 +15,6 @@ class LLMClient:
         model_name: str = "gpt-5-mini",
         *,
         max_workers: int = 4,
-        vllm_base_url: str = "http://localhost:8002/v1",
         retry_times: int = 1,
     ):
         self.provider = provider
@@ -22,27 +22,23 @@ class LLMClient:
         if retry_times < 0:
             raise ValueError("retry_times must be >= 0")
         self.retry_times = retry_times
-        self.vllm_base_url = vllm_base_url
-
         self._executor: Optional[ThreadPoolExecutor] = ThreadPoolExecutor(
             max_workers=max_workers
         )
 
         if provider == "openai":
+            self.client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+        elif provider == "aimlapi":
             self.client = OpenAI(
-                api_key=os.getenv("OPENAI_API_KEY")
+                base_url="https://api.aimlapi.com/v1",
+                api_key=os.getenv("AIMLAPI_API_KEY"),
             )
         elif provider == "gemini":
-            self.client = genai.Client(
-                api_key=os.getenv("GOOGLE_API_KEY")
-            )
-
-        elif provider == "vllm":
-            self.client = OpenAI(
-                base_url=self.vllm_base_url,
-                api_key="EMPTY",
-            )
-
+            try:
+                from google import genai
+            except Exception as exc:  # pragma: no cover
+                raise RuntimeError("Gemini provider requires google-genai") from exc
+            self.client = genai.Client(api_key=os.getenv("GEMINI_API_KEY"))
         else:
             raise ValueError(f"Unknown provider: {provider}")
 
@@ -64,10 +60,7 @@ class LLMClient:
         *,
         response_type: str = "json",
     ) -> List[Future]:
-        return [
-            self.ask_async(prompt, response_type=response_type)
-            for prompt in prompts
-        ]
+        return [self.ask_async(prompt, response_type=response_type) for prompt in prompts]
 
     def collect(self, futures: Iterable[Future]) -> List[Union[Dict, str, Exception]]:
         results: List[Union[Dict, str, Exception]] = []
@@ -87,10 +80,6 @@ class LLMClient:
         futures = self.ask_many_async(prompts, response_type=response_type)
         return self.collect(futures)
 
-    # =======================
-    # Provider implementations
-    # =======================
-
     def _ask_impl(self, prompt: str, response_type: str) -> Dict | str:
         attempts = self.retry_times + 1
         last_exc: Exception | None = None
@@ -102,7 +91,13 @@ class LLMClient:
                         input=prompt,
                     )
                     return self._parse_response(response.output_text, response_type)
-
+                if self.provider == "aimlapi":
+                    response = self.client.chat.completions.create(
+                        model=self.model_name,
+                        messages=[{"role": "user", "content": prompt}],
+                    )
+                    content = response.choices[0].message.content or ""
+                    return self._parse_response(content, response_type)
                 if self.provider == "gemini":
                     response = self.client.models.generate_content(
                         model=self.model_name,
@@ -110,17 +105,6 @@ class LLMClient:
                         config={"response_mime_type": "application/json"},
                     )
                     return self._parse_response(response.text, response_type)
-                if self.provider == "vllm":
-                    response = self.client.chat.completions.create(
-                        model=self.model_name,
-                        messages=[
-                            {"role": "user", "content": prompt}
-                        ],
-                        temperature=0.2,
-                    )
-                    text = response.choices[0].message.content
-                    return self._parse_response(text, response_type)
-        
                 raise ValueError(f"Unknown provider: {self.provider}")
             except Exception as exc:
                 last_exc = exc
@@ -130,10 +114,8 @@ class LLMClient:
     def _parse_response(self, text: str, response_type: str) -> Dict | str:
         if response_type == "text":
             return text
-
         if response_type != "json":
             raise ValueError(f"Unknown response_type: {response_type}")
-
         try:
             return json.loads(text)
         except json.JSONDecodeError as exc:
@@ -162,41 +144,3 @@ class LLMClient:
         if self._executor is not None:
             self._executor.shutdown(wait=True)
             self._executor = None
-
-
-if __name__ == "__main__":
-    llm_openai = LLMClient(
-        provider="openai",
-        model_name="gpt-5-mini"
-    )
-
-    print(
-        llm_openai.ask(
-            "What is the capital of France?"
-            , response_type="text"
-        )
-    )
-
-    llm_gemini = LLMClient(
-        provider="gemini",
-        model_name="gemini-2.5-flash-lite"
-    )
-
-    print(
-        llm_gemini.ask(
-            "What is the capital of Japan?"
-            , response_type="text"
-        )
-    )
-
-    llm_vllm = LLMClient(
-        provider="vllm",
-        model_name="Qwen/Qwen3-30B-A3B-Instruct-2507-FP8",
-    )
-
-    print(
-        llm_vllm.ask(
-            "What is the capital of China?"
-            , response_type="text"
-        )
-    )
