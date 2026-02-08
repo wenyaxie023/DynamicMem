@@ -1,4 +1,4 @@
-﻿from qa_generation.cli import main
+from qa_generation.cli import main
 
 if __name__ == "__main__":
     raise SystemExit(main())

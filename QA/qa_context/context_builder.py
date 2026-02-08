@@ -1,4 +1,4 @@
-﻿"""Context builder: merge states/events/logs into raw.json."""
+"""Context builder: merge states/events/logs into raw.json."""
 
 from __future__ import annotations
 

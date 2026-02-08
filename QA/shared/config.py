@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 from dataclasses import dataclass, replace
 from pathlib import Path
@@ -39,8 +39,28 @@ class GenerationConfig:
         return self.data_dir / "qa.json"
 
     @property
+    def qa_context_path(self) -> Path:
+        return self.data_dir / "qa_context.json"
+
+    @property
     def run_state_path(self) -> Path:
         return self.data_dir / "run_state.json"
+
+    @property
+    def judge_refine_output_path(self) -> Path:
+        return self.data_dir / "qa_refine.json"
+
+    @property
+    def judge_state_path(self) -> Path:
+        return self.data_dir / "run_state_judge.json"
+
+    @property
+    def doublecheck_output_path(self) -> Path:
+        return self.data_dir / "qa_doublecheck.json"
+
+    @property
+    def doublecheck_state_path(self) -> Path:
+        return self.data_dir / "run_state_doublecheck.json"
 
     @property
     def log_path(self) -> Path:

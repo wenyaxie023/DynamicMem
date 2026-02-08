@@ -19,8 +19,15 @@ QA/
     cli.py
 
   qa_generation/
+    core/base_generator.py  # shared engine (parallel/flush/resume/log)
     core/sampler.py         # tasks.json -> tasks_sampled.json
-    core/generator.py       # tasks_sampled.json + raw.json -> qa.json
+    core/generator.py       # QAGenerator: tasks_sampled.json + raw.json -> qa.json
+    core/judge_generator.py # JudgeRefineGenerator: qa.json -> qa_refine.json
+    core/doublecheck_generator.py # DoublecheckGenerator: qa_refine.json -> qa_doublecheck.json
+    core/records.py         # dataclasses
+    io/json_store.py        # json read/write
+    io/state_store.py       # run_state write
+    resolvers/evidence_resolver.py # event/log mapping and log-context resolver
     fix_qa_links.py         # post-fix event/log mapping in qa.json
     llm/client.py
     llm/parser.py
@@ -46,6 +53,9 @@ Per user (`data/user{user_id}`):
 5. `tasks.json`
 6. `tasks_sampled.json`
 7. `qa.json`
+8. `qa_context.json`
+9. `qa_refine.json`
+10. `qa_doublecheck.json`
 
 ## Unified CLI
 
@@ -70,8 +80,14 @@ python -m QA context store --user-id 10
 ```bash
 python -m QA generation sample --user-id 10
 python -m QA generation generate --user-id 10
+python -m QA generation context-cache --user-id 10
+python -m QA generation judge --user-id 10
+python -m QA generation doublecheck --user-id 10
+python -m QA generation export-csv --user-id 10
 python -m QA generation pipeline --user-id 10
 ```
+
+`generation pipeline` now includes `export-csv` as the final step.
 
 Common generation args:
 
@@ -107,6 +123,20 @@ python -m QA fix-links --user-id 10 --inplace
 
 - `1-4`: `event_ids -> reference_evidence(app_log_ids)`
 - `5-6`: `reference_evidence(app_log_ids) -> event_ids`
+
+### Checker CSV Export
+
+```bash
+python -m QA generation export-csv --user-id 10
+```
+
+Generated files under `data/user{user_id}`:
+
+- `qa_refine.csv`
+- `qa_doublecheck.csv`
+- `qa_refine_simple.csv`
+- `qa_checker_simple.csv`
+- `qa_checker_summary.csv`
 
 ## Resume / Reliability
 

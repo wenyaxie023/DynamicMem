@@ -1,1 +1,1 @@
-﻿"""qa_generation package: sampling + generation only."""
+"""qa_generation package: sampling + generation only."""

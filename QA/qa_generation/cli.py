@@ -1,11 +1,15 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 import argparse
 from typing import List, Optional
 
+from qa_generation.core.context_cache_builder import run_build_qa_context
+from qa_generation.core.doublecheck_generator import run_doublecheck
 from qa_generation.core.generator import run_generation
+from qa_generation.core.judge_generator import run_judge_refine
 from qa_generation.core.pipeline import run_pipeline
 from qa_generation.core.sampler import run_sampling
+from qa_generation.tools.export_checker_csv import export_checker_csv
 from shared.config import GenerationConfig
 
 
@@ -63,10 +67,14 @@ def _build_config(args: argparse.Namespace) -> GenerationConfig:
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="qa_generation: tasks sampling + QA generation")
+    parser = argparse.ArgumentParser(description="qa_generation: sample + generate + judge + doublecheck")
     sub = parser.add_subparsers(dest="command")
     sub.add_parser("sample", parents=[_base_parser()])
     sub.add_parser("generate", parents=[_base_parser()])
+    sub.add_parser("context-cache", parents=[_base_parser()])
+    sub.add_parser("judge", parents=[_base_parser()])
+    sub.add_parser("doublecheck", parents=[_base_parser()])
+    sub.add_parser("export-csv", parents=[_base_parser()])
     sub.add_parser("pipeline", parents=[_base_parser()])
 
     args = parser.parse_args()
@@ -79,6 +87,15 @@ def main() -> int:
         return run_sampling(config=config, qtypes=qtypes, categories=categories)
     if args.command == "generate":
         return run_generation(config=config)
+    if args.command == "context-cache":
+        return run_build_qa_context(config=config)
+    if args.command == "judge":
+        return run_judge_refine(config=config)
+    if args.command == "doublecheck":
+        return run_doublecheck(config=config)
+    if args.command == "export-csv":
+        export_checker_csv(config=config)
+        return 0
     return run_pipeline(
         config=config,
         qtypes=qtypes,

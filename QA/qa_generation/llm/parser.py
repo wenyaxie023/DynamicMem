@@ -1,6 +1,6 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
-from typing import Any, Dict
+from typing import Any, Dict, Optional, Tuple
 
 
 def parse_qa_response(resp: Any) -> Dict[str, Any]:
@@ -38,3 +38,32 @@ def parse_qa_response(resp: Any) -> Dict[str, Any]:
             "draft_answer": obj.get("draft2", ""),
         },
     }
+
+
+def parse_judge_response(resp: Any) -> Tuple[str, int, Optional[Dict[str, Any]]]:
+    if isinstance(resp, Exception):
+        raise resp
+    if not isinstance(resp, dict):
+        raise ValueError("Expected object for judge response")
+
+    rationale = resp.get("rationale")
+    judge = resp.get("judge")
+    refine_info = resp.get("refine_info")
+
+    if not isinstance(rationale, str):
+        raise ValueError("Missing valid 'rationale' field")
+
+    if isinstance(judge, str) and judge.isdigit():
+        judge = int(judge)
+    if not isinstance(judge, int):
+        raise ValueError("Missing valid 'judge' field")
+
+    normalized_judge = 1 if judge == 1 else 0
+    if not isinstance(refine_info, dict):
+        return rationale, normalized_judge, None
+    return rationale, normalized_judge, refine_info
+
+
+def parse_doublecheck_response(resp: Any) -> Tuple[str, int]:
+    rationale, judge, _ = parse_judge_response(resp)
+    return rationale, judge

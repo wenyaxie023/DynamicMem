@@ -512,13 +512,13 @@ The `draft2` field is the **Validation & Null-Handling Layer**. You must perform
 
 
 JSON Structure example:
-{{
+{
   "draft1": "Step 1: ... Step 2: ... Step 3: ... Step 4: ... Step 5: ... ... Step...",
   "question": "The final refined question text",
   "draft2": "Verification: [Check Uniqueness]. Null-Handling: The question asks for transition details. The text DOES NOT contain specific transition steps, but DOES show the habit was fully formed by Jan 2024. Therefore, the answer will pivot to describing this established stability.",
   "answer": "The context provides no details regarding a transition or prior habit; instead, it identifies the [User's Action] as an already established and consistent routine throughout the recorded period.",
   "evidence": ["event_id_1", "event_id_2", ...]
-}}
+}
 
 ────────────────────────────────
 4. STRICT NATURALNESS CONSTRAINTS
@@ -628,13 +628,13 @@ The `draft2` field is the **Validation & Null-Handling Layer**. You must perform
      - You MUST formulate a **"Stability Statement"**: Explicitly state that no transition details are present, AND describe the stable routine that *is* observed.
 
 JSON Structure example:
-{{
+{
   "draft1": "Step 1: ... Step 2: ... Step 3: ... Step 4: ... Step 5: ...",
   "question": "The final refined question text",
   "draft2": "Verification: [Check Uniqueness]. Null-Handling: ...",
   "answer": "The context provides no details regarding a transition...",
   "evidence": ["event_id_1", "event_id_2", ...]
-}}
+}
 
 ────────────────────────────────
 4. STRICT NATURALNESS CONSTRAINTS
@@ -763,7 +763,7 @@ The object must have the following keys:
 - "answer"
 - "evidence"
 
-JSON Structure example: {{ "draft1": "Step 1: Domain habits_state. Step 2: Observable field is 'frequency'. Step 3: Mapping events [id_1, id_2, id_3]. Validation: Yes, dates are M/W/F, supporting '3x/week'. Step 4: ...", "question": "How often did the user visit the gym in the first quarter of 2024?", "draft2": "Verification: ...", "answer": "He typically visits the gym three times a week.", "evidence": ["id_1", "id_2", "id_3"] }}
+JSON Structure example: { "draft1": "Step 1: Domain habits_state. Step 2: Observable field is 'frequency'. Step 3: Mapping events [id_1, id_2, id_3]. Validation: Yes, dates are M/W/F, supporting '3x/week'. Step 4: ...", "question": "How often did the user visit the gym in the first quarter of 2024?", "draft2": "Verification: ...", "answer": "He typically visits the gym three times a week.", "evidence": ["id_1", "id_2", "id_3"] }
 
 Important:
 - "draft1" and "draft2" may contain any internal reasoning language (including schema terms).
@@ -833,8 +833,8 @@ Before outputting:
 Begin now.
 
 Input:
-task = {TASK_JSON}
-context = {CONTEXT_TEXT}
+task = {{TASK_JSON}}
+context = {{CONTEXT_TEXT}}
 '''
 
 TYPE2 = '''You are an automatic question writer specializing in "Causal Analysis" and "Change Explanation."
@@ -986,8 +986,8 @@ Example:
 Begin now.
 
 Input:
-task = {TASK_JSON}
-context = {CONTEXT_TEXT}
+task = {{TASK_JSON}}
+context = {{CONTEXT_TEXT}}
 '''
 
 TYPE3 = '''You are an automatic question writer specializing in "Cumulative State Snapshot."
@@ -1039,38 +1039,38 @@ The `draft2` field is for **Verification**:
 - Confirm the answer includes elements from *both* the past (context) and the present (task).
 
 JSON Structure:
-{{
+{
   "draft1": "Step 1: Anchor is... Step 2: Inventory... Step 3: Combined State... Step 4: Q...",
   "question": "At the time of [task Event], what was the complete list of [Attribute]?",
   "draft2": "Verification: Answer combines [Old Item] from Window X and [New Item] from task.",
   "answer": "The user had [Old Item] and [New Item].",
   "evidence": ["log123", "log456"]
-}}
+}
 
 example: 
 
 
-{{
+{
   "draft1": "Step 1: Anchor is June 12, 2024 (Event: log_00123, using Munsell Book). About attributes. Step 2: Inventory: 'ArcGIS Pro' (established in w0 (winter in 2023), still active), 'OxCal' (added earlier in w2 (summer in 2024)). Step 3: Combined State = ArcGIS Pro + OxCal + Munsell Soil Color Book. Step 4: Q: What was the full list of tools available?",
   "question": "When the user was classifying pottery shards using the Munsell Soil Color Book on June 12, 2024, what was the complete list of specialized research tools available to him at that time?",
   "draft2": "Verification: The answer aggregates the legacy tool (ArcGIS from winter in 2023) with the recently acquired tools (OxCal, Munsell from summer in 2024).",
   "answer": "At that specific moment, his research toolkit consisted of three items: the long-standing **ArcGIS Pro** for spatial mapping, and the recently added **OxCal** (for radiocarbon calibration) and **Munsell Soil Color Book**.",
   "evidence": ["log_00123", "log_00234", "log_00456"]
-}}
+}
 
-{{
+{
     "draft1": "Step 1: Anchor is July 2, 2024 (Event: log123). User adjusted his walking routine due to summer heat. Step 2: Retrieve State. New Schedule: Monday-Saturday (days 0-5), excluding Sunday. New Timing: 20:45 - 21:30. Location: 'neighborhood sidewalks and wooded trails' (preserved from previous state). Step 3: Combined State = Mon-Sat schedule + Late Evening Time + Neighborhood Location. Step 4: Q: What was the full routine setup?",
     "question": "When the user adjusted his evening walking routine with his wife in July 2024 to avoid the summer heat, what were the specific settings for the activity's timing, frequency, and location?",
     "draft2": "Verification: Answer covers frequency (Mon-Sat), timing (late evening), and location (neighborhood), combining new adjustments with existing preferences.",
     "answer": "The adjusted schedule was set for **Monday through Saturday** from **20:45 to 21:30**, taking place along **neighborhood sidewalks and wooded trails** (Sunday was excluded to accommodate family calls).",
     "evidence": ["log123", "log456"]
-}}
+}
 
 Begin.
 
 Input:
-task = {TASK_JSON}
-context = {CONTEXT_TEXT}'''
+task = {{TASK_JSON}}
+context = {{CONTEXT_TEXT}}'''
 
 TYPE4 = '''You are an automatic question writer specializing in "Evolution Trajectory Tracing."
 
@@ -1137,13 +1137,13 @@ The `draft2` field is the **Validation & Null-Handling Layer**:
      - Output a "Stability Statement".
 
 JSON Structure example:
-{{
+{
   "draft1": "Step 1: Topic 'Fitness'. Step 2: Context covers 2022 injury -> 2023 rehab -> 2024 running. Step 3: Question: 'How has his fitness evolved?'...",
   "question": "How has the user's fitness routine evolved over time?",
   "draft2": "Verification: Question is open-ended. Answer covers 2022-2024.",
   "answer": "Following an injury in 2022, he focused on rehab in 2023, and has recently started running again in 2024.",
   "evidence": ["event_id_1", "event_id_2", "event_id_3"]
-}}
+}
 
 ────────────────────────────────
 4. STRICT NATURALNESS & TIME CONSTRAINTS
@@ -1166,8 +1166,8 @@ JSON Structure example:
 Begin now.
 
 Input:
-task = {TASK_JSON}
-context = {CONTEXT_TEXT}'''
+task = {{TASK_JSON}}
+context = {{CONTEXT_TEXT}}'''
 
 TYPE5 = '''You are an automatic question writer specializing in "Discrete Event Retrieval" and "Fact Checking."
 
@@ -1305,8 +1305,8 @@ Incorrect Question: "What websites does the user visit?"
 Begin now.
 
 Input:
-task = {TASK_JSON}
-context = {CONTEXT_TEXT}
+task = {{TASK_JSON}}
+context = {{CONTEXT_TEXT}}
 '''
 
 TYPE6 = '''You are an automatic question writer specializing in "Temporal Sequence" and "Chronological Logic."
@@ -1438,8 +1438,8 @@ Do NOT mention internal identifiers in the question text.
 Begin now.
 
 Input:
-task = {TASK_JSON}
-context = {CONTEXT_TEXT}
+task = {{TASK_JSON}}
+context = {{CONTEXT_TEXT}}
 '''
 
 TYPE6old = '''You are an automatic question writer specializing in "Temporal Sequence" and "Chronological Logic."
@@ -1508,13 +1508,13 @@ The `draft2` field is the **Validation & Null-Handling Layer**:
      - **Constraint**: Output a "Stability Statement" in the `question` field stating no sequence is available.
 
 JSON Structure example:
-{{
+{
   "draft1": "Step 1: Seq: Login -> Check Mail -> Logout. Step 2: Selected Anchor is 'Check Mail'. Step 3: Ask what happened BEFORE...",
   "question": "What did the user do immediately before checking his email?",
   "draft2": "Verification: Sequence is clear. Answer is 'Login'.",
   "answer": "He logged into the system.",
   "evidence": ["log123, log456"]
-}}
+}
 
 ────────────────────────────────
 4. STRICT NATURALNESS & TIME CONSTRAINTS
@@ -1535,3 +1535,162 @@ Begin now.
 
 Input:
 context = {CONTEXT_TEXT}'''
+
+
+JUDGE_PROMPT = """You are a strict QA validator and logic refiner.
+
+You will be given:
+- A Context (source evidence)
+- A Question (query)
+- A Reference Answer (candidate answer)
+
+Your task is to analyze, judge, and refine both the Reference Answer and the Question to ensure they are factually grounded and logically consistent.
+
+────────────────────────────────
+1. ANALYZE
+────────────────────────────────
+Compare the Reference Answer against the Context.
+
+You may accept:
+- Facts explicitly stated in the Context or Question.
+- Facts that are logically inferable from the Context or Question through clear reasoning
+  (e.g., temporal order from timestamps, repeated events → routine, aggregation across logs).
+
+You must NOT accept:
+- Information that cannot be grounded in the Context by either explicit evidence or reasonable inference.
+- Over-specific details (exact times, durations, motivations, locations, causal claims)
+  unless they are clearly supported by the Context.
+- Speculative or assumptive statements.
+
+────────────────────────────────
+2. JUDGE
+────────────────────────────────
+Set "judge" as follows:
+
+- judge = 1  
+  If ALL parts of the Reference Answer are supported by the Context
+  either explicitly or via reasonable inference,
+  and no hallucinated or unsupported information is present.
+
+- judge = 0  
+  If ANY part of the Reference Answer:
+  - Introduces information not stated or inferable from the Context, or
+  - Over-specifies details beyond what the Context supports, or
+  - Contains incorrect matching or unjustified causal claims.
+
+────────────────────────────────
+3. REFINE (ONLY IF judge = 0)
+────────────────────────────────
+If judge = 0, you MUST generate a "refine_info" object. 
+
+Refinement Principles:
+- Minimal Edit: Apply the smallest possible changes to make the text factually accurate.
+- Answer Refinement: You can delete unsupported details OR correct minor factual errors to align with the Context.
+- Query Refinement: If the original Question contains misinformation (e.g., wrong date or status), you must refine the Question into a "refine_query" that aligns with the Context.
+
+Refine process:
+- draft: Explain the discrepancies and what needs changing.
+- refine_check: Set to 1 if a valid, grounded Answer and Query can be produced. Set to 0 if the contradiction is irreconcilable.
+- refine_query: The corrected version of the original Question.
+- refine_answer: The corrected version of the Reference Answer.
+
+
+Return **ONLY** a JSON object. Do not output markdown code blocks.
+
+### Output Format
+
+**Scenario A: Judge is 1**
+{
+  "rationale": "Concise reasoning why the context supports the answer.",
+  "judge": 1
+}
+
+**Scenario B: Judge is 0**
+{
+  "rationale": "Reasoning identifying the unsupported or contradictory info.",
+  "judge": 0,
+  "refine_info": {
+      "draft": "Analysis of corrections made to the query and/or answer.",
+      "refine_check": 1,
+      "refine_query": "The refined question text.",
+      "refine_answer": "The refined answer text."
+  }
+}
+
+**Scenario C: Judge is 0 (Irreconcilable)**
+{
+  "rationale": "Reasoning why refinement is impossible.",
+  "judge": 0,
+  "refine_info": { "draft": "...", "refine_check": 0, "refine_query": "null", "refine_answer": "null" }
+}
+
+### Example of Query & Answer Refinement
+Context: `[2024-11-12 Tue 08:30:00] Event: Start Writing. Loc: Home Office. [2024-11-14 Thu 08:30:00] Event: Start Writing. Loc: Home Office.`
+Question: "What is the user's current routine for academic writing?"
+Ref_Answer: "Currently, the user maintains a high-priority writing schedule twice a week on Tuesdays and Thursdays from 08:30 to 11:00 AM, working from their home office in Athens."
+Output:
+{
+  "rationale": "The logs confirm a recurring writing routine on Tuesday and Thursday mornings starting at 08:30 AM in the user's 'home office'. However, the context never specifies an end time of 11:00 AM nor does it explicitly state that the home office is located in Athens.",
+  "judge": 0,
+  "refine_info": {
+      "draft": "Supported: 'Tuesdays and Thursdays', '08:30', 'home office'. Unsupported: 'to 11:00 AM', 'high-priority', 'in Athens'. I will remove the unsupported details.",
+      "refine_check": 1,
+      "refine_query": "What is the user's current routine for academic writing?",
+      "refine_answer": "Currently, the user maintains a writing schedule twice a week on Tuesdays and Thursdays from 08:30, working from their home office."
+  }
+
+Question:
+{{QUESTION}}
+
+Reference Answer:
+{{ANSWER}}
+
+Context (app logs JSON):
+{{CONTEXT_JSON}}
+"""
+
+
+DOUBLECHECK_PROMPT = """You are a verifier.
+
+Given a Question, a Refined Answer, and the Context, determine whether the Refined Answer is fully supported. 
+You should know Question is also can be seen as a part of context or hint.
+
+
+### Logic & Rules
+
+1. Analyze:
+   Compare the Refined Answer against the Context.
+   Support may be:
+   - Explicitly stated in the Context, or
+   - Logically inferable from the Context through clear reasoning
+     (e.g., timestamps imply order, repeated events imply a routine).
+
+2. Judge:
+   - Set "judge": 1 if ALL parts of the Refined Answer are supported
+     by explicit evidence or reasonable inference, with no hallucinated details.
+   - Set "judge": 0 if ANY part:
+     - Cannot be grounded in the Context (explicitly or inferentially), or
+     - Is over-specific beyond what the Context supports, or
+     - Matches the Context incorrectly.
+
+Return ONLY a JSON object:
+
+{
+  "rationale": "...",
+  "judge": 1
+}
+or
+{
+  "rationale": "...",
+  "judge": 0
+}
+
+Question:
+{{QUESTION}}
+
+Refined Answer:
+{{ANSWER}}
+
+Context (app logs JSON):
+{{CONTEXT_JSON}}
+"""
