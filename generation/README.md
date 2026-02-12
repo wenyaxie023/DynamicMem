@@ -44,3 +44,11 @@ Each `prediction/*.json` must be a **JSON array** with items like the following 
 See:
 `generation/rag/results/003_user_003/prediction/rag_results_small_top5.json`
 
+## Dynamic State Prediction Artifacts
+
+For dynamic state prediction baselines (paper terminology), use:
+
+- Benchmark input:
+  `data_construction/generated_outputs/gemini_3_flash_preview/<user_id>/dynamic_state_prediction_benchmark.json`
+- Prediction output:
+  `generation/<baseline>/results/<user_id>/prediction/dynamic_state_prediction_results.json`

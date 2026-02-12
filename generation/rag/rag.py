@@ -144,12 +144,40 @@ class BruteForceRetriever(Retriever):
         self,
         embed_fn: Callable[[List[str]], np.ndarray],
         *,
-        batch_size: int = 1,
+        batch_size: int = 64,
+        length_fn: Callable[[str], int] | None = None,
+        long_text_tokens: int = 4096,
     ):
         self.embed_fn = embed_fn
         self.batch_size = batch_size
+        self.length_fn = length_fn or (lambda text: len(text))
+        self.long_text_tokens = long_text_tokens
         self.documents: List[str] = []
         self.embeddings: np.ndarray | None = None
+
+    def _iter_batches(self, texts: List[str]) -> List[List[str]]:
+        if not texts:
+            return []
+        lengths = [self.length_fn(text) for text in texts]
+        indexed = list(enumerate(texts))
+        indexed.sort(key=lambda item: lengths[item[0]])
+
+        batches: List[List[str]] = []
+        current: List[str] = []
+        for idx, text in indexed:
+            if lengths[idx] >= self.long_text_tokens:
+                if current:
+                    batches.append(current)
+                    current = []
+                batches.append([text])
+                continue
+            current.append(text)
+            if len(current) >= self.batch_size:
+                batches.append(current)
+                current = []
+        if current:
+            batches.append(current)
+        return batches
 
     def build_index(self, documents: List[str]):
         self.documents = documents
@@ -165,11 +193,10 @@ class BruteForceRetriever(Retriever):
                 texts.append(json.dumps(doc, ensure_ascii=False))
 
         batches = []
-        for i in tqdm(
-            range(0, len(texts), self.batch_size),
+        for batch in tqdm(
+            self._iter_batches(texts),
             desc="Embedding",
         ):
-            batch = texts[i: i + self.batch_size]
             batches.append(self.embed_fn(batch))
         self.embeddings = np.vstack(batches)  # (N, D)
 
@@ -198,6 +225,9 @@ class BaseEmbedder(ABC):
     def embed(self, texts: List[str]) -> np.ndarray:
         pass
 
+    def length(self, text: str) -> int:
+        return len(text)
+
 
 class ContrieverEmbedder(BaseEmbedder):
     def __init__(self, model_name: str):
@@ -207,6 +237,9 @@ class ContrieverEmbedder(BaseEmbedder):
             use_safetensors=True
         )
         self.model.eval()
+
+    def length(self, text: str) -> int:
+        return len(self.tokenizer.encode(text))
 
     @torch.no_grad()
     def embed(self, texts: List[str]) -> np.ndarray:
@@ -236,6 +269,9 @@ class QwenEmbeddingEmbedder(BaseEmbedder):
             device_map="auto",
         )
         self.model.eval()
+
+    def length(self, text: str) -> int:
+        return len(self.tokenizer.encode(text))
 
     @torch.no_grad()
     def embed(self, texts: List[str]) -> np.ndarray:
@@ -280,6 +316,9 @@ class OpenAIEmbeddingEmbedder(BaseEmbedder):
             self._encoder = tiktoken.encoding_for_model(model_name)
         except KeyError:
             self._encoder = tiktoken.get_encoding("cl100k_base")
+
+    def length(self, text: str) -> int:
+        return len(self._encoder.encode(text))
 
     def _truncate_texts(self, texts: List[str]) -> List[str]:
         truncated: List[str] = []
@@ -341,6 +380,12 @@ class SentenceTransformerEmbedder(BaseEmbedder):
     def __init__(self, model_name: str):
         self.model = SentenceTransformer(model_name)
 
+    def length(self, text: str) -> int:
+        tokenizer = getattr(self.model, "tokenizer", None)
+        if tokenizer is None:
+            return len(text)
+        return len(tokenizer.encode(text))
+
     def embed(self, texts: List[str]) -> np.ndarray:
         if not texts:
             return np.empty((0, 0), dtype="float32")
@@ -398,7 +443,10 @@ class RAGManager:
                 cfg.retriever_model or "facebook/contriever"
             )
 
-        self.retriever = BruteForceRetriever(embedder.embed)
+        self.retriever = BruteForceRetriever(
+            embedder.embed,
+            length_fn=embedder.length,
+        )
 
         # ---- Reader ----
         self.llm = LLMClient(
@@ -407,6 +455,36 @@ class RAGManager:
             max_workers=cfg.llm_max_workers,
         )
         self.template = Template(PROMPT)
+
+    def _safe_parse_llm_output(self, raw: object) -> tuple[dict, str | None]:
+        if isinstance(raw, dict):
+            return raw, None
+
+        if isinstance(raw, str):
+            try:
+                return json.loads(raw), None
+            except json.JSONDecodeError as exc:
+                # Try client-side extraction fallback.
+                try:
+                    parsed = self.llm._parse_response(raw, "json")
+                    return parsed, None
+                except Exception:
+                    # Last resort: trim to outermost JSON object.
+                    start = raw.find("{")
+                    end = raw.rfind("}")
+                    if start != -1 and end > start:
+                        snippet = raw[start : end + 1]
+                        try:
+                            return json.loads(snippet), None
+                        except Exception:
+                            pass
+                return {"answer": "", "evidence": []}, (
+                    f"LLM JSON parse failed: {exc}"
+                )
+
+        return {"answer": "", "evidence": []}, (
+            f"Unexpected LLM output type: {type(raw).__name__}"
+        )
 
     def load_schema_as_text(self) -> str:
         with open(self.cfg.schema_path, "r", encoding="utf-8") as f:
@@ -495,19 +573,103 @@ class RAGManager:
         *,
         output_path: str | None = None,
         write_each: bool = False,
+        initial_results: List[dict] | None = None,
     ) -> List[dict]:
-        results = []
+        max_parse_retries = 1
+        results = list(initial_results or [])
+
+        def _normalize_context(raw_context: object) -> str:
+            if isinstance(raw_context, list):
+                return "\n<->\n".join(
+                    c if isinstance(c, str) else json.dumps(c, ensure_ascii=False)
+                    for c in raw_context
+                )
+            return raw_context if isinstance(raw_context, str) else json.dumps(raw_context, ensure_ascii=False)
+
+        def _answer_one(item: dict) -> dict:
+            context = _normalize_context(item["context"])
+            prompt = self.template.render(
+                question=item["query"],
+                context=context,
+            )
+            t1 = time.time()
+            try:
+                raw = self.llm.ask(prompt, response_type="text")
+                parse_error = None
+                parsed, parse_error = self._safe_parse_llm_output(raw)
+                if parse_error:
+                    for _ in range(max_parse_retries):
+                        try:
+                            retry_raw = self.llm.ask(
+                                prompt, response_type="text"
+                            )
+                        except Exception as exc:
+                            parse_error = (
+                                f"LLM retry failed: {exc}"
+                            )
+                            continue
+                        parsed, parse_error = (
+                            self._safe_parse_llm_output(retry_raw)
+                        )
+                        if not parse_error:
+                            raw = retry_raw
+                            break
+
+                prediction = parsed.get("answer", "")
+                evidence = parsed.get("evidence", [])
+                if not isinstance(evidence, list):
+                    evidence = []
+                t2 = time.time()
+
+                metadata = {
+                    **(item.get("metadata") or {}),
+                    "context": context,
+                    "search_time": item.get("search_time"),
+                    "response_time": t2 - t1,
+                    "evidence_prediction": evidence,
+                }
+                if parse_error:
+                    metadata["llm_parse_error"] = parse_error
+                    if isinstance(raw, str):
+                        metadata["llm_raw_preview"] = raw[:1000]
+
+                return {
+                    "id": item.get("id"),
+                    "query": item["query"],
+                    "reference": item.get("reference"),
+                    "prediction": prediction,
+                    "metadata": metadata,
+                }
+            except Exception as exc:
+                t2 = time.time()
+                return {
+                    "id": item.get("id"),
+                    "query": item.get("query", ""),
+                    "reference": item.get("reference"),
+                    "prediction": "",
+                    "metadata": {
+                        **(item.get("metadata") or {}),
+                        "context": context,
+                        "search_time": item.get("search_time"),
+                        "response_time": t2 - t1,
+                        "llm_parse_error": f"Unhandled error: {exc}",
+                    },
+                }
+
+        # If write_each is enabled, generate one-by-one and write after each item.
+        if write_each and output_path:
+            for item in tqdm(items, desc="Answering"):
+                results.append(_answer_one(item))
+                with open(output_path, "w", encoding="utf-8") as f:
+                    json.dump(results, f, indent=2, ensure_ascii=False)
+            return results
+
         prompts: List[str] = []
         contexts: List[str] = []
         start_times: List[float] = []
 
         for item in items:
-            context = item["context"]
-            if isinstance(context, list):
-                context = "\n<->\n".join(
-                    c if isinstance(c, str) else json.dumps(c, ensure_ascii=False)
-                    for c in context
-                )
+            context = _normalize_context(item["context"])
             prompt = self.template.render(
                 question=item["query"],
                 context=context,
@@ -518,35 +680,81 @@ class RAGManager:
 
         raw_results = self.llm.ask_many(prompts, response_type="text")
 
-        for item, context, t1, raw in tqdm(
-            zip(items, contexts, start_times, raw_results),
+        for item, context, t1, prompt, raw in tqdm(
+            zip(items, contexts, start_times, prompts, raw_results),
             total=len(items),
             desc="Answering",
         ):
-            if isinstance(raw, Exception):
-                raise raw
-            prediction = json.loads(raw)["answer"]
-            evidence = json.loads(raw)["evidence"]
-            t2 = time.time()
+            try:
+                parse_error = None
+                if isinstance(raw, Exception):
+                    parsed = {"answer": "", "evidence": []}
+                    parse_error = f"LLM request failed: {raw}"
+                else:
+                    parsed, parse_error = self._safe_parse_llm_output(raw)
 
-            results.append(
-                {
-                    "id": item.get("id"),
-                    "query": item["query"],
-                    "reference": item.get("reference"),
-                    "prediction": prediction,
-                    "metadata": {
-                        **(item.get("metadata") or {}),
-                        "context": context,
-                        "search_time": item.get("search_time"),
-                        "response_time": t2 - t1,
-                        "evidence_prediction": evidence,
-                    },
+                if parse_error:
+                    for attempt in range(max_parse_retries):
+                        try:
+                            retry_raw = self.llm.ask(
+                                prompt, response_type="text"
+                            )
+                        except Exception as exc:
+                            parse_error = (
+                                f"LLM retry failed: {exc}"
+                            )
+                            continue
+                        parsed, parse_error = (
+                            self._safe_parse_llm_output(retry_raw)
+                        )
+                        if not parse_error:
+                            raw = retry_raw
+                            break
+
+                prediction = parsed.get("answer", "")
+                evidence = parsed.get("evidence", [])
+                if not isinstance(evidence, list):
+                    evidence = []
+                t2 = time.time()
+
+                metadata = {
+                    **(item.get("metadata") or {}),
+                    "context": context,
+                    "search_time": item.get("search_time"),
+                    "response_time": t2 - t1,
+                    "evidence_prediction": evidence,
                 }
-            )
-            if write_each and output_path:
-                with open(output_path, "w", encoding="utf-8") as f:
-                    json.dump(results, f, indent=2, ensure_ascii=False)
+                if parse_error:
+                    metadata["llm_parse_error"] = parse_error
+                    if isinstance(raw, str):
+                        metadata["llm_raw_preview"] = raw[:1000]
+
+                results.append(
+                    {
+                        "id": item.get("id"),
+                        "query": item["query"],
+                        "reference": item.get("reference"),
+                        "prediction": prediction,
+                        "metadata": metadata,
+                    }
+                )
+            except Exception as exc:
+                t2 = time.time()
+                results.append(
+                    {
+                        "id": item.get("id"),
+                        "query": item.get("query", ""),
+                        "reference": item.get("reference"),
+                        "prediction": "",
+                        "metadata": {
+                            **(item.get("metadata") or {}),
+                            "context": context,
+                            "search_time": item.get("search_time"),
+                            "response_time": t2 - t1,
+                            "llm_parse_error": f"Unhandled error: {exc}",
+                        },
+                    }
+                )
         return results
 
     def run_two_stage(
@@ -555,6 +763,7 @@ class RAGManager:
         skip_retrieve: bool = False,
         retrieve_only: bool = False,
         write_each: bool = False,
+        resume: bool = False,
     ) -> List[dict]:
         if skip_retrieve and retrieve_only:
             raise ValueError("Cannot use --skip-retrieve with --retrieve-only.")
@@ -584,11 +793,54 @@ class RAGManager:
                 for item in retrieval_items
             ]
 
+        existing_results: List[dict] = []
+        done_keys: set[tuple[str, object]] = set()
+
+        def _item_key(item: dict) -> tuple[str, object] | None:
+            if item.get("id") is not None:
+                return ("id", item.get("id"))
+            if item.get("query"):
+                return ("query", item.get("query"))
+            return None
+
+        if resume:
+            output_path = Path(self.cfg.output_path)
+            if output_path.exists():
+                try:
+                    existing_results = json.loads(
+                        output_path.read_text(encoding="utf-8")
+                    )
+                    if not isinstance(existing_results, list):
+                        existing_results = []
+                except Exception:
+                    existing_results = []
+
+                for item in existing_results:
+                    key = _item_key(item)
+                    if key:
+                        done_keys.add(key)
+
+                if done_keys:
+                    before = len(retrieval_items)
+                    retrieval_items = [
+                        item
+                        for item in retrieval_items
+                        if _item_key(item) not in done_keys
+                    ]
+                    after = len(retrieval_items)
+                    print(
+                        f"[RAG] Resume: skipping {before - after} already generated items."
+                    )
+
         results = self._generate(
             retrieval_items,
             output_path=self.cfg.output_path,
             write_each=write_each,
+            initial_results=existing_results if write_each else None,
         )
+
+        if existing_results and not write_each:
+            results = existing_results + results
 
         with open(self.cfg.output_path, "w", encoding="utf-8") as f:
             json.dump(results, f, indent=2, ensure_ascii=False)
@@ -613,7 +865,25 @@ if __name__ == "__main__":
         default=Path(
             "generation/rag/results"
         ),
-        help="Root directory containing user subdirectories",
+        help="Root directory containing user subdirectories (legacy, used for input and output)",
+    )
+    parser.add_argument(
+        "--input-root-dir",
+        type=Path,
+        default=None,
+        help="Root directory containing user inputs (app logs). If unset, falls back to --root-dir.",
+    )
+    parser.add_argument(
+        "--output-root-dir",
+        type=Path,
+        default=None,
+        help="Root directory containing user outputs. If unset, falls back to --root-dir.",
+    )
+    parser.add_argument(
+        "--qa-dir",
+        type=Path,
+        default=Path(__file__).resolve().parents[1] / "qa",
+        help="Directory containing qa_human_{user_id}.json",
     )
     parser.add_argument(
         "--gen-topk",
@@ -639,16 +909,14 @@ if __name__ == "__main__":
         help="Chunk size for schema (use -1 for AppLogChunker)",
     )
     parser.add_argument(
-        "--log-size",
-        type=str,
-        choices=["small", "medium", "large"],
-        default="large",
-        help="Which app_log size to use (small/medium/large)",
-    )
-    parser.add_argument(
         "--write-each",
         action="store_true",
         help="Write output JSON after each answer",
+    )
+    parser.add_argument(
+        "--resume",
+        action="store_true",
+        help="Resume generation by skipping already-generated items in output JSON",
     )
     parser.add_argument(
         "--retriever-type",
@@ -686,36 +954,58 @@ if __name__ == "__main__":
             return f"{idx:03d}_user_{idx:03d}"
         return user_idx
 
-    def _select_qa_path(user_dir: Path, log_size: str) -> Path:
-        # New naming convention: small->qa_w0, medium->qa_w0_w1, large->qa_w0_w4.
+    def _normalize_user_id(user_idx: str) -> str:
+        if user_idx.isdigit():
+            return f"{int(user_idx):03d}"
+        digits = "".join(ch for ch in user_idx if ch.isdigit())
+        if len(digits) >= 3:
+            return digits[-3:]
+        return user_idx
+
+    def _select_qa_path(
+        user_dir: Path,
+        qa_dir: Path,
+        user_idx: str,
+    ) -> Path:
+        user_id = _normalize_user_id(user_idx)
+        qa_path = qa_dir / f"qa_human_{user_id}.json"
+        if qa_path.exists():
+            return qa_path
+        import pdb; pdb.set_trace()
+
+        # Legacy naming convention fallback in user directory.
         legacy = user_dir / "QA.json"
         if legacy.exists():
             return legacy
-        qa_suffix_by_size = {
-            "small": "qa_w0_with_app_logs.json",
-            "medium": "qa_w0_w1_with_app_logs.json",
-            "large": "qa_w0_w4_with_app_logs.json",
-        }
-        return user_dir / qa_suffix_by_size[log_size]
+        return user_dir / "qa_w0_w4_with_app_logs.json"
 
-    user_dir = args.root_dir / _normalize_user_dir(args.user_idx)
-    user_dir.mkdir(parents=True, exist_ok=True)
+    input_root = args.input_root_dir or args.root_dir
+    output_root = args.output_root_dir or args.root_dir
 
-    schema_path = user_dir / f"app_log_{args.log_size}.json"
-    qa_path = _select_qa_path(user_dir, args.log_size)
+    input_user_dir = input_root / _normalize_user_dir(args.user_idx)
+    output_user_dir = output_root / _normalize_user_dir(args.user_idx)
 
-    retrieval_dir = user_dir / "memory"
-    prediction_dir = user_dir / "prediction"
+    output_user_dir.mkdir(parents=True, exist_ok=True)
+
+    schema_path = input_user_dir / "app_log_large.json"
+    qa_path = _select_qa_path(
+        input_user_dir,
+        args.qa_dir,
+        args.user_idx,
+    )
+
+    retrieval_dir = output_user_dir / "memory"
+    prediction_dir = output_user_dir / "prediction"
     retrieval_dir.mkdir(parents=True, exist_ok=True)
     prediction_dir.mkdir(parents=True, exist_ok=True)
 
     retrieval_output_paths = {
-        5: str(retrieval_dir / f"rag_retrieval_{args.log_size}_top5.json"),
-        10: str(retrieval_dir / f"rag_retrieval_{args.log_size}_top10.json"),
-        20: str(retrieval_dir / f"rag_retrieval_{args.log_size}_top20.json"),
+        5: str(retrieval_dir / "rag_retrieval_top5.json"),
+        10: str(retrieval_dir / "rag_retrieval_top10.json"),
+        20: str(retrieval_dir / "rag_retrieval_top20.json"),
     }
 
-    output_path = prediction_dir / f"rag_results_{args.log_size}_top{args.gen_topk}.json"
+    output_path = prediction_dir / f"rag_results_top{args.gen_topk}.json"
 
     cfg = RAGConfig(
         schema_path=str(schema_path),
@@ -737,4 +1027,5 @@ if __name__ == "__main__":
         skip_retrieve=args.skip_retrieve,
         retrieve_only=args.retrieve_only,
         write_each=args.write_each,
+        resume=args.resume,
     )

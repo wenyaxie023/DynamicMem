@@ -117,6 +117,7 @@ def discover_prediction_files(
 
     baseline_allowed_files = {
         "oracle": {"oracle_results.json"},
+        "icl": {"icl_results.json"},
         "rag": {"rag_results_top5.json", "rag_results_top10.json", "rag_results_top20.json"},
         "MemoryOS": {"memoryos_results.json"},
         "HippoRAG2": {"hipporag2_results_top5.json", "hipporag2_results_top10.json", "hipporag2_results_top20.json"},

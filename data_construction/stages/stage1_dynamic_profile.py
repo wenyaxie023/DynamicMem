@@ -491,6 +491,13 @@ class DynamicProfileStage:
                 fixed_profiles[domain_name] = profile
                 continue
 
+            slug = _slugify(domain_name)
+            domain_cache_path = self.debug_dir / f"{slug}_domain_fixed_profile.json" if self.debug_mode else None
+            if domain_cache_path and domain_cache_path.exists():
+                self.logger.info(f"Loading cached domain-fixed profile for {domain_name}...")
+                fixed_profiles[domain_name] = json.loads(domain_cache_path.read_text())
+                continue
+
             self.logger.info(f"Applying rule fixes for {domain_name}...")
 
             domain_world_bg = world_backgrounds.get(domain.domain_name, {})
@@ -505,8 +512,10 @@ class DynamicProfileStage:
             fixed_profiles[domain_name] = fixed_profile
             aggregate_usage[domain_name] = domain_usage
 
+            if domain_cache_path:
+                _write_json(domain_cache_path, fixed_profile)
+
             if self.debug_mode and domain_fixes:
-                slug = _slugify(domain_name)
                 _write_json(
                     self.debug_dir / f"{slug}_rule_fixes.json",
                     domain_fixes,
@@ -540,114 +549,139 @@ class DynamicProfileStage:
         slug = _slugify(domain.domain_name)
 
         # Rule 1: Required fields
-        rule1_issues = self._detect_rule1_issues(revised_profile)
-        if rule1_issues:
-            self.logger.info(f"  Rule 1: Found {len(rule1_issues)} required field issues")
-            fix_result, usage = self._fix_rule1(
-                domain, user_profile_text, revised_profile, rule1_issues
-            )
-            if fix_result:
-                all_fixes["rule1"] = fix_result
-                revised_profile = self._apply_fix(revised_profile, fix_result)
-                aggregate_usage["rule1"] = usage
+        rule1_cached = self.debug_dir / f"{slug}_rule1_fixed_profile.json" if self.debug_mode else None
+        if rule1_cached and rule1_cached.exists():
+            self.logger.info(f"  Rule 1: Loading cached fixed profile for {domain.domain_name}")
+            revised_profile = json.loads(rule1_cached.read_text())
+        else:
+            rule1_issues = self._detect_rule1_issues(revised_profile)
+            if rule1_issues:
+                self.logger.info(f"  Rule 1: Found {len(rule1_issues)} required field issues")
+                fix_result, usage = self._fix_rule1(
+                    domain, user_profile_text, revised_profile, rule1_issues
+                )
+                if fix_result:
+                    all_fixes["rule1"] = fix_result
+                    revised_profile = self._apply_fix(revised_profile, fix_result)
+                    aggregate_usage["rule1"] = usage
 
-                if self.debug_mode:
-                    _write_json(
-                        self.debug_dir / f"{slug}_rule1_fix.json",
-                        fix_result,
-                    )
-                    _write_json(
-                        self.debug_dir / f"{slug}_rule1_fixed_profile.json",
-                        revised_profile,
-                    )
+                    if self.debug_mode:
+                        _write_json(
+                            self.debug_dir / f"{slug}_rule1_fix.json",
+                            fix_result,
+                        )
+                        _write_json(
+                            self.debug_dir / f"{slug}_rule1_fixed_profile.json",
+                            revised_profile,
+                        )
 
         # Rule 2: Prior existence
-        rule2_issues = self._detect_rule2_issues(revised_profile)
-        if rule2_issues:
-            self.logger.info(f"  Rule 2: Found {len(rule2_issues)} prior existence issues")
-            fix_result, usage = self._fix_rule2(
-                domain, user_profile_text, revised_profile, rule2_issues
-            )
-            if fix_result:
-                all_fixes["rule2"] = fix_result
-                revised_profile = self._apply_fix(revised_profile, fix_result)
-                aggregate_usage["rule2"] = usage
+        rule2_cached = self.debug_dir / f"{slug}_rule2_fixed_profile.json" if self.debug_mode else None
+        if rule2_cached and rule2_cached.exists():
+            self.logger.info(f"  Rule 2: Loading cached fixed profile for {domain.domain_name}")
+            revised_profile = json.loads(rule2_cached.read_text())
+        else:
+            rule2_issues = self._detect_rule2_issues(revised_profile)
+            if rule2_issues:
+                self.logger.info(f"  Rule 2: Found {len(rule2_issues)} prior existence issues")
+                fix_result, usage = self._fix_rule2(
+                    domain, user_profile_text, revised_profile, rule2_issues
+                )
+                if fix_result:
+                    all_fixes["rule2"] = fix_result
+                    revised_profile = self._apply_fix(revised_profile, fix_result)
+                    aggregate_usage["rule2"] = usage
 
-                if self.debug_mode:
-                    _write_json(
-                        self.debug_dir / f"{slug}_rule2_fix.json",
-                        fix_result,
-                    )
-                    _write_json(
-                        self.debug_dir / f"{slug}_rule2_fixed_profile.json",
-                        revised_profile,
-                    )
+                    if self.debug_mode:
+                        _write_json(
+                            self.debug_dir / f"{slug}_rule2_fix.json",
+                            fix_result,
+                        )
+                        _write_json(
+                            self.debug_dir / f"{slug}_rule2_fixed_profile.json",
+                            revised_profile,
+                        )
 
         # Rule 3: Essential initialization
-        rule3_issues = self._detect_rule3_issues(revised_profile)
-        if rule3_issues:
-            self.logger.info(f"  Rule 3: Found {len(rule3_issues)} essential initialization issues")
-            fix_result, usage = self._fix_rule3(
-                domain, user_profile_text, revised_profile, rule3_issues
-            )
-            if fix_result:
-                all_fixes["rule3"] = fix_result
-                revised_profile = self._apply_fix(revised_profile, fix_result)
-                aggregate_usage["rule3"] = usage
+        rule3_cached = self.debug_dir / f"{slug}_rule3_fixed_profile.json" if self.debug_mode else None
+        if rule3_cached and rule3_cached.exists():
+            self.logger.info(f"  Rule 3: Loading cached fixed profile for {domain.domain_name}")
+            revised_profile = json.loads(rule3_cached.read_text())
+        else:
+            rule3_issues = self._detect_rule3_issues(revised_profile)
+            if rule3_issues:
+                self.logger.info(f"  Rule 3: Found {len(rule3_issues)} essential initialization issues")
+                fix_result, usage = self._fix_rule3(
+                    domain, user_profile_text, revised_profile, rule3_issues
+                )
+                if fix_result:
+                    all_fixes["rule3"] = fix_result
+                    revised_profile = self._apply_fix(revised_profile, fix_result)
+                    aggregate_usage["rule3"] = usage
 
-                if self.debug_mode:
-                    _write_json(
-                        self.debug_dir / f"{slug}_rule3_fix.json",
-                        fix_result,
-                    )
-                    _write_json(
-                        self.debug_dir / f"{slug}_rule3_fixed_profile.json",
-                        revised_profile,
-                    )
+                    if self.debug_mode:
+                        _write_json(
+                            self.debug_dir / f"{slug}_rule3_fix.json",
+                            fix_result,
+                        )
+                        _write_json(
+                            self.debug_dir / f"{slug}_rule3_fixed_profile.json",
+                            revised_profile,
+                        )
 
         # Rule 4: Short-term followups
-        rule4_issues = self._detect_rule4_issues(revised_profile)
-        if rule4_issues:
-            self.logger.info(f"  Rule 4: Found {len(rule4_issues)} short-term followup issues")
-            fix_result, usage = self._fix_rule4(
-                domain, user_profile_text, revised_profile, rule4_issues, world_background
-            )
-            if fix_result:
-                all_fixes["rule4"] = fix_result
-                revised_profile = self._apply_fix(revised_profile, fix_result)
-                aggregate_usage["rule4"] = usage
+        rule4_cached = self.debug_dir / f"{slug}_rule4_fixed_profile.json" if self.debug_mode else None
+        if rule4_cached and rule4_cached.exists():
+            self.logger.info(f"  Rule 4: Loading cached fixed profile for {domain.domain_name}")
+            revised_profile = json.loads(rule4_cached.read_text())
+        else:
+            rule4_issues = self._detect_rule4_issues(revised_profile)
+            if rule4_issues:
+                self.logger.info(f"  Rule 4: Found {len(rule4_issues)} short-term followup issues")
+                fix_result, usage = self._fix_rule4(
+                    domain, user_profile_text, revised_profile, rule4_issues, world_background
+                )
+                if fix_result:
+                    all_fixes["rule4"] = fix_result
+                    revised_profile = self._apply_fix(revised_profile, fix_result)
+                    aggregate_usage["rule4"] = usage
 
-                if self.debug_mode:
-                    _write_json(
-                        self.debug_dir / f"{slug}_rule4_fix.json",
-                        fix_result,
-                    )
-                    _write_json(
-                        self.debug_dir / f"{slug}_rule4_fixed_profile.json",
-                        revised_profile,
-                    )
+                    if self.debug_mode:
+                        _write_json(
+                            self.debug_dir / f"{slug}_rule4_fix.json",
+                            fix_result,
+                        )
+                        _write_json(
+                            self.debug_dir / f"{slug}_rule4_fixed_profile.json",
+                            revised_profile,
+                        )
 
         # Rule 5: Time conflicts
-        rule5_issues = self._detect_rule5_issues(revised_profile)
-        if rule5_issues and rule5_issues.get("conflicts"):
-            self.logger.info(f"  Rule 5: Found {len(rule5_issues.get('conflicts', []))} time conflict issues")
-            fix_result, usage = self._fix_rule5(
-                domain, user_profile_text, revised_profile, rule5_issues
-            )
-            if fix_result:
-                all_fixes["rule5"] = fix_result
-                revised_profile = self._apply_fix(revised_profile, fix_result)
-                aggregate_usage["rule5"] = usage
+        rule5_cached = self.debug_dir / f"{slug}_rule5_fixed_profile.json" if self.debug_mode else None
+        if rule5_cached and rule5_cached.exists():
+            self.logger.info(f"  Rule 5: Loading cached fixed profile for {domain.domain_name}")
+            revised_profile = json.loads(rule5_cached.read_text())
+        else:
+            rule5_issues = self._detect_rule5_issues(revised_profile)
+            if rule5_issues and rule5_issues.get("conflicts"):
+                self.logger.info(f"  Rule 5: Found {len(rule5_issues.get('conflicts', []))} time conflict issues")
+                fix_result, usage = self._fix_rule5(
+                    domain, user_profile_text, revised_profile, rule5_issues
+                )
+                if fix_result:
+                    all_fixes["rule5"] = fix_result
+                    revised_profile = self._apply_fix(revised_profile, fix_result)
+                    aggregate_usage["rule5"] = usage
 
-                if self.debug_mode:
-                    _write_json(
-                        self.debug_dir / f"{slug}_rule5_fix.json",
-                        fix_result,
-                    )
-                    _write_json(
-                        self.debug_dir / f"{slug}_rule5_fixed_profile.json",
-                        revised_profile,
-                    )
+                    if self.debug_mode:
+                        _write_json(
+                            self.debug_dir / f"{slug}_rule5_fix.json",
+                            fix_result,
+                        )
+                        _write_json(
+                            self.debug_dir / f"{slug}_rule5_fixed_profile.json",
+                            revised_profile,
+                        )
 
         return revised_profile, aggregate_usage, all_fixes
 
@@ -999,9 +1033,17 @@ class DynamicProfileStage:
         """
 
         # Try to load from the latest iteration cache
-        resolved_profiles, start_iteration = self._load_latest_temporal_iteration_cache(dynamic_profiles)
+        (
+            resolved_profiles,
+            start_iteration,
+            start_window_label,
+        ) = self._load_latest_temporal_iteration_cache(dynamic_profiles)
         if start_iteration > 0:
-            self.logger.info(f"Resuming temporal conflict resolution from iteration {start_iteration}")
+            resume_window = _normalize_window_id_label(start_window_label) if start_window_label else None
+            self.logger.info(
+                f"Resuming temporal conflict resolution from iteration {start_iteration}"
+                + (f" (window {resume_window})" if resume_window else "")
+            )
 
         aggregate_usage: Dict[str, Any] = {}
         all_payloads: Dict[str, Any] = {}
@@ -1027,9 +1069,15 @@ class DynamicProfileStage:
 
         iteration_counter = start_iteration
 
+        resume_started = start_iteration == 0 or not start_window_label
         for window_label in window_order:
             if not window_label or window_label == "unknown":
                 continue
+
+            if not resume_started:
+                if _normalize_window_id_label(window_label) != _normalize_window_id_label(start_window_label):
+                    continue
+                resume_started = True
 
             self.logger.info(f"  Processing conflicts in {window_label}...")
 
@@ -1136,7 +1184,7 @@ class DynamicProfileStage:
     def _load_latest_temporal_iteration_cache(
         self,
         fallback_profiles: Dict[str, Dict],
-    ) -> Tuple[Dict[str, Dict], int]:
+    ) -> Tuple[Dict[str, Dict], int, Optional[str]]:
         """
         Load the latest temporal iteration cache if available.
 
@@ -1148,22 +1196,23 @@ class DynamicProfileStage:
 
         Returns:
             Tuple of (profiles dict, iteration number). If no cache found,
-            returns (fallback_profiles, 0).
+            returns (fallback_profiles, 0, None).
         """
         if not self.debug_mode or not hasattr(self, 'debug_dir'):
-            return deepcopy(fallback_profiles), 0
+            return deepcopy(fallback_profiles), 0, None
 
         # Find all iteration cache files
         pattern = "profiles_after_iter_*.json"
         cache_files = list(self.debug_dir.glob(pattern))
 
         if not cache_files:
-            return deepcopy(fallback_profiles), 0
+            return deepcopy(fallback_profiles), 0, None
 
         # Parse iteration numbers from filenames
         # Format: profiles_after_iter_{iteration}_{window_label}.json
         max_iter = 0
         latest_file: Path | None = None
+        latest_window_label: Optional[str] = None
 
         for cache_file in cache_files:
             # Extract iteration number from filename
@@ -1174,19 +1223,21 @@ class DynamicProfileStage:
                 iter_idx = parts.index("iter")
                 if iter_idx + 1 < len(parts):
                     iter_num = int(parts[iter_idx + 1])
+                    window_label = "_".join(parts[iter_idx + 2:]) if iter_idx + 2 < len(parts) else None
                     if iter_num > max_iter:
                         max_iter = iter_num
                         latest_file = cache_file
+                        latest_window_label = window_label
             except (ValueError, IndexError):
                 continue
 
         if latest_file is None or max_iter == 0:
-            return deepcopy(fallback_profiles), 0
+            return deepcopy(fallback_profiles), 0, None
 
         try:
             self.logger.info(f"Loading temporal iteration cache from {latest_file.name}")
             cached_profiles = json.loads(latest_file.read_text())
-            return cached_profiles, max_iter
+            return cached_profiles, max_iter, latest_window_label
         except (json.JSONDecodeError, IOError) as e:
             self.logger.warning(f"Failed to load cache {latest_file}: {e}")
-            return deepcopy(fallback_profiles), 0
+            return deepcopy(fallback_profiles), 0, None

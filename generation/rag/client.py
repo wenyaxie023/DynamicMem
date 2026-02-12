@@ -5,6 +5,21 @@ from typing import Dict, Iterable, List, Optional, Union
 
 from openai import OpenAI
 from google import genai
+from tqdm import tqdm
+
+
+_AIMLAPI_MODEL_MAPPING = {
+    "gpt-5-mini": "openai/gpt-5-mini-2025-08-07",
+    "gemini-3-flash-preview": "google/gemini-3-flash-preview",
+    "gemini-2.5-flash-preview-05-20": "google/gemini-2.5-flash-preview-05-20",
+    "gemini-2.5-pro-preview-05-06": "google/gemini-2.5-pro-preview-05-06",
+    "gemini-2.0-flash": "google/gemini-2.0-flash",
+    "gemini-2.0-flash-lite": "google/gemini-2.0-flash-lite",
+}
+
+
+def _normalize_aiml_model(model_name: str) -> str:
+    return _AIMLAPI_MODEL_MAPPING.get(model_name, model_name)
 
 
 class LLMClient:
@@ -24,9 +39,25 @@ class LLMClient:
             max_workers=max_workers
         )
 
-        if provider == "openai":
+        if provider in {"openai", "azure"}:
+            api_key = os.getenv("OPENAI_API_KEY") or os.getenv("AZURE_OPENAI_API_KEY")
+            base_url = os.getenv("OPENAI_BASE_URL") or os.getenv("AZURE_OPENAI_BASE_URL")
+            client_kwargs = {"api_key": api_key}
+            if base_url:
+                client_kwargs["base_url"] = base_url
+                if os.getenv("AZURE_OPENAI_API_KEY") or "azure" in base_url:
+                    client_kwargs["default_headers"] = {"api-key": api_key}
+            self.client = OpenAI(**client_kwargs)
+
+        elif provider in {"aiml", "aimlapi"}:
+            api_key = os.getenv("AIMLAPI_API_KEY")
+            if api_key and api_key.startswith("Bearer "):
+                api_key = api_key[len("Bearer "):]
+            base_url = os.getenv("AIMLAPI_BASE_URL") or "https://api.aimlapi.com/v1"
+            self.model_name = _normalize_aiml_model(self.model_name)
             self.client = OpenAI(
-                api_key=os.getenv("OPENAI_API_KEY")
+                api_key=api_key,
+                base_url=base_url,
             )
 
         elif provider == "gemini":
@@ -72,7 +103,8 @@ class LLMClient:
 
     def collect(self, futures: Iterable[Future]) -> List[Union[Dict, str, Exception]]:
         results: List[Union[Dict, str, Exception]] = []
-        for future in futures:
+        futures_list = list(futures)
+        for future in tqdm(futures_list, desc="Generating"):
             try:
                 results.append(future.result())
             except Exception as exc:
@@ -93,7 +125,7 @@ class LLMClient:
     # =======================
 
     def _ask_impl(self, prompt: str, response_type: str) -> Dict | str:
-        if self.provider == "openai":
+        if self.provider in {"openai", "azure", "aiml", "aimlapi"}:
             response = self.client.responses.create(
                 model=self.model_name,
                 input=prompt,

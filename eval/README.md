@@ -50,3 +50,24 @@ python -m eval.eval \
   `exact_match`, `rouge`, `bert_score`, `llm_judge`, `evidence_recall`.
 - Batch mode scans `generation/<baseline>/results/<user_id>/prediction/*.json`.
 
+
+## Dynamic State Prediction Evaluation
+
+You can evaluate behavior-style dynamic state prediction (not QA) with:
+
+```bash
+python -m eval.eval_dynamic_state_prediction \
+  --benchmark data_construction/generated_outputs/gemini_3_flash_preview/<user_id>/dynamic_state_prediction_benchmark.json \
+  --prediction generation/<baseline>/results/<user_id>/prediction/dynamic_state_prediction_results.json \
+  --output generation/<baseline>/results/<user_id>/eval/dynamic_state_prediction_eval.json
+```
+
+
+Prediction format:
+
+- `checkpoint_id`: checkpoint id from benchmark
+- `snapshot_state`: predicted full state map
+
+Evaluation focus for this task:
+- Keys are treated as fixed by benchmark.
+- Main automatic metric is average value F1 across keys (`snapshot_value_f1_mean_on_expected`).
