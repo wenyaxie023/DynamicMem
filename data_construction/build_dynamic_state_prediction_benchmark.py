@@ -180,12 +180,16 @@ def _validate_state_ref_with_chain_events(
 
         value_obj = _extract_state_value_from_resolved_item(item)
         value_schedule_dates = set()
+        has_schedule_dates_field = False
         if isinstance(value_obj, dict):
+            has_schedule_dates_field = "schedule_dates" in value_obj
             maybe_dates = value_obj.get("schedule_dates")
             value_schedule_dates = _to_date_set(maybe_dates)
 
         event_schedule_dates = event_schedule_dates_by_state_name.get(resolved_name, set())
-        if value_schedule_dates or event_schedule_dates:
+        # Only enforce schedule_dates consistency when the resolved item
+        # explicitly defines schedule_dates (typically time-anchored habits).
+        if has_schedule_dates_field:
             if value_schedule_dates != event_schedule_dates:
                 reasons.append("schedule_dates_mismatch_with_event_union")
 
@@ -282,7 +286,9 @@ def build_checkpoints(
     pending_chain_events: Dict[str, List[Dict[str, Any]]] = defaultdict(list)
     checkpoints: List[Dict[str, Any]] = []
     skipped_checkpoints_no_valid_states = 0
+    skipped_checkpoints_no_new_valid_observation = 0
     source_total_checkpoints = len(completion_indices)
+    last_exported_snapshot_flat: Dict[str, Any] = {}
 
     for idx, log in enumerate(app_logs):
         chain_id = (log.get("metadata") or {}).get("chain_id", "")
@@ -374,6 +380,13 @@ def build_checkpoints(
             skipped_checkpoints_no_valid_states += 1
             continue
 
+        # Keep checkpoints only when there is new evaluable information.
+        # If valid snapshot is identical to the last exported checkpoint,
+        # this chain completion does not change prediction targets.
+        if checkpoints and valid_snapshot_flat == last_exported_snapshot_flat:
+            skipped_checkpoints_no_new_valid_observation += 1
+            continue
+
         snapshot = _expand_snapshot(valid_snapshot_flat)
         md = log.get("metadata") or {}
 
@@ -397,6 +410,7 @@ def build_checkpoints(
                 },
             }
         )
+        last_exported_snapshot_flat = copy.deepcopy(valid_snapshot_flat)
 
     return {
         "user_id": app_logs_final.get("user_id"),
@@ -404,6 +418,7 @@ def build_checkpoints(
         "total_chains": len(chain_last_index),
         "source_total_checkpoints": source_total_checkpoints,
         "skipped_checkpoints_no_valid_states": skipped_checkpoints_no_valid_states,
+        "skipped_checkpoints_no_new_valid_observation": skipped_checkpoints_no_new_valid_observation,
         "total_checkpoints": len(checkpoints),
         "checkpoints": checkpoints,
     }
@@ -461,6 +476,7 @@ def main() -> None:
         f"checkpoints={benchmark.get('total_checkpoints')}, "
         f"source_checkpoints={benchmark.get('source_total_checkpoints')}, "
         f"skipped_no_valid={benchmark.get('skipped_checkpoints_no_valid_states')}, "
+        f"skipped_no_new_valid_obs={benchmark.get('skipped_checkpoints_no_new_valid_observation')}, "
         f"chains={benchmark.get('total_chains')}"
     )
 

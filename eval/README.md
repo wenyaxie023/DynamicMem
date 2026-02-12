@@ -71,3 +71,9 @@ Prediction format:
 Evaluation focus for this task:
 - Keys are treated as fixed by benchmark.
 - Main automatic metric is average value F1 across keys (`snapshot_value_f1_mean_on_expected`).
+
+Dynamic state prediction eval implementation details:
+- prediction-to-benchmark alignment is done by `metadata.checkpoint_timestamp` first; unmatched timestamps are excluded to avoid silent checkpoint-id drift.
+- when `--enable-llm-judge` is enabled, results are written incrementally (checkpoint-by-checkpoint) to the output json.
+- `llm_judge_raw_output`, `llm_judge_prompt`, and (if available) `llm_judge_prompt_from_response` are saved for debugging.
+- openai/azure judge calls use structured response with dynamic pydantic schemas; other providers fall back to JSON parsing.

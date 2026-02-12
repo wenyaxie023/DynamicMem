@@ -71,8 +71,11 @@ Checkpoint rule (current implementation):
 - Valid-state filtering is applied before checkpoint export:
   - state validity is checked from `all_events_chains.json` at chain level.
   - required observable fields must be supported by the chain events.
-  - `resolved_items` schedule dates must match the union of `events[*].time_specification.schedule_dates` for that state.
+  - if a resolved state explicitly contains `schedule_dates`, it must match the union of `events[*].time_specification.schedule_dates` for that state.
   - invalid states are removed from checkpoint targets; checkpoints with no valid states are skipped.
+- New-information filtering is applied after valid-state filtering:
+  - if a checkpoint has no new valid observable snapshot compared to the previous exported checkpoint, it is skipped.
+  - this avoids evaluating chain completions that do not change evaluable state targets.
 
 ### 2) Produce Baseline Predictions
 
@@ -93,6 +96,9 @@ Prediction contract (`generation/<baseline>/results/<user_id>/prediction/dynamic
   ]
 }
 ```
+
+Implementation note:
+- generation now uses structured response (dynamic schema) for openai/azure providers, with automatic fallback to JSON prompting for other providers.
 
 Example baseline runner:
 

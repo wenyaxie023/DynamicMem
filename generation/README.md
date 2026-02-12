@@ -52,3 +52,8 @@ For dynamic state prediction baselines (paper terminology), use:
   `data_construction/generated_outputs/gemini_3_flash_preview/<user_id>/dynamic_state_prediction_benchmark.json`
 - Prediction output:
   `generation/<baseline>/results/<user_id>/prediction/dynamic_state_prediction_results.json`
+
+Dynamic state prediction generation notes:
+- generation uses a shared LLM client implementation under `generation/common/llm_client.py`.
+- openai/azure providers use structured response with per-checkpoint dynamic schemas.
+- non-structured providers fall back to JSON-output prompting.

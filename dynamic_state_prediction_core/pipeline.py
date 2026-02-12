@@ -2,8 +2,11 @@
 
 import json
 from datetime import datetime, timezone
+from enum import Enum
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple, Type
+
+from pydantic import BaseModel, create_model
 
 from tqdm import tqdm
 
@@ -129,18 +132,19 @@ For each key, also predict supporting evidence app log ids:
 
 Output JSON ONLY with this schema:
 {{
-  "snapshot_state": {{
-    "<each key from the fill dict above>": <filled value, string>
-  }},
-  "evidence": {{
-    "<each key from the fill dict above>": ["<app_log_id>", "..."]
-  }}
+  "predictions": [
+    {{
+      "key": "<one key from the fill dict>",
+      "snapshot_value": <filled value object matching template>,
+      "evidence": ["<app_log_id>", "..."]
+    }}
+  ]
 }}
 
 Rules:
 1. Use only evidence implied by logs.
-2. MUST return exactly the same keys as the fill dict in snapshot_state (no extra keys).
-3. For each key, keep exactly the same nested field structure and fill values only.
+2. MUST include every key from the fill dict exactly once in predictions.
+3. For each key, keep exactly the same nested field structure in snapshot_value and fill values only.
 4. If a field is unresolvable from logs, set it to null.
 5. evidence for each key must be a list of app_log_id strings from provided user memory.
 6. If evidence is unknown, use empty list.
@@ -175,6 +179,60 @@ def normalize_evidence_prediction(raw_evidence: Any, target_keys: List[str]) -> 
         for key in target_keys:
             evidence[key] = []
     return evidence
+
+
+def build_generation_text_format(target_keys: Sequence[str], model_idx: int) -> Type[BaseModel]:
+    allowed = tuple(target_keys) if target_keys else ("__no_key__",)
+    key_enum = Enum(
+        f"DspPredKey_{model_idx}",
+        {f"K_{i}": key for i, key in enumerate(allowed)},
+    )
+    item_model = create_model(  # type: ignore[call-overload]
+        f"DspPredItem_{model_idx}",
+        key=(key_enum, ...),
+        snapshot_value=(Any, ...),
+        evidence=(List[str], ...),
+    )
+    output_model = create_model(  # type: ignore[call-overload]
+        f"DspPredOutput_{model_idx}",
+        predictions=(List[item_model], ...),
+    )
+    return output_model
+
+
+def normalize_generation_output(raw_out: Any, target_keys: List[str]) -> Dict[str, Any]:
+    if isinstance(raw_out, dict):
+        # Native schema path.
+        if "snapshot_state" in raw_out or "evidence" in raw_out:
+            return {
+                "snapshot_state": raw_out.get("snapshot_state", {}),
+                "evidence": raw_out.get("evidence", {}),
+            }
+
+        # Structured schema path.
+        items = raw_out.get("predictions")
+        if isinstance(items, list):
+            snapshot_state: Dict[str, Any] = {}
+            evidence: Dict[str, Any] = {}
+            for item in items:
+                if not isinstance(item, dict):
+                    continue
+                key = item.get("key")
+                if isinstance(key, dict):
+                    key = key.get("value") or key.get("name")
+                if key is None:
+                    continue
+                key = str(key)
+                if key not in target_keys:
+                    continue
+                snapshot_state[key] = item.get("snapshot_value")
+                evidence[key] = item.get("evidence", [])
+            return {
+                "snapshot_state": snapshot_state,
+                "evidence": evidence,
+            }
+
+    return {"snapshot_state": {}, "evidence": {}}
 
 
 def write_debug_artifact(debug_dir: Path, checkpoint_id: str, payload: Dict[str, Any]) -> None:
@@ -234,6 +292,8 @@ def run_pipeline(
     output_path: Path,
     max_visible_logs: Optional[int],
     ask_json: Callable[[str], Any],
+    ask_structured: Optional[Callable[[str, Type[BaseModel]], Any]],
+    use_structured_response: bool,
     close: Callable[[], None],
     retrieve_context: Callable[[Dict[str, Any], List[Dict[str, Any]], List[str]], Dict[str, Any]],
     baseline_name: str,
@@ -301,11 +361,15 @@ def run_pipeline(
 
             raw_out: Any = {}
             try:
-                raw_out = ask_json(prompt)
-                out = raw_out if isinstance(raw_out, dict) else {}
+                if use_structured_response and ask_structured is not None:
+                    text_format = build_generation_text_format(target_keys, len(predictions))
+                    raw_out = ask_structured(prompt, text_format)
+                else:
+                    raw_out = ask_json(prompt)
+                out = normalize_generation_output(raw_out, target_keys)
             except Exception:
                 raw_out = {"_error": "llm_call_failed"}
-                out = {}
+                out = {"snapshot_state": {}, "evidence": {}}
 
             pred_snapshot = flatten_snapshot(out.get("snapshot_state"))
             pred_snapshot = {k: drop_excluded_fields(pred_snapshot.get(k)) for k in target_keys}

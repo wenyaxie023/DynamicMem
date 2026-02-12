@@ -6,7 +6,7 @@ from typing import Any, Dict, List, Optional
 
 from dotenv import load_dotenv
 
-from generation.icl.client import LLMClient
+from generation.oracle.client import LLMClient
 from dynamic_state_prediction_core.pipeline import run_pipeline
 
 load_dotenv()
@@ -72,6 +72,9 @@ def run_generation(
     def ask_json(prompt: str) -> Any:
         return client.ask(prompt, response_type="json")
 
+    def ask_structured(prompt: str, text_format: Any) -> Any:
+        return client.ask_structured(prompt, text_format=text_format)
+
     def close() -> None:
         client.close()
 
@@ -130,6 +133,8 @@ def run_generation(
         output_path=output_path,
         max_visible_logs=max_visible_logs,
         ask_json=ask_json,
+        ask_structured=ask_structured,
+        use_structured_response=client.supports_structured_response(),
         close=close,
         retrieve_context=retrieve_context,
         baseline_name="oracle",
