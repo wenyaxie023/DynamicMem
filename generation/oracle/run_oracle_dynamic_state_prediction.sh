@@ -59,7 +59,6 @@ for user in "${USERS[@]}"; do
     --llm-provider "$LLM_PROVIDER"
     --llm-model "$LLM_MODEL"
     --llm-max-workers "$LLM_MAX_WORKERS"
-    --max-checkpoints 20
   )
 
   if [[ -n "$MAX_VISIBLE_LOGS" ]]; then

@@ -2,11 +2,10 @@
 
 import json
 from datetime import datetime, timezone
-from enum import Enum
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple, Type
+from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple, Type, Union
 
-from pydantic import BaseModel, create_model
+from pydantic import BaseModel, ConfigDict, Field, create_model
 
 from tqdm import tqdm
 
@@ -71,12 +70,7 @@ def drop_excluded_fields(value: Any) -> Any:
     return value
 
 
-def null_template(value: Any) -> Any:
-    if isinstance(value, dict):
-        return {k: null_template(v) for k, v in value.items()}
-    if isinstance(value, list):
-        return [null_template(v) for v in value]
-    return None
+ScalarValue = Union[str, int, float, bool, None]
 
 
 def fill_blank_template(value: Any) -> Any:
@@ -90,18 +84,37 @@ def fill_blank_template(value: Any) -> Any:
 def align_prediction_to_template(pred_value: Any, template_value: Any) -> Any:
     if isinstance(template_value, dict):
         pred_dict = pred_value if isinstance(pred_value, dict) else {}
-        return {
-            k: align_prediction_to_template(pred_dict.get(k), v)
-            for k, v in template_value.items()
-        }
+        return {k: align_prediction_to_template(pred_dict.get(k), v) for k, v in template_value.items()}
     if isinstance(template_value, list):
         pred_list = pred_value if isinstance(pred_value, list) else []
-        out: List[Any] = []
-        for i, tmpl_item in enumerate(template_value):
-            src = pred_list[i] if i < len(pred_list) else None
-            out.append(align_prediction_to_template(src, tmpl_item))
-        return out
+        if not template_value:
+            return pred_list
+        item_tmpl = template_value[0]
+        return [align_prediction_to_template(v, item_tmpl) for v in pred_list]
     return pred_value
+
+
+def _build_value_model(value: Any, model_idx: int, counter: List[int]) -> Any:
+    if isinstance(value, dict):
+        node_idx = counter[0]
+        counter[0] += 1
+        fields: Dict[str, Tuple[Any, Any]] = {}
+        for i, (k, v) in enumerate(value.items()):
+            field_name = f"f_{i}"
+            fields[field_name] = (
+                _build_value_model(v, model_idx, counter),
+                Field(..., alias=str(k)),
+            )
+        return create_model(  # type: ignore[call-overload]
+            f"DspValueNode_{model_idx}_{node_idx}",
+            __config__=ConfigDict(extra="forbid", populate_by_name=True),
+            **fields,
+        )
+    if isinstance(value, list):
+        if not value:
+            return List[ScalarValue]  # type: ignore[valid-type]
+        return List[_build_value_model(value[0], model_idx, counter)]  # type: ignore[valid-type]
+    return ScalarValue
 
 
 def build_prompt(
@@ -114,41 +127,43 @@ def build_prompt(
     retrieval_query: Optional[str] = None,
 ) -> str:
     context = "\n<->\n".join(to_log_text(log) for log in context_logs)
-    fill_dict = {k: fill_blank_template(v) for k, v in target_value_templates.items()}
-    fill_block = json.dumps(fill_dict, ensure_ascii=False, indent=2)
+    snapshot_template = {k: target_value_templates.get(k, "<fill the blank>") for k in target_keys}
     evidence_template = {k: ["<app_log_id>"] for k in target_keys}
-    evidence_block = json.dumps(evidence_template, ensure_ascii=False, indent=2)
+    fill_template = {
+        "snapshot_state": snapshot_template,
+        "evidence": evidence_template,
+    }
+    fill_template_block = json.dumps(fill_template, ensure_ascii=False, indent=2)
 
     return f"""Based on user memory, predict the values for the following state keys:
 
 User memory:
 {context}
 
-Fill this dict by replacing each "<fill the blank>" with predicted values:
-{fill_block}
-
-For each key, also predict supporting evidence app log ids:
-{evidence_block}
+Fill this dict template:
+{fill_template_block}
 
 Output JSON ONLY with this schema:
 {{
-  "predictions": [
-    {{
-      "key": "<one key from the fill dict>",
-      "snapshot_value": <filled value object matching template>,
-      "evidence": ["<app_log_id>", "..."]
-    }}
-  ]
+  "snapshot_state": {{
+    "<key>": "<value or nested object following the template>",
+    "...": "<same structure as template>"
+  }},
+  "evidence": {{
+    "<key>": ["<app_log_id>", "..."],
+    "...": []
+  }}
 }}
 
 Rules:
 1. Use only evidence implied by logs.
-2. MUST include every key from the fill dict exactly once in predictions.
-3. For each key, keep exactly the same nested field structure in snapshot_value and fill values only.
-4. If a field is unresolvable from logs, set it to null.
+2. MUST include every key in the template exactly once in snapshot_state and evidence.
+3. Keep exactly the same nested key structure in snapshot_state. Only fill leaf values.
+4. If a leaf value is unresolvable from logs, use null.
 5. evidence for each key must be a list of app_log_id strings from provided user memory.
 6. If evidence is unknown, use empty list.
-7. No markdown. No extra keys.
+7. app_log_id strings in evidence must exactly match the IDs shown in user memory (e.g., "log_00028" must stay "log_00028", never "log_28").
+8. No markdown. No extra keys.
 """
 
 
@@ -181,23 +196,53 @@ def normalize_evidence_prediction(raw_evidence: Any, target_keys: List[str]) -> 
     return evidence
 
 
-def build_generation_text_format(target_keys: Sequence[str], model_idx: int) -> Type[BaseModel]:
-    allowed = tuple(target_keys) if target_keys else ("__no_key__",)
-    key_enum = Enum(
-        f"DspPredKey_{model_idx}",
-        {f"K_{i}": key for i, key in enumerate(allowed)},
+def build_generation_text_format(
+    target_keys: Sequence[str],
+    target_value_templates: Dict[str, Any],
+    model_idx: int,
+) -> Type[BaseModel]:
+    if not target_keys:
+        target_keys = ["__no_key__"]
+
+    snapshot_fields: Dict[str, Tuple[Any, Any]] = {}
+    evidence_fields: Dict[str, Tuple[Any, Any]] = {}
+    counter = [0]
+    for i, key in enumerate(target_keys):
+        field_name = f"k_{i}"
+        value_template = target_value_templates.get(key, "<fill the blank>")
+        snapshot_fields[field_name] = (
+            _build_value_model(value_template, model_idx, counter),
+            Field(
+                ...,
+                alias=key,
+                description="Predicted value with the same nested structure as template.",
+            ),
+        )
+        evidence_fields[field_name] = (
+            List[str],
+            Field(
+                ...,
+                alias=key,
+                description="Supporting app_log_id list for this key.",
+            ),
+        )
+
+    snapshot_model = create_model(  # type: ignore[call-overload]
+        f"DspSnapshotState_{model_idx}",
+        __config__=ConfigDict(extra="forbid", populate_by_name=True),
+        **snapshot_fields,
     )
-    item_model = create_model(  # type: ignore[call-overload]
-        f"DspPredItem_{model_idx}",
-        key=(key_enum, ...),
-        snapshot_value=(Any, ...),
-        evidence=(List[str], ...),
+    evidence_model = create_model(  # type: ignore[call-overload]
+        f"DspEvidence_{model_idx}",
+        __config__=ConfigDict(extra="forbid", populate_by_name=True),
+        **evidence_fields,
     )
-    output_model = create_model(  # type: ignore[call-overload]
+    return create_model(  # type: ignore[call-overload]
         f"DspPredOutput_{model_idx}",
-        predictions=(List[item_model], ...),
+        __config__=ConfigDict(extra="forbid"),
+        snapshot_state=(snapshot_model, ...),
+        evidence=(evidence_model, ...),
     )
-    return output_model
 
 
 def normalize_generation_output(raw_out: Any, target_keys: List[str]) -> Dict[str, Any]:
@@ -209,7 +254,7 @@ def normalize_generation_output(raw_out: Any, target_keys: List[str]) -> Dict[st
                 "evidence": raw_out.get("evidence", {}),
             }
 
-        # Structured schema path.
+        # Backward-compatible structured list schema path.
         items = raw_out.get("predictions")
         if isinstance(items, list):
             snapshot_state: Dict[str, Any] = {}
@@ -218,19 +263,17 @@ def normalize_generation_output(raw_out: Any, target_keys: List[str]) -> Dict[st
                 if not isinstance(item, dict):
                     continue
                 key = item.get("key")
-                if isinstance(key, dict):
-                    key = key.get("value") or key.get("name")
                 if key is None:
                     continue
                 key = str(key)
                 if key not in target_keys:
                     continue
-                snapshot_state[key] = item.get("snapshot_value")
+                value = item.get("snapshot_value")
+                if value is None and "snapshot_value_json" in item:
+                    value = item.get("snapshot_value_json")
+                snapshot_state[key] = value
                 evidence[key] = item.get("evidence", [])
-            return {
-                "snapshot_state": snapshot_state,
-                "evidence": evidence,
-            }
+            return {"snapshot_state": snapshot_state, "evidence": evidence}
 
     return {"snapshot_state": {}, "evidence": {}}
 
@@ -281,7 +324,7 @@ def build_target_templates(checkpoint: Dict[str, Any]) -> Tuple[List[str], Dict[
     expected_snapshot_flat = flatten_snapshot(checkpoint.get("expected_snapshot_state") or {})
     expected_snapshot_flat = {k: drop_excluded_fields(v) for k, v in expected_snapshot_flat.items()}
     target_keys = sorted(expected_snapshot_flat.keys())
-    target_value_templates = {k: null_template(expected_snapshot_flat.get(k)) for k in target_keys}
+    target_value_templates = {k: fill_blank_template(expected_snapshot_flat.get(k)) for k in target_keys}
     return target_keys, target_value_templates
 
 
@@ -360,21 +403,38 @@ def run_pipeline(
             )
 
             raw_out: Any = {}
+            error_messages: List[str] = []
             try:
                 if use_structured_response and ask_structured is not None:
-                    text_format = build_generation_text_format(target_keys, len(predictions))
-                    raw_out = ask_structured(prompt, text_format)
+                    try:
+                        text_format = build_generation_text_format(
+                            target_keys,
+                            target_value_templates,
+                            len(predictions),
+                        )
+                        # import pdb; pdb.set_trace()    
+                        raw_out = ask_structured(prompt, text_format)
+                        out = normalize_generation_output(raw_out, target_keys)
+                    except Exception as exc:
+                        error_messages.append(f"structured_call_failed: {exc}")
+                        raw_out = ask_json(prompt)
+                        out = normalize_generation_output(raw_out, target_keys)
                 else:
                     raw_out = ask_json(prompt)
-                out = normalize_generation_output(raw_out, target_keys)
-            except Exception:
-                raw_out = {"_error": "llm_call_failed"}
+                    out = normalize_generation_output(raw_out, target_keys)
+            except Exception as exc:
+                error_messages.append(f"json_call_failed: {exc}")
+                raw_out = {"_error": "; ".join(error_messages) if error_messages else f"llm_call_failed: {exc}"}
                 out = {"snapshot_state": {}, "evidence": {}}
+
+            if error_messages and isinstance(raw_out, dict):
+                raw_out = dict(raw_out)
+                raw_out["_warnings"] = error_messages
 
             pred_snapshot = flatten_snapshot(out.get("snapshot_state"))
             pred_snapshot = {k: drop_excluded_fields(pred_snapshot.get(k)) for k in target_keys}
             snapshot = {
-                k: align_prediction_to_template(pred_snapshot.get(k), target_value_templates[k])
+                k: align_prediction_to_template(pred_snapshot.get(k), target_value_templates.get(k))
                 for k in target_keys
             }
             evidence = normalize_evidence_prediction(out.get("evidence"), target_keys)

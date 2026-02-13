@@ -8,8 +8,10 @@ PREDICTION_ROOT="$PROJECT_ROOT/generation/rag/results"
 
 # Accept either numeric IDs (1,2,3) or full user dirs (001_user_001)
 USERS=("001_user_001")
+RETRIEVAL_TOP_K="${RETRIEVAL_TOP_K:-5}"
 
 ENABLE_LLM_JUDGE="${ENABLE_LLM_JUDGE:-true}"
+SAVE_EYEBALL="${SAVE_EYEBALL:-true}"
 LLM_PROVIDER="${LLM_PROVIDER:-openai}"
 LLM_MODEL="${LLM_MODEL:-gpt-5-mini}"
 LLM_MAX_WORKERS="${LLM_MAX_WORKERS:-1}"
@@ -29,8 +31,8 @@ for user in "${USERS[@]}"; do
   user_dir="$(normalize_user_dir "$user")"
 
   benchmark_path="$BENCHMARK_ROOT/$user_dir/dynamic_state_prediction_benchmark.json"
-  prediction_path="$PREDICTION_ROOT/$user_dir/prediction/dynamic_state_prediction_results.json"
-  output_path="$PREDICTION_ROOT/$user_dir/eval/dynamic_state_prediction_eval.json"
+  prediction_path="$PREDICTION_ROOT/$user_dir/prediction/dynamic_state_prediction_results_topk${RETRIEVAL_TOP_K}.json"
+  output_path="$PREDICTION_ROOT/$user_dir/eval/dynamic_state_prediction_eval_topk${RETRIEVAL_TOP_K}.json"
   mkdir -p "$(dirname "$output_path")"
 
   if [[ ! -f "$benchmark_path" ]]; then
@@ -51,6 +53,10 @@ for user in "${USERS[@]}"; do
     --prediction "$prediction_path"
     --output "$output_path"
   )
+
+  if [[ "$SAVE_EYEBALL" == "true" ]]; then
+    cmd+=(--save-eyeball)
+  fi
 
   if [[ "$ENABLE_LLM_JUDGE" == "true" ]]; then
     cmd+=(

@@ -18,17 +18,6 @@ def _f1(tp: int, fp: int, fn: int) -> float:
     return _safe_div(2 * p * r, p + r) if (p + r) else 0.0
 
 
-def _value_to_text(value: Any) -> str:
-    if value is None:
-        return ""
-    if isinstance(value, str):
-        return value
-    try:
-        return json.dumps(value, ensure_ascii=False, sort_keys=True)
-    except Exception:
-        return str(value)
-
-
 def _drop_excluded_fields(value: Any) -> Any:
     if isinstance(value, dict):
         out: Dict[str, Any] = {}
@@ -46,9 +35,37 @@ def _tokenize_text(text: str) -> List[str]:
     return re.findall(r"[a-z0-9_]+", text.lower())
 
 
+def _collect_leaf_texts(value: Any) -> List[str]:
+    if value is None:
+        return []
+    if isinstance(value, dict):
+        out: List[str] = []
+        for v in value.values():
+            out.extend(_collect_leaf_texts(v))
+        return out
+    if isinstance(value, list):
+        out: List[str] = []
+        for item in value:
+            out.extend(_collect_leaf_texts(item))
+        return out
+    if isinstance(value, str):
+        return [value]
+    if isinstance(value, (int, float, bool)):
+        return [str(value)]
+    try:
+        return [json.dumps(value, ensure_ascii=False, sort_keys=True)]
+    except Exception:
+        return [str(value)]
+
+
 def _value_f1(expected_value: Any, predicted_value: Any) -> float:
-    exp_tokens = _tokenize_text(_value_to_text(expected_value))
-    pred_tokens = _tokenize_text(_value_to_text(predicted_value))
+    exp_tokens: List[str] = []
+    for leaf in _collect_leaf_texts(expected_value):
+        exp_tokens.extend(_tokenize_text(leaf))
+
+    pred_tokens: List[str] = []
+    for leaf in _collect_leaf_texts(predicted_value):
+        pred_tokens.extend(_tokenize_text(leaf))
 
     if not exp_tokens and not pred_tokens:
         return 1.0

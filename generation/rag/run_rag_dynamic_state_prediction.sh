@@ -14,14 +14,14 @@ USERS=("001_user_001")
 # Optional truncation for debugging.
 # Leave empty to use full history until each checkpoint.
 MAX_VISIBLE_LOGS=""
-RETRIEVAL_TOP_K="5"
+RETRIEVAL_TOP_K="10"
 LLM_PROVIDER="openai"
 LLM_MODEL="gpt-5-mini"
 LLM_MAX_WORKERS="1"
 RETRIEVER_PROVIDER="openai"
 RETRIEVER_MODEL="text-embedding-3-large"
 RETRIEVER_BATCH_SIZE="64"
-RESUME="true"
+RESUME="false"
 SAVE_PROMPT_AND_RAW="true"
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -42,7 +42,7 @@ for user in "${USERS[@]}"; do
   benchmark_path="$BENCHMARK_ROOT/$user_dir/dynamic_state_prediction_benchmark.json"
 
   app_logs_path="$BENCHMARK_ROOT/$user_dir/app_log_large.json"
-  output_path="$OUTPUT_ROOT/$user_dir/prediction/dynamic_state_prediction_results.json"
+  output_path="$OUTPUT_ROOT/$user_dir/prediction/dynamic_state_prediction_results_topk${RETRIEVAL_TOP_K}.json"
 
   if [[ ! -f "$benchmark_path" ]]; then
     echo "[RAG-DSP] SKIP $user_dir: benchmark not found"
@@ -68,7 +68,6 @@ for user in "${USERS[@]}"; do
     --retriever-provider "$RETRIEVER_PROVIDER"
     --retriever-model "$RETRIEVER_MODEL"
     --retriever-batch-size "$RETRIEVER_BATCH_SIZE"
-    --max-checkpoints 2
   )
 
   if [[ -n "$MAX_VISIBLE_LOGS" ]]; then

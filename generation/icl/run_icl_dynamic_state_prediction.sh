@@ -18,6 +18,8 @@ LLM_PROVIDER="openai"
 LLM_MODEL="gpt-5-mini"
 LLM_MAX_WORKERS="1"
 RESUME="true"
+SAVE_PROMPT_AND_RAW="true"
+MAX_CHECKPOINTS=""
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$PROJECT_ROOT"
@@ -59,8 +61,11 @@ for user in "${USERS[@]}"; do
     --llm-provider "$LLM_PROVIDER"
     --llm-model "$LLM_MODEL"
     --llm-max-workers "$LLM_MAX_WORKERS"
-    --max-checkpoints 20
   )
+
+  if [[ -n "$MAX_CHECKPOINTS" ]]; then
+    cmd+=(--max-checkpoints "$MAX_CHECKPOINTS")
+  fi
 
   if [[ -n "$MAX_VISIBLE_LOGS" ]]; then
     cmd+=(--max-visible-logs "$MAX_VISIBLE_LOGS")
@@ -68,6 +73,10 @@ for user in "${USERS[@]}"; do
 
   if [[ "$RESUME" == "true" ]]; then
     cmd+=(--resume)
+  fi
+
+  if [[ "$SAVE_PROMPT_AND_RAW" == "true" ]]; then
+    cmd+=(--save-prompt-and-raw)
   fi
 
   "${cmd[@]}"

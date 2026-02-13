@@ -79,7 +79,7 @@ Checkpoint rule (current implementation):
 
 ### 2) Produce Baseline Predictions
 
-Prediction contract (`generation/<baseline>/results/<user_id>/prediction/dynamic_state_prediction_results.json`):
+Prediction contract (`generation/<baseline>/results/<user_id>/prediction/dynamic_state_prediction_results*.json`):
 
 ```json
 {
@@ -107,7 +107,7 @@ cd <repo_root>
 python3 generation/rag/rag_dynamic_state_prediction.py \
   --benchmark data_construction/generated_outputs/gemini_3_flash_preview/001_user_001/dynamic_state_prediction_benchmark.json \
   --app-logs-path data_construction/generated_outputs/gemini_3_flash_preview/001_user_001/app_log_large.json \
-  --output generation/rag/results/001_user_001/prediction/dynamic_state_prediction_results.json \
+  --output generation/rag/results/001_user_001/prediction/dynamic_state_prediction_results_topk5.json \
   --llm-provider openai \
   --llm-model gpt-5-mini \
   --resume
@@ -120,14 +120,17 @@ cd <repo_root>
 python3 -m eval.eval_dynamic_state_prediction \
   --benchmark data_construction/generated_outputs/gemini_3_flash_preview/001_user_001/dynamic_state_prediction_benchmark.json \
   --prediction generation/<baseline>/results/001_user_001/prediction/dynamic_state_prediction_results.json \
-  --output generation/<baseline>/results/001_user_001/eval/dynamic_state_prediction_eval.json
+  --output generation/<baseline>/results/001_user_001/eval/dynamic_state_prediction_eval.json \
+  --save-eyeball
 ```
 
 Main metrics:
 
 - snapshot/value: `snapshot_value_f1_mean_on_expected`, `snapshot_value_accuracy_on_expected`, `snapshot_exact_match`
 - snapshot/evidence: `snapshot_evidence_recall_mean_on_expected`, `snapshot_evidence_precision_mean_on_expected`, `snapshot_evidence_f1_mean_on_expected`
-- llm-as-judge (optional): per-key correctness decisions are requested from LLM, and score is computed by program as `correct_pairs / total_pairs` (range `[0,1]`).
+- llm-as-judge (optional): per-key 0-10 scores are requested from LLM, and the program reports:
+  - `llm_judge_avg_score_0_10` (checkpoint average on 0-10 scale)
+  - `llm_judge_score` (normalized to `[0,1]`, i.e. `avg_score_0_10 / 10`)
 
 Enable LLM judge:
 
@@ -136,6 +139,7 @@ python3 -m eval.eval_dynamic_state_prediction \
   --benchmark data_construction/generated_outputs/gemini_3_flash_preview/001_user_001/dynamic_state_prediction_benchmark.json \
   --prediction generation/<baseline>/results/001_user_001/prediction/dynamic_state_prediction_results.json \
   --output generation/<baseline>/results/001_user_001/eval/dynamic_state_prediction_eval.json \
+  --save-eyeball \
   --enable-llm-judge \
   --llm-provider openai \
   --llm-model gpt-5-mini

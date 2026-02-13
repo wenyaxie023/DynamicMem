@@ -10,6 +10,7 @@ PREDICTION_ROOT="$PROJECT_ROOT/generation/oracle/results"
 USERS=("001_user_001")
 
 ENABLE_LLM_JUDGE="${ENABLE_LLM_JUDGE:-true}"
+SAVE_EYEBALL="${SAVE_EYEBALL:-true}"
 LLM_PROVIDER="${LLM_PROVIDER:-openai}"
 LLM_MODEL="${LLM_MODEL:-gpt-5-mini}"
 LLM_MAX_WORKERS="${LLM_MAX_WORKERS:-1}"
@@ -51,6 +52,10 @@ for user in "${USERS[@]}"; do
     --prediction "$prediction_path"
     --output "$output_path"
   )
+
+  if [[ "$SAVE_EYEBALL" == "true" ]]; then
+    cmd+=(--save-eyeball)
+  fi
 
   if [[ "$ENABLE_LLM_JUDGE" == "true" ]]; then
     cmd+=(

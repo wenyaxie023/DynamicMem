@@ -131,11 +131,19 @@ class LLMClient:
                 f"Structured response is only supported for openai/azure provider, got {self.provider}"
             )
 
-        response = self.client.responses.parse(
-            model=self.model_name,
-            input=prompt,
-            text_format=text_format,
-        )
+        try:
+            response = self.client.responses.parse(
+                model=self.model_name,
+                input=prompt,
+                text_format=text_format,
+                truncation="auto",
+            )
+        except TypeError:
+            response = self.client.responses.parse(
+                model=self.model_name,
+                input=prompt,
+                text_format=text_format,
+            )
         parsed = getattr(response, "output_parsed", None)
         if parsed is None:
             raise ValueError("Structured response parsing returned no output_parsed payload.")
@@ -158,10 +166,17 @@ class LLMClient:
 
     def _ask_impl(self, prompt: str, response_type: str) -> Dict | str:
         if self.provider in {"openai", "azure", "aiml", "aimlapi"}:
-            response = self.client.responses.create(
-                model=self.model_name,
-                input=prompt,
-            )
+            try:
+                response = self.client.responses.create(
+                    model=self.model_name,
+                    input=prompt,
+                    truncation="auto",
+                )
+            except TypeError:
+                response = self.client.responses.create(
+                    model=self.model_name,
+                    input=prompt,
+                )
             return self._parse_response(response.output_text, response_type)
         if self.provider == "gemini":
             response = self.client.models.generate_content(

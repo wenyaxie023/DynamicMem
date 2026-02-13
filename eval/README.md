@@ -59,7 +59,8 @@ You can evaluate behavior-style dynamic state prediction (not QA) with:
 python -m eval.eval_dynamic_state_prediction \
   --benchmark data_construction/generated_outputs/gemini_3_flash_preview/<user_id>/dynamic_state_prediction_benchmark.json \
   --prediction generation/<baseline>/results/<user_id>/prediction/dynamic_state_prediction_results.json \
-  --output generation/<baseline>/results/<user_id>/eval/dynamic_state_prediction_eval.json
+  --output generation/<baseline>/results/<user_id>/eval/dynamic_state_prediction_eval.json \
+  --save-eyeball
 ```
 
 
@@ -77,3 +78,7 @@ Dynamic state prediction eval implementation details:
 - when `--enable-llm-judge` is enabled, results are written incrementally (checkpoint-by-checkpoint) to the output json.
 - `llm_judge_raw_output`, `llm_judge_prompt`, and (if available) `llm_judge_prompt_from_response` are saved for debugging.
 - openai/azure judge calls use structured response with dynamic pydantic schemas; other providers fall back to JSON parsing.
+- llm-as-judge now uses per-key `score` in `[0,10]` (not only boolean correctness):
+  - `llm_judge_avg_score_0_10`: per-checkpoint average key score
+  - `llm_judge_score`: normalized `[0,1]` value (= avg score / 10)
+- `--save-eyeball` stores `groundtruth_snapshot`, `prediction_snapshot`, `groundtruth_evidence`, and `prediction_evidence` for manual inspection.

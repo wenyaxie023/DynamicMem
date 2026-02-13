@@ -6,10 +6,10 @@ import json
 from concurrent.futures import as_completed
 from enum import Enum
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple, Type
+from typing import Any, Callable, Dict, List, Literal, Optional, Sequence, Tuple, Type
 
 from dotenv import load_dotenv
-from pydantic import BaseModel, create_model
+from pydantic import BaseModel, Field, create_model
 from tqdm import tqdm
 
 from dynamic_state_prediction_core import (
@@ -27,7 +27,7 @@ def _build_llm_judge_prompt(
     value_pairs: Dict[str, Dict[str, Any]],
 ) -> str:
     judgment_template = [
-        {"key": k, "reason": "<very short>", "correct": False}
+        {"key": k, "reason": "<very short>", "score": 0}
         for k in sorted(value_pairs.keys())
     ]
     return """You are evaluating dynamic state prediction value quality.
@@ -44,14 +44,24 @@ Fill this exact judgments template (do not add/drop keys):
 Output JSON ONLY:
 {{
   "judgments": [
-    {{"key": "<state_key>", "reason": "<very short>", "correct": true or false}}
+    {{"key": "<state_key>", "reason": "<very short>", "score": 0-10}}
   ]
 }}
 
 Rules:
 1. Include each key exactly once in judgments.
 2. Judge only value correctness for each key.
-3. If uncertain, mark correct=false.
+3. Semantic equivalence is sufficient: if predicted and expected mean the same thing, assign a score near 10 even if wording differs.
+4. Do NOT penalize for paraphrases, minor phrasing differences, or missing stylistic words (e.g., "set", adjective wording) when core meaning matches.
+5. Penalize only factual mismatches, missing critical facts, contradictions, or clearly less specific content that changes meaning.
+6. Use a 0-10 score scale for each key:
+   - 10: fully correct and complete.
+   - 7-9: mostly correct with minor missing details.
+   - 4-6: partially correct; some important details missing or slightly wrong.
+   - 1-3: mostly incorrect but with small overlap.
+   - 0: completely incorrect or contradictory.
+7. For each judgment, write reason first, then assign score.
+8. If uncertain, use a conservative score.
 """.format(
         value_pairs=json.dumps(value_pairs, ensure_ascii=False),
         judgment_template=json.dumps(judgment_template, ensure_ascii=False),
@@ -60,15 +70,12 @@ Rules:
 
 def _build_llm_judge_text_format(target_keys: Sequence[str], model_idx: int) -> Type[BaseModel]:
     allowed = tuple(target_keys) if target_keys else ("__no_key__",)
-    key_enum = Enum(
-        f"JudgeKey_{model_idx}",
-        {f"K_{i}": key for i, key in enumerate(allowed)},
-    )
+    key_literal = Literal[allowed]  # type: ignore[valid-type]
     item_model = create_model(  # type: ignore[call-overload]
         f"JudgeItem_{model_idx}",
-        key=(key_enum, ...),
-        correct=(bool, ...),
+        key=(key_literal, Field(..., description="One key from the provided value pairs.")),
         reason=(str, ...),
+        score=(float, ...),
     )
     output_model = create_model(  # type: ignore[call-overload]
         f"JudgeOutput_{model_idx}",
@@ -107,18 +114,48 @@ def _json_safe(value: Any) -> Any:
     return value
 
 
-def _extract_correct_flag(item: Any) -> bool:
+def _extract_key_score(item: Any) -> float:
     if isinstance(item, dict):
+        if "score" in item:
+            try:
+                score = float(item.get("score"))
+                return max(0.0, min(10.0, score))
+            except Exception:
+                pass
+        # Backward-compatible fallback for old boolean schema
         if "correct" in item:
-            return _to_bool(item.get("correct"))
-        # tolerate direct score-like labels
+            return 10.0 if _to_bool(item.get("correct")) else 0.0
         if "is_correct" in item:
-            return _to_bool(item.get("is_correct"))
-        return False
-    return _to_bool(item)
+            return 10.0 if _to_bool(item.get("is_correct")) else 0.0
+        return 0.0
+    if isinstance(item, (int, float)):
+        return max(0.0, min(10.0, float(item)))
+    if isinstance(item, str):
+        try:
+            return max(0.0, min(10.0, float(item.strip())))
+        except Exception:
+            return 0.0
+    return 0.0
 
 
-def _normalize_judgments(out: Any, target_keys: List[str]) -> Dict[str, bool]:
+def _normalize_state_key(key: Any) -> Optional[str]:
+    if key is None:
+        return None
+    if isinstance(key, Enum):
+        return str(key.value)
+    if isinstance(key, dict):
+        key = key.get("value") or key.get("name") or key.get("key")
+        if key is None:
+            return None
+    if hasattr(key, "value"):
+        try:
+            return str(getattr(key, "value"))
+        except Exception:
+            pass
+    return str(key)
+
+
+def _normalize_judgments(out: Any, target_keys: List[str]) -> Dict[str, float]:
     """
     Normalize LLM judge outputs into a strict target_key -> bool mapping.
     Supports:
@@ -127,7 +164,7 @@ def _normalize_judgments(out: Any, target_keys: List[str]) -> Dict[str, bool]:
     - {"judgments": [{"key": "...", "correct": true}, ...]}
     - {"cat:state": {"correct": true}}  (fallback without judgments root)
     """
-    result: Dict[str, bool] = {k: False for k in target_keys}
+    result: Dict[str, float] = {k: 0.0 for k in target_keys}
 
     if not isinstance(out, dict):
         return result
@@ -141,12 +178,12 @@ def _normalize_judgments(out: Any, target_keys: List[str]) -> Dict[str, bool]:
         for item in data:
             if not isinstance(item, dict):
                 continue
-            key = item.get("key") or item.get("state_key") or item.get("name")
+            raw_key = item.get("key") or item.get("state_key") or item.get("name")
+            key = _normalize_state_key(raw_key)
             if key is None:
                 continue
-            key = str(key)
             if key in result:
-                result[key] = _extract_correct_flag(item)
+                result[key] = _extract_key_score(item)
         return result
 
     if not isinstance(data, dict):
@@ -155,7 +192,7 @@ def _normalize_judgments(out: Any, target_keys: List[str]) -> Dict[str, bool]:
     # direct form: {"cat:state": {...}}
     for k in target_keys:
         if k in data:
-            result[k] = _extract_correct_flag(data.get(k))
+            result[k] = _extract_key_score(data.get(k))
 
     # nested category form: {"category": {"state": {...}}}
     for cat, maybe_states in data.items():
@@ -164,7 +201,7 @@ def _normalize_judgments(out: Any, target_keys: List[str]) -> Dict[str, bool]:
         for state_name, item in maybe_states.items():
             merged = f"{cat}:{state_name}"
             if merged in result:
-                result[merged] = _extract_correct_flag(item)
+                result[merged] = _extract_key_score(item)
 
     return result
 
@@ -306,16 +343,18 @@ def _run_llm_judge(
             expected_snapshot = row.get("_expected_snapshot", {}) or {}
             target_keys = sorted(expected_snapshot.keys())
             total = len(target_keys)
-            correct = 0
+            sum_scores_0_10 = 0.0
 
             if total > 0:
                 judgments = _normalize_judgments(out, target_keys)
+                row["llm_judge_judgments"] = judgments
                 for key in target_keys:
-                    if judgments.get(key, False):
-                        correct += 1
+                    sum_scores_0_10 += float(judgments.get(key, 0.0))
 
-            score = (correct / total) if total > 0 else 0.0
-            row["llm_judge_correct_pairs"] = correct
+            avg_score_0_10 = (sum_scores_0_10 / total) if total > 0 else 0.0
+            score = avg_score_0_10 / 10.0
+            row["llm_judge_sum_score_0_10"] = sum_scores_0_10
+            row["llm_judge_avg_score_0_10"] = avg_score_0_10
             row["llm_judge_total_pairs"] = total
             reason = str(out.get("reason", ""))
         else:
@@ -372,6 +411,7 @@ def evaluate(
     predictions: Dict[str, Dict[str, Any]],
     *,
     enable_llm_judge: bool = False,
+    save_eyeball: bool = False,
     llm_provider: str = "openai",
     llm_model: str = "gpt-5-mini",
     llm_max_workers: int = 4,
@@ -380,7 +420,7 @@ def evaluate(
     checkpoint_rows, evaluated = evaluate_checkpoints(
         benchmark,
         predictions,
-        include_internal_payload=enable_llm_judge,
+        include_internal_payload=(enable_llm_judge or save_eyeball),
     )
 
     if enable_llm_judge:
@@ -397,6 +437,11 @@ def evaluate(
         )
 
     for row in checkpoint_rows:
+        if save_eyeball:
+            row["groundtruth_snapshot"] = _json_safe(row.get("_expected_snapshot", {}))
+            row["prediction_snapshot"] = _json_safe(row.get("_pred_snapshot", {}))
+            row["groundtruth_evidence"] = _json_safe(row.get("_expected_evidence", {}))
+            row["prediction_evidence"] = _json_safe(row.get("_pred_evidence", {}))
         row.pop("_expected_snapshot", None)
         row.pop("_pred_snapshot", None)
         row.pop("_expected_evidence", None)
@@ -427,6 +472,11 @@ def main() -> None:
     parser.add_argument("--prediction", type=Path, required=True, help="Path to model predictions json")
     parser.add_argument("--output", type=Path, required=True, help="Output eval json path")
     parser.add_argument("--enable-llm-judge", action="store_true", help="Enable LLM-as-a-judge scoring.")
+    parser.add_argument(
+        "--save-eyeball",
+        action="store_true",
+        help="Save per-checkpoint groundtruth/prediction payloads for manual eyeballing.",
+    )
     parser.add_argument("--llm-provider", type=str, default="openai", help="LLM judge provider.")
     parser.add_argument("--llm-model", type=str, default="gpt-5-mini", help="LLM judge model.")
     parser.add_argument("--llm-max-workers", type=int, default=4, help="Max workers for LLM judge.")
@@ -445,6 +495,11 @@ def main() -> None:
                 for k, v in row.items()
                 if k not in {"_expected_snapshot", "_pred_snapshot", "_expected_evidence", "_pred_evidence"}
             }
+            if args.save_eyeball:
+                out_row["groundtruth_snapshot"] = _json_safe(row.get("_expected_snapshot", {}))
+                out_row["prediction_snapshot"] = _json_safe(row.get("_pred_snapshot", {}))
+                out_row["groundtruth_evidence"] = _json_safe(row.get("_expected_evidence", {}))
+                out_row["prediction_evidence"] = _json_safe(row.get("_pred_evidence", {}))
             output_rows.append(out_row)
         payload = {
             "user_id": benchmark.get("user_id"),
@@ -463,6 +518,7 @@ def main() -> None:
         benchmark,
         predictions,
         enable_llm_judge=args.enable_llm_judge,
+        save_eyeball=args.save_eyeball,
         llm_provider=args.llm_provider,
         llm_model=args.llm_model,
         llm_max_workers=args.llm_max_workers,
