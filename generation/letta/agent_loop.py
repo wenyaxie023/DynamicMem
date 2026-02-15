@@ -1,4 +1,5 @@
 import json
+import importlib
 import os
 from datetime import datetime
 from typing import Any, Dict, List, Optional
@@ -181,18 +182,18 @@ class LettaAgentLoop:
         return self._local_llm.ask(composed, response_type="text")
 
     def _init_sdk_agent(self) -> bool:
-        candidates = [
-            ("letta_client", "Letta"),
-            ("letta_client", "Client"),
-            ("letta", "Letta"),
-            ("letta", "Client"),
-        ]
-        for module_name, class_name in candidates:
+        # Intentionally support only `letta_client` package.
+        try:
+            module = importlib.import_module("letta_client")
+        except Exception:
+            return False
+
+        # Keep minor class-name compatibility within letta_client only.
+        for class_name in ("Letta", "Client"):
+            cls = getattr(module, class_name, None)
+            if cls is None:
+                continue
             try:
-                module = __import__(module_name, fromlist=[class_name])
-                cls = getattr(module, class_name, None)
-                if cls is None:
-                    continue
                 client = self._instantiate_client(cls)
                 if client is None:
                     continue
@@ -308,4 +309,3 @@ class LettaAgentLoop:
             except Exception:
                 continue
         raise RuntimeError("No supported Letta SDK send-message method found for this client version")
-

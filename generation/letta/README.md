@@ -26,10 +26,28 @@ Current implementation uses **agent-loop ingestion**:
 - Dynamic state prediction eval:
   - `bash generation/letta/run_eval_letta_dynamic_state_prediction.sh`
 
+## Docker Server (OpenAI only)
+
+One-click script:
+
+```bash
+export OPENAI_API_KEY="your_openai_api_key"
+bash generation/letta/run_letta_docker_server.sh
+```
+
+Default server URL:
+- `http://localhost:8283`
+
+Optional env vars:
+- `LETTA_PORT` (default `8283`)
+- `LETTA_PERSIST_DIR` (default `~/.letta/.persist/pgdata`)
+- `LETTA_CONTAINER_NAME` (default `letta-server`)
+- `LETTA_SECURE=true` and `LETTA_SERVER_PASSWORD=...` to enable password auth
+
 ## Letta Modes
 
 - `--letta-mode sdk`:
-  - tries Letta Python SDK agent loop first.
+  - uses `letta_client` Python SDK agent loop.
 - `--letta-mode local`:
   - local fallback simulation (non-SDK).
 
