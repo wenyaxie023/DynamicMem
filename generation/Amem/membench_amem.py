@@ -212,42 +212,44 @@ def evaluate_membench(
 
     if processed <= 0:
         processed = start_index
-    found = False
-    for sample in load_membench_dataset(resolved_app_log_path, size=size):
-        if sample.sample_id != user_id:
-            continue
-        found = True
-        logger.info(
-            "Loaded MemBench sample_id=%s events=%d",
-            sample.sample_id,
-            len(sample.app_logs),
-        )
-        last_event_idx = start_index - 1
-        interrupted_exc = None
-        try:
-            for idx, event in enumerate(sample.app_logs):
-                if idx < start_index:
-                    continue
-                content, time_str = build_membench_memory_from_event(event)
-                memory_system.add_note(content, time=time_str)
-                processed += 1
-                last_event_idx = idx
-                print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] {processed} processed")
-                if save_every > 0 and processed % save_every == 0:
-                    memory_system.save_state(state_path)
-                    _write_checkpoint(checkpoint_path, last_event_idx, processed)
-        except BaseException as exc:
-            interrupted_exc = exc
-            logger.warning("Run interrupted (%s). Saving checkpoint.", type(exc).__name__)
-        finally:
-            if resume_requested and last_event_idx >= 0:
+
+    samples = load_membench_dataset(
+        resolved_app_log_path,
+        user_id=user_id,
+        size=size,
+    )
+    if not samples:
+        raise ValueError(f"User id not found in dataset: {user_id}")
+    sample = samples[0]
+
+    logger.info(
+        "Loaded MemBench sample_id=%s events=%d",
+        sample.sample_id,
+        len(sample.app_logs),
+    )
+    last_event_idx = start_index - 1
+    interrupted_exc = None
+    try:
+        for idx, event in enumerate(sample.app_logs):
+            if idx < start_index:
+                continue
+            content, time_str = build_membench_memory_from_event(event)
+            memory_system.add_note(content, time=time_str)
+            processed += 1
+            last_event_idx = idx
+            print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] {processed} processed")
+            if save_every > 0 and processed % save_every == 0:
                 memory_system.save_state(state_path)
                 _write_checkpoint(checkpoint_path, last_event_idx, processed)
-        if interrupted_exc is not None:
-            raise interrupted_exc
-
-    if not found:
-        raise ValueError(f"User id not found in dataset: {user_id}")
+    except BaseException as exc:
+        interrupted_exc = exc
+        logger.warning("Run interrupted (%s). Saving checkpoint.", type(exc).__name__)
+    finally:
+        if resume_requested and last_event_idx >= 0:
+            memory_system.save_state(state_path)
+            _write_checkpoint(checkpoint_path, last_event_idx, processed)
+    if interrupted_exc is not None:
+        raise interrupted_exc
 
     return {
         "user_id": user_id,

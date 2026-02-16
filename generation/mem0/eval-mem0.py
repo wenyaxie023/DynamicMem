@@ -373,7 +373,7 @@ def evaluate_membench_with_mem0(
     app_log_path: Path,
     qa_path: Optional[Path],
     mem0_config: Dict[str, Any],
-    user_id: Optional[str],
+    user_id: str,
     llm_model: str,
     temperature: float,
     output_path: Optional[Path],
@@ -408,10 +408,8 @@ def evaluate_membench_with_mem0(
             logger.warning(f"Could not reset mem0 memories: {e}")
 
     summaries: List[Dict[str, Any]] = []
-    for sample in load_membench_dataset(app_log_path, qa_path, size=size):
-        if user_id and sample.sample_id != user_id:
-            continue
-        sample_user_id = user_id or sample.sample_id
+    for sample in load_membench_dataset(app_log_path, qa_path, user_id=user_id, size=size):
+        sample_user_id = user_id
         logger.info(
             f"Loaded MemBench sample_id={sample.sample_id} "
             f"events={len(sample.app_logs)} qa={len(sample.qa)} user_id={sample_user_id}"
@@ -576,7 +574,7 @@ def main() -> None:
         default=None,
         help="Optional path to a mem0 config JSON (overrides default qdrant config)",
     )
-    parser.add_argument("--user-id", type=str, default=None, help="User id to use inside mem0 (defaults to sample id)")
+    parser.add_argument("--user-id", type=str, required=True, help="User id/sample id to load and use inside mem0")
     parser.add_argument("--model", type=str, default="gpt-4o-mini", help="(Deprecated) LLM model for answering")
     parser.add_argument("--llm-model", type=str, default=None, help="LLM model for answering")
     parser.add_argument("--embedder-model", type=str, default=None, help="Embedding model name")

@@ -1,5 +1,5 @@
 import json
-from typing import Dict, Iterator, List, Optional, Union
+from typing import Any, Dict, List, Optional, Tuple, Union
 import os
 from dataclasses import dataclass
 from datetime import datetime
@@ -277,34 +277,77 @@ def _normalize_membench_size(size: str) -> str:
         return normalized
     raise ValueError(f"Invalid size '{size}'. Expected small, medium, or large.")
 
-def _iter_membench_app_log_paths(app_log_path: Path, size: str) -> Iterator[tuple[Path, str]]:
+def _extract_user_index(user_id: str) -> Optional[int]:
+    token = (user_id or "").strip().lower()
+    if not token:
+        return None
+    if re.fullmatch(r"\d+", token):
+        return int(token)
+    match = re.fullmatch(r"(\d+)_user_(\d+)", token)
+    if match:
+        left = int(match.group(1))
+        right = int(match.group(2))
+        return right if right != left else left
+    return None
+
+def _user_id_aliases(user_id: str) -> set[str]:
+    token = (user_id or "").strip().lower()
+    aliases = {token}
+    idx = _extract_user_index(token)
+    if idx is not None:
+        padded = f"{idx:03d}"
+        aliases.add(str(idx))
+        aliases.add(padded)
+        aliases.add(f"{padded}_user_{padded}")
+    return aliases
+
+def _matches_user_id(sample_id: str, user_id: str) -> bool:
+    if not sample_id or not user_id:
+        return False
+    return bool(_user_id_aliases(sample_id) & _user_id_aliases(user_id))
+
+def _resolve_user_app_log_file(
+    app_log_path: Path,
+    user_id: str,
+    size: str,
+) -> Tuple[Path, str]:
     if app_log_path.is_file():
-        yield app_log_path, app_log_path.stem
-        return
+        inferred_sample_id = app_log_path.parent.name or app_log_path.stem
+        if not _matches_user_id(inferred_sample_id, user_id):
+            raise ValueError(
+                f"App log file '{app_log_path}' does not match user_id='{user_id}'. "
+                f"Inferred sample_id='{inferred_sample_id}'."
+            )
+        return app_log_path, inferred_sample_id
+
     if not app_log_path.exists():
         raise FileNotFoundError(f"App log path not found at {app_log_path}")
     if not app_log_path.is_dir():
         raise ValueError(f"Invalid app log path: {app_log_path}")
 
     pattern = f"app_log_{size}.json"
-    found = False
+    matches: List[Tuple[Path, str]] = []
     direct_file = app_log_path / pattern
-    if direct_file.exists():
-        found = True
-        yield direct_file, direct_file.stem
+    if direct_file.exists() and _matches_user_id(app_log_path.name, user_id):
+        matches.append((direct_file, app_log_path.name))
 
     for entry in sorted(app_log_path.iterdir()):
         if not entry.is_dir():
             continue
         candidate = entry / pattern
-        if candidate.exists():
-            found = True
-            yield candidate, entry.name
+        if candidate.exists() and _matches_user_id(entry.name, user_id):
+            matches.append((candidate, entry.name))
 
-    if not found:
+    if not matches:
         raise FileNotFoundError(
-            f"No '{pattern}' found under {app_log_path}"
+            f"No '{pattern}' found for user_id='{user_id}' under {app_log_path}"
         )
+    if len(matches) > 1:
+        rendered = ", ".join(f"{path} (sample_id={sid})" for path, sid in matches)
+        raise ValueError(
+            f"Ambiguous app log matches for user_id='{user_id}' under {app_log_path}: {rendered}"
+        )
+    return matches[0]
 
 def _is_timestamp_key(key: str) -> bool:
     return bool(_TIMESTAMP_KEY_RE.search(key))
@@ -420,19 +463,28 @@ def load_membench_dataset(
     app_log_path: Union[str, Path],
     qa_path: Optional[Union[str, Path]] = None,
     *,
+    user_id: str,
     size: str = "small",
-) -> Iterator[MemBenchSample]:
+    load_ckpts: bool = False,
+) -> Union[List[MemBenchSample], Tuple[List[MemBenchSample], List[dict]]]:
     """
-    Load MemBench dataset samples from:
+    Load one MemBench sample for a specific user from:
     - `app_log_path`: JSON file with an app log list, or a directory containing user subfolders.
-      When a directory is provided, each subfolder is expected to contain app_log_{size}.json.
+      When a directory is provided, a matching user subfolder is expected to contain app_log_{size}.json.
     - `qa_path` (optional): JSON file containing `{"qa": [...]}`.
       If omitted, tries to read per-user `qa_human_*.json` or `qa` from app logs.
+    - `user_id` (required): user/sample identifier (supports aliases like 1, 001, 001_user_001).
+    - `load_ckpts`: if True, also loads raw benchmark checkpoints.
 
-    Returns a lazy iterator over MemBenchSample objects.
+    Returns:
+    - `[MemBenchSample]` when `load_ckpts=False`
+    - `([MemBenchSample], checkpoints)` when `load_ckpts=True`
     """
+    if not str(user_id or "").strip():
+        raise ValueError("user_id is required and cannot be empty.")
     app_log_path = Path(app_log_path)
     size = _normalize_membench_size(size)
+    app_log_file, sample_id = _resolve_user_app_log_file(app_log_path, user_id, size)
 
     qa_list_from_path: Optional[List[QA]] = None
     if qa_path is not None:
@@ -443,46 +495,61 @@ def load_membench_dataset(
             raw_qa = json.load(f)
         qa_list_from_path = _parse_qa_list(raw_qa)
 
-    for app_log_file, sample_id in _iter_membench_app_log_paths(app_log_path, size):
-        with open(app_log_file, "r", encoding="utf-8") as f:
-            raw = json.load(f)
+    with open(app_log_file, "r", encoding="utf-8") as f:
+        raw = json.load(f)
 
-        raw_app_logs = raw.get("app_logs") if isinstance(raw, dict) else raw
-        if not isinstance(raw_app_logs, list):
-            raise ValueError(
-                f"Invalid app log format in {app_log_file}: "
-                "expected list or object with 'app_logs' list."
-            )
+    raw_app_logs = raw.get("app_logs") if isinstance(raw, dict) else raw
+    if not isinstance(raw_app_logs, list):
+        raise ValueError(
+            f"Invalid app log format in {app_log_file}: "
+            "expected list or object with 'app_logs' list."
+        )
 
-        if qa_list_from_path is not None:
-            qa_list = list(qa_list_from_path)
+    if qa_list_from_path is not None:
+        qa_list = list(qa_list_from_path)
+    else:
+        qa_file = _find_user_qa_file(app_log_file, sample_id)
+        if qa_file is not None:
+            with open(qa_file, "r", encoding="utf-8") as f:
+                qa_list = _parse_qa_list(json.load(f))
+        elif isinstance(raw, dict) and "qa" in raw:
+            qa_list = _parse_qa_list(raw["qa"])
         else:
-            qa_file = _find_user_qa_file(app_log_file, sample_id)
-            if qa_file is not None:
-                with open(qa_file, "r", encoding="utf-8") as f:
-                    qa_list = _parse_qa_list(json.load(f))
-            elif isinstance(raw, dict) and "qa" in raw:
-                qa_list = _parse_qa_list(raw["qa"])
-            else:
-                qa_list = []
+            qa_list = []
 
-        events: List[MemBenchEvent] = []
-        for ev in raw_app_logs:
-            if not isinstance(ev, dict):
-                continue
-            event_id = ev.get("app_log_id", ev.get("event_id", ""))
-            events.append(
-                MemBenchEvent(
-                    event_id=str(event_id),
-                    timestamp=ev.get("timestamp"),
-                    app_name=str(ev.get("app_name", "")),
-                    api_name=str(ev.get("api_name", "")),
-                    request=ev.get("request"),
-                    response=ev.get("response"),
-                )
+    events: List[MemBenchEvent] = []
+    for ev in raw_app_logs:
+        if not isinstance(ev, dict):
+            continue
+        event_id = ev.get("app_log_id", ev.get("event_id", ""))
+        events.append(
+            MemBenchEvent(
+                event_id=str(event_id),
+                timestamp=ev.get("timestamp"),
+                app_name=str(ev.get("app_name", "")),
+                api_name=str(ev.get("api_name", "")),
+                request=ev.get("request"),
+                response=ev.get("response"),
             )
+        )
 
-        yield MemBenchSample(sample_id=sample_id, qa=qa_list, app_logs=events)
+    samples = [MemBenchSample(sample_id=sample_id, qa=qa_list, app_logs=events)]
+    if not load_ckpts:
+        return samples
+
+    benchmark_path = app_log_file.parent / "dynamic_state_prediction_benchmark.json"
+    if not benchmark_path.exists():
+        raise FileNotFoundError(
+            f"Checkpoint benchmark file not found for user '{sample_id}': {benchmark_path}"
+        )
+    with open(benchmark_path, "r", encoding="utf-8") as f:
+        benchmark_payload: Any = json.load(f)
+    checkpoints = benchmark_payload.get("checkpoints", []) if isinstance(benchmark_payload, dict) else []
+    if not isinstance(checkpoints, list):
+        raise ValueError(
+            f"Invalid checkpoint format in {benchmark_path}: expected top-level 'checkpoints' list."
+        )
+    return samples, checkpoints
 
 if __name__ == "__main__":
     # Example usage

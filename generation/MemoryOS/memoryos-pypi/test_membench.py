@@ -96,10 +96,10 @@ def _resolve_data_storage_root() -> Path:
     return Path(os.path.abspath(DATA_STORAGE_PATH or ""))
 
 def _count_sample_events(size: str, sample_id: str) -> Optional[int]:
-    for item in load_membench_dataset(DATA_ROOT, size=size):
-        if item.sample_id == sample_id:
-            return len(item.app_logs)
-    return None
+    samples = load_membench_dataset(DATA_ROOT, user_id=sample_id, size=size)
+    if not samples:
+        return None
+    return len(samples[0].app_logs)
 
 def _maybe_seed_user_data(data_storage_root: Path, seed_user_id: str, target_user_id: str) -> bool:
     users_dir = data_storage_root / "users"
@@ -240,6 +240,8 @@ def simple_demo(
 ):
     print("MemoryOS Simple Demo")
     dataset_size = _normalize_membench_size(dataset_size)
+    if not target_sample_id:
+        raise ValueError("target_sample_id is required.")
     user_id = f"{target_sample_id}_{dataset_size}" if target_sample_id else f"demo_{dataset_size}"
     data_storage_root = _resolve_data_storage_root()
     skip_events = 0
@@ -291,18 +293,15 @@ def simple_demo(
     # 2. Load MemBench app logs
     print("Loading MemBench dataset...")
     try:
-        sample = None
-        for item in load_membench_dataset(
+        samples = load_membench_dataset(
             DATA_ROOT,
+            user_id=target_sample_id,
             size=dataset_size,
-        ):
-            if target_sample_id and item.sample_id != target_sample_id:
-                continue
-            sample = item
-            break
-        if sample is None:
+        )
+        if not samples:
             print("No MemBench samples found for the requested filter.")
             return
+        sample = samples[0]
     except Exception as e:
         print(f"Error loading dataset: {e}")
         return
@@ -450,7 +449,7 @@ if __name__ == "__main__":
         "--sample-id",
         type=str,
         default=DEFAULT_TARGET_SAMPLE_ID,
-        help="Sample id to load (empty to take the first sample)",
+        help="Sample id/user id to load",
     )
     parser.add_argument("--batch-size", type=int, default=DEFAULT_BATCH_SIZE, help="Batch size for app log ingest")
     parser.add_argument(
