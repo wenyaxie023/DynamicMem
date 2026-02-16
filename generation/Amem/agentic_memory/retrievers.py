@@ -219,7 +219,13 @@ class PersistentChromaRetriever(ChromaRetriever):
         
         if collection_name in existing_collections:
             if extend:
-                self.collection = self.client.get_collection(name=collection_name)
+                # Bind the configured embedding function even when reopening an
+                # existing collection so query/add paths do not fall back to
+                # Chroma's default embedding behavior.
+                self.collection = self.client.get_or_create_collection(
+                    name=collection_name,
+                    embedding_function=self.embedding_function,
+                )
             else:
                 raise ValueError(
                     f"Collection '{collection_name}' already exists. "

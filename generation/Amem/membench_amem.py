@@ -458,6 +458,18 @@ def evaluate_membench(
         if resume_snapshot_bundle is not None
         else collection_name
     )
+    resume_snapshot_id = (
+        str(resume_snapshot_bundle["snapshot_id"])
+        if resume_snapshot_bundle is not None
+        else None
+    )
+    logger.info(
+        "Embedding config: backend=%s model=%s active_collection=%s snapshot_id=%s",
+        embedding_backend,
+        embedding_model_name,
+        active_collection_name,
+        resume_snapshot_id,
+    )
 
     memory_system = AgenticMemorySystem(
         collection_name=active_collection_name,
