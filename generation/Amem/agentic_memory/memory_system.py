@@ -103,6 +103,7 @@ class AgenticMemorySystem:
                 
                 evo_threshold: int = 100,
                 collection_name: str = "memories",
+                retriever_directory: Optional[str] = None,
                 reset_collection: bool = True):  
         """Initialize the memory system.
         
@@ -122,6 +123,7 @@ class AgenticMemorySystem:
         self.embedding_model_name = embedding_model_name
         self.embedding_backend = embedding_backend
         self.collection_name = collection_name
+        self.retriever_directory = retriever_directory
         self.embedding_api_key = embedding_api_key
         self.embedding_api_base_url = embedding_api_base_url
         self.llm_controller_backend = llm_controller_backend
@@ -133,6 +135,7 @@ class AgenticMemorySystem:
             try:
                 # Attempt to remove only the target collection (safer than client.reset()).
                 temp_retriever = PersistentChromaRetriever(
+                    directory=self.retriever_directory,
                     collection_name=collection_name,
                     model_name=self.embedding_model_name,
                     embedding_backend=self.embedding_backend,
@@ -151,6 +154,7 @@ class AgenticMemorySystem:
             
         # Create a fresh retriever instance
         self.retriever = PersistentChromaRetriever(
+            directory=self.retriever_directory,
             collection_name=self.collection_name,
             model_name=self.embedding_model_name,
             embedding_backend=self.embedding_backend,
@@ -225,6 +229,7 @@ class AgenticMemorySystem:
             pass
 
         self.retriever = PersistentChromaRetriever(
+            directory=self.retriever_directory,
             collection_name=self.collection_name,
             model_name=self.embedding_model_name,
             embedding_backend=self.embedding_backend,
@@ -365,6 +370,7 @@ class AgenticMemorySystem:
             pass
 
         self.retriever = PersistentChromaRetriever(
+            directory=self.retriever_directory,
             collection_name=self.collection_name,
             model_name=self.embedding_model_name,
             embedding_backend=self.embedding_backend,

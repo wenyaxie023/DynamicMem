@@ -1,6 +1,6 @@
 import json
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional, Union
 import ast
 import tempfile
 import atexit
@@ -231,6 +231,60 @@ class PersistentChromaRetriever(ChromaRetriever):
                 embedding_function=self.embedding_function
             )
         self.collection_name = collection_name
+
+    def clone_collection_to_directory(
+        self,
+        dest_directory: Union[str, Path],
+        dest_collection_name: Optional[str] = None,
+        overwrite: bool = False,
+        batch_size: int = 100,
+    ) -> Dict[str, Any]:
+        """
+        Clone this retriever's collection into a persistent Chroma directory.
+
+        Args:
+            dest_directory: Destination root path for Chroma PersistentClient.
+            dest_collection_name: Optional destination collection name.
+            overwrite: If True, delete destination collection if it exists.
+            batch_size: Number of records per copy batch.
+
+        Returns:
+            Metadata about the cloned collection.
+        """
+        dest_directory = Path(dest_directory)
+        dest_directory.mkdir(parents=True, exist_ok=True)
+
+        dest_client = chromadb.PersistentClient(path=str(dest_directory))
+        collection_name = dest_collection_name or self.collection_name
+        existing = {col.name for col in dest_client.list_collections()}
+
+        if collection_name in existing:
+            if not overwrite:
+                raise ValueError(
+                    f"Destination collection '{collection_name}' already exists in "
+                    f"{dest_directory}. Set overwrite=True to replace it."
+                )
+            dest_client.delete_collection(collection_name)
+
+        create_kwargs = {
+            "name": collection_name,
+            "embedding_function": self.embedding_function,
+        }
+        if self.collection.metadata is not None:
+            create_kwargs["metadata"] = self.collection.metadata
+        dest_collection = dest_client.get_or_create_collection(**create_kwargs)
+
+        _clone_collection(
+            src=self.collection,
+            dest=dest_collection,
+            batch_size=batch_size,
+        )
+
+        return {
+            "dest_directory": str(dest_directory),
+            "collection_name": collection_name,
+            "count": dest_collection.count(),
+        }
 
 
 class CopiedChromaRetriever(PersistentChromaRetriever):
