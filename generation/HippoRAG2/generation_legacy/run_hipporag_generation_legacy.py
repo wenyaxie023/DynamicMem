@@ -4,8 +4,11 @@ import glob
 import sys
 from dotenv import load_dotenv
 
-# Add HippoRAG to path
-sys.path.append(os.path.abspath("generation/HippoRAG2/HippoRAG/src"))
+# Add HippoRAG and project roots to path
+script_dir = os.path.dirname(os.path.abspath(__file__))
+root_dir = os.path.abspath(os.path.join(script_dir, ".."))
+sys.path.append(os.path.join(root_dir, "HippoRAG/src"))
+sys.path.append(os.path.abspath(os.path.join(root_dir, "..", ".."))) # For generation.rag etc.
 
 # Monkeypatch for torch load vulnerability check
 # Must be done BEFORE importing transformers or libraries that use it
@@ -20,7 +23,7 @@ from hipporag.llm.openai_gpt import CacheOpenAI
 from hipporag.utils.config_utils import BaseConfig
 import argparse
 from jinja2 import Template
-from generation_prompt import PROMPT
+from generation_prompt_legacy import PROMPT
 
 def main():
     parser = argparse.ArgumentParser(description="Run HippoRAG Generation")
@@ -34,7 +37,7 @@ def main():
     args = parser.parse_args()
 
     # 1. Load Environment Variables
-    env_path = "generation/HippoRAG2/.env"
+    env_path = ".env"
     load_dotenv(env_path, override=True)
     key = os.getenv("OPENAI_API_KEY")
     if not key:
@@ -57,7 +60,7 @@ def main():
     if not folder_user_id.endswith("_large") and "user_003" in folder_user_id:
         folder_user_id = f"{user_id}_large"
         
-    existing_data_dir = os.path.abspath(f"generation/HippoRAG2/outputs/{folder_user_id}/{llm_name}_{embedding_model}")
+    existing_data_dir = os.path.abspath(f"outputs/{folder_user_id}/{llm_name}_{embedding_model}")
     
     if not os.path.exists(existing_data_dir):
         print(f"Error: Existing data directory not found: {existing_data_dir}")
@@ -142,7 +145,7 @@ def main():
         print(f"Processing {q_file}...")
         
         output_dir = os.path.join(
-            "generation", 
+            ".", 
             "hipporag_gpt5mini", 
             "results", 
             user_id, 

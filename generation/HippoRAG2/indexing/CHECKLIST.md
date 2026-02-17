@@ -1,6 +1,6 @@
-# HippoRAG System & Graph Health Checklist (Updated)
+# HippoRAG System & Graph Health Checklist (Indexing)
 
-This document serves as a persistent reference for verifying the health and validity of the HippoRAG indexing process.
+This document serves as a reference for verifying the health and validity of the HippoRAG indexing process.
 
 ## 1. System Health & Performance
 - **LLM Engine**: `gpt-5-mini` via Azure (Latency: ~10-20s, stability: High).
@@ -21,8 +21,8 @@ Verified against `gpt-5-mini` outputs for User 003 & 004:
 - **Detail**: Captures fine-grained details (e.g., "Buster Investigated near lakeside creek") which are critical for precision retrieval.
 
 ### Node/Edge Attributes:
-- **`chunk` Nodes**: Store complete raw JSON log entries (Verified for User 003/004).
-- **`entity` Nodes**: Successfully store conceptual entities (e.g., "2022 excavation results").
+- **`chunk` Nodes**: Store complete raw JSON log entries.
+- **`entity` Nodes**: Successfully store conceptual entities.
 - **`weight`**:
   - Triples/Direct Links: Weight >= 1.0 (Summed if repeated).
   - Synonymy Links: Weight range [0.8, 1.0) based on `bge-m3` or `text-embedding-3-small` similarity.
@@ -31,13 +31,10 @@ Verified against `gpt-5-mini` outputs for User 003 & 004:
 Run these to check health anytime:
 - **Progress**: `python3 check_progress.py`
 - **Graph Stats**: `python3 inspect_graph.py <pickle_path>`
-- **Error Scan**: `grep -ri "Error code" logs_stable_4x/`
+- **Error Scan**: `grep -ri "Error code" ../logs_stable_4x/`
 
 ## 4. Latest Global Statistics
 - **Total Concurrent Users**: 10
 - **Average Node Count**: ~3,000 per user (early stage)
 - **Average Edge Count**: ~800,000 per user (due to synonymy density)
 - **Status**: Stable execution.
-
----
-*Comprehensive verification completed on 2026-01-27.*

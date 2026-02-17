@@ -1,8 +1,14 @@
-
 import os
-import json
 import sys
-import os
+import json
+
+# Add project roots for robust imports
+script_dir = os.path.dirname(os.path.abspath(__file__))
+root_dir = os.path.abspath(os.path.join(script_dir, ".."))
+sys.path.append(os.path.join(root_dir, "HippoRAG/src"))
+# Allow importing from MemBench root (for generation.rag etc.)
+sys.path.append(os.path.abspath(os.path.join(root_dir, "..", "..")))
+
 from dotenv import load_dotenv
 
 # Load .env file to get correct API key
@@ -26,6 +32,7 @@ import time
 from tqdm import tqdm
 
 from hipporag import HippoRAG
+
 
 class _TimestampedWriter:
     def __init__(self, stream):
@@ -106,6 +113,8 @@ def run_indexing(data_path, save_dir, reasoner_url, embedding_model_name, llm_mo
     
     if end_idx is not None:
         actual_end = min(end_idx, total_events)
+    elif limit is not None:
+        actual_end = min(start_index + limit, total_events)
     else:
         actual_end = total_events
     

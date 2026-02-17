@@ -1,9 +1,13 @@
 import json
 import os
 from concurrent.futures import Future, ThreadPoolExecutor
-from typing import Any, Dict, Iterable, List, Optional, Type, Union
+from typing import Any, Callable, Dict, Iterable, List, Optional, Type, Union
 
-from google import genai
+try:
+    from google import genai
+except ImportError:
+    genai = None
+
 from openai import OpenAI
 
 
@@ -108,25 +112,43 @@ class LLMClient:
                 results.append(exc)
         return results
 
+    def _with_retry(self, func: Callable, *args, **kwargs) -> Any:
+        import time
+        max_attempts = 2
+        for attempt in range(max_attempts):
+            try:
+                return func(*args, **kwargs)
+            except Exception as exc:
+                if attempt < max_attempts - 1:
+                    print(f"[LLM] Attempt {attempt + 1} failed: {exc}. Retrying in 2s...")
+                    time.sleep(2)
+                    continue
+                raise
+
     def _ask_structured_impl(self, prompt: str, text_format: Type[Any]) -> Dict[str, Any]:
         if not self.supports_structured_response():
             raise ValueError(
                 f"Structured response is only supported for openai/azure provider, got {self.provider}"
             )
-        try:
-            response = self.client.responses.parse(
-                model=self.model_name,
-                input=prompt,
-                text_format=text_format,
-                truncation="auto",
-            )
-        except TypeError:
-            # Backward compatibility with older SDKs that do not support truncation.
-            response = self.client.responses.parse(
-                model=self.model_name,
-                input=prompt,
-                text_format=text_format,
-            )
+        
+        def _parse_call():
+            try:
+                return self.client.responses.parse(
+                    model=self.model_name,
+                    input=prompt,
+                    text_format=text_format,
+                    truncation="auto",
+                    timeout=60,
+                )
+            except TypeError:
+                return self.client.responses.parse(
+                    model=self.model_name,
+                    input=prompt,
+                    text_format=text_format,
+                    timeout=60,
+                )
+
+        response = self._with_retry(_parse_call)
         parsed = getattr(response, "output_parsed", None)
         if parsed is None:
             raise ValueError("Structured response parsing returned no output_parsed payload.")
@@ -141,15 +163,22 @@ class LLMClient:
 
     def _ask_impl(self, prompt: str, response_type: str) -> Union[Dict[str, Any], str]:
         if self.provider in {"openai", "azure", "aiml", "aimlapi"}:
-            try:
-                response = self.client.responses.create(
-                    model=self.model_name,
-                    input=prompt,
-                    truncation="auto",
-                )
-            except TypeError:
-                # Backward compatibility with older SDKs that do not support truncation.
-                response = self.client.responses.create(model=self.model_name, input=prompt)
+            def _create_call():
+                try:
+                    return self.client.responses.create(
+                        model=self.model_name,
+                        input=prompt,
+                        truncation="auto",
+                        timeout=60,
+                    )
+                except TypeError:
+                    return self.client.responses.create(
+                        model=self.model_name, 
+                        input=prompt,
+                        timeout=60,
+                    )
+            
+            response = self._with_retry(_create_call)
             return self._parse_response(response.output_text, response_type)
         if self.provider == "gemini":
             response = self.client.models.generate_content(

@@ -60,3 +60,12 @@ Dynamic state prediction generation notes:
 - openai/azure providers use structured response with per-checkpoint dynamic schemas.
 - non-structured providers fall back to JSON-output prompting.
 - openai/azure/aimlapi responses are requested with `truncation=\"auto\"` to reduce context-length failures.
+
+## Security & Configuration
+
+> [!CAUTION]
+> **NEVER create unignored backup files for configuration files containing secrets (e.g., `.env.bak`).**
+> 
+> *   All `.env` backups must be strictly git-ignored (`.env.bak*` is added to `.gitignore`).
+> *   Prefer creating `.env.example` without secrets for backups or templates.
+> *   If a backup is absolutely necessary for a temporary operation, ensure it is immediately deleted or explicitly ignored.

@@ -10,7 +10,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from tqdm import tqdm
 
 # Add HippoRAG to path
-sys.path.append(os.path.abspath("generation/HippoRAG2/HippoRAG/src"))
+sys.path.append(os.path.abspath("HippoRAG/src"))
 
 # Monkeypatch for torch load vulnerability check
 import transformers.utils.import_utils
@@ -22,7 +22,7 @@ from hipporag import HippoRAG
 from hipporag.utils.config_utils import BaseConfig
 from hipporag.embedding_store import EmbeddingStore
 from hipporag.utils.llm_utils import TextChatMessage
-from generation_prompt import PROMPT
+from generation_prompt_legacy import PROMPT
 
 def run_user_generation(user_id, questions_file, llm_name, embedding_model, base_url, batch_size, limit, qa_top_k=None, output_parent_dir=None):
     print(f"\n{'='*50}")
@@ -34,7 +34,7 @@ def run_user_generation(user_id, questions_file, llm_name, embedding_model, base
     # user_id format example: 003_user_003
     # Folder format: 003_user_003_large
     folder_user_id = f"{user_id}_large" if not user_id.endswith("_large") else user_id
-    existing_data_dir = os.path.abspath(f"generation/HippoRAG2/outputs/{folder_user_id}/{llm_name}_{embedding_model}")
+    existing_data_dir = os.path.abspath(f"outputs/{folder_user_id}/{llm_name}_{embedding_model}")
     
     if not os.path.exists(existing_data_dir):
         print(f"SKIP: Data directory not found for {user_id}: {existing_data_dir}")
@@ -95,7 +95,7 @@ def run_user_generation(user_id, questions_file, llm_name, embedding_model, base
         # Here output_parent_dir acts as the <baseline_root>
         output_dir = os.path.join(output_parent_dir, "results", user_id, "prediction")
     else:
-        output_dir = os.path.join("generation", "HippoRAG2", "hipporag_gpt5mini", "results", user_id, "prediction")
+        output_dir = os.path.join("hipporag_gpt5mini", "results", user_id, "prediction")
     os.makedirs(output_dir, exist_ok=True)
     output_file = os.path.join(output_dir, os.path.basename(questions_file))
     
@@ -225,20 +225,20 @@ def main():
     args = parser.parse_args()
     
     # Load Environment
-    env_path = "generation/HippoRAG2/.env"
+    env_path = ".env"
     load_dotenv(env_path, override=True)
     base_url = os.getenv("OPENAI_BASE_URL")
     
     # Discover Users
     if args.user_id:
         uid_num = args.user_id.split('_')[0]
-        q_file = os.path.join("questions", f"qa_human_{uid_num}.json")
+        q_file = os.path.join("../../questions", f"qa_human_{uid_num}.json")
         if not os.path.exists(q_file):
             print(f"Error: Target file {q_file} not found!")
             return
         question_files = [q_file]
     else:
-        questions_pattern = os.path.join("questions", "qa_human_*.json")
+        questions_pattern = os.path.join("../../questions", "qa_human_*.json")
         question_files = sorted(glob.glob(questions_pattern))
     
     if not question_files:
