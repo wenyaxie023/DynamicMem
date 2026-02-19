@@ -6,74 +6,40 @@ import json
 from concurrent.futures import as_completed
 from enum import Enum
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Literal, Optional, Sequence, Tuple, Type
+from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple, Type
 
-from dotenv import load_dotenv
-from pydantic import BaseModel, Field, create_model
+try:
+    from dotenv import load_dotenv
+except Exception:  # pragma: no cover
+    def load_dotenv(*_args, **_kwargs) -> None:
+        return None
+
+try:
+    from pydantic import BaseModel, Field, create_model
+except Exception:  # pragma: no cover
+    BaseModel = Any  # type: ignore[assignment]
+    Field = None  # type: ignore[assignment]
+    create_model = None  # type: ignore[assignment]
 from tqdm import tqdm
 
 from dynamic_state_prediction_core import (
-    evaluate_checkpoints,
     mean_numeric_fields,
-    normalize_predictions,
 )
-
-from .client import LLMClient
+from bench_core.dsp_evaluator import (
+    build_dsp_result_payload,
+    evaluate_dsp_rows,
+)
+from .prompts_dsp import build_llm_judge_prompt
 
 load_dotenv()
 
 
-def _build_llm_judge_prompt(
-    value_pairs: Dict[str, Dict[str, Any]],
-) -> str:
-    judgment_template = [
-        {"key": k, "reason": "<very short>", "score": 0}
-        for k in sorted(value_pairs.keys())
-    ]
-    return """You are evaluating dynamic state prediction value quality.
-
-Task:
-For each key independently, decide whether predicted_value is correct vs expected_value.
-
-[Per-key Value Pairs]
-{value_pairs}
-
-Fill this exact judgments template (do not add/drop keys):
-{judgment_template}
-
-Output JSON ONLY:
-{{
-  "judgments": [
-    {{"key": "<state_key>", "reason": "<very short>", "score": 0-10}}
-  ]
-}}
-
-Rules:
-1. Include each key exactly once in judgments.
-2. Judge only value correctness for each key.
-3. Semantic equivalence is sufficient: if predicted and expected mean the same thing, assign a score near 10 even if wording differs.
-4. Do NOT penalize for paraphrases, minor phrasing differences, or missing stylistic words (e.g., "set", adjective wording) when core meaning matches.
-5. Penalize only factual mismatches, missing critical facts, contradictions, or clearly less specific content that changes meaning.
-6. Use a 0-10 score scale for each key:
-   - 10: fully correct and complete.
-   - 7-9: mostly correct with minor missing details.
-   - 4-6: partially correct; some important details missing or slightly wrong.
-   - 1-3: mostly incorrect but with small overlap.
-   - 0: completely incorrect or contradictory.
-7. For each judgment, write reason first, then assign score.
-8. If uncertain, use a conservative score.
-""".format(
-        value_pairs=json.dumps(value_pairs, ensure_ascii=False),
-        judgment_template=json.dumps(judgment_template, ensure_ascii=False),
-    )
-
-
 def _build_llm_judge_text_format(target_keys: Sequence[str], model_idx: int) -> Type[BaseModel]:
-    allowed = tuple(target_keys) if target_keys else ("__no_key__",)
-    key_literal = Literal[allowed]  # type: ignore[valid-type]
+    if create_model is None or Field is None:
+        raise RuntimeError("LLM judge structured output requires pydantic to be installed.")
     item_model = create_model(  # type: ignore[call-overload]
         f"JudgeItem_{model_idx}",
-        key=(key_literal, Field(..., description="One key from the provided value pairs.")),
+        key=(str, Field(..., description="One key from the provided value pairs.")),
         reason=(str, ...),
         score=(float, ...),
     )
@@ -280,6 +246,7 @@ def _run_llm_judge(
 ) -> None:
     if not rows:
         return
+    from .client import LLMClient
 
     reqs: List[Dict[str, Any]] = []
     for idx, row in enumerate(rows):
@@ -408,7 +375,7 @@ def _run_llm_judge(
 
 def evaluate(
     benchmark: Dict[str, Any],
-    predictions: Dict[str, Dict[str, Any]],
+    raw_prediction: Any,
     *,
     enable_llm_judge: bool = False,
     save_eyeball: bool = False,
@@ -416,10 +383,11 @@ def evaluate(
     llm_model: str = "gpt-5-mini",
     llm_max_workers: int = 4,
     on_progress: Optional[Callable[[List[Dict[str, Any]], int], None]] = None,
-) -> Dict[str, Any]:
-    checkpoint_rows, evaluated = evaluate_checkpoints(
+) -> Tuple[Dict[str, Any], Dict[str, Any]]:
+    checkpoint_rows, evaluated, align_report = evaluate_dsp_rows(
         benchmark,
-        predictions,
+        raw_prediction,
+        align_by_timestamp=True,
         include_internal_payload=(enable_llm_judge or save_eyeball),
     )
 
@@ -436,29 +404,14 @@ def evaluate(
             on_row_done=on_row_done,
         )
 
-    for row in checkpoint_rows:
-        if save_eyeball:
-            row["groundtruth_snapshot"] = _json_safe(row.get("_expected_snapshot", {}))
-            row["prediction_snapshot"] = _json_safe(row.get("_pred_snapshot", {}))
-            row["groundtruth_evidence"] = _json_safe(row.get("_expected_evidence", {}))
-            row["prediction_evidence"] = _json_safe(row.get("_pred_evidence", {}))
-        row.pop("_expected_snapshot", None)
-        row.pop("_pred_snapshot", None)
-        row.pop("_expected_evidence", None)
-        row.pop("_pred_evidence", None)
-
-    summary = mean_numeric_fields(
-        [{k: v for k, v in row.items() if k != "checkpoint_id"} for row in checkpoint_rows]
+    result = build_dsp_result_payload(
+        benchmark,
+        checkpoint_rows,
+        evaluated,
+        save_eyeball=save_eyeball,
+        strip_internal_payload=True,
     )
-
-    return {
-        "user_id": benchmark.get("user_id"),
-        "total_checkpoints": benchmark.get("total_checkpoints", len(checkpoint_rows)),
-        "evaluated_checkpoints": evaluated,
-        "skipped_checkpoints": max(benchmark.get("total_checkpoints", 0) - evaluated, 0),
-        "summary": summary,
-        "checkpoints": checkpoint_rows,
-    }
+    return result, align_report
 
 
 def main() -> None:
@@ -484,8 +437,6 @@ def main() -> None:
 
     benchmark = json.loads(args.benchmark.read_text(encoding="utf-8"))
     raw_pred = json.loads(args.prediction.read_text(encoding="utf-8"))
-    raw_pred, align_report = _align_predictions_to_benchmark(benchmark, raw_pred)
-    predictions = normalize_predictions(raw_pred)
 
     def _write_progress(rows: List[Dict[str, Any]], evaluated: int) -> None:
         output_rows: List[Dict[str, Any]] = []
@@ -514,9 +465,9 @@ def main() -> None:
         args.output.parent.mkdir(parents=True, exist_ok=True)
         args.output.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
 
-    result = evaluate(
+    result, align_report = evaluate(
         benchmark,
-        predictions,
+        raw_pred,
         enable_llm_judge=args.enable_llm_judge,
         save_eyeball=args.save_eyeball,
         llm_provider=args.llm_provider,

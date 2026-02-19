@@ -6,13 +6,11 @@ from typing import Any, Dict, List, Sequence
 
 from dynamic_state_prediction_core import (
     build_target_templates,
-    evaluate_checkpoints,
-    mean_numeric_fields,
     normalize_app_logs,
-    normalize_predictions,
     observed_logs_for_checkpoint,
     parse_ts,
 )
+from bench_core.dsp_evaluator import evaluate_dsp_rows, build_dsp_result_payload
 
 
 @dataclass
@@ -139,25 +137,19 @@ class DynamicStatePredictionAPI:
 
     def evaluate_predictions(self, prediction_path: Path, output_path: Path) -> Dict[str, Any]:
         raw_pred = json.loads(Path(prediction_path).read_text(encoding="utf-8"))
-        pred_by_id = normalize_predictions(raw_pred)
-
-        rows, evaluated = evaluate_checkpoints(
+        rows, evaluated, _align_report = evaluate_dsp_rows(
             self.benchmark,
-            pred_by_id,
+            raw_pred,
+            align_by_timestamp=True,
             include_internal_payload=False,
         )
-        summary = mean_numeric_fields(
-            [{k: v for k, v in row.items() if k != "checkpoint_id"} for row in rows]
+        result = build_dsp_result_payload(
+            self.benchmark,
+            rows,
+            evaluated,
+            save_eyeball=False,
+            strip_internal_payload=True,
         )
-
-        result = {
-            "user_id": self.benchmark.get("user_id"),
-            "total_checkpoints": len(self.checkpoints),
-            "evaluated_checkpoints": evaluated,
-            "skipped_checkpoints": max(len(self.checkpoints) - evaluated, 0),
-            "summary": summary,
-            "checkpoints": rows,
-        }
 
         output_path = Path(output_path)
         output_path.parent.mkdir(parents=True, exist_ok=True)
