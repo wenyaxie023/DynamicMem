@@ -8,7 +8,7 @@ PREDICTION_ROOT="$PROJECT_ROOT/generation/rag/results"
 
 # Accept either numeric IDs (1,2,3) or full user dirs (001_user_001)
 USERS=("001_user_001")
-RETRIEVAL_TOP_K="${RETRIEVAL_TOP_K:-5}"
+RETRIEVAL_TOP_K="${RETRIEVAL_TOP_K:-10}"
 
 ENABLE_LLM_JUDGE="${ENABLE_LLM_JUDGE:-true}"
 SAVE_EYEBALL="${SAVE_EYEBALL:-true}"
