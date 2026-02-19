@@ -69,3 +69,44 @@ Dynamic state prediction generation notes:
 > *   All `.env` backups must be strictly git-ignored (`.env.bak*` is added to `.gitignore`).
 > *   Prefer creating `.env.example` without secrets for backups or templates.
 > *   If a backup is absolutely necessary for a temporary operation, ensure it is immediately deleted or explicitly ignored.
+
+## DSP Unified Architecture (New)
+
+The DSP pipeline now supports a unified generation architecture based on YAML config + adapters.
+
+### Entrypoints
+
+- `generation/run_dsp.py`
+  - Single-run DSP entry.
+  - Supports YAML mode (recommended) and legacy CLI mode.
+
+- `generation/run_dsp_batch.py`
+  - Batch DSP entry for multi-user experiments.
+  - Renders `{user_id}` placeholders from config `users`.
+  - Supports benchmark auto-build when enabled in runtime config.
+
+### Shared Config Layer
+
+- `generation/dsp_config.py`
+  - Shared parser/merger used by both runners.
+  - Handles defaults merge, bool coercion, user templating, and run-settings persistence.
+
+Recommended config structure:
+- `configs/dsp.default.yaml`
+- `configs/experiments/dsp/<baseline>.yaml`
+
+### Adapter Layer
+
+- `generation/adapters/base.py`: adapter contracts.
+- `generation/adapters/registry.py`: baseline dispatch.
+- `generation/adapters/*.py`: baseline-specific adapters.
+
+This isolates baseline-specific logic while keeping one consistent runner interface.
+
+### Reproducibility
+
+Each run writes:
+- prediction JSON (model output)
+- `*_run_settings.yaml` (resolved runtime/data/model settings)
+
+Use `*_run_settings.yaml` as the canonical experiment record for reporting and reruns.
