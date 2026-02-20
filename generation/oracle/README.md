@@ -4,6 +4,7 @@
 
 ```bash
 bash generation/oracle/run_oracle.sh
+bash generation/oracle/run_oracle_qa.sh
 ```
 
 ## Dynamic State Prediction

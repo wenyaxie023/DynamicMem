@@ -4,6 +4,7 @@
 
 ```bash
 bash generation/icl/run_icl.sh
+bash generation/icl/run_icl_qa.sh
 ```
 
 Outputs:
