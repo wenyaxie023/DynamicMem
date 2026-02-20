@@ -1,11 +1,15 @@
 ﻿# QA
 
-`QA` is the refactored MemBench pipeline with two clear stages:
+> Protocol source of truth: `docs/protocols/qa_generation_and_eval_contract.md`
+
+`QA` is the refactored MemBench internal pipeline with two clear stages:
 
 1. `qa_context`: build normalized task data from schema + logs.
 2. `qa_generation`: sample tasks and generate final `qa.json`.
 
 All cross-stage contracts are in `shared/`.
+Contributor-facing generation/evaluation contract is documented in:
+`docs/protocols/qa_generation_and_eval_contract.md`.
 
 ## Structure
 
@@ -154,4 +158,3 @@ python QA/scripts/run_pipeline.py --user-id 10
 ```
 
 Equivalent to `python -m QA pipeline --user-id 10`.
-

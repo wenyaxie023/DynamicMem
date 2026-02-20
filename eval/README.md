@@ -1,5 +1,8 @@
 # Evaluation Usage
 
+Canonical QA contract:
+`docs/protocols/qa_generation_and_eval_contract.md`
+
 This directory provides evaluation scripts for single-file or batch evaluation across baselines/users.
 
 ## Quick Start (Recommended)
