@@ -1,0 +1,13 @@
+runtime:
+  baseline: qa_pipeline
+  command: pipeline
+  user_id: "10"
+
+llm:
+  provider: gemini
+  model: gemini-3-flash-preview
+  max_workers: 1
+
+sampling:
+  sample_per_group: 5
+  sample_seed: 42

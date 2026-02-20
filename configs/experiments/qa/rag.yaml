@@ -1,0 +1,23 @@
+runtime:
+  baseline: rag
+  user_id: "001_user_001"
+
+data:
+  input_root_dir: /users/4/xie00470/mem_bench/behavior_and_conversation/data_construction/generated_outputs/gemini_3_flash_preview
+  output_root_dir: /users/4/xie00470/mem_bench/behavior_and_conversation/generation/rag/results
+  qa_dir: /users/4/xie00470/mem_bench/behavior_and_conversation/generation/qa
+
+llm:
+  provider: openai
+  model: gpt-5-mini
+  max_workers: 4
+
+baseline_params:
+  gen_topk: 5
+  chunk_size: -1
+  retriever_type: openai
+  retriever_model: text-embedding-3-large
+  skip_retrieve: false
+  retrieve_only: false
+  write_each: true
+  resume: false
