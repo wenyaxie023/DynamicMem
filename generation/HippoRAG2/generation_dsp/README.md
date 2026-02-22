@@ -23,3 +23,12 @@ bash run_dynamic_state_prediction.sh --max-checkpoints 30
 - **Checkpoints 1-5**: Simple (1-3 keys), fast retrieval.
 - **Checkpoints 6+**: Complex (8-15+ keys). Retrieval may take >10s (up to 5 mins for massive queries).
 - **LLM Timeout**: The logic includes a 60s timeout + retry to handle complex Schema generation.
+
+## Online/Global Prefetch Mode
+To run the optimized online mode with global prefetching:
+```bash
+# Recommended command for high throughput (adjust batch-size as needed)
+nohup sh generation_dsp/run_online.sh --batch-size <LARGE_BATCH_SIZE> > outputs/online_test_u003/nohup_run.log 2>&1 &
+```
+- **Global Prefetch**: The script will now pre-compute OpenIE for ALL logs before starting the pipeline.
+- **Large Batch Size**: Ensures efficient utilization of TPM and reduces total runtime.

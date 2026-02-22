@@ -138,14 +138,14 @@ class LLMClient:
                     input=prompt,
                     text_format=text_format,
                     truncation="auto",
-                    timeout=60,
+                    timeout=300,
                 )
             except TypeError:
                 return self.client.responses.parse(
                     model=self.model_name,
                     input=prompt,
                     text_format=text_format,
-                    timeout=60,
+                    timeout=300,
                 )
 
         response = self._with_retry(_parse_call)
@@ -169,13 +169,13 @@ class LLMClient:
                         model=self.model_name,
                         input=prompt,
                         truncation="auto",
-                        timeout=60,
+                        timeout=300,
                     )
                 except TypeError:
                     return self.client.responses.create(
                         model=self.model_name, 
                         input=prompt,
-                        timeout=60,
+                        timeout=300,
                     )
             
             response = self._with_retry(_create_call)

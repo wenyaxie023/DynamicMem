@@ -57,6 +57,7 @@ def run_generation(
     debug: bool,
     debug_dir: Optional[Path],
     save_prompt_and_raw: bool,
+    online: bool = False,
 ) -> Dict[str, Any]:
     # 1. Initialize LLM Client for Generation (Unified Client)
     client = LLMClient(
@@ -109,7 +110,7 @@ def run_generation(
         global_config=config,
         save_dir=str(real_save_dir), 
         llm_model_name=llm_model,
-        embedding_model_name=os.getenv("AZURE_EMBEDDING_MODEL", "text-embedding-3-large"), 
+        embedding_model_name="text-embedding-3-small", 
     )
     # We still enforce working_dir to be exactly what was passed, just in case
     hipporag.working_dir = str(hipporag_dir.resolve())
@@ -166,6 +167,22 @@ def run_generation(
     def ask_structured(prompt: str, text_format: Any) -> Any:
         return client.ask_structured(prompt, text_format=text_format)
 
+    def close() -> None:
+        client.close()
+
+    # State for Online Mode
+    indexed_log_ids = set()
+    
+    # If online, we need the raw logs available to index them on the fly
+    # We already loaded them into `all_logs` (list of dicts)
+    # We need a map from app_log_id -> log_content
+    log_id_to_content = {}
+    if online:
+        for log in all_logs:
+            lid = log.get("app_log_id")
+            if lid:
+                log_id_to_content[str(lid)] = log
+
     def retrieve_context(
         cp: Dict[str, Any],
         memory_pool: List[Dict[str, Any]],
@@ -174,9 +191,47 @@ def run_generation(
         import time
         start_time = time.time()
         
+        checkpoint_id = cp.get("checkpoint_id", "unknown")
+        
+        # --- ONLINE MODE: Incremental Indexing ---
+        if online:
+            # 1. Identify new logs in memory_pool that haven't been indexed
+            new_logs_to_index = []
+            current_pool_ids = set()
+            
+            for log in memory_pool:
+                lid = str(log.get("app_log_id"))
+                current_pool_ids.add(lid)
+                if lid not in indexed_log_ids:
+                    # Retrieve full content
+                    full_log = log_id_to_content.get(lid)
+                    if full_log:
+                        new_logs_to_index.append(full_log)
+                        indexed_log_ids.add(lid)
+            
+            # 2. Index new logs if any
+            if new_logs_to_index:
+                print(f"[ONLINE] Indexing {len(new_logs_to_index)} new logs for CP {checkpoint_id}...")
+                
+                # Format for indexing (JSON strings)
+                docs = [json.dumps(e, ensure_ascii=False) for e in new_logs_to_index]
+                
+                # We need to use valid indexing method.
+                # HippoRAG.index() usually takes a list of strings
+                try:
+                    t_idx_start = time.time()
+                    hipporag.index(docs=docs)
+                    t_idx_end = time.time()
+                    print(f"[ONLINE] Indexed {len(docs)} logs in {t_idx_end - t_idx_start:.2f}s")
+                except Exception as e:
+                    print(f"[ONLINE] ERROR indexing logs: {e}")
+            else:
+                # print(f"[ONLINE] No new logs to index for CP {checkpoint_id}")
+                pass
+        # -----------------------------------------
+
         # 1. Build Query
         query = _build_retrieval_query(cp, target_keys)
-        checkpoint_id = cp.get("checkpoint_id", "unknown")
         
         print(f"\n[DEBUG] CP: {checkpoint_id} | Keys: {len(target_keys)} | Query: {query}")
         
@@ -210,21 +265,29 @@ def run_generation(
                 except json.JSONDecodeError:
                     pass
         
-        # No more filtering by memory_pool (OLD LOGIC REMOVED)
-        # We assume the index provided to HippoRAG is correct/valid for this run.
+        # Filter by memory pool
+        # In Online Mode, this should technically be redundant if implemented correctly (no future logs indexed),
+        # but we keep it as a safety double-check.
+        pool_ids = {str(log.get("app_log_id")) for log in memory_pool}
         
-        selected_logs = retrieved_logs_candidates[:5] # Limit to top-5, but from whatever RAG returned
+        selected_logs = []
+        for log in retrieved_logs_candidates:
+            log_id = str(log.get("app_log_id"))
+            if log_id in pool_ids:
+                selected_logs.append(log)
+                if len(selected_logs) >= 5: # Limit to top-5 valid
+                    break
         
         total_duration = time.time() - start_time
-        print(f"[DEBUG] CP: {checkpoint_id} | Selected {len(selected_logs)} logs (Raw Top-5)")
+        print(f"[DEBUG] CP: {checkpoint_id} | Selected {len(selected_logs)} logs out of {len(retrieved_logs_candidates)} raw candidates.")
         if selected_logs:
             log_ids_str = ", ".join([str(x.get("app_log_id")) for x in selected_logs])
             print(f"[DEBUG] CP: {checkpoint_id} | Selected IDs: {log_ids_str}")
-        print(f"[DEBUG] CP: {checkpoint_id} | Total retrieval took {total_duration:.2f}s\n")
+        print(f"[DEBUG] CP: {checkpoint_id} | Total retrieval & filtering took {total_duration:.2f}s\n")
         
         return {
             "context_logs": selected_logs,
-            "context_note": f"HippoRAG retrieved (top-{len(selected_logs)} raw candidates)",
+            "context_note": f"HippoRAG retrieved (top-{len(selected_logs)} from memory pool)",
             "retrieval_query": query,
             "metadata": {
                 "hipporag_retrieved_raw_count": len(retrieved_logs_candidates),
@@ -268,6 +331,7 @@ def main() -> None:
     parser.add_argument("--debug-dir", type=Path, default=None)
     parser.add_argument("--save-prompt-and-raw", action="store_true")
     parser.add_argument("--max-checkpoints", type=int, default=None)
+    parser.add_argument("--online", action="store_true", help="Run in online mode: incrementally index logs at each checkpoint.")
     
     args = parser.parse_args()
 
@@ -285,6 +349,7 @@ def main() -> None:
         debug=args.debug,
         debug_dir=args.debug_dir,
         save_prompt_and_raw=args.save_prompt_and_raw,
+        online=args.online,
     )
 
 if __name__ == "__main__":
