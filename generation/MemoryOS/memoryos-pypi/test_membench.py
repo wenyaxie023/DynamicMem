@@ -4,10 +4,9 @@ import json
 import os
 import shutil
 import sys
-import time
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Optional, Union
+from typing import Any, Optional
 
 from dotenv import load_dotenv
 from memoryos import Memoryos
@@ -36,39 +35,7 @@ DATA_STORAGE_PATH = ""
 DEFAULT_LLM_MODEL = "gpt-5-mini-2025-08-07"
 DEFAULT_EMBEDDING_MODEL_NAME = "text-embedding-3-large"
 DATA_ROOT = GENERATION_DIR / "data"
-QA_PATH = None  # Per-user QA is loaded automatically by load_membench_dataset.
 MAX_EVENTS = None  # Optional: set an int to limit ingested events
-OUTPUT_DIR = Path(__file__).resolve().parent / "outputs"
-PROMPT = """# Task
-Given a question and a list of user app logs, answer the question using ONLY the information in the logs.
-
-# Input
-Question:
-{{ question }}
-
-User App Logs (each log has: app_log_id, timestamp, app_name, api_name, content):
-{{ context }}
-
-# Output (JSON ONLY; no markdown, no extra text)
-Return a single JSON object with this schema:
-{
-  "evidence": [
-    {
-      "app_log_id": "string",
-      "timestamp": "string (as in the log; prefer ISO-8601 if present)",
-      "app_name": "string",
-      "api_name": "string",
-      "anchor": "string" // [required, a short justification grounded in the context.]
-    }
-  ],
-  "answer": "string"
-}
-
-# Missing-field policy
-- If you don't know the app_log_id / timestamp / app_name / api_name, you should set them to null.
-"""
-RETRY_EMPTY_RESPONSES = 10
-RETRY_SLEEP_SECONDS = 1
 
 _SIZE_ALIASES = {
     "s": "small",
@@ -124,92 +91,6 @@ def _maybe_seed_user_data(data_storage_root: Path, seed_user_id: str, target_use
     users_dir.mkdir(parents=True, exist_ok=True)
     shutil.copytree(source_dir, dest_dir)
     return True
-
-def _extract_app_logs(text: str) -> list[dict]:
-    if not text:
-        return []
-    logs: list[dict] = []
-    parts = text.split("[APP_LOG] ")
-    for part in parts:
-        chunk = part.strip()
-        if not chunk:
-            continue
-        first_line = chunk.splitlines()[0].strip()
-        try:
-            payload = json.loads(first_line)
-        except Exception:
-            payload = {"content": chunk}
-        logs.append(payload)
-    return logs
-
-def _build_context_from_retrieval(retrieval: dict) -> str:
-    context_logs = []
-    for page in retrieval.get("retrieved_pages", []):
-        user_input = page.get("user_input", "")
-        for payload in _extract_app_logs(user_input):
-            if isinstance(payload, dict):
-                context_logs.append(
-                    {
-                        "app_log_id": payload.get("app_log_id"),
-                        "timestamp": payload.get("timestamp") or payload.get("memory_timestamp"),
-                        "app_name": payload.get("app_name"),
-                        "api_name": payload.get("api_name"),
-                        "content": json.dumps(payload, ensure_ascii=False, sort_keys=True),
-                    }
-                )
-            else:
-                context_logs.append(
-                    {
-                        "app_log_id": None,
-                        "timestamp": None,
-                        "app_name": None,
-                        "api_name": None,
-                        "content": str(payload),
-                    }
-                )
-    return json.dumps(context_logs, ensure_ascii=False, indent=2)
-
-def _maybe_parse_json(text: str) -> Optional[dict]:
-    try:
-        return json.loads(text)
-    except Exception:
-        return None
-
-def _is_empty_response(response: object) -> bool:
-    if response is None:
-        return True
-    if isinstance(response, str):
-        return response.strip() == ""
-    return False
-
-def _is_empty_prediction(value: object) -> bool:
-    if value is None:
-        return True
-    if isinstance(value, str):
-        return value.strip() == ""
-    return False
-
-def _load_existing_results(path: Optional[Union[str, Path]]) -> dict[str, dict]:
-    if not path:
-        return {}
-    p = Path(path)
-    if not p.exists():
-        raise FileNotFoundError(f"Existing results file not found: {p}")
-    with p.open("r", encoding="utf-8") as f:
-        raw = json.load(f)
-    if isinstance(raw, dict):
-        raw = raw.get("results", [])
-    if not isinstance(raw, list):
-        return {}
-    out: dict[str, dict] = {}
-    for item in raw:
-        if not isinstance(item, dict):
-            continue
-        rid = item.get("id")
-        if rid is None:
-            continue
-        out[str(rid)] = item
-    return out
 
 def _atomic_write_json(path: Path, payload: Any) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -340,37 +221,12 @@ def _write_snapshot_bundle(
     _atomic_write_json(manifest_path, manifest)
     return entry
 
-def _find_sample_qa_file(sample_dir: Path, sample_id: str) -> Optional[Path]:
-    direct = sample_dir / f"qa_human_{sample_id}.json"
-    if direct.exists():
-        return direct
-    digits = [d for d in "".join(c if c.isdigit() else " " for c in sample_id).split() if d]
-    if digits:
-        candidate = sample_dir / f"qa_human_{digits[-1]}.json"
-        if candidate.exists():
-            return candidate
-    matches = sorted(sample_dir.glob("qa_human_*.json"))
-    if len(matches) == 1:
-        return matches[0]
-    return None
-
-def _load_raw_qa_list(sample_dir: Path, sample_id: str) -> list[dict]:
-    qa_file = _find_sample_qa_file(sample_dir, sample_id)
-    if qa_file is None or not qa_file.exists():
-        return []
-    with qa_file.open("r", encoding="utf-8") as f:
-        raw = json.load(f)
-    if isinstance(raw, dict) and "qa" in raw:
-        raw = raw["qa"]
-    return raw if isinstance(raw, list) else []
-
 def simple_demo(
     dataset_size: str,
     target_sample_id: str,
     llm_model: str,
     embedding_model_name: str,
     snapshot_root: str,
-    existing_results_path: Optional[str] = None,
 ):
     print("MemoryOS Simple Demo")
     dataset_size = _normalize_membench_size(dataset_size)
@@ -506,101 +362,8 @@ def simple_demo(
             )
     # end loading checkpoints
 
-    if not sample.qa:
-        print("No QA pairs found; nothing to run.")
-        return
-
-    sample_dir = DATA_ROOT / sample.sample_id
-    raw_qa_list = _load_raw_qa_list(sample_dir, sample.sample_id)
-    existing_answer_map = _load_existing_results(existing_results_path)
-
-    OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
-    timestamp = datetime.now().strftime("%Y-%m-%d-%H-%M")
-    output_dir = OUTPUT_DIR / f"membench_answers_{sample.sample_id}_{dataset_size}_{timestamp}"
-    output_dir.mkdir(parents=True, exist_ok=True)
-    print(f"Writing answers to {output_dir}")
-    results_path = output_dir / "memoryos_results.json"
-    existing_results: list[dict] = []
-    if results_path.exists():
-        try:
-            with results_path.open("r", encoding="utf-8") as f:
-                existing = json.load(f)
-            if isinstance(existing, list):
-                existing_results = existing
-        except Exception:
-            existing_results = []
-    existing_by_id: dict[str, dict] = {}
-    existing_no_id: list[dict] = []
-    for item in existing_results:
-        if not isinstance(item, dict):
-            continue
-        rid = item.get("id")
-        if rid is None:
-            existing_no_id.append(item)
-        else:
-            existing_by_id[str(rid)] = item
-    for idx, qa in enumerate(sample.qa):
-        test_query = qa.question
-        print(f"[{idx + 1}/{len(sample.qa)}] {test_query}")
-        raw_qa = raw_qa_list[idx] if idx < len(raw_qa_list) and isinstance(raw_qa_list[idx], dict) else {}
-        qa_id = raw_qa.get("id")
-        existing_answer = existing_answer_map.get(str(qa_id)) if qa_id is not None else None
-
-        if existing_answer and not _is_empty_prediction(existing_answer.get("prediction")):
-            existing_predicted_evidence = existing_answer.get("predicted_evidence") or []
-            if not isinstance(existing_predicted_evidence, list):
-                existing_predicted_evidence = []
-            result_item = {
-                "id": existing_answer.get("id", qa_id),
-                "query": existing_answer.get("query") or raw_qa.get("query") or test_query,
-                "reference": existing_answer.get("reference") or raw_qa.get("reference") or qa.final_answer,
-                "prediction": existing_answer.get("prediction"),
-                "predicted_evidence": existing_predicted_evidence,
-            }
-            metadata = existing_answer.get("metadata") or raw_qa.get("metadata")
-            if isinstance(metadata, dict) and metadata:
-                result_item["metadata"] = metadata
-            print(f"Skipping LLM call for id={qa_id}: prediction already present.")
-        else:
-            retrieval = memo.retriever.retrieve_context(user_query=test_query, user_id=memo.user_id)
-            context = _build_context_from_retrieval(retrieval)
-            prompt = PROMPT.replace("{{ question }}", test_query).replace("{{ context }}", context)
-            print("prompt:", prompt)
-            response = ""
-            for attempt in range(1, RETRY_EMPTY_RESPONSES + 1):
-                response = memo.client.chat_completion(
-                    model="gpt-5.1-chat-latest",
-                    messages=[{"role": "user", "content": prompt}],
-                )
-                if not _is_empty_response(response):
-                    break
-                print(f"Empty response (attempt {attempt}). Retrying...")
-                time.sleep(RETRY_SLEEP_SECONDS)
-            print("response:", response)
-            parsed = _maybe_parse_json(response)
-            prediction = parsed.get("answer") if isinstance(parsed, dict) else None
-            predicted_evidence = parsed.get("evidence") if isinstance(parsed, dict) else []
-            if not isinstance(predicted_evidence, list):
-                predicted_evidence = []
-            result_item = {
-                "id": qa_id,
-                "query": raw_qa.get("query") or test_query,
-                "reference": raw_qa.get("reference") or qa.final_answer,
-                "prediction": prediction,
-                "predicted_evidence": predicted_evidence,
-            }
-            metadata = raw_qa.get("metadata")
-            if isinstance(metadata, dict) and metadata:
-                result_item["metadata"] = metadata
-
-        if qa_id is None:
-            existing_no_id.append(result_item)
-        else:
-            existing_by_id[str(qa_id)] = result_item
-        with results_path.open("w", encoding="utf-8") as f:
-            ordered = list(existing_by_id.values()) + existing_no_id
-            json.dump(ordered, f, ensure_ascii=False, indent=2)
-        print(f"Updated {results_path} ({len(existing_by_id) + len(existing_no_id)} records)")
+    print("Ingestion completed.")
+    return
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="MemoryOS MemBench demo")
@@ -629,12 +392,6 @@ if __name__ == "__main__":
         default=str(Path(__file__).resolve().parent / "snapshots"),
         help="Snapshot root directory",
     )
-    parser.add_argument(
-        "--existing-results-path",
-        type=str,
-        default=None,
-        help="Path to a memoryos_results.json file with prior predictions to skip non-empty entries",
-    )
     args = parser.parse_args()
 
     simple_demo(
@@ -643,5 +400,4 @@ if __name__ == "__main__":
         args.llm_model,
         args.embedding_model_name,
         args.snapshot_root,
-        args.existing_results_path,
     )
