@@ -23,8 +23,6 @@ from load_dataset import (  # type: ignore  # noqa: E402
 load_dotenv(Path(__file__).resolve().parent / ".env")
 
 # --- Basic Configuration ---
-DEFAULT_DATASET_SIZE = "large"  # small | medium | large
-DEFAULT_TARGET_SAMPLE_ID = "004_user_004"
 ASSISTANT_ID = "assistant"
 # TODO: Load api keys and api base from .env
 LLM_CONTROLLER_API_KEY = os.getenv("LLM_CONTROLLER_API_KEY")
@@ -35,62 +33,6 @@ DATA_STORAGE_PATH = ""
 DEFAULT_LLM_MODEL = "gpt-5-mini-2025-08-07"
 DEFAULT_EMBEDDING_MODEL_NAME = "text-embedding-3-large"
 DATA_ROOT = GENERATION_DIR / "data"
-MAX_EVENTS = None  # Optional: set an int to limit ingested events
-
-_SIZE_ALIASES = {
-    "s": "small",
-    "small": "small",
-    "m": "medium",
-    "med": "medium",
-    "medium": "medium",
-    "l": "large",
-    "lg": "large",
-    "large": "large",
-}
-
-def _normalize_membench_size(size: str) -> str:
-    size_key = (size or "small").strip().lower()
-    normalized = _SIZE_ALIASES.get(size_key)
-    if normalized:
-        return normalized
-    raise ValueError(f"Invalid size '{size}'. Expected small, medium, or large.")
-
-def _baseline_size(size: str) -> Optional[str]:
-    if size == "medium":
-        return "small"
-    if size == "large":
-        return "medium"
-    return None
-
-def _resolve_data_storage_root() -> Path:
-    return Path(os.path.abspath(DATA_STORAGE_PATH or ""))
-
-def _count_sample_events(size: str, sample_id: str) -> Optional[int]:
-    samples = load_membench_dataset(DATA_ROOT, user_id=sample_id, size=size)
-    if not samples:
-        return None
-    return len(samples[0].app_logs)
-
-def _maybe_seed_user_data(data_storage_root: Path, seed_user_id: str, target_user_id: str) -> bool:
-    users_dir = data_storage_root / "users"
-    dest_dir = users_dir / target_user_id
-    if dest_dir.exists():
-        return False
-
-    candidate_roots = [data_storage_root, Path(__file__).resolve().parent]
-    source_dir = None
-    for root in candidate_roots:
-        candidate = root / "users" / seed_user_id
-        if candidate.exists():
-            source_dir = candidate
-            break
-
-    if source_dir is None:
-        return False
-
-    users_dir.mkdir(parents=True, exist_ok=True)
-    shutil.copytree(source_dir, dest_dir)
-    return True
 
 def _atomic_write_json(path: Path, payload: Any) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -221,95 +163,64 @@ def _write_snapshot_bundle(
     _atomic_write_json(manifest_path, manifest)
     return entry
 
-def simple_demo(
-    dataset_size: str,
+def run_evaluation(
     target_sample_id: str,
     llm_model: str,
     embedding_model_name: str,
     snapshot_root: str,
 ):
-    print("MemoryOS Simple Demo")
-    dataset_size = _normalize_membench_size(dataset_size)
+    print("MemoryOS Evaluation")
+    dataset_size = "large"
     if not target_sample_id:
         raise ValueError("target_sample_id is required.")
-    user_id = f"{target_sample_id}_{dataset_size}" if target_sample_id else f"demo_{dataset_size}"
-    data_storage_root = _resolve_data_storage_root()
-    skip_events = 0
-    seeded = False
-
-    baseline = _baseline_size(dataset_size)
-    if baseline and target_sample_id:
-        seed_user_id = f"{target_sample_id}_{baseline}"
-        if _maybe_seed_user_data(data_storage_root, seed_user_id, user_id):
-            seeded = True
-            print(f"Seeded user data from '{seed_user_id}' to '{user_id}'.")
-        baseline_count = _count_sample_events(baseline, target_sample_id)
-        dest_dir = data_storage_root / "users" / user_id
-        if baseline_count and (seeded or dest_dir.exists()):
-            skip_events = baseline_count
+    user_id = f"{target_sample_id}_{dataset_size}"
+    data_storage_root = Path(os.path.abspath(DATA_STORAGE_PATH or ""))
     
     # 1. Initialize MemoryOS
     print("Initializing MemoryOS...")
-    try:
-        memo = Memoryos(
-            user_id=user_id,
-            openai_api_key=LLM_CONTROLLER_API_KEY,
-            openai_base_url=LLM_CONTROLLER_API_BASE_URL,
-            data_storage_path=str(data_storage_root),
-            llm_model=llm_model,
-            assistant_id=ASSISTANT_ID,
-            short_term_capacity=7,  
-            mid_term_heat_threshold=5,  
-            retrieval_queue_capacity=10,
-            long_term_knowledge_capacity=100,
-            mid_term_similarity_threshold=0.6,
-            embedding_model_name=embedding_model_name, # text-embedding-3-large, Qwen/Qwen3-Embedding-8B
-            embedding_model_kwargs={
-                "embedding_backend": "openai",
-                "api_key": EMBEDDING_API_KEY,
-                'api_base': EMBEDDING_API_BASE_URL,
-                "max_input_tokens": 8000,
-                "truncate_from": "end",
-                # "embedding_backend": "sentence-transformers",
-                # "device": "mps",  # or "cpu"/"cuda"
-            },
-        )
-        print("MemoryOS initialized successfully!\n")
-    except Exception as e:
-        print(f"Error: {e}")
-        return
-
-    # 2. Load MemBench app logs
-    print("Loading MemBench dataset...")
-    try:
-        samples = load_membench_dataset(
-            DATA_ROOT,
-            user_id=target_sample_id,
-            size=dataset_size,
-        )
-        if not samples:
-            print("No MemBench samples found for the requested filter.")
-            return
-        sample = samples[0]
-    except Exception as e:
-        print(f"Error loading dataset: {e}")
-        return
-
-    print(
-        f"Loaded sample '{sample.sample_id}' with "
-        f"{len(sample.app_logs)} events and {len(sample.qa)} QA pairs."
+    memo = Memoryos(
+        user_id=user_id,
+        openai_api_key=LLM_CONTROLLER_API_KEY,
+        openai_base_url=LLM_CONTROLLER_API_BASE_URL,
+        data_storage_path=str(data_storage_root),
+        llm_model=llm_model,
+        assistant_id=ASSISTANT_ID,
+        short_term_capacity=7,  
+        mid_term_heat_threshold=5,  
+        retrieval_queue_capacity=10,
+        long_term_knowledge_capacity=100,
+        mid_term_similarity_threshold=0.6,
+        embedding_model_name=embedding_model_name, # text-embedding-3-large, Qwen/Qwen3-Embedding-8B
+        embedding_model_kwargs={
+            "embedding_backend": "openai",
+            "api_key": EMBEDDING_API_KEY,
+            'api_base': EMBEDDING_API_BASE_URL,
+            "max_input_tokens": 8000,
+            "truncate_from": "end",
+            # "embedding_backend": "sentence-transformers",
+            # "device": "mps",  # or "cpu"/"cuda"
+        },
     )
-    if skip_events:
-        print(f"Skipping first {skip_events} events based on '{baseline}' data.")
+    print("MemoryOS initialized successfully!\n")
 
-
-    # Load Checkpoints
-    _, checkpoints = load_membench_dataset(
+    # 2. Load MemBench app logs and checkpoints
+    print("Loading MemBench dataset and checkpoints...")
+    samples, checkpoints = load_membench_dataset(
         DATA_ROOT,
         user_id=target_sample_id,
         size=dataset_size,
         load_ckpts=True,
     )
+    if not samples:
+        print("No MemBench samples found for the requested filter.")
+        return
+    sample = samples[0]
+
+    print(
+        f"Loaded sample '{sample.sample_id}' with "
+        f"{len(sample.app_logs)} events and {len(sample.qa)} QA pairs."
+    )
+
     checkpoint_by_app_log_id: dict[str, list[dict]] = {}
     for cp in checkpoints:
         if not isinstance(cp, dict):
@@ -341,8 +252,6 @@ def simple_demo(
     for idx, event in enumerate(sample.app_logs):
         if idx < start_index:
             continue
-        if skip_events and idx < skip_events:
-            continue
         content, time_str = build_membench_memory_from_event(event)
         memo.add_memory(
             user_input=f"[APP_LOG] {content}",
@@ -366,12 +275,11 @@ def simple_demo(
     return
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="MemoryOS MemBench demo")
-    parser.add_argument("--size", type=str, default=DEFAULT_DATASET_SIZE, help="Dataset size: small|medium|large")
+    parser = argparse.ArgumentParser(description="MemoryOS MemBench evaluation")
     parser.add_argument(
         "--sample-id",
         type=str,
-        default=DEFAULT_TARGET_SAMPLE_ID,
+        required=True,
         help="Sample id/user id to load",
     )
     parser.add_argument(
@@ -394,8 +302,7 @@ if __name__ == "__main__":
     )
     args = parser.parse_args()
 
-    simple_demo(
-        args.size,
+    run_evaluation(
         args.sample_id,
         args.llm_model,
         args.embedding_model_name,
