@@ -11,6 +11,7 @@ from dotenv import load_dotenv
 
 from generation.rag.client import LLMClient
 from dynamic_state_prediction_core.pipeline import run_pipeline
+from dynamic_state_prediction_core.retrieval_query import build_retrieval_query
 
 load_dotenv()
 
@@ -64,16 +65,6 @@ def _embed_texts(
         chunks.append(arr)
     emb = np.vstack(chunks)
     return _normalize_rows(emb)
-
-
-def _build_retrieval_query(checkpoint: Dict[str, Any], target_keys: List[str]) -> str:
-    as_of = checkpoint.get("as_of", {})
-    ts = as_of.get("timestamp", "")
-    keys_hint = ", ".join(target_keys[:20])
-    return (
-        f"Predict values for provided state keys at checkpoint time {ts}. "
-        f"Target keys include: {keys_hint}"
-    )
 
 
 def run_generation(
@@ -142,13 +133,14 @@ def run_generation(
             return {
                 "context_logs": [],
                 "context_note": "Retrieved app logs (top-0)",
-                "retrieval_query": _build_retrieval_query(cp, target_keys),
+                "retrieval_query": build_retrieval_query(cp, target_keys),
                 "metadata": {
                     "retrieval_top_k": retrieval_top_k,
                     "num_retrieved_logs": 0,
                     "retriever_provider": retriever_provider,
                     "retriever_model": retriever_model,
                     "retrieved_app_log_ids": [],
+                    "top20_similarity": [],
                 },
             }
 
@@ -184,13 +176,22 @@ def run_generation(
         mem_emb = np.vstack(mem_emb_rows).astype("float32")
         mem_emb = _normalize_rows(mem_emb)
 
-        retrieval_query = _build_retrieval_query(cp, target_keys)
+        retrieval_query = build_retrieval_query(cp, target_keys)
         query_emb = _embed_texts(embed_client, retriever_model, [retrieval_query], batch_size=1)[0]
 
         k = len(memory_pool) if retrieval_top_k <= 0 else min(retrieval_top_k, len(memory_pool))
         scores = mem_emb @ query_emb
         top_idx = np.argsort(scores)[::-1][:k]
         retrieved = [memory_pool[i] for i in top_idx]
+        top20_idx = np.argsort(scores)[::-1][: min(20, len(memory_pool))]
+        top20_similarity = [
+            {
+                "rank": rank + 1,
+                "app_log_id": memory_pool[i].get("app_log_id"),
+                "similarity": float(scores[i]),
+            }
+            for rank, i in enumerate(top20_idx)
+        ]
 
         return {
             "context_logs": retrieved,
@@ -202,6 +203,7 @@ def run_generation(
                 "retriever_provider": retriever_provider,
                 "retriever_model": retriever_model,
                 "retrieved_app_log_ids": [x.get("app_log_id") for x in retrieved],
+                "top20_similarity": top20_similarity,
             },
         }
 
