@@ -23,7 +23,6 @@ transformers.modeling_utils.check_torch_load_is_safe = lambda *args, **kwargs: T
 
 from hipporag import HippoRAG
 from hipporag.utils.config_utils import BaseConfig
-from hipporag.utils.misc_utils import compute_mdhash_id
 
 from generation.rag.client import LLMClient
 from dynamic_state_prediction_core.pipeline import run_pipeline, observed_logs_for_checkpoint
@@ -52,40 +51,6 @@ class OnlineDSPRunner:
         self.all_logs = all_logs
         self.batch_size = batch_size
         self.last_indexed_idx = -1
-        self.last_prefetched_idx = -1
-
-    def prefetch_openie(self, start_idx: int, end_idx: int):
-        """
-        Runs OpenIE on a range of logs and saves results to disk WITHOUT adding them to the graph yet.
-        """
-        target_logs = self.all_logs[start_idx : end_idx + 1]
-        if not target_logs:
-            return
-            
-        print(f"[PREFETCH] Running OpenIE for logs {start_idx} to {end_idx} (Count: {len(target_logs)})...")
-        t0 = time.time()
-        
-        # Format logs
-        docs = [json.dumps(log, ensure_ascii=False) for log in target_logs]
-        
-        # 1. Chunk Embedding (needed for keys)
-        self.hipporag.chunk_embedding_store.insert_strings(docs)
-        new_chunk_keys = [compute_mdhash_id(doc, prefix='chunk-') for doc in docs]
-        chunk_to_rows = self.hipporag.chunk_embedding_store.get_rows(new_chunk_keys)
-        
-        # 2. Check cache
-        all_openie_info, chunk_keys_to_process = self.hipporag.load_existing_openie(new_chunk_keys)
-        new_openie_rows = {k : chunk_to_rows[k] for k in chunk_keys_to_process}
-        
-        if len(chunk_keys_to_process) > 0:
-            print(f"[PREFETCH] LLM Extraction needed for {len(chunk_keys_to_process)} chunks...")
-            new_ner, new_triples = self.hipporag.openie.batch_openie(new_openie_rows)
-            self.hipporag.merge_openie_results(all_openie_info, new_openie_rows, new_ner, new_triples)
-            if self.hipporag.global_config.save_openie:
-                self.hipporag.save_openie_results(all_openie_info)
-                
-        self.last_prefetched_idx = end_idx
-        print(f"[PREFETCH] Done. Took {time.time() - t0:.2f}s. New last_prefetched_idx: {self.last_prefetched_idx}")
 
     def retrieve_context(
         self,
@@ -105,15 +70,6 @@ class OnlineDSPRunner:
             
         print(f"\n[ONLINE] CP: {checkpoint_id} | Cutoff Index: {cutoff_idx} | Last Indexed: {self.last_indexed_idx}")
         
-        # 1.5 LOOKAHEAD PREFETCH (Hyper-Aggressive as requested)
-        PREFETCH_BUFFER = self.batch_size * 4 # Buffer of 160 logs
-        if self.last_prefetched_idx < cutoff_idx + PREFETCH_BUFFER and self.last_prefetched_idx < len(self.all_logs) - 1:
-            pf_start = self.last_prefetched_idx + 1
-            # Aggressive prefetch: fetch up to 320 logs ahead to minimize interruptions
-            pf_end = min(len(self.all_logs) - 1, pf_start + (self.batch_size * 8) - 1)
-            pf_end = max(pf_end, cutoff_idx)
-            self.prefetch_openie(pf_start, pf_end)
-
         # 2. Incremental Indexing
         if cutoff_idx > self.last_indexed_idx:
             new_logs = self.all_logs[self.last_indexed_idx + 1 : cutoff_idx + 1]
@@ -217,24 +173,7 @@ def run_online_generation(
     # 5. Initialize Runner
     runner = OnlineDSPRunner(hipporag, all_logs, batch_size)
 
-    # 6. Initialize State from Cache/Resume
-    if os.path.isfile(hipporag.openie_results_path):
-        try:
-            with open(hipporag.openie_results_path, 'r') as f:
-                openie_data = json.load(f)
-                existing_hashes = set(d['idx'] for d in openie_data.get('docs', []))
-                temp_covered = -1
-                for i, log in enumerate(all_logs):
-                    doc_str = json.dumps(log, ensure_ascii=False)
-                    if compute_mdhash_id(doc_str, prefix='chunk-') in existing_hashes:
-                        temp_covered = i
-                    else:
-                        break
-                runner.last_prefetched_idx = temp_covered
-                print(f"[*] Pre-computed OpenIE coverage: {runner.last_prefetched_idx}")
-        except:
-            pass
-
+    # 6. Initialize State from Resume
     if resume and output_path.exists():
         try:
             existing_data = json.loads(output_path.read_text(encoding="utf-8"))
@@ -243,21 +182,7 @@ def run_online_generation(
         except:
             pass
 
-
-    # 7. GLOBAL PREFETCH (User Requested: Pre-compute ALL OpenIE upfront)
-    print(f"[*] Prefetching ALL OpenIE results (Batch Size: {batch_size})...")
-    
-    total_logs = len(all_logs)
-    current_start = runner.last_prefetched_idx + 1
-    
-    # We only prefetch if we haven't covered everything yet
-    if current_start < total_logs:
-        for start_idx in range(current_start, total_logs, batch_size):
-            end_idx = min(start_idx + batch_size - 1, total_logs - 1)
-            # Use the runner's prefetch logic which handles dedup and LLM calls
-            runner.prefetch_openie(start_idx, end_idx)
-            
-    print(f"[*] All OpenIE results prefetched. Starting pipeline...")
+    print(f"[*] No pre-fetching. OpenIE will run incrementally per checkpoint. Starting pipeline...")
 
     return run_pipeline(
         benchmark_path=benchmark_path,
