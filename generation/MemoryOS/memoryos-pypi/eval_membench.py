@@ -29,7 +29,6 @@ LLM_CONTROLLER_API_KEY = os.getenv("LLM_CONTROLLER_API_KEY")
 LLM_CONTROLLER_API_BASE_URL = os.getenv("LLM_CONTROLLER_API_BASE_URL")
 EMBEDDING_API_KEY = os.getenv("EMBEDDING_API_KEY")
 EMBEDDING_API_BASE_URL = os.getenv("EMBEDDING_API_BASE_URL")
-DATA_STORAGE_PATH = ""
 DEFAULT_LLM_MODEL = "gpt-5-mini-2025-08-07"
 DEFAULT_EMBEDDING_MODEL_NAME = "text-embedding-3-large"
 DATA_ROOT = GENERATION_DIR / "data"
@@ -167,6 +166,8 @@ def run_evaluation(
     target_sample_id: str,
     llm_model: str,
     embedding_model_name: str,
+    dataset_path: str,
+    data_storage_path: str,
     snapshot_root: str,
 ):
     print("MemoryOS Evaluation")
@@ -174,7 +175,7 @@ def run_evaluation(
     if not target_sample_id:
         raise ValueError("target_sample_id is required.")
     user_id = f"{target_sample_id}_{dataset_size}"
-    data_storage_root = Path(os.path.abspath(DATA_STORAGE_PATH or ""))
+    data_storage_root = Path(data_storage_path).expanduser().resolve()
     
     # 1. Initialize MemoryOS
     print("Initializing MemoryOS...")
@@ -206,7 +207,7 @@ def run_evaluation(
     # 2. Load MemBench app logs and checkpoints
     print("Loading MemBench dataset and checkpoints...")
     samples, checkpoints = load_membench_dataset(
-        DATA_ROOT,
+        dataset_path,
         user_id=target_sample_id,
         size=dataset_size,
         load_ckpts=True,
@@ -300,11 +301,25 @@ if __name__ == "__main__":
         default=str(Path(__file__).resolve().parent / "snapshots"),
         help="Snapshot root directory",
     )
+    parser.add_argument(
+        "--data-storage-path",
+        type=str,
+        required=True,
+        help="Path for MemoryOS user data JSON files",
+    )
+    parser.add_argument(
+        "--dataset-path",
+        type=str,
+        default=str(DATA_ROOT),
+        help="Path to MemBench dataset root or app log file",
+    )
     args = parser.parse_args()
 
     run_evaluation(
         args.sample_id,
         args.llm_model,
         args.embedding_model_name,
+        args.dataset_path,
+        args.data_storage_path,
         args.snapshot_root,
     )

@@ -205,11 +205,13 @@ def run_generation(
         }
 
     def ask_json(prompt: str) -> Any:
+
         return client.ask(prompt, response_type="json")
 
     def ask_structured(prompt: str, text_format: Any) -> Any:
+       
         return client.ask_structured(prompt, text_format=text_format)
-
+       
     def close() -> None:
         client.close()
 
