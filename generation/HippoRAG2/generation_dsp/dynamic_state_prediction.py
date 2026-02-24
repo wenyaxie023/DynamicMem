@@ -5,7 +5,6 @@ import os
 import json
 from pathlib import Path
 from typing import Any, Dict, List, Optional
-from dotenv import load_dotenv
 
 # Add HippoRAG and project roots to path
 script_dir = os.path.dirname(os.path.abspath(__file__))
@@ -23,16 +22,10 @@ from hipporag import HippoRAG
 from hipporag.utils.config_utils import BaseConfig
 
 from generation.rag.client import LLMClient
+from generation.common.provider_config import setup_provider_env
 from dynamic_state_prediction_core.pipeline import run_pipeline
 
-# Load environment variables
-load_dotenv("generation/HippoRAG2/.env", override=True)
-
-# Azure Compatibility: Map Azure credentials to OpenAI standard env vars
-if os.getenv("AZURE_OPENAI_API_KEY"):
-    os.environ["OPENAI_API_KEY"] = os.getenv("AZURE_OPENAI_API_KEY")
-if os.getenv("AZURE_OPENAI_BASE_URL"):
-    os.environ["OPENAI_BASE_URL"] = os.getenv("AZURE_OPENAI_BASE_URL")
+REPO_ROOT_DIR = Path(os.path.abspath(os.path.join(root_dir, "..", "..")))
 
 def _build_retrieval_query(checkpoint: Dict[str, Any], target_keys: List[str]) -> str:
     as_of = checkpoint.get("as_of", {})
@@ -59,6 +52,8 @@ def run_generation(
     save_prompt_and_raw: bool,
     online: bool = False,
 ) -> Dict[str, Any]:
+    _, resolved_base_url = setup_provider_env(llm_provider, repo_root=REPO_ROOT_DIR)
+
     # 1. Initialize LLM Client for Generation (Unified Client)
     client = LLMClient(
         provider=llm_provider,
@@ -83,9 +78,8 @@ def run_generation(
     # We use high temperature? No, retrieval doesn't use temperature usually, 
     # but the config expects it.
     
-    # Restore legacy behavior: propagate base URLs from environment
-    llm_base_url = os.getenv("OPENAI_BASE_URL")
-    embedding_base_url = os.getenv("OPENAI_BASE_URL")
+    llm_base_url = resolved_base_url
+    embedding_base_url = resolved_base_url
     
     config = BaseConfig(
         temperature=0,

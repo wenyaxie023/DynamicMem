@@ -2,6 +2,7 @@ import json
 import os
 from concurrent.futures import Future, ThreadPoolExecutor
 from typing import Any, Callable, Dict, Iterable, List, Optional, Type, Union
+from .provider_config import resolve_openai_compatible_credentials
 
 try:
     from google import genai
@@ -40,8 +41,7 @@ class LLMClient:
         self._executor: Optional[ThreadPoolExecutor] = ThreadPoolExecutor(max_workers=max_workers)
 
         if provider in {"openai", "azure"}:
-            api_key = os.getenv("OPENAI_API_KEY") or os.getenv("AZURE_OPENAI_API_KEY")
-            base_url = os.getenv("OPENAI_BASE_URL") or os.getenv("AZURE_OPENAI_BASE_URL")
+            api_key, base_url = resolve_openai_compatible_credentials(provider)
             client_kwargs: Dict[str, Any] = {"api_key": api_key}
             if base_url:
                 client_kwargs["base_url"] = base_url

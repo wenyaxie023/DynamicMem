@@ -6,8 +6,6 @@ import json
 import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional
-from datetime import datetime
-from dotenv import load_dotenv
 
 # Add HippoRAG and project roots to path
 script_dir = os.path.dirname(os.path.abspath(__file__))
@@ -25,16 +23,10 @@ from hipporag import HippoRAG
 from hipporag.utils.config_utils import BaseConfig
 
 from generation.rag.client import LLMClient
+from generation.common.provider_config import setup_provider_env
 from dynamic_state_prediction_core.pipeline import run_pipeline, observed_logs_for_checkpoint
 
-# Load environment variables
-load_dotenv(os.path.join(root_dir, ".env"), override=True)
-
-# Azure Compatibility
-if os.getenv("AZURE_OPENAI_API_KEY"):
-    os.environ["OPENAI_API_KEY"] = os.getenv("AZURE_OPENAI_API_KEY")
-if os.getenv("AZURE_OPENAI_BASE_URL"):
-    os.environ["OPENAI_BASE_URL"] = os.getenv("AZURE_OPENAI_BASE_URL")
+REPO_ROOT_DIR = Path(os.path.abspath(os.path.join(root_dir, "..", "..")))
 
 def _build_retrieval_query(checkpoint: Dict[str, Any], target_keys: List[str]) -> str:
     as_of = checkpoint.get("as_of", {})
@@ -134,6 +126,7 @@ def run_online_generation(
     embedding_model: str,
     batch_size: int = 64,
 ) -> Dict[str, Any]:
+    _, resolved_base_url = setup_provider_env(llm_provider, repo_root=REPO_ROOT_DIR)
     
     # 1. Initialize LLM Client
     client = LLMClient(
@@ -152,8 +145,8 @@ def run_online_generation(
     print(f"[*] Initializing HippoRAG in {save_dir}...")
     os.makedirs(save_dir, exist_ok=True)
     
-    llm_base_url = os.getenv("OPENAI_BASE_URL")
-    embedding_base_url = os.getenv("OPENAI_BASE_URL")
+    llm_base_url = resolved_base_url
+    embedding_base_url = resolved_base_url
     
     config = BaseConfig(temperature=0, llm_base_url=llm_base_url, embedding_base_url=embedding_base_url)
     hipporag = HippoRAG(
@@ -208,7 +201,9 @@ def main():
     parser.add_argument("--app-logs-path", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--save-dir", type=Path, required=True)
+    parser.add_argument("--llm-provider", type=str, default="openai")
     parser.add_argument("--llm-model", type=str, default="gpt-5-mini")
+    parser.add_argument("--llm-max-workers", type=int, default=1)
     parser.add_argument("--embedding-model", type=str, default="text-embedding-3-large")
     parser.add_argument("--batch-size", type=int, default=64)
     parser.add_argument("--max-checkpoints", type=int, default=None)
@@ -222,9 +217,9 @@ def main():
         app_logs_path=args.app_logs_path,
         output_path=args.output,
         save_dir=args.save_dir,
-        llm_provider="openai",
+        llm_provider=args.llm_provider,
         llm_model=args.llm_model,
-        llm_max_workers=1,
+        llm_max_workers=args.llm_max_workers,
         resume=args.resume,
         max_checkpoints=args.max_checkpoints,
         debug=args.debug,
