@@ -2,19 +2,15 @@
 set -euo pipefail
 
 PYTHON_BIN="python"
-PROJECT_ROOT="/users/4/xie00470/mem_bench/behavior_and_conversation"
-INPUT_ROOT_DIR="$PROJECT_ROOT/data_construction/generated_outputs/gemini_3_flash_preview"
-OUTPUT_ROOT_DIR="$PROJECT_ROOT/generation/letta/results"
-QA_DIR="$PROJECT_ROOT/generation/qa"
-USERS=("001_user_001")
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PROJECT_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
+INPUT_ROOT_DIR="${INPUT_ROOT_DIR:-$PROJECT_ROOT/data}"
+OUTPUT_ROOT_DIR="${OUTPUT_ROOT_DIR:-$PROJECT_ROOT/generation/letta/results}"
+QA_DIR="${QA_DIR:-$PROJECT_ROOT/data}"
+USERS=(${USERS:-user1})
+APP_LOGS_FILENAME="${APP_LOGS_FILENAME:-app_log_large.json}"
+QA_FILENAME="${QA_FILENAME:-qa.json}"
 
-RETRIEVAL_TOP_K="10"
-LLM_PROVIDER="openai"
-LLM_MODEL="gpt-5-mini"
-LLM_MAX_WORKERS="4"
-
-LETTA_MODE="sdk" # sdk | local
-ALLOW_LOCAL_FALLBACK="true"
 RESUME="true"
 PERSONA=""
 HUMAN=""
@@ -28,16 +24,9 @@ for user in "${USERS[@]}"; do
     --input-root-dir "$INPUT_ROOT_DIR"
     --output-root-dir "$OUTPUT_ROOT_DIR"
     --qa-dir "$QA_DIR"
-    --retrieval-top-k "$RETRIEVAL_TOP_K"
-    --llm-provider "$LLM_PROVIDER"
-    --llm-model "$LLM_MODEL"
-    --llm-max-workers "$LLM_MAX_WORKERS"
-    --letta-mode "$LETTA_MODE"
+    --app-logs-filename "$APP_LOGS_FILENAME"
+    --qa-filename "$QA_FILENAME"
   )
-
-  if [[ "$ALLOW_LOCAL_FALLBACK" != "true" ]]; then
-    cmd+=(--no-local-fallback)
-  fi
 
   if [[ "$RESUME" == "true" ]]; then
     cmd+=(--resume)

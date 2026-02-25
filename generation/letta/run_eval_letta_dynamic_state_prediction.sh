@@ -2,11 +2,12 @@
 set -euo pipefail
 
 PYTHON_BIN="python"
-PROJECT_ROOT="/users/4/xie00470/mem_bench/behavior_and_conversation"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PROJECT_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 BENCHMARK_ROOT="$PROJECT_ROOT/data_construction/generated_outputs/gemini_3_flash_preview"
 PREDICTION_ROOT="$PROJECT_ROOT/generation/letta/results"
 
-USERS=("001_user_001")
+USERS=(${USERS:-001_user_001})
 ENABLE_LLM_JUDGE="${ENABLE_LLM_JUDGE:-true}"
 SAVE_EYEBALL="${SAVE_EYEBALL:-true}"
 LLM_PROVIDER="${LLM_PROVIDER:-openai}"
@@ -32,12 +33,12 @@ for user in "${USERS[@]}"; do
   mkdir -p "$(dirname "$output_path")"
 
   if [[ ! -f "$benchmark_path" ]]; then
-    echo "[LETTA-DSP-EVAL] SKIP $user_dir: benchmark not found: $benchmark_path"
-    continue
+    echo "[LETTA-DSP-EVAL] benchmark not found: $benchmark_path"
+    exit 1
   fi
   if [[ ! -f "$prediction_path" ]]; then
-    echo "[LETTA-DSP-EVAL] SKIP $user_dir: prediction not found: $prediction_path"
-    continue
+    echo "[LETTA-DSP-EVAL] prediction not found: $prediction_path"
+    exit 1
   fi
 
   cmd=(
@@ -61,4 +62,3 @@ for user in "${USERS[@]}"; do
 
   "${cmd[@]}"
 done
-

@@ -8,6 +8,9 @@ env
 *.txt
 .env
 .env.bak*
+data/
+pixi.toml
+pixi.lock
 
 # HippoRAG Cache and Outputs
 *.sqlite

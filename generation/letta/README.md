@@ -21,10 +21,13 @@ Current implementation uses **agent-loop ingestion**:
 
 - QA:
   - `bash generation/letta/run_letta.sh`
+  - smoke test: `bash generation/letta/run_letta_test.sh`
 - Dynamic state prediction:
   - `bash generation/letta/run_letta_dynamic_state_prediction.sh`
 - Dynamic state prediction eval:
   - `bash generation/letta/run_eval_letta_dynamic_state_prediction.sh`
+
+Scripts now resolve `PROJECT_ROOT` relative to their own location (no absolute path hardcoding).
 
 ## Docker Server (OpenAI only)
 
@@ -44,15 +47,16 @@ Optional env vars:
 - `LETTA_CONTAINER_NAME` (default `letta-server`)
 - `LETTA_SECURE=true` and `LETTA_SERVER_PASSWORD=...` to enable password auth
 
-## Letta Modes
+## Letta SDK
 
-- `--letta-mode sdk`:
-  - uses `letta_client` Python SDK agent loop.
-- `--letta-mode local`:
-  - local fallback simulation (non-SDK).
-
-By default `sdk` mode allows fallback (`--no-local-fallback` disables fallback and fails hard).
+- The implementation now requires `letta_client` SDK.
+- Local fallback mode was removed.
+- Make sure `LETTA_BASE_URL` (and `LETTA_API_KEY` if secure mode) is configured.
 
 Optional core-memory context:
 - `--persona "<text>"`
 - `--human "<text>"`
+
+QA now uses explicit filenames (no fallback probing):
+- `--app-logs-filename` (default: `app_log_large.json`)
+- `--qa-filename` (default: `qa.json`)

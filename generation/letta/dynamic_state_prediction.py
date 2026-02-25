@@ -7,7 +7,7 @@ from typing import Any, Dict, List, Optional
 from dotenv import load_dotenv
 
 from dynamic_state_prediction_core.pipeline import run_pipeline
-from generation.letta.agent_loop import LettaAgentLoop, sort_logs
+from generation.letta.agent_loop import LettaAgentLoop
 
 load_dotenv()
 
@@ -28,11 +28,6 @@ def run_generation(
     output_path: Path,
     max_visible_logs: Optional[int],
     retrieval_top_k: int,
-    llm_provider: str,
-    llm_model: str,
-    llm_max_workers: int,
-    letta_mode: str,
-    allow_local_fallback: bool,
     persona: Optional[str],
     human: Optional[str],
     resume: bool,
@@ -43,11 +38,6 @@ def run_generation(
 ) -> Dict[str, Any]:
     agent = LettaAgentLoop(
         user_namespace=f"dsp::{app_logs_path.parent.name}",
-        llm_provider=llm_provider,
-        llm_model=llm_model,
-        llm_max_workers=llm_max_workers,
-        mode=letta_mode,
-        allow_local_fallback=allow_local_fallback,
         persona=persona,
         human=human,
     )
@@ -60,7 +50,6 @@ def run_generation(
     else:
         all_logs = []
     all_logs = [x for x in all_logs if isinstance(x, dict)]
-    all_logs = sort_logs(all_logs)
 
     ingested_until = -1
     latest_request: Dict[str, Any] = {
@@ -135,7 +124,7 @@ def run_generation(
             ),
             "retrieval_query": query,
             "metadata": {
-                "retrieval_mode": f"letta_agent_loop_{letta_mode}",
+                "retrieval_mode": "letta_agent_loop_sdk",
                 "retrieval_top_k": retrieval_top_k,
                 "num_retrieved_logs": 0,
                 "retrieved_app_log_ids": [],
@@ -190,21 +179,6 @@ def main() -> None:
         default=10,
         help="Top-k logs retrieved by Letta from the checkpoint-visible memory pool.",
     )
-    parser.add_argument("--llm-provider", type=str, default="openai", help="openai|azure|aimlapi|gemini|vllm")
-    parser.add_argument("--llm-model", type=str, default="gpt-5-mini", help="LLM model name")
-    parser.add_argument("--llm-max-workers", type=int, default=1, help="Max workers for LLM client")
-    parser.add_argument(
-        "--letta-mode",
-        type=str,
-        default="sdk",
-        choices=["sdk", "local"],
-        help="Retrieval backend: sdk tries Letta Python SDK; local uses lexical fallback.",
-    )
-    parser.add_argument(
-        "--no-local-fallback",
-        action="store_true",
-        help="Fail if Letta SDK is unavailable or incompatible.",
-    )
     parser.add_argument("--persona", type=str, default=None, help="Optional Letta core persona override.")
     parser.add_argument("--human", type=str, default=None, help="Optional Letta core human override.")
     parser.add_argument("--resume", action="store_true", help="Resume from existing output if available")
@@ -229,11 +203,6 @@ def main() -> None:
         output_path=args.output,
         max_visible_logs=args.max_visible_logs,
         retrieval_top_k=args.retrieval_top_k,
-        llm_provider=args.llm_provider,
-        llm_model=args.llm_model,
-        llm_max_workers=args.llm_max_workers,
-        letta_mode=args.letta_mode,
-        allow_local_fallback=not args.no_local_fallback,
         persona=args.persona,
         human=args.human,
         resume=args.resume,
