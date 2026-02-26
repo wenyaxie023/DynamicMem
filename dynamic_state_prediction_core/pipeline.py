@@ -325,6 +325,7 @@ def run_pipeline(
     debug: bool,
     debug_dir: Optional[Path],
     save_prompt_and_raw: bool,
+    predict_per_key: bool = False,
 ) -> Dict[str, Any]:
     benchmark = json.loads(benchmark_path.read_text(encoding="utf-8"))
     app_logs = normalize_app_logs(json.loads(app_logs_path.read_text(encoding="utf-8")))
@@ -367,57 +368,146 @@ def run_pipeline(
 
             target_keys, target_value_templates = build_target_templates(cp)
 
-            ctx_info = retrieve_context(cp, memory_pool, target_keys)
-            context_logs = ctx_info.get("context_logs") or []
-            retrieval_query = ctx_info.get("retrieval_query")
-            context_note = ctx_info.get("context_note") or "Context app logs"
-            retrieval_meta = ctx_info.get("metadata") or {}
-
-            prompt = build_prompt(
-                checkpoint=cp,
-                context_logs=context_logs,
-                context_note=context_note,
-                target_keys=target_keys,
-                target_value_templates=target_value_templates,
-                retrieval_query=retrieval_query,
-            )
+            retrieval_meta: Dict[str, Any] = {}
+            context_logs: List[Dict[str, Any]] = []
+            context_note = "Context app logs"
+            retrieval_query = None
 
             raw_out: Any = {}
-            error_messages: List[str] = []
-            try:
-                if use_structured_response and ask_structured is not None:
-                    try:
-                        text_format = build_generation_text_format(
-                            target_keys,
-                            target_value_templates,
-                            len(predictions),
-                        )
-                        # import pdb; pdb.set_trace()    
-                        raw_out = ask_structured(prompt, text_format)
-                        out = normalize_generation_output(raw_out, target_keys)
-                    except Exception as exc:
-                        error_messages.append(f"structured_call_failed: {exc}")
+            prompt: Any = ""
+            if not predict_per_key:
+                ctx_info = retrieve_context(cp, memory_pool, target_keys)
+                context_logs = ctx_info.get("context_logs") or []
+                retrieval_query = ctx_info.get("retrieval_query")
+                context_note = ctx_info.get("context_note") or "Context app logs"
+                retrieval_meta = ctx_info.get("metadata") or {}
+                prompt = build_prompt(
+                    checkpoint=cp,
+                    context_logs=context_logs,
+                    context_note=context_note,
+                    target_keys=target_keys,
+                    target_value_templates=target_value_templates,
+                    retrieval_query=retrieval_query,
+                )
+
+                error_messages: List[str] = []
+                try:
+                    if use_structured_response and ask_structured is not None:
+                        try:
+                            text_format = build_generation_text_format(
+                                target_keys,
+                                target_value_templates,
+                                len(predictions),
+                            )
+                            raw_out = ask_structured(prompt, text_format)
+                            out = normalize_generation_output(raw_out, target_keys)
+                        except Exception as exc:
+                            error_messages.append(f"structured_call_failed: {exc}")
+                            raw_out = ask_json(prompt)
+                            out = normalize_generation_output(raw_out, target_keys)
+                    else:
                         raw_out = ask_json(prompt)
                         out = normalize_generation_output(raw_out, target_keys)
-                else:
-                    raw_out = ask_json(prompt)
-                    out = normalize_generation_output(raw_out, target_keys)
-            except Exception as exc:
-                error_messages.append(f"json_call_failed: {exc}")
-                raw_out = {"_error": "; ".join(error_messages) if error_messages else f"llm_call_failed: {exc}"}
-                out = {"snapshot_state": {}, "evidence": {}}
+                except Exception as exc:
+                    error_messages.append(f"json_call_failed: {exc}")
+                    raw_out = {"_error": "; ".join(error_messages) if error_messages else f"llm_call_failed: {exc}"}
+                    out = {"snapshot_state": {}, "evidence": {}}
 
-            if error_messages and isinstance(raw_out, dict):
-                raw_out = dict(raw_out)
-                raw_out["_warnings"] = error_messages
+                if error_messages and isinstance(raw_out, dict):
+                    raw_out = dict(raw_out)
+                    raw_out["_warnings"] = error_messages
 
-            pred_snapshot = flatten_snapshot(out.get("snapshot_state"))
-            pred_snapshot = {k: drop_excluded_fields(pred_snapshot.get(k)) for k in target_keys}
-            snapshot = {
-                k: align_prediction_to_template(pred_snapshot.get(k), target_value_templates.get(k))
-                for k in target_keys
-            }
-            evidence = normalize_evidence_prediction(out.get("evidence"), target_keys)
+                pred_snapshot = flatten_snapshot(out.get("snapshot_state"))
+                pred_snapshot = {k: drop_excluded_fields(pred_snapshot.get(k)) for k in target_keys}
+                snapshot = {
+                    k: align_prediction_to_template(pred_snapshot.get(k), target_value_templates.get(k))
+                    for k in target_keys
+                }
+                evidence = normalize_evidence_prediction(out.get("evidence"), target_keys)
+            else:
+                per_key_records: List[Dict[str, Any]] = []
+                snapshot: Dict[str, Any] = {}
+                evidence: Dict[str, List[str]] = {}
+                per_key_retrieval: List[Dict[str, Any]] = []
+                for key_idx, key in enumerate(target_keys):
+                    single_keys = [key]
+                    single_template = {key: target_value_templates.get(key)}
+                    single_ctx_info = retrieve_context(cp, memory_pool, single_keys)
+                    single_context_logs = single_ctx_info.get("context_logs") or []
+                    single_retrieval_query = single_ctx_info.get("retrieval_query")
+                    single_context_note = single_ctx_info.get("context_note") or "Context app logs"
+                    single_retrieval_meta = single_ctx_info.get("metadata") or {}
+                    single_prompt = build_prompt(
+                        checkpoint=cp,
+                        context_logs=single_context_logs,
+                        context_note=single_context_note,
+                        target_keys=single_keys,
+                        target_value_templates=single_template,
+                        retrieval_query=single_retrieval_query,
+                    )
+                    single_error_messages: List[str] = []
+                    single_raw_out: Any = {}
+                    try:
+                        if use_structured_response and ask_structured is not None:
+                            try:
+                                text_format = build_generation_text_format(
+                                    single_keys,
+                                    single_template,
+                                    len(predictions) * 1000 + key_idx,
+                                )
+                                single_raw_out = ask_structured(single_prompt, text_format)
+                                single_out = normalize_generation_output(single_raw_out, single_keys)
+                            except Exception as exc:
+                                single_error_messages.append(f"structured_call_failed: {exc}")
+                                single_raw_out = ask_json(single_prompt)
+                                single_out = normalize_generation_output(single_raw_out, single_keys)
+                        else:
+                            single_raw_out = ask_json(single_prompt)
+                            single_out = normalize_generation_output(single_raw_out, single_keys)
+                    except Exception as exc:
+                        single_error_messages.append(f"json_call_failed: {exc}")
+                        single_raw_out = {
+                            "_error": "; ".join(single_error_messages)
+                            if single_error_messages
+                            else f"llm_call_failed: {exc}"
+                        }
+                        single_out = {"snapshot_state": {}, "evidence": {}}
+
+                    if single_error_messages and isinstance(single_raw_out, dict):
+                        single_raw_out = dict(single_raw_out)
+                        single_raw_out["_warnings"] = single_error_messages
+
+                    single_snapshot = flatten_snapshot(single_out.get("snapshot_state"))
+                    single_snapshot = {key: drop_excluded_fields(single_snapshot.get(key))}
+                    snapshot[key] = align_prediction_to_template(
+                        single_snapshot.get(key),
+                        target_value_templates.get(key),
+                    )
+                    single_evidence = normalize_evidence_prediction(single_out.get("evidence"), single_keys)
+                    evidence[key] = single_evidence.get(key, [])
+                    per_key_records.append(
+                        {
+                            "key": key,
+                            "prompt": single_prompt,
+                            "retrieval_query": single_retrieval_query,
+                            "retrieval_metadata": single_retrieval_meta,
+                            "raw_model_output": single_raw_out,
+                        }
+                    )
+                    per_key_retrieval.append(
+                        {
+                            "key": key,
+                            "retrieval_query": single_retrieval_query,
+                            "retrieval_metadata": single_retrieval_meta,
+                            "context_log_ids": [x.get("app_log_id") for x in single_context_logs],
+                        }
+                    )
+
+                prompt = [x["prompt"] for x in per_key_records]
+                raw_out = {"mode": "per_key", "records": per_key_records}
+                retrieval_meta = {"retrieval_mode": "per_key_isolated", "per_key_retrieval": per_key_retrieval}
+                context_logs = []
+                context_note = "Per-key isolated retrieval contexts"
 
             item = {
                 "checkpoint_id": cid,
@@ -434,6 +524,7 @@ def run_pipeline(
                     "target_key_count": len(target_keys),
                     "target_value_templates": target_value_templates,
                     "baseline": baseline_name,
+                    "predict_per_key": predict_per_key,
                     **retrieval_meta,
                 },
             }

@@ -1,5 +1,5 @@
 users:
-  - 002_user_002
+  - 001_user_001
 
 runtime:
   baseline: rag
@@ -7,13 +7,14 @@ runtime:
   resume: false
   debug: false
   save_prompt_and_raw: true
+  max_checkpoints: 10
 
 data:
   benchmark: data_construction/generated_outputs/gemini_3_flash_preview/{user_id}/dynamic_state_prediction_benchmark.json
   app_logs_path: data_construction/generated_outputs/gemini_3_flash_preview/{user_id}/app_log_large.json
 
 output:
-  prediction_path: generation/rag/results/{user_id}/prediction/dynamic_state_prediction_results_topk5.json
+  prediction_path: generation/rag/results/{user_id}/prediction/dynamic_state_prediction_results_topk5_perkey_impl.json
 
 llm:
   provider: openai
@@ -25,4 +26,4 @@ baseline_params:
   retriever_provider: openai
   retriever_model: text-embedding-3-large
   retriever_batch_size: 64
-  predict_per_key: false
+  predict_per_key: true

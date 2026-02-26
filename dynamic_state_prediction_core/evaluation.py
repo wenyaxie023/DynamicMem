@@ -82,6 +82,11 @@ def _value_f1(expected_value: Any, predicted_value: Any) -> float:
     return 2 * precision * recall / (precision + recall)
 
 
+def value_f1(expected_value: Any, predicted_value: Any) -> float:
+    """Public wrapper for value-level token F1 used in DSP evaluation."""
+    return _value_f1(expected_value, predicted_value)
+
+
 def normalize_predictions(raw: Any) -> Dict[str, Dict[str, Any]]:
     """Normalize prediction payload to checkpoint_id -> prediction mapping."""
     if isinstance(raw, dict) and "predictions" in raw:

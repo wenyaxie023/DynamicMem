@@ -85,3 +85,25 @@ Dynamic state prediction eval implementation details:
   - `llm_judge_avg_score_0_10`: per-checkpoint average key score
   - `llm_judge_score`: normalized `[0,1]` value (= avg score / 10)
 - `--save-eyeball` stores `groundtruth_snapshot`, `prediction_snapshot`, `groundtruth_evidence`, and `prediction_evidence` for manual inspection.
+
+### Item-Level Trend Analysis
+
+For changed-vs-unchanged and per-key temporal trends, run:
+
+```bash
+python -m eval.analyze_dsp_item_trends \
+  --benchmark data_construction/generated_outputs/gemini_3_flash_preview/<user_id>/dynamic_state_prediction_benchmark.json \
+  --prediction generation/rag/results/<user_id>/prediction/dynamic_state_prediction_results_topk5_perkey_impl.json \
+  --output-dir generation/rag/results/<user_id>/analysis/perkey_trends \
+  --group-change-mode first_seen \
+  --metrics exact,f1 \
+  --rolling-days 7 \
+  --top-n-keys 12
+```
+
+Outputs:
+- `item_level_metrics.csv`
+- `changed_vs_unchanged_daily.csv`
+- `key_daily_metrics.csv`
+- `changed_vs_unchanged_trend.png`
+- `top_keys_trend.png`

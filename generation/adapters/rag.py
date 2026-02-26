@@ -3,6 +3,13 @@ from .base import DspAdapterArgs
 
 def run(args: DspAdapterArgs):
     from generation.rag.rag_dynamic_state_prediction import run_generation
+    predict_per_key = args.extras.get("predict_per_key", "false").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "y",
+        "on",
+    }
 
     return run_generation(
         benchmark_path=args.benchmark,
@@ -21,4 +28,5 @@ def run(args: DspAdapterArgs):
         debug=args.debug,
         debug_dir=args.debug_dir,
         save_prompt_and_raw=args.save_prompt_and_raw,
+        predict_per_key=predict_per_key,
     )

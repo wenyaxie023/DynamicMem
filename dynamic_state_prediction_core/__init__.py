@@ -6,6 +6,7 @@ from .evaluation import (
     mean_numeric_fields,
     normalize_predictions,
     score_snapshot,
+    value_f1,
 )
 from .pipeline import (
     run_pipeline,
@@ -23,6 +24,7 @@ __all__ = [
     "mean_numeric_fields",
     "normalize_predictions",
     "score_snapshot",
+    "value_f1",
     "run_pipeline",
     "parse_ts",
     "to_log_text",

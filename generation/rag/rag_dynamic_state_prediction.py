@@ -84,6 +84,7 @@ def run_generation(
     debug: bool,
     debug_dir: Optional[Path],
     save_prompt_and_raw: bool,
+    predict_per_key: bool = False,
 ) -> Dict[str, Any]:
     client = LLMClient(
         provider=llm_provider,
@@ -223,6 +224,7 @@ def run_generation(
         debug=debug,
         debug_dir=debug_dir,
         save_prompt_and_raw=save_prompt_and_raw,
+        predict_per_key=predict_per_key,
     )
 
 
@@ -278,6 +280,11 @@ def main() -> None:
         default=None,
         help="Only run the first N checkpoints (for quick debugging).",
     )
+    parser.add_argument(
+        "--predict-per-key",
+        action="store_true",
+        help="Predict each target key in an isolated call, then merge outputs.",
+    )
     args = parser.parse_args()
 
     result = run_generation(
@@ -297,6 +304,7 @@ def main() -> None:
         debug=args.debug,
         debug_dir=args.debug_dir,
         save_prompt_and_raw=args.save_prompt_and_raw,
+        predict_per_key=args.predict_per_key,
     )
 
     print("Saved:", args.output)
