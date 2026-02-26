@@ -8,6 +8,7 @@ from typing import Any, Dict, List, Optional, Tuple
 from dotenv import load_dotenv
 
 from dynamic_state_prediction_core.pipeline import run_pipeline
+from dynamic_state_prediction_core.retrieval_query import build_retrieval_query
 from generation.Amem.agentic_memory.retrievers import PersistentChromaRetriever
 from generation.Amem.client import LLMClient
 
@@ -66,18 +67,6 @@ def _load_snapshot_bundle(snapshot_root: Path, manifest_entry: Dict[str, Any]) -
             str(checkpoint_app_log_id).strip() if checkpoint_app_log_id is not None else ""
         ),
     }
-
-
-
-def _build_retrieval_query(checkpoint: Dict[str, Any], target_keys: List[str]) -> str:
-    as_of = checkpoint.get("as_of", {})
-    ts = as_of.get("timestamp", "")
-    keys_hint = ", ".join(target_keys[:20])
-    return (
-        f"Predict values for provided state keys at checkpoint time {ts}. "
-        f"Target keys include: {keys_hint}"
-    )
-
 
 def run_generation(
     benchmark_path: Path,
@@ -180,7 +169,7 @@ def run_generation(
                 f"manifest={manifest_path}."
             )
 
-        retrieval_query = _build_retrieval_query(cp, target_keys)
+        retrieval_query = build_retrieval_query(cp, target_keys)
 
         k = len(memory_pool) if retrieval_top_k <= 0 else min(retrieval_top_k, len(memory_pool))
         if k <= 0:
