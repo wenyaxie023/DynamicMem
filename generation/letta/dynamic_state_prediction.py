@@ -40,6 +40,7 @@ def run_generation(
     debug_dir: Optional[Path],
     save_prompt_and_raw: bool,
     lease_registry_path: Optional[Path] = None,
+    keep_imported_agents: bool = False,
 ) -> Dict[str, Any]:
     # Keep adapter compatibility args explicitly accepted even if not used by SDK mode.
     _ = (llm_provider, llm_model, llm_max_workers, letta_mode, allow_local_fallback)
@@ -104,16 +105,35 @@ def run_generation(
             "2. Evidence must be list of app_log_id strings.\n"
             "3. If unsure, use null value and [] evidence.\n"
         )
+        def _parse_if_json_string(value: Any) -> Any:
+            if not isinstance(value, str):
+                return value
+            s = value.strip()
+            if not s:
+                return value
+            if not ((s.startswith("{") and s.endswith("}")) or (s.startswith("[") and s.endswith("]"))):
+                return value
+            try:
+                return json.loads(s)
+            except Exception:
+                return value
+
         checkpoint_id = str(latest_request.get("checkpoint_id", "")).strip()
         checkpoint_af = checkpoint_agentfiles.get(checkpoint_id)
         if checkpoint_af is not None:
             temp_agent_id = agent.load_agent_file(checkpoint_af, activate=False)
+            if keep_imported_agents:
+                print(f"[LETTA-DSP] keep imported agent for checkpoint {checkpoint_id}: {temp_agent_id}")
+                raw = agent.ask_with_agent(temp_agent_id, agent_prompt, expect_json=True)
+                return _parse_if_json_string(raw)
             try:
-                return agent.ask_with_agent(temp_agent_id, agent_prompt, expect_json=True)
+                raw = agent.ask_with_agent(temp_agent_id, agent_prompt, expect_json=True)
+                return _parse_if_json_string(raw)
             finally:
                 agent.delete_agent(temp_agent_id, ignore_missing=True)
 
-        return agent.ask_json(agent_prompt)
+        raw = agent.ask_json(agent_prompt)
+        return _parse_if_json_string(raw)
 
     def ask_structured(prompt: str, text_format: Any) -> Any:
         raise RuntimeError("Structured call is disabled for Letta agent-loop mode.")
@@ -243,6 +263,11 @@ def main() -> None:
         default=None,
         help="Only run the first N checkpoints (for quick debugging).",
     )
+    parser.add_argument(
+        "--keep-imported-agents",
+        action="store_true",
+        help="Testing only: do not delete imported checkpoint agents after each checkpoint.",
+    )
     args = parser.parse_args()
 
     result = run_generation(
@@ -263,6 +288,7 @@ def main() -> None:
         debug=args.debug,
         debug_dir=args.debug_dir,
         save_prompt_and_raw=args.save_prompt_and_raw,
+        keep_imported_agents=args.keep_imported_agents,
     )
 
     print("Saved:", args.output)

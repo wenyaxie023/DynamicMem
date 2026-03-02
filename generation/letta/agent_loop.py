@@ -141,10 +141,35 @@ class LettaAgentLoop:
             messages = response.get("messages")
         if not isinstance(messages, list):
             return "No text response received from agent."
-        for msg in messages:
+
+        def _letta_content_to_text(content: Any) -> str:
+            # Letta assistant_message currently returns content as JSON string.
+            if isinstance(content, str):
+                return content.strip()
+            # Keep lightweight support for structured text blocks.
+            if isinstance(content, list):
+                parts: List[str] = []
+                for part in content:
+                    if not isinstance(part, dict):
+                        continue
+                    if str(part.get("type", "")).strip().lower() != "text":
+                        continue
+                    text_val = part.get("text")
+                    if isinstance(text_val, str) and text_val.strip():
+                        parts.append(text_val.strip())
+                return "\n".join(parts).strip()
+            return ""
+
+        for msg in reversed(messages):
             msg_dict = msg.to_dict() if hasattr(msg, "to_dict") else msg
-            if isinstance(msg_dict, dict) and msg_dict.get("role") == "assistant" and msg_dict.get("content"):
-                return str(msg_dict["content"])
+            if not isinstance(msg_dict, dict):
+                continue
+            message_type = str(msg_dict.get("message_type", "")).strip().lower()
+            if message_type != "assistant_message":
+                continue
+            text = _letta_content_to_text(msg_dict.get("content"))
+            if text:
+                return text
         return "No text response received from agent."
 
     def _format_log_as_dialogue(self, log: dict) -> str:

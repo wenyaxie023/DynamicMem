@@ -74,6 +74,11 @@ def main() -> None:
     parser.add_argument("--debug-dir", type=Path, default=None)
     parser.add_argument("--save-prompt-and-raw", action="store_true")
     parser.add_argument(
+        "--keep-imported-agents",
+        action="store_true",
+        help="DSP test mode: do not delete imported checkpoint agents.",
+    )
+    parser.add_argument(
         "--gc-leased-agents",
         action="store_true",
         help="If set, cleanup leased temporary agent ids before running stages.",
@@ -169,6 +174,7 @@ def main() -> None:
             debug=args.debug,
             debug_dir=args.debug_dir,
             save_prompt_and_raw=args.save_prompt_and_raw,
+            keep_imported_agents=args.keep_imported_agents,
         )
         print("DSP output:", dsp_output_path)
         print("DSP checkpoints:", len(dsp_results.get("predictions", [])))

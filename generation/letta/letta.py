@@ -105,6 +105,25 @@ def run_qa(
 
     results = list(existing_results)
 
+    def _normalize_qa_prediction_text(value: Any) -> str:
+        if isinstance(value, str):
+            s = value.strip()
+            if not s:
+                return s
+            if (s.startswith("{") and s.endswith("}")) or (s.startswith("[") and s.endswith("]")):
+                try:
+                    parsed = json.loads(s)
+                    if isinstance(parsed, dict):
+                        answer = parsed.get("answer")
+                        if isinstance(answer, str):
+                            return answer
+                except Exception:
+                    pass
+            return s
+        if value is None:
+            return ""
+        return str(value)
+
     try:
         for item in tqdm(qa_list, desc=f"LETTA-QA {run_name}"):
             query = str(item.get("query", ""))
@@ -126,6 +145,7 @@ def run_qa(
                     answer_text = agent.ask_with_agent(temp_agent_id, prompt)
                 finally:
                     agent.delete_agent(temp_agent_id, ignore_missing=True)
+            answer_text = _normalize_qa_prediction_text(answer_text)
             t2 = time.time()
 
             out = {

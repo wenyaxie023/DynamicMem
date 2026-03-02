@@ -9,6 +9,7 @@ USER_ID="${USER_ID:-user1}"
 ACTION="${ACTION:-all}"
 RESUME="${RESUME:-true}"
 HOT_RESUME_LATEST="${HOT_RESUME_LATEST:-true}"
+KEEP_IMPORTED_AGENTS="${KEEP_IMPORTED_AGENTS:-false}"
 
 DATA_ROOT="${DATA_ROOT:-$PROJECT_ROOT/data}"
 RESULT_ROOT="${RESULT_ROOT:-$PROJECT_ROOT/generation/letta/results}"
@@ -38,10 +39,12 @@ fi
 if [[ "$HOT_RESUME_LATEST" == "true" ]]; then
   cmd+=(--hot-resume-latest)
 fi
+if [[ "$KEEP_IMPORTED_AGENTS" == "true" ]]; then
+  cmd+=(--keep-imported-agents)
+fi
 
 echo "[LETTA-PIPELINE] Running command:"
 printf ' %q' "${cmd[@]}"
 echo
 
 "${cmd[@]}"
-
