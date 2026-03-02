@@ -25,5 +25,4 @@ baseline_params:
   retrieval_top_k: 10
   letta_mode: sdk
   allow_local_fallback: true
-  persona: ""
-  human: ""
+  checkpoint_state_path: ""

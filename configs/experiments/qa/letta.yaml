@@ -1,0 +1,19 @@
+runtime:
+  baseline: letta
+  command: pipeline
+  user_id: "001_user_001"
+
+data:
+  input_root_dir: data_construction/generated_outputs/gemini_3_flash_preview
+  output_root_dir: generation/letta/results
+  qa_dir: data_construction/generated_outputs/gemini_3_flash_preview
+
+output:
+  prediction_path: generation/letta/results/{user_id}/prediction/letta_results.json
+
+baseline_params:
+  app_logs_filename: app_log_large.json
+  qa_filename: qa.json
+  resume: true
+  checkpoint_state_path: ""
+  agentfile_path: ""
