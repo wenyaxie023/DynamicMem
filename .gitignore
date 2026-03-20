@@ -46,3 +46,6 @@ eval/plots/
 eval/*.png
 eval/*.pdf
 eval/*.csv
+
+# Local presentation drafts/decks
+docs/presentations/

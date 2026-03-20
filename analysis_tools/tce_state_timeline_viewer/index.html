@@ -1,0 +1,90 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>TCE State Timeline Viewer</title>
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <header class="topbar">
+      <div>
+        <h1>TCE State Timeline Viewer</h1>
+        <p id="dataset-meta" class="subtle">Loading dataset…</p>
+      </div>
+      <div class="loader-bar">
+        <label for="data-path-input">Data</label>
+        <input id="data-path-input" type="text" value="./state_timeline_viewer_data.json" />
+        <button id="reload-button" type="button">Load</button>
+      </div>
+    </header>
+
+    <main class="layout">
+      <section class="overview-panel">
+        <div class="filters">
+          <label>
+            Category
+            <select id="category-filter">
+              <option value="all">all</option>
+            </select>
+          </label>
+          <label>
+            Task
+            <select id="task-filter">
+              <option value="all">all</option>
+              <option value="A">A</option>
+              <option value="B">B</option>
+              <option value="C">C</option>
+            </select>
+          </label>
+          <label>
+            Matrix view
+            <select id="matrix-view-filter">
+              <option value="task_a">Task A quality</option>
+              <option value="task_b">Task B quality</option>
+              <option value="task_c">Task C quality</option>
+            </select>
+          </label>
+          <label class="checkbox">
+            <input id="changed-only-filter" type="checkbox" />
+            only changed
+          </label>
+          <label class="checkbox">
+            <input id="taskc-only-filter" type="checkbox" />
+            only states with Task C
+          </label>
+          <label class="search">
+            Search
+            <input id="search-filter" type="search" placeholder="state key" />
+          </label>
+        </div>
+        <div class="legend">
+          <span><i class="legend-box absent"></i> not present</span>
+          <span><i class="legend-box validated"></i> no score for selected matrix task</span>
+          <span><i class="legend-box low"></i> low score in selected matrix task</span>
+          <span><i class="legend-box high"></i> high score in selected matrix task</span>
+          <span><i class="legend-box changed"></i> changed checkpoint</span>
+          <span><i class="legend-box taskc"></i> has Task C</span>
+        </div>
+        <div id="matrix-container" class="matrix-container"></div>
+      </section>
+
+      <section class="detail-panel">
+        <div id="state-header" class="state-header">
+          <h2>Select a state</h2>
+          <p class="subtle">Click a row or cell on the left.</p>
+        </div>
+        <div id="timeline-cards" class="timeline-cards"></div>
+      </section>
+    </main>
+
+    <template id="json-block-template">
+      <details class="json-block">
+        <summary></summary>
+        <pre></pre>
+      </details>
+    </template>
+
+    <script src="./app.js?v=20260319e"></script>
+  </body>
+</html>

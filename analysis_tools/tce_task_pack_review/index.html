@@ -1,0 +1,81 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>TCE Task Pack Review</title>
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <header class="topbar">
+      <div>
+        <h1>TCE Task Pack Review</h1>
+        <p id="dataset-meta" class="subtle">Loading dataset…</p>
+      </div>
+      <div class="loader-bar">
+        <label for="data-path-input">Data</label>
+        <input id="data-path-input" type="text" value="./task_pack.json" />
+        <button id="reload-button" type="button">Load</button>
+      </div>
+    </header>
+
+    <main class="layout">
+      <section class="sidebar">
+        <div class="controls">
+          <label>
+            Checkpoint
+            <select id="checkpoint-filter"></select>
+          </label>
+          <label>
+            Focus
+            <select id="focus-filter">
+              <option value="overview">Overview</option>
+              <option value="task_a">Task A</option>
+              <option value="task_b">Task B</option>
+              <option value="task_c">Task C</option>
+            </select>
+          </label>
+          <label>
+            Category
+            <select id="category-filter">
+              <option value="all">all</option>
+            </select>
+          </label>
+          <label>
+            Task C status
+            <select id="taskc-status-filter">
+              <option value="all">all</option>
+              <option value="accepted">accepted</option>
+              <option value="discarded">discarded</option>
+              <option value="no_item">no-item</option>
+            </select>
+          </label>
+          <label class="search">
+            Search
+            <input id="search-filter" type="search" placeholder="state key" />
+          </label>
+        </div>
+
+        <section id="checkpoint-summary" class="summary-cards"></section>
+        <section id="entry-list" class="entry-list"></section>
+      </section>
+
+      <section class="detail-panel">
+        <div id="detail-header" class="detail-header">
+          <h2>Select a state</h2>
+          <p class="subtle">Use the list on the left to inspect one task-pack entry.</p>
+        </div>
+        <div id="detail-body" class="detail-body"></div>
+      </section>
+    </main>
+
+    <template id="json-block-template">
+      <details class="json-block">
+        <summary></summary>
+        <pre></pre>
+      </details>
+    </template>
+
+    <script src="./app.js"></script>
+  </body>
+</html>
