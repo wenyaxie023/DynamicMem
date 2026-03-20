@@ -1,12 +1,12 @@
 # Data Construction Pipeline
 
-This directory owns benchmark data construction and dynamic-state-prediction benchmark building.
+This directory owns benchmark data construction and TCE benchmark building.
 
 ## Scope
 
 - User/profile generation pipeline (Stage 1 -> Stage 2 -> Stage 3)
 - App-log dataset preparation (`app_logs_final.json`, `app_log_large.json`, etc.)
-- Dynamic state prediction benchmark checkpoint construction
+- TCE benchmark checkpoint construction
 
 For stage-level implementation details, see `stages/README.md`.
 
@@ -42,15 +42,15 @@ Under `generated_outputs/<model_name>/<user_id>/`:
 - `app_log_large.json` (after `prepare_test_data.py`)
 - `golden_evidence_index.json`
 
-## Dynamic State Prediction Benchmark
+## TCE Benchmark
 
-To evaluate memory behavior beyond QA, build checkpoint-based dynamic state prediction ground truth.
+To evaluate memory behavior beyond QA, build checkpoint-based TCE ground truth.
 
 ### 1) Build Checkpoints
 
 ```bash
 cd data_construction
-python3 build_dynamic_state_prediction_benchmark.py \
+python3 build_tce_benchmark.py \
   --app-logs-final generated_outputs/gemini_3_flash_preview/001_user_001/app_logs_final.json
 ```
 
@@ -58,12 +58,12 @@ Or use the wrapper:
 
 ```bash
 cd <repo_root>
-bash data_construction/run_build_dynamic_state_prediction_benchmark.sh
+bash data_construction/run_build_tce_benchmark.sh
 ```
 
 Output:
 
-- `data_construction/generated_outputs/gemini_3_flash_preview/001_user_001/dynamic_state_prediction_benchmark.json`
+- `data_construction/generated_outputs/gemini_3_flash_preview/001_user_001/tce_benchmark.json`
 
 Checkpoint rule (current implementation):
 
@@ -79,7 +79,7 @@ Checkpoint rule (current implementation):
 
 ### 2) Produce Baseline Predictions
 
-Prediction contract (`generation/<baseline>/results/<user_id>/prediction/dynamic_state_prediction_results*.json`):
+Prediction contract (`generation/<baseline>/results/<user_id>/prediction/tce_results*.json`):
 
 ```json
 {
@@ -104,10 +104,10 @@ Example baseline runner:
 
 ```bash
 cd <repo_root>
-python3 generation/rag/rag_dynamic_state_prediction.py \
-  --benchmark data_construction/generated_outputs/gemini_3_flash_preview/001_user_001/dynamic_state_prediction_benchmark.json \
+python3 generation/rag/rag_tce.py \
+  --benchmark data_construction/generated_outputs/gemini_3_flash_preview/001_user_001/tce_benchmark.json \
   --app-logs-path data_construction/generated_outputs/gemini_3_flash_preview/001_user_001/app_log_large.json \
-  --output generation/rag/results/001_user_001/prediction/dynamic_state_prediction_results_topk5.json \
+  --output generation/rag/results/001_user_001/prediction/tce_results_topk5.json \
   --llm-provider openai \
   --llm-model gpt-5-mini \
   --resume
@@ -117,10 +117,10 @@ python3 generation/rag/rag_dynamic_state_prediction.py \
 
 ```bash
 cd <repo_root>
-python3 -m eval.eval_dynamic_state_prediction \
-  --benchmark data_construction/generated_outputs/gemini_3_flash_preview/001_user_001/dynamic_state_prediction_benchmark.json \
-  --prediction generation/<baseline>/results/001_user_001/prediction/dynamic_state_prediction_results.json \
-  --output generation/<baseline>/results/001_user_001/eval/dynamic_state_prediction_eval.json \
+python3 -m eval.eval_tce \
+  --benchmark data_construction/generated_outputs/gemini_3_flash_preview/001_user_001/tce_benchmark.json \
+  --prediction generation/<baseline>/results/001_user_001/prediction/tce_results.json \
+  --output generation/<baseline>/results/001_user_001/eval/tce_eval.json \
   --save-eyeball
 ```
 
@@ -135,14 +135,18 @@ Main metrics:
 Enable LLM judge:
 
 ```bash
-python3 -m eval.eval_dynamic_state_prediction \
-  --benchmark data_construction/generated_outputs/gemini_3_flash_preview/001_user_001/dynamic_state_prediction_benchmark.json \
-  --prediction generation/<baseline>/results/001_user_001/prediction/dynamic_state_prediction_results.json \
-  --output generation/<baseline>/results/001_user_001/eval/dynamic_state_prediction_eval.json \
+python3 -m eval.eval_tce \
+  --benchmark data_construction/generated_outputs/gemini_3_flash_preview/001_user_001/tce_benchmark.json \
+  --prediction generation/<baseline>/results/001_user_001/prediction/tce_results.json \
+  --output generation/<baseline>/results/001_user_001/eval/tce_eval.json \
   --save-eyeball \
   --enable-llm-judge \
   --llm-provider openai \
   --llm-model gpt-5-mini
 ```
 
-For checkpoint/date export APIs and a one-click demo, see `dynamic_state_prediction_api/README.md`.
+legacy parallel API entrypoint has been removed. Use the unified generation/eval flow:
+- `python3 -m generation.run_tce --config ...`
+- `python3 -m eval.eval_tce --benchmark ... --prediction ... --output ...`
+
+Historical artifact note: existing files under `results*/` and `generated_outputs/` may still use legacy names and are kept unchanged intentionally.

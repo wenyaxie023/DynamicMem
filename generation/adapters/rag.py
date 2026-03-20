@@ -1,15 +1,41 @@
-from .base import DspAdapterArgs
+from .base import TceAdapterArgs
 
 
-def run(args: DspAdapterArgs):
-    from generation.rag.rag_dynamic_state_prediction import run_generation
-    predict_per_key = args.extras.get("predict_per_key", "false").strip().lower() in {
+def run(args: TceAdapterArgs):
+    from generation.rag.rag_tce import run_generation
+    predict_per_key = args.extras.get("predict_per_key", "true").strip().lower() in {
         "1",
         "true",
         "yes",
         "y",
         "on",
     }
+    if not predict_per_key:
+        raise ValueError(
+            "Current TCE protocol requires baseline_params.predict_per_key=true for RAG Task A generation. "
+            "Checkpoint-level combined Task A retrieval/prompting is no longer supported."
+        )
+    exposure_anchors_raw = str(args.extras.get("exposure_anchors", "")).strip()
+    exposure_anchors = [
+        int(x.strip())
+        for x in exposure_anchors_raw.split(",")
+        if x.strip()
+    ]
+    calendar_anchor_freq = str(args.extras.get("calendar_anchor_freq", "")).strip()
+    exposure_tokenizer_model = str(args.extras.get("exposure_tokenizer_model", "gpt-4o-mini")).strip()
+    enable_change_reasoning = str(args.extras.get("enable_change_reasoning", "false")).strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "y",
+        "on",
+    }
+    rq3_apply_items_per_key = int(args.extras.get("rq3_apply_items_per_key", "1"))
+    rq3_apply_retrieval_top_k_raw = str(args.extras.get("rq3_apply_retrieval_top_k", "")).strip()
+    rq3_apply_retrieval_top_k = int(rq3_apply_retrieval_top_k_raw) if rq3_apply_retrieval_top_k_raw else None
+    checkpoint_workers = int(args.extras.get("checkpoint_workers", "1"))
+    within_checkpoint_workers = int(args.extras.get("within_checkpoint_workers", "1"))
+    save_every_generation_keys = int(args.extras.get("save_every_generation_keys", "1"))
 
     return run_generation(
         benchmark_path=args.benchmark,
@@ -29,4 +55,16 @@ def run(args: DspAdapterArgs):
         debug_dir=args.debug_dir,
         save_prompt_and_raw=args.save_prompt_and_raw,
         predict_per_key=predict_per_key,
+        exposure_anchors=exposure_anchors,
+        calendar_anchor_freq=calendar_anchor_freq or None,
+        exposure_tokenizer_model=exposure_tokenizer_model or "gpt-4o-mini",
+        enable_change_reasoning=enable_change_reasoning,
+        enable_rq3_apply_service_qa=args.enable_rq3_apply_service_qa,
+        rq3_apply_fail_on_missing_pack=args.rq3_apply_fail_on_missing_pack,
+        rq3_apply_save_prompt_and_raw=args.rq3_apply_save_prompt_and_raw,
+        rq3_apply_items_per_key=rq3_apply_items_per_key,
+        rq3_apply_retrieval_top_k=rq3_apply_retrieval_top_k,
+        checkpoint_workers=checkpoint_workers,
+        within_checkpoint_workers=within_checkpoint_workers,
+        save_every_generation_keys=save_every_generation_keys,
     )

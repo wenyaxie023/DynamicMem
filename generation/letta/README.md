@@ -6,6 +6,7 @@ This directory contains Letta-based baselines for:
 - QA generation: `generation.letta.letta`
 - Dynamic state prediction: `generation.letta.dynamic_state_prediction`
 - Checkpoint agent snapshot builder: `generation.letta.checkpoint_agent_builder`
+- TCE: `generation.letta.tce`
 
 Current implementation uses **agent-loop ingestion**:
 - each app log is sent to Letta agent as one message in chronological order.
@@ -18,6 +19,8 @@ Current implementation uses **agent-loop ingestion**:
   - `generation/letta/results/<user_id>/prediction/letta_results.json`
 - Dynamic state prediction:
   - `generation/letta/results/<user_id>/prediction/dynamic_state_prediction_results.json`
+- TCE:
+  - `generation/letta/results/<user_id>/prediction/tce_results.json`
 - Agent artifacts:
   - checkpoint state: `generation/letta/agents/<user_id>_checkpoint_state.json`
   - lease registry: `generation/letta/agents/<user_id>_leased_agent_ids.json`
@@ -39,6 +42,12 @@ Current implementation uses **agent-loop ingestion**:
   - `bash generation/letta/run_letta_pipeline_test.sh`
 - Build checkpoint snapshots directly:
   - `python3 -m generation.letta.checkpoint_agent_builder --logs-path <app_log_large.json> --benchmark-path <dynamic_state_prediction_benchmark.json> --resume`
+- QA:
+  - `bash generation/letta/run_letta.sh`
+- TCE:
+  - `bash generation/letta/run_letta_tce.sh`
+- TCE eval:
+  - `bash generation/letta/run_eval_letta_tce.sh`
 
 ## Docker Server (OpenAI only)
 

@@ -2,7 +2,7 @@ import json
 from pathlib import Path
 from typing import Any, Dict, List
 
-from dynamic_state_prediction_core.evaluation import normalize_predictions
+from tce_core.evaluation import normalize_predictions
 
 from .contracts import AppLogsBundle, BenchmarkBundle, PredictionBundle
 

@@ -1,0 +1,1167 @@
+"""Shared generation pipeline for TCE baselines."""
+
+import copy
+import json
+import threading
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple, Type, Union
+
+try:
+    from pydantic import BaseModel, ConfigDict, Field, create_model
+except Exception:  # pragma: no cover
+    BaseModel = Any  # type: ignore[assignment]
+    ConfigDict = None  # type: ignore[assignment]
+    Field = None  # type: ignore[assignment]
+    create_model = None  # type: ignore[assignment]
+
+from tqdm import tqdm
+from generation.adapters.base import get_baseline_concurrency_policy
+from .prompts import (
+    build_change_reasoning_prompt,
+    build_generation_prompt,
+    build_rq3_apply_answer_prompt,
+)
+from .task_packs import (
+    build_change_targets_from_pack,
+    build_rq3_apply_retrieval_query,
+    build_state_completion_targets_from_pack,
+)
+from .task_spec import (
+    build_change_reasoning_instruction,
+    build_change_reasoning_task_text,
+    build_prediction_task_from_checkpoint,
+    build_prediction_task_instruction,
+)
+from .exposure_checkpoint_builder import (
+    build_calendar_anchor_checkpoints,
+    build_token_exposure_checkpoints,
+)
+
+EXCLUDED_VALUE_FIELDS = {"priority", "schedule_date", "schedule_dates"}
+
+
+def parse_ts(ts: str) -> datetime:
+    for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%dT%H:%M:%S", "%Y-%m-%dT%H:%M:%S%z"):
+        try:
+            dt = datetime.strptime(ts, fmt)
+            if dt.tzinfo is not None:
+                return dt.astimezone(timezone.utc).replace(tzinfo=None)
+            return dt
+        except ValueError:
+            continue
+    try:
+        dt = datetime.fromisoformat(ts)
+        if dt.tzinfo is not None:
+            return dt.astimezone(timezone.utc).replace(tzinfo=None)
+        return dt
+    except ValueError:
+        return datetime.max
+
+
+def to_log_text(log: Dict[str, Any]) -> str:
+    return json.dumps(
+        {
+            "app_log_id": log.get("app_log_id"),
+            "timestamp": log.get("timestamp"),
+            "app_name": log.get("app_name"),
+            "api_name": log.get("api_name"),
+            "request": log.get("request"),
+            "response": log.get("response"),
+        },
+        ensure_ascii=False,
+    )
+
+
+def flatten_snapshot(snapshot: Any) -> Dict[str, Any]:
+    if not isinstance(snapshot, dict):
+        return {}
+    if any(isinstance(k, str) and ":" in k for k in snapshot.keys()):
+        return {str(k): v for k, v in snapshot.items()}
+    flat: Dict[str, Any] = {}
+    for category, content in snapshot.items():
+        if isinstance(content, dict):
+            for state_name, value in content.items():
+                flat[f"{category}:{state_name}"] = value
+    return flat
+
+
+def drop_excluded_fields(value: Any) -> Any:
+    if isinstance(value, dict):
+        out: Dict[str, Any] = {}
+        for k, v in value.items():
+            if str(k).lower() in EXCLUDED_VALUE_FIELDS:
+                continue
+            out[k] = drop_excluded_fields(v)
+        return out
+    if isinstance(value, list):
+        return [drop_excluded_fields(v) for v in value]
+    return value
+
+
+ScalarValue = Union[str, int, float, bool, None]
+
+
+def fill_blank_template(value: Any) -> Any:
+    if isinstance(value, dict):
+        return {k: fill_blank_template(v) for k, v in value.items()}
+    if isinstance(value, list):
+        return [fill_blank_template(v) for v in value]
+    return "<fill the blank>"
+
+
+def _build_change_templates(before_value: Any, after_value: Any) -> Dict[str, Any]:
+    return {
+        "before": fill_blank_template(before_value),
+        "after": fill_blank_template(after_value),
+        "change_reason": "<fill the blank>",
+        "evidence": [{"app_log_id": "<app_log_id>", "evidence_content": "<supporting snippet>"}],
+    }
+
+
+def _compute_changed_items_by_checkpoint(checkpoints: List[Dict[str, Any]]) -> Dict[str, Dict[str, Any]]:
+    out: Dict[str, Dict[str, Any]] = {}
+    prev_snapshot: Optional[Dict[str, Any]] = None
+    prev_ts = ""
+    for cp in checkpoints:
+        cid = str(cp.get("checkpoint_id"))
+        cp_ts = str((cp.get("as_of") or {}).get("timestamp", ""))
+        cur = flatten_snapshot(cp.get("expected_snapshot_state") or {})
+        cur = {k: drop_excluded_fields(v) for k, v in cur.items()}
+        changed_keys: List[str] = []
+        templates: Dict[str, Any] = {}
+        if prev_snapshot is not None:
+            all_keys = sorted(set(prev_snapshot.keys()) | set(cur.keys()))
+            for k in all_keys:
+                before_v = prev_snapshot.get(k)
+                after_v = cur.get(k)
+                if before_v != after_v:
+                    changed_keys.append(k)
+                    templates[k] = _build_change_templates(before_v, after_v)
+        out[cid] = {
+            "previous_cutoff_ts": prev_ts,
+            "changed_keys": changed_keys,
+            "changed_templates": templates,
+        }
+        prev_snapshot = cur
+        prev_ts = cp_ts
+    return out
+
+
+def normalize_change_reasoning_output(raw_out: Any, changed_keys: List[str]) -> Dict[str, Any]:
+    if not isinstance(raw_out, dict):
+        return {}
+    payload = raw_out.get("change_analysis")
+    if not isinstance(payload, dict):
+        return {}
+    out: Dict[str, Any] = {}
+    for key in changed_keys:
+        item = payload.get(key)
+        if not isinstance(item, dict):
+            out[key] = {"before": None, "after": None, "change_reason": "", "evidence": []}
+            continue
+        evidence = item.get("evidence")
+        evidence_records = normalize_evidence_prediction({"_": evidence}, ["_"]).get("_", [])
+        change_reason = item.get("change_reason")
+        if change_reason is None:
+            change_reason = item.get("reason", "")
+        out[key] = {
+            "before": item.get("before"),
+            "after": item.get("after"),
+            "change_reason": str(change_reason or ""),
+            "evidence": evidence_records,
+        }
+    return out
+
+
+def _retrieve_context_with_task_text(
+    retrieve_context: Callable[..., Dict[str, Any]],
+    checkpoint: Dict[str, Any],
+    memory_pool: List[Dict[str, Any]],
+    target_keys: List[str],
+    task_text: str,
+    retrieval_top_k_override: Optional[int] = None,
+) -> Dict[str, Any]:
+    try:
+        return retrieve_context(
+            checkpoint,
+            memory_pool,
+            target_keys,
+            task_text=task_text,
+            retrieval_top_k_override=retrieval_top_k_override,
+        )
+    except TypeError:
+        try:
+            return retrieve_context(checkpoint, memory_pool, target_keys, task_text=task_text)
+        except TypeError:
+            return retrieve_context(checkpoint, memory_pool, target_keys)
+
+
+def align_prediction_to_template(pred_value: Any, template_value: Any) -> Any:
+    if isinstance(template_value, dict):
+        pred_dict = pred_value if isinstance(pred_value, dict) else {}
+        return {k: align_prediction_to_template(pred_dict.get(k), v) for k, v in template_value.items()}
+    if isinstance(template_value, list):
+        pred_list = pred_value if isinstance(pred_value, list) else []
+        if not template_value:
+            return pred_list
+        item_tmpl = template_value[0]
+        return [align_prediction_to_template(v, item_tmpl) for v in pred_list]
+    return pred_value
+
+
+def _build_value_model(value: Any, model_idx: int, counter: List[int]) -> Any:
+    if isinstance(value, dict):
+        node_idx = counter[0]
+        counter[0] += 1
+        fields: Dict[str, Tuple[Any, Any]] = {}
+        for i, (k, v) in enumerate(value.items()):
+            field_name = f"f_{i}"
+            fields[field_name] = (
+                _build_value_model(v, model_idx, counter),
+                Field(..., alias=str(k)),
+            )
+        return create_model(  # type: ignore[call-overload]
+            f"TceValueNode_{model_idx}_{node_idx}",
+            __config__=ConfigDict(extra="forbid", populate_by_name=True),
+            **fields,
+        )
+    if isinstance(value, list):
+        if not value:
+            return List[ScalarValue]  # type: ignore[valid-type]
+        return List[_build_value_model(value[0], model_idx, counter)]  # type: ignore[valid-type]
+    return ScalarValue
+
+
+def build_prompt(
+    *,
+    checkpoint: Dict[str, Any],
+    context_logs: List[Dict[str, Any]],
+    context_note: str,
+    target_keys: List[str],
+    target_value_templates: Dict[str, Any],
+    retrieval_query: Optional[str] = None,
+    task_text_override: Optional[str] = None,
+) -> str:
+    task_query = task_text_override or build_prediction_task_from_checkpoint(checkpoint, target_keys)
+    return build_generation_prompt(
+        context_logs=context_logs,
+        task_instruction=build_prediction_task_instruction(),
+        task_query=task_query,
+        target_keys=target_keys,
+        target_value_templates=target_value_templates,
+        log_to_text=to_log_text,
+        retrieval_query=retrieval_query,
+        context_note=context_note,
+    )
+
+
+def normalize_evidence_prediction(raw_evidence: Any, target_keys: List[str]) -> Dict[str, List[Dict[str, str]]]:
+    def to_records(value: Any) -> List[Dict[str, str]]:
+        if not isinstance(value, list):
+            return []
+        out: List[Dict[str, str]] = []
+        seen = set()
+        for item in value:
+            log_id = ""
+            evidence_content = ""
+            if isinstance(item, dict):
+                candidate = item.get("app_log_id")
+                if candidate is not None:
+                    log_id = str(candidate).strip()
+                evidence_content = str(item.get("evidence_content") or "").strip()
+            elif isinstance(item, (str, int, float)):
+                log_id = str(item).strip()
+            dedupe_key = (log_id, evidence_content)
+            if dedupe_key in seen:
+                continue
+            if log_id or evidence_content:
+                seen.add(dedupe_key)
+                out.append(
+                    {
+                        "app_log_id": log_id,
+                        "evidence_content": evidence_content,
+                    }
+                )
+        return out
+
+    evidence: Dict[str, List[Dict[str, str]]] = {}
+    if isinstance(raw_evidence, dict):
+        for key in target_keys:
+            evidence[key] = to_records(raw_evidence.get(key))
+    else:
+        for key in target_keys:
+            evidence[key] = []
+    return evidence
+
+
+def _extract_rq3_apply_pack_for_checkpoint(
+    checkpoint: Dict[str, Any],
+    target_keys: List[str],
+    item_count_per_key: int,
+) -> Dict[str, List[Dict[str, str]]]:
+    if "rq3_know_apply" in checkpoint:
+        raise ValueError("Legacy field rq3_know_apply is no longer supported. Use rq3_apply_service_qa.")
+    payload = checkpoint.get("rq3_apply_service_qa")
+    if not isinstance(payload, dict):
+        return {}
+    keys_obj = payload.get("keys")
+    if not isinstance(keys_obj, dict):
+        return {}
+
+    out: Dict[str, List[Dict[str, str]]] = {}
+    for key in target_keys:
+        key_obj = keys_obj.get(key)
+        if not isinstance(key_obj, dict):
+            continue
+        items = key_obj.get("items")
+        if not isinstance(items, list):
+            continue
+        normalized: List[Dict[str, str]] = []
+        for idx, item in enumerate(items):
+            if not isinstance(item, dict):
+                continue
+            qa_id = str(item.get("qa_id") or f"q{idx+1}")
+            service_category = str(item.get("service_category") or "").strip()
+            apply_scenario = str(item.get("apply_scenario") or "").strip()
+            apply_q = str(item.get("question") or item.get("apply_question") or "").strip()
+            apply_a = str(item.get("reference_answer") or item.get("apply_reference_answer") or "").strip()
+            if not apply_q:
+                continue
+            normalized.append(
+                {
+                    "qa_id": qa_id,
+                    "service_category": service_category,
+                    "apply_scenario": apply_scenario,
+                    "apply_question": apply_q,
+                    "retrieval_query": str(item.get("retrieval_query") or "").strip()
+                    or build_rq3_apply_retrieval_query(
+                        service_category=service_category,
+                        question=apply_q,
+                        apply_scenario=apply_scenario,
+                    ),
+                    "apply_reference_answer": apply_a,
+                }
+            )
+        if normalized:
+            out[key] = normalized[: max(1, int(item_count_per_key))]
+    return out
+
+
+def _normalize_rq3_apply_answer_output(raw_out: Any) -> Dict[str, Any]:
+    if not isinstance(raw_out, dict):
+        return {"answer": "", "evidence": []}
+    answer = raw_out.get("answer")
+    if answer is None:
+        answer = raw_out.get("final_answer", "")
+    text = str(answer or "").strip()
+    evidence_records = normalize_evidence_prediction({"_": raw_out.get("evidence")}, ["_"]).get("_", [])
+    return {"answer": text, "evidence": evidence_records}
+
+
+def build_generation_text_format(
+    target_keys: Sequence[str],
+    target_value_templates: Dict[str, Any],
+    model_idx: int,
+) -> Type[BaseModel]:
+    if create_model is None or Field is None or ConfigDict is None:
+        raise RuntimeError(
+            "Structured response requires pydantic. Install pydantic to use this path."
+        )
+    if not target_keys:
+        target_keys = ["__no_key__"]
+
+    snapshot_fields: Dict[str, Tuple[Any, Any]] = {}
+    evidence_fields: Dict[str, Tuple[Any, Any]] = {}
+    counter = [0]
+    for i, key in enumerate(target_keys):
+        field_name = f"k_{i}"
+        evidence_model = create_model(  # type: ignore[call-overload]
+            f"TceEvidenceItem_{model_idx}_{i}",
+            __config__=ConfigDict(extra="forbid", populate_by_name=True),
+            app_log_id=(str, ...),
+            evidence_content=(str, ...),
+        )
+        value_template = target_value_templates.get(key, "<fill the blank>")
+        snapshot_fields[field_name] = (
+            _build_value_model(value_template, model_idx, counter),
+            Field(
+                ...,
+                alias=key,
+                description="Predicted value with the same nested structure as template.",
+            ),
+        )
+        evidence_fields[field_name] = (
+            List[evidence_model],  # type: ignore[valid-type]
+            Field(
+                ...,
+                alias=key,
+                description="Supporting evidence objects for this key.",
+            ),
+        )
+
+    snapshot_model = create_model(  # type: ignore[call-overload]
+        f"TceSnapshotState_{model_idx}",
+        __config__=ConfigDict(extra="forbid", populate_by_name=True),
+        **snapshot_fields,
+    )
+    evidence_model = create_model(  # type: ignore[call-overload]
+        f"TceEvidence_{model_idx}",
+        __config__=ConfigDict(extra="forbid", populate_by_name=True),
+        **evidence_fields,
+    )
+    return create_model(  # type: ignore[call-overload]
+        f"TcePredOutput_{model_idx}",
+        __config__=ConfigDict(extra="forbid"),
+        snapshot_state=(snapshot_model, ...),
+        evidence=(evidence_model, ...),
+    )
+
+
+def normalize_generation_output(raw_out: Any, target_keys: List[str]) -> Dict[str, Any]:
+    if isinstance(raw_out, dict):
+        # Native schema path.
+        if "snapshot_state" in raw_out or "evidence" in raw_out:
+            return {
+                "snapshot_state": raw_out.get("snapshot_state", {}),
+                "evidence": raw_out.get("evidence", {}),
+            }
+
+        # Backward-compatible structured list schema path.
+        items = raw_out.get("predictions")
+        if isinstance(items, list):
+            snapshot_state: Dict[str, Any] = {}
+            evidence: Dict[str, Any] = {}
+            for item in items:
+                if not isinstance(item, dict):
+                    continue
+                key = item.get("key")
+                if key is None:
+                    continue
+                key = str(key)
+                if key not in target_keys:
+                    continue
+                value = item.get("snapshot_value")
+                if value is None and "snapshot_value_json" in item:
+                    value = item.get("snapshot_value_json")
+                snapshot_state[key] = value
+                evidence[key] = item.get("evidence", [])
+            return {"snapshot_state": snapshot_state, "evidence": evidence}
+
+    return {"snapshot_state": {}, "evidence": {}}
+
+
+def write_debug_artifact(debug_dir: Path, checkpoint_id: str, payload: Dict[str, Any]) -> None:
+    debug_dir.mkdir(parents=True, exist_ok=True)
+    path = debug_dir / f"{checkpoint_id}.json"
+    path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def _is_checkpoint_prediction_complete(item: Any) -> bool:
+    if not isinstance(item, dict):
+        return False
+    metadata = item.get("metadata")
+    if not isinstance(metadata, dict):
+        return False
+    return bool(metadata.get("_checkpoint_complete"))
+
+
+def normalize_app_logs(payload: Any) -> List[Dict[str, Any]]:
+    if isinstance(payload, list):
+        logs = payload
+    elif isinstance(payload, dict):
+        logs = payload.get("app_logs", [])
+    else:
+        logs = []
+    logs = [x for x in logs if isinstance(x, dict)]
+    logs.sort(
+        key=lambda x: (
+            parse_ts(str(x.get("timestamp", "9999-12-31 23:59:59"))),
+            str(x.get("app_log_id", "")),
+        )
+    )
+    return logs
+
+
+def observed_logs_for_checkpoint(
+    checkpoint: Dict[str, Any],
+    app_logs: List[Dict[str, Any]],
+) -> Tuple[List[Dict[str, Any]], datetime, str]:
+    cp_ts = str((checkpoint.get("as_of") or {}).get("timestamp", ""))
+    cp_idx_raw = (checkpoint.get("as_of") or {}).get("log_index")
+    if isinstance(cp_idx_raw, int) and 0 <= cp_idx_raw < len(app_logs):
+        observed = app_logs[: cp_idx_raw + 1]
+        cp_dt = parse_ts(cp_ts)
+    else:
+        cp_dt = parse_ts(cp_ts)
+        observed = [
+            log
+            for log in app_logs
+            if parse_ts(str(log.get("timestamp", "9999-12-31 23:59:59"))) <= cp_dt
+        ]
+    return observed, cp_dt, cp_ts
+
+
+def build_target_templates(checkpoint: Dict[str, Any]) -> Tuple[List[str], Dict[str, Any]]:
+    expected_snapshot_flat = flatten_snapshot(checkpoint.get("expected_snapshot_state") or {})
+    expected_snapshot_flat = {k: drop_excluded_fields(v) for k, v in expected_snapshot_flat.items()}
+    target_keys = sorted(expected_snapshot_flat.keys())
+    target_value_templates = {k: fill_blank_template(expected_snapshot_flat.get(k)) for k in target_keys}
+    return target_keys, target_value_templates
+
+
+def build_observable_target_templates(checkpoint: Dict[str, Any]) -> Tuple[List[str], Dict[str, Any], Dict[str, Any]]:
+    """
+    Select per-checkpoint keys that are observable+valid at this anchor.
+    Fallback to expected snapshot keys when observability payload is missing.
+    """
+    expected_snapshot_flat = flatten_snapshot(checkpoint.get("expected_snapshot_state") or {})
+    expected_snapshot_flat = {k: drop_excluded_fields(v) for k, v in expected_snapshot_flat.items()}
+    observability_flat = flatten_snapshot(checkpoint.get("state_observability") or {})
+
+    key_status: Dict[str, Any] = {}
+    candidate_keys: List[str] = []
+    for key, value in expected_snapshot_flat.items():
+        obs = observability_flat.get(key)
+        is_observable = isinstance(obs, dict)
+        is_valid = bool(isinstance(obs, dict) and obs.get("is_valid"))
+        if not observability_flat:
+            # Backward compatibility for older checkpoints without state_observability.
+            is_observable = True
+            is_valid = True
+        key_status[key] = {
+            "observable": is_observable,
+            "valid": is_valid,
+            "selected": bool(is_observable and is_valid),
+            "template_source": "expected_snapshot_state",
+            "value": value,
+        }
+        if is_observable and is_valid:
+            candidate_keys.append(key)
+
+    target_keys = sorted(set(candidate_keys))
+    if not target_keys:
+        # Last-resort fallback so generation never crashes on malformed checkpoints.
+        target_keys = sorted(expected_snapshot_flat.keys())
+        for key in target_keys:
+            status = key_status.setdefault(key, {})
+            status["selected"] = True
+            status["fallback_selected"] = True
+
+    target_value_templates = {k: fill_blank_template(expected_snapshot_flat.get(k)) for k in target_keys}
+    for key in key_status:
+        key_status[key].pop("value", None)
+    return target_keys, target_value_templates, key_status
+
+
+def _extract_prebuilt_sampling_meta(checkpoints: List[Dict[str, Any]]) -> Dict[str, Dict[str, Any]]:
+    out: Dict[str, Dict[str, Any]] = {}
+    for cp in checkpoints:
+        if not isinstance(cp, dict):
+            continue
+        cid = str(cp.get("checkpoint_id", "")).strip()
+        if not cid:
+            continue
+        sampling = cp.get("sampling")
+        if not isinstance(sampling, dict):
+            continue
+        params = sampling.get("params")
+        mode = str(sampling.get("mode", "")).strip()
+        meta: Dict[str, Any] = {}
+        if mode:
+            meta["sampling_mode"] = mode
+        if isinstance(params, dict):
+            meta["sampling_params"] = dict(params)
+        if meta:
+            out[cid] = meta
+    return out
+
+
+def run_pipeline(
+    *,
+    benchmark_path: Path,
+    app_logs_path: Path,
+    output_path: Path,
+    max_visible_logs: Optional[int],
+    ask_json: Callable[[str], Any],
+    ask_structured: Optional[Callable[[str, Type[BaseModel]], Any]],
+    use_structured_response: bool,
+    close: Callable[[], None],
+    retrieve_context: Callable[[Dict[str, Any], List[Dict[str, Any]], List[str]], Dict[str, Any]],
+    baseline_name: str,
+    resume: bool,
+    max_checkpoints: Optional[int],
+    debug: bool,
+    debug_dir: Optional[Path],
+    save_prompt_and_raw: bool,
+    predict_per_key: bool = True,
+    exposure_anchors: Optional[Sequence[int]] = None,
+    calendar_anchor_freq: Optional[str] = None,
+    exposure_tokenizer_model: str = "gpt-4o-mini",
+    enable_change_reasoning: bool = False,
+    enable_rq3_apply_service_qa: bool = False,
+    rq3_apply_fail_on_missing_pack: bool = False,
+    rq3_apply_save_prompt_and_raw: bool = True,
+    rq3_apply_items_per_key: int = 2,
+    rq3_apply_retrieval_top_k: Optional[int] = None,
+    checkpoint_workers: int = 1,
+    within_checkpoint_workers: int = 1,
+    save_every_generation_keys: int = 1,
+) -> Dict[str, Any]:
+    benchmark = json.loads(benchmark_path.read_text(encoding="utf-8"))
+    app_logs = normalize_app_logs(json.loads(app_logs_path.read_text(encoding="utf-8")))
+    raw_checkpoints = benchmark.get("checkpoints", [])
+    checkpoints = [cp for cp in raw_checkpoints if isinstance(cp, dict)]
+    checkpoint_sampling_meta = _extract_prebuilt_sampling_meta(checkpoints)
+    sampling_strategy = benchmark.get("sampling_strategy")
+    has_prebuilt_sampling = bool(
+        isinstance(sampling_strategy, dict)
+        and str(sampling_strategy.get("stage", "")).strip().lower() == "benchmark_build"
+    )
+
+    # Sampling strategy resolution:
+    # - prebuilt benchmark sampling takes precedence
+    # - runtime sampling is used only for legacy/non-prebuilt benchmark payloads
+    if has_prebuilt_sampling:
+        if exposure_anchors or calendar_anchor_freq:
+            print("[TCE] benchmark contains prebuilt sampled checkpoints; runtime sampling params are ignored.")
+    elif exposure_anchors:
+        checkpoints, checkpoint_sampling_meta = build_token_exposure_checkpoints(
+            benchmark_path=benchmark_path,
+            app_logs_large=app_logs,
+            exposure_anchors=list(exposure_anchors or []),
+            tokenizer_model=exposure_tokenizer_model,
+        )
+    elif calendar_anchor_freq:
+        checkpoints, checkpoint_sampling_meta = build_calendar_anchor_checkpoints(
+            benchmark_path=benchmark_path,
+            app_logs_large=app_logs,
+            calendar_anchor_freq=calendar_anchor_freq,
+            tokenizer_model=exposure_tokenizer_model,
+        )
+    if max_checkpoints is not None:
+        checkpoints = checkpoints[:max_checkpoints]
+    changed_items_by_cid = _compute_changed_items_by_checkpoint(checkpoints)
+
+    existing: Dict[str, Dict[str, Any]] = {}
+    if resume and output_path.exists():
+        try:
+            raw = json.loads(output_path.read_text(encoding="utf-8"))
+            for item in raw.get("predictions", []):
+                cid = item.get("checkpoint_id")
+                if cid and _is_checkpoint_prediction_complete(item):
+                    existing[str(cid)] = item
+        except Exception:
+            pass
+
+    policy = get_baseline_concurrency_policy(baseline_name)
+    requested_checkpoint_workers = max(1, int(checkpoint_workers))
+    requested_within_checkpoint_workers = max(1, int(within_checkpoint_workers))
+    checkpoint_workers = requested_checkpoint_workers if policy.checkpoint_parallelism == "allowed" else 1
+    within_checkpoint_workers = (
+        requested_within_checkpoint_workers if policy.within_checkpoint_parallelism == "allowed" else 1
+    )
+    save_every_generation_keys = max(1, int(save_every_generation_keys))
+    checkpoint_order = [str(cp.get("checkpoint_id")) for cp in checkpoints if str(cp.get("checkpoint_id"))]
+    predictions_by_cid: Dict[str, Dict[str, Any]] = {}
+    save_lock = threading.Lock()
+
+    if debug:
+        if debug_dir is None:
+            debug_dir = output_path.parent / "debug_tce"
+        debug_dir.mkdir(parents=True, exist_ok=True)
+
+    if not predict_per_key:
+        raise ValueError(
+            "Current TCE protocol requires per-key Task A state-completion generation. "
+            "Checkpoint-level combined retrieval/prompting is no longer supported."
+        )
+
+    def _ordered_predictions() -> List[Dict[str, Any]]:
+        return [
+            copy.deepcopy(predictions_by_cid[cid])
+            for cid in checkpoint_order
+            if cid in predictions_by_cid
+        ]
+
+    def _save_predictions_snapshot() -> None:
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        output_path.write_text(
+            json.dumps({"predictions": _ordered_predictions()}, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+
+    def _persist_checkpoint_item(item: Dict[str, Any]) -> None:
+        cid = str(item.get("checkpoint_id") or "")
+        if not cid:
+            return
+        with save_lock:
+            predictions_by_cid[cid] = copy.deepcopy(item)
+            _save_predictions_snapshot()
+
+    def _process_checkpoint(cp: Dict[str, Any]) -> Dict[str, Any]:
+        cid = str(cp.get("checkpoint_id"))
+        observed, cp_dt, cp_ts = observed_logs_for_checkpoint(cp, app_logs)
+
+        memory_pool = observed if not max_visible_logs or max_visible_logs <= 0 else observed[-max_visible_logs:]
+
+        state_completion_pack_used = False
+        prebuilt_state_completion_records: Dict[str, Any] = {}
+        pack_targets = build_state_completion_targets_from_pack(cp)
+        if pack_targets is not None:
+            (
+                target_keys,
+                target_value_templates,
+                target_key_status,
+                prebuilt_state_completion_records,
+            ) = pack_targets
+            state_completion_pack_used = True
+        else:
+            target_keys, target_value_templates, target_key_status = build_observable_target_templates(cp)
+
+        item: Dict[str, Any] = {
+            "checkpoint_id": cid,
+            "snapshot_state": {},
+            "evidence": {},
+            "metadata": {
+                "checkpoint_timestamp": cp_ts,
+                "checkpoint_date": cp_dt.strftime("%Y-%m-%d") if cp_dt != datetime.max else "",
+                "history_mode": "full_until_checkpoint" if not max_visible_logs or max_visible_logs <= 0 else "truncated_tail",
+                "max_visible_logs": max_visible_logs,
+                "num_observed_logs": len(observed),
+                "num_memory_pool_logs": len(memory_pool),
+                "target_keys": target_keys,
+                "target_key_count": len(target_keys),
+                "target_value_templates": target_value_templates,
+                "target_key_status": target_key_status,
+                "state_completion_pack_used": state_completion_pack_used,
+                "baseline": baseline_name,
+                "concurrency_policy": {
+                    "checkpoint_parallelism": policy.checkpoint_parallelism,
+                    "within_checkpoint_parallelism": policy.within_checkpoint_parallelism,
+                },
+                "requested_checkpoint_workers": requested_checkpoint_workers,
+                "requested_within_checkpoint_workers": requested_within_checkpoint_workers,
+                "effective_checkpoint_workers": checkpoint_workers,
+                "effective_within_checkpoint_workers": within_checkpoint_workers,
+                "sampled_checkpoint_id": cid,
+                "predict_per_key": predict_per_key,
+                "_checkpoint_complete": False,
+            },
+        }
+        source_cid = cp.get("_source_checkpoint_id")
+        if source_cid:
+            item["metadata"]["source_checkpoint_id"] = source_cid
+        if cid in checkpoint_sampling_meta:
+            sampling_meta = checkpoint_sampling_meta[cid]
+            item["metadata"]["sampling_mode"] = str(sampling_meta.get("sampling_mode", ""))
+            if isinstance(sampling_meta.get("sampling_params"), dict):
+                item["metadata"]["sampling_params"] = dict(sampling_meta.get("sampling_params") or {})
+            item["metadata"]["sampling_strategy"] = {
+                "mode": item["metadata"].get("sampling_mode", ""),
+                "params": item["metadata"].get("sampling_params", {}),
+            }
+        if save_prompt_and_raw:
+            item["metadata"]["prompt"] = []
+            item["metadata"]["raw_model_output"] = {"mode": "per_key", "records": []}
+
+        save_counter = 0
+
+        def _maybe_persist() -> None:
+            nonlocal save_counter
+            save_counter += 1
+            if save_counter % save_every_generation_keys == 0:
+                _persist_checkpoint_item(item)
+
+        context_logs: List[Dict[str, Any]] = []
+        context_note = "Context app logs"
+
+        if state_completion_pack_used and not target_keys:
+            item["snapshot_state"] = {}
+            item["evidence"] = {}
+            item["metadata"]["retrieval_mode"] = "pack_empty_scope"
+            context_logs = []
+            context_note = "Empty state-completion pack scope"
+            if save_prompt_and_raw:
+                item["metadata"]["prompt"] = []
+                item["metadata"]["raw_model_output"] = {"mode": "pack_empty_scope", "records": []}
+        else:
+            per_key_records_by_key: Dict[str, Dict[str, Any]] = {}
+            per_key_retrieval_by_key: Dict[str, Dict[str, Any]] = {}
+            item["snapshot_state"] = {}
+            item["evidence"] = {}
+            def _run_state_completion_key(key_idx: int, key: str) -> Dict[str, Any]:
+                single_keys = [key]
+                single_template = {key: target_value_templates.get(key)}
+                if state_completion_pack_used:
+                    single_task_text = str(
+                        (prebuilt_state_completion_records.get(key) or {}).get("retrieval_query") or ""
+                    ).strip() or build_prediction_task_from_checkpoint(cp, single_keys)
+                else:
+                    single_task_text = build_prediction_task_from_checkpoint(cp, single_keys)
+                single_ctx_info = _retrieve_context_with_task_text(
+                    retrieve_context,
+                    cp,
+                    memory_pool,
+                    single_keys,
+                    single_task_text,
+                )
+                single_context_logs = single_ctx_info.get("context_logs") or []
+                single_retrieval_query = single_ctx_info.get("retrieval_query")
+                single_context_note = single_ctx_info.get("context_note") or "Context app logs"
+                single_retrieval_meta = single_ctx_info.get("metadata") or {}
+                single_prompt = build_prompt(
+                    checkpoint=cp,
+                    context_logs=single_context_logs,
+                    context_note=single_context_note,
+                    target_keys=single_keys,
+                    target_value_templates=single_template,
+                    retrieval_query=single_retrieval_query,
+                    task_text_override=single_task_text,
+                )
+                single_error_messages: List[str] = []
+                single_raw_out: Any = {}
+                try:
+                    if use_structured_response and ask_structured is not None:
+                        try:
+                            text_format = build_generation_text_format(
+                                single_keys,
+                                single_template,
+                                checkpoint_order.index(cid) * 1000 + key_idx,
+                            )
+                            single_raw_out = ask_structured(single_prompt, text_format)
+                            single_out = normalize_generation_output(single_raw_out, single_keys)
+                        except Exception as exc:
+                            single_error_messages.append(f"structured_call_failed: {exc}")
+                            single_raw_out = ask_json(single_prompt)
+                            single_out = normalize_generation_output(single_raw_out, single_keys)
+                    else:
+                        single_raw_out = ask_json(single_prompt)
+                        single_out = normalize_generation_output(single_raw_out, single_keys)
+                except Exception as exc:
+                    single_error_messages.append(f"json_call_failed: {exc}")
+                    single_raw_out = {
+                        "_error": "; ".join(single_error_messages)
+                        if single_error_messages
+                        else f"llm_call_failed: {exc}"
+                    }
+                    single_out = {"snapshot_state": {}, "evidence": {}}
+
+                if single_error_messages and isinstance(single_raw_out, dict):
+                    single_raw_out = dict(single_raw_out)
+                    single_raw_out["_warnings"] = single_error_messages
+
+                single_snapshot = flatten_snapshot(single_out.get("snapshot_state"))
+                if state_completion_pack_used:
+                    single_snapshot = {key: single_snapshot.get(key)}
+                else:
+                    single_snapshot = {key: drop_excluded_fields(single_snapshot.get(key))}
+                single_evidence = normalize_evidence_prediction(single_out.get("evidence"), single_keys)
+                return {
+                    "key": key,
+                    "snapshot_value": align_prediction_to_template(
+                        single_snapshot.get(key),
+                        target_value_templates.get(key),
+                    ),
+                    "evidence": single_evidence.get(key, []),
+                    "record": {
+                        "key": key,
+                        "prompt": single_prompt,
+                        "retrieval_query": single_retrieval_query,
+                        "retrieval_metadata": single_retrieval_meta,
+                        "raw_model_output": single_raw_out,
+                    },
+                    "retrieval": {
+                        "key": key,
+                        "retrieval_query": single_retrieval_query,
+                        "retrieval_metadata": single_retrieval_meta,
+                        "context_log_ids": [x.get("app_log_id") for x in single_context_logs],
+                    },
+                }
+
+            with ThreadPoolExecutor(max_workers=within_checkpoint_workers) as executor:
+                futures = {
+                    executor.submit(_run_state_completion_key, key_idx, key): key
+                    for key_idx, key in enumerate(target_keys)
+                }
+                for future in as_completed(futures):
+                    result = future.result()
+                    key = result["key"]
+                    item["snapshot_state"][key] = result["snapshot_value"]
+                    item["evidence"][key] = result["evidence"]
+                    per_key_records_by_key[key] = result["record"]
+                    per_key_retrieval_by_key[key] = result["retrieval"]
+                    ordered_records = [
+                        per_key_records_by_key[state_key]
+                        for state_key in target_keys
+                        if state_key in per_key_records_by_key
+                    ]
+                    ordered_retrieval = [
+                        per_key_retrieval_by_key[state_key]
+                        for state_key in target_keys
+                        if state_key in per_key_retrieval_by_key
+                    ]
+                    item["metadata"]["retrieval_mode"] = "per_key_isolated"
+                    item["metadata"]["per_key_retrieval"] = ordered_retrieval
+                    if save_prompt_and_raw:
+                        item["metadata"]["prompt"] = [x["prompt"] for x in ordered_records]
+                        item["metadata"]["raw_model_output"] = {"mode": "per_key", "records": ordered_records}
+                    _maybe_persist()
+
+            context_logs = []
+            context_note = "Per-key isolated retrieval contexts"
+
+        if enable_change_reasoning:
+            change_pack_used = False
+            prebuilt_change_records: Dict[str, Any] = {}
+            pack_change_info = build_change_targets_from_pack(cp)
+            if pack_change_info is not None:
+                changed_keys, changed_templates, prev_cutoff_ts, prebuilt_change_records = pack_change_info
+                change_pack_used = True
+            else:
+                change_info = changed_items_by_cid.get(cid, {})
+                changed_keys = list(change_info.get("changed_keys", []))
+                changed_templates = dict(change_info.get("changed_templates", {}))
+                prev_cutoff_ts = str(change_info.get("previous_cutoff_ts", ""))
+            if changed_keys and prev_cutoff_ts:
+                change_analysis: Dict[str, Any] = {}
+                per_key_records: List[Dict[str, Any]] = []
+                def _run_change_key(key: str) -> Dict[str, Any]:
+                    single_keys = [key]
+                    single_templates = {key: changed_templates.get(key, {})}
+                    if change_pack_used:
+                        change_task_text = str(
+                            (prebuilt_change_records.get(key) or {}).get("retrieval_query") or ""
+                        ).strip() or build_change_reasoning_task_text(
+                            cp_ts,
+                            prev_cutoff_ts,
+                            single_templates,
+                        )
+                    else:
+                        change_task_text = build_change_reasoning_task_text(
+                            cp_ts,
+                            prev_cutoff_ts,
+                            single_templates,
+                        )
+                    change_ctx = _retrieve_context_with_task_text(
+                        retrieve_context,
+                        cp,
+                        memory_pool,
+                        single_keys,
+                        change_task_text,
+                    )
+                    change_context_logs = change_ctx.get("context_logs") or []
+                    change_prompt = build_change_reasoning_prompt(
+                        context_logs=change_context_logs,
+                        task_instruction=build_change_reasoning_instruction(),
+                        task_query=change_task_text,
+                        changed_keys=single_keys,
+                        changed_value_templates=single_templates,
+                        log_to_text=to_log_text,
+                        context_note=change_ctx.get("context_note") or "Context app logs",
+                    )
+                    change_raw: Any = {}
+                    try:
+                        change_raw = ask_json(change_prompt)
+                        parsed_single = normalize_change_reasoning_output(change_raw, single_keys)
+                    except Exception as exc:
+                        change_raw = {"_error": f"change_reasoning_failed: {exc}"}
+                        parsed_single = {
+                            key: {"before": None, "after": None, "change_reason": "", "evidence": []}
+                        }
+                    return {
+                        "key": key,
+                        "change_value": parsed_single.get(
+                            key,
+                            {"before": None, "after": None, "change_reason": "", "evidence": []},
+                        ),
+                        "record": {
+                            "key": key,
+                            "prompt": change_prompt,
+                            "retrieval_query": change_ctx.get("retrieval_query"),
+                            "retrieval_metadata": change_ctx.get("metadata") or {},
+                            "raw_model_output": change_raw,
+                        },
+                    }
+
+                with ThreadPoolExecutor(max_workers=within_checkpoint_workers) as executor:
+                    futures = {executor.submit(_run_change_key, key): key for key in changed_keys}
+                    for future in as_completed(futures):
+                        result = future.result()
+                        key = result["key"]
+                        change_analysis[key] = result["change_value"]
+                        per_key_records.append(result["record"])
+                        item["change_analysis"] = change_analysis
+                        item["metadata"]["change_reasoning"] = {
+                            "enabled": True,
+                            "mode": "per_key",
+                            "change_tracking_pack_used": change_pack_used,
+                            "changed_keys_groundtruth": changed_keys,
+                            "previous_cutoff_ts": prev_cutoff_ts,
+                            "per_key_records": per_key_records,
+                        }
+                        _maybe_persist()
+            else:
+                item["change_analysis"] = {}
+                item["metadata"]["change_reasoning"] = {
+                    "enabled": True,
+                    "mode": "per_key",
+                    "change_tracking_pack_used": change_pack_used,
+                    "changed_keys_groundtruth": changed_keys,
+                    "previous_cutoff_ts": prev_cutoff_ts,
+                }
+
+        if enable_rq3_apply_service_qa:
+            rq3_pack = _extract_rq3_apply_pack_for_checkpoint(
+                cp,
+                target_keys=target_keys,
+                item_count_per_key=rq3_apply_items_per_key,
+            )
+            if not rq3_pack:
+                if rq3_apply_fail_on_missing_pack:
+                    raise ValueError(
+                        f"RQ3 apply is enabled but rq3_apply_service_qa pack is missing/invalid for checkpoint {cid}"
+                    )
+                item["rq3_apply_answers"] = {}
+                item["metadata"]["rq3_apply"] = {
+                    "enabled": True,
+                    "missing_pack": True,
+                    "items_per_key": int(rq3_apply_items_per_key),
+                }
+            else:
+                rq3_answers: Dict[str, Any] = {}
+                rq3_raw_records: List[Dict[str, Any]] = []
+                discard_counts: Dict[str, int] = {}
+                def _run_apply_key(key: str) -> Dict[str, Any]:
+                    item_answers: List[Dict[str, Any]] = []
+                    raw_records: List[Dict[str, Any]] = []
+                    for qa_item in rq3_pack.get(key, []):
+                        qa_id = str(qa_item.get("qa_id") or "")
+                        service_category = str(qa_item.get("service_category") or "")
+                        apply_scenario = str(qa_item.get("apply_scenario") or "")
+                        apply_q = str(qa_item.get("apply_question") or "")
+                        apply_retrieval_query = str(qa_item.get("retrieval_query") or apply_q)
+
+                        apply_ctx = _retrieve_context_with_task_text(
+                            retrieve_context,
+                            cp,
+                            memory_pool,
+                            [key],
+                            apply_retrieval_query,
+                            retrieval_top_k_override=rq3_apply_retrieval_top_k,
+                        )
+                        apply_prompt = build_rq3_apply_answer_prompt(
+                            question_text=apply_q,
+                            context_logs=apply_ctx.get("context_logs") or [],
+                            log_to_text=to_log_text,
+                            service_category=service_category,
+                            apply_scenario=apply_scenario,
+                        )
+                        apply_raw: Any = {}
+                        try:
+                            apply_raw = ask_json(apply_prompt)
+                        except Exception as exc:
+                            apply_raw = {"_error": f"rq3_apply_failed: {exc}"}
+                        apply_norm = _normalize_rq3_apply_answer_output(apply_raw)
+                        item_answers.append(
+                            {
+                                "qa_id": qa_id,
+                                "service_category": service_category,
+                                "answer": apply_norm.get("answer", ""),
+                                "evidence": apply_norm.get("evidence", []),
+                            }
+                        )
+                        raw_records.append(
+                            {
+                                "key": key,
+                                "qa_id": qa_id,
+                                "scenario": apply_scenario,
+                                "question": apply_q,
+                                "retrieval_query": apply_retrieval_query,
+                                "prompt": apply_prompt,
+                                "retrieval_metadata": apply_ctx.get("metadata") or {},
+                                "raw_model_output": apply_raw,
+                            }
+                        )
+                    expected_items = ((cp.get("rq3_apply_service_qa") or {}).get("keys", {}).get(key, {}) or {}).get("items", [])
+                    return {
+                        "key": key,
+                        "answers": {"items": item_answers},
+                        "discard_count": max(0, int(len(expected_items)) - int(len(item_answers))),
+                        "raw_records": raw_records,
+                    }
+
+                with ThreadPoolExecutor(max_workers=within_checkpoint_workers) as executor:
+                    futures = {executor.submit(_run_apply_key, key): key for key in sorted(rq3_pack.keys())}
+                    for future in as_completed(futures):
+                        result = future.result()
+                        key = result["key"]
+                        rq3_answers[key] = result["answers"]
+                        discard_counts[key] = result["discard_count"]
+                        rq3_raw_records.extend(result["raw_records"])
+                        item["rq3_apply_answers"] = rq3_answers
+                        item["metadata"]["rq3_apply"] = {
+                            "enabled": True,
+                            "missing_pack": False,
+                            "items_per_key": int(rq3_apply_items_per_key),
+                            "rq3_apply_retrieval_top_k": rq3_apply_retrieval_top_k,
+                            "validator_model": str(((cp.get("rq3_apply_service_qa") or {}).get("validator") or {}).get("model", "")),
+                            "discard_counts": discard_counts,
+                        }
+                        if rq3_apply_save_prompt_and_raw:
+                            item["metadata"]["rq3_apply"]["records"] = rq3_raw_records
+                        _maybe_persist()
+        else:
+            item["metadata"]["rq3_apply"] = {"enabled": False}
+
+        if debug and debug_dir is not None:
+            write_debug_artifact(
+                debug_dir=debug_dir,
+                checkpoint_id=cid,
+                payload={
+                    "checkpoint_id": cid,
+                    "prompt": item.get("metadata", {}).get("prompt"),
+                    "target_keys": target_keys,
+                    "target_value_templates": target_value_templates,
+                    "context_note": context_note,
+                    "context_log_ids": [x.get("app_log_id") for x in context_logs],
+                    "raw_model_output": item.get("metadata", {}).get("raw_model_output"),
+                    "normalized_prediction": {"snapshot_state": item.get("snapshot_state"), "evidence": item.get("evidence")},
+                },
+            )
+
+        item["metadata"]["_checkpoint_complete"] = True
+        _persist_checkpoint_item(item)
+        return item
+
+    progress = tqdm(checkpoints, desc=f"{baseline_name.upper()}-TCE checkpoints", unit="cp")
+    try:
+        pending = []
+        for cp in checkpoints:
+            cid = str(cp.get("checkpoint_id"))
+            progress.set_postfix({"checkpoint_id": cid})
+            if cid in existing:
+                predictions_by_cid[cid] = copy.deepcopy(existing[cid])
+                progress.update(1)
+                _save_predictions_snapshot()
+                continue
+            pending.append(cp)
+
+        with ThreadPoolExecutor(max_workers=checkpoint_workers) as executor:
+            futures = {
+                executor.submit(_process_checkpoint, cp): str(cp.get("checkpoint_id"))
+                for cp in pending
+            }
+            for future in as_completed(futures):
+                cid = futures[future]
+                progress.set_postfix({"checkpoint_id": cid})
+                future.result()
+                progress.update(1)
+    finally:
+        close()
+
+    result = {"predictions": _ordered_predictions()}
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    output_path.write_text(json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8")
+    return result

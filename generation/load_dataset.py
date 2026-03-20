@@ -537,7 +537,7 @@ def load_membench_dataset(
     if not load_ckpts:
         return samples
 
-    benchmark_path = app_log_file.parent / "dynamic_state_prediction_benchmark.json"
+    benchmark_path = app_log_file.parent / "tce_benchmark.json"
     if not benchmark_path.exists():
         raise FileNotFoundError(
             f"Checkpoint benchmark file not found for user '{sample_id}': {benchmark_path}"

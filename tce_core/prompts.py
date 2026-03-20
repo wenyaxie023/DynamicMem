@@ -1,0 +1,1561 @@
+import json
+from typing import Any, Dict, List, Optional
+
+
+def build_generation_prompt(
+    *,
+    context_logs: List[Dict[str, Any]],
+    task_instruction: str,
+    task_query: str,
+    target_keys: List[str],
+    target_value_templates: Dict[str, Any],
+    log_to_text,
+    retrieval_query: Optional[str] = None,
+    context_note: str = "Context app logs",
+) -> str:
+    context = "\n<->\n".join(log_to_text(log) for log in context_logs)
+    snapshot_template = {k: target_value_templates.get(k, "<fill the blank>") for k in target_keys}
+    evidence_template = {
+        k: [{"app_log_id": "<app_log_id>", "evidence_content": "<supporting snippet>"}]
+        for k in target_keys
+    }
+    fill_template = {
+        "snapshot_state": snapshot_template,
+        "evidence": evidence_template,
+    }
+    fill_template_block = json.dumps(fill_template, ensure_ascii=False, indent=2)
+
+    return f"""[Task]
+Instruction:
+{task_instruction}
+
+Query:
+{task_query}
+
+[User memory]
+{context}
+
+[Output format]
+{{
+  "snapshot_state": {{
+    "<key>": "<value or nested object following the template>",
+    "...": "<same structure as template>"
+  }},
+  "evidence": {{
+    "<key>": [
+      {{
+        "app_log_id": "<app_log_id>",
+        "evidence_content": "<supporting snippet from the same log>"
+      }}
+    ],
+    "...": []
+  }}
+}}
+
+[Rules]
+1. Use only evidence implied by logs.
+2. MUST include every key in the template exactly once in snapshot_state and evidence.
+3. Keep exactly the same nested key structure in snapshot_state. Only fill leaf values.
+4. If a leaf value is unresolvable from logs, use null.
+5. evidence for each key must be a list of evidence objects with `app_log_id` and `evidence_content`.
+6. `app_log_id` must exactly match an ID shown in [User memory].
+7. `evidence_content` must be a short quoted or closely paraphrased supporting snippet from the same log as `app_log_id`.
+8. Keep `evidence_content` concise and local to the supporting fact, not a long summary.
+9. If evidence is unknown, use empty list.
+10. No markdown. No extra keys.
+
+Template:
+{fill_template_block}
+"""
+
+
+def build_change_reasoning_prompt(
+    *,
+    context_logs: List[Dict[str, Any]],
+    task_instruction: str,
+    task_query: str,
+    changed_keys: List[str],
+    changed_value_templates: Dict[str, Any],
+    log_to_text,
+    context_note: str = "Context app logs",
+) -> str:
+    context = "\n<->\n".join(log_to_text(log) for log in context_logs)
+    change_template = {k: changed_value_templates.get(k, {}) for k in changed_keys}
+    fill_template = {"change_analysis": change_template}
+    fill_template_block = json.dumps(fill_template, ensure_ascii=False, indent=2)
+
+    return f"""[Task]
+Instruction:
+{task_instruction}
+
+Query:
+{task_query}
+
+[User memory]
+{context}
+
+[Output format]
+{{
+  "change_analysis": {{
+    "<key>": {{
+      "before": "<value or nested object following template.before>",
+      "after": "<value or nested object following template.after>",
+      "change_reason": "<one concise reason or attribution>",
+      "evidence": [
+        {{
+          "app_log_id": "<app_log_id>",
+          "evidence_content": "<supporting snippet from the same log>"
+        }}
+      ]
+    }}
+  }}
+}}
+
+[Rules]
+1. Use only evidence implied by logs.
+2. MUST include every key in the template exactly once.
+3. Keep exactly the same nested structure for before/after values.
+4. If unknown, use null for before/after and empty string for change_reason.
+5. evidence must be a list of evidence objects with `app_log_id` and `evidence_content`.
+6. `app_log_id` must exactly match an ID shown in [User memory].
+7. `evidence_content` must be a short quoted or closely paraphrased supporting snippet from the same log as `app_log_id`.
+8. Keep `evidence_content` concise and local to the supporting fact, not a long summary.
+9. No markdown. No extra keys.
+
+Template:
+{fill_template_block}
+"""
+
+
+def build_personalized_service_question_pack_prompt(
+    *,
+    checkpoint_timestamp: str,
+    state_type: str,
+    state_key: str,
+    state_value: Any,
+    item_count: int = 2,
+) -> str:
+    item_count = max(1, int(item_count))
+    item_template = [
+        {
+            "service_category": "<one service category name>",
+            "question": "<one concise free-form question asking what service should be provided for the user>",
+            "reference_answer": "<short canonical answer>",
+        }
+        for i in range(item_count)
+    ]
+    return """[Task Instruction]
+Generate personalized service free-form QA items that test whether an LLM can remember and correctly use one user state item
+to provide the right personalized service for the user.
+
+The generated question will be asked directly to the responding model, which should naturally act as the assistant serving the user.
+The question must require the given user state item to answer correctly.
+
+Do not generate questions that mainly test state recall, paraphrase, trivial lookup, or generic common-sense advice.
+Instead, generate questions where the best answer depends on using the provided user state item to decide what service should be provided for the user.
+
+Each item must include:
+- one service_category
+- one question
+- one reference_answer
+
+[Definitions]
+- user state item: one structured memory item about the user.
+- state_type: the type of the user state item. It must be exactly one of:
+  - attribute
+  - habit
+  - preference
+
+- attribute: a relatively stable fact about the user, such as memberships, affiliations, roles, social context, access, or standing constraints.
+- habit: a recurring behavior pattern, routine, or repeated timing pattern that affects when or how service should be delivered.
+- preference: a favored option, favored format, or comparative inclination that affects which service action is best for the user.
+
+- personalized service: a service decision or action tailored to the user, such as what should be recommended, scheduled, sent, chosen, routed, or prioritized for the user.
+
+- service_category: the type of service decision the item is about. It must name the service context in a short and concrete way.
+  Allowed examples include:
+  - shopping recommendation
+  - plan recommendation
+  - scheduling
+  - outreach
+  - event recommendation
+  - provider choice
+  - notification strategy
+  - community engagement
+  - content recommendation
+  - support routing
+  The service_category is a label for the kind of service being personalized, not a full scenario description.
+
+- question: one concise free-form question asking what service should be provided for the user.
+  The question should be written so that the responding model naturally acts as the assistant.
+  The question must not be multiple choice and must not list answer options.
+  Good patterns include:
+  - What policy should the assistant apply for the user ...?
+  - How should the assistant prioritize or route ...?
+  - What service configuration should the assistant adopt for the user ...?
+  - How should the assistant respond when ...?
+
+- reference_answer: a short canonical answer naming the best personalized service action for the user.
+  It should be specific, action-oriented, and concise.
+
+- strong item: an item where the given state item is necessary for the correct answer, and if the state changed to a reasonable alternative, the best answer would likely change.
+- weak item: an item that can be answered correctly without using the state item, or by generic common sense alone, or by simply paraphrasing the state.
+
+[Constraints]
+1. Generate exactly {item_count} items in list order.
+2. Each item must use exactly one given user state item as the key personalization signal.
+3. Each item must be a free-form QA item.
+4. Each item must be about a realistic personalized service decision.
+5. The question must directly ask what service should be provided for the user.
+6. The question must be concise and ask for one best service action.
+7. Do not include explicit answer options in the question, and do not frame the question as a named A/B menu of candidate actions.
+8. The correct answer must depend on the given state item; if the state changed to a reasonable alternative, the best answer would likely change.
+9. Do not rely on any user state other than the provided state item.
+10. Do not address the user as "you", "your", or "yours".
+11. Keep the reference_answer short, specific, and action-oriented.
+12. The program will assign internal item ids automatically. Do not generate `qa_id` or any other internal identifier field.
+13. Prefer service decisions that fit the state type:
+   - for attribute: route/prioritize policy, specialist-plan choice, eligibility/access handling, provider choice, or bounded support triage
+   - for habit: interruption policy, batching policy, defer-vs-escalate policy, notification suppression/surfacing, or service timing strategy around a recurring routine
+   - for preference: recommendation format, communication format, plan format, or recommend-vs-avoid policy where the best action depends on the user's comparative preference
+14. Prefer bounded policy or service-decision questions such as:
+   - defer vs escalate policy
+   - route / prioritize policy
+   - recommend / avoid policy
+   - configure / suppress / surface policy
+15. Avoid question types that mainly ask for:
+   - exact capacity calculation
+   - lot or tactic optimization
+   - monitoring-rule design
+   - threshold-setting
+   - exact inventory / participant arithmetic
+16. The question must require a real decision tension: at least two plausible service actions should exist, and the provided state item must be what makes one action better than the alternative.
+17. For habit states, schedule-grounded service operations are valid when the question asks what the assistant should do around the routine, such as silence, batch, defer, protect, or flag conflicts; do not ask the model to merely report the routine time/date or compute a timestamp from it.
+18. Do not turn the item into a pure lookup, direct state restatement, trivial extraction, or simple calendar arithmetic problem with no real assistant-action layer.
+19. Reject questions whose scenario merely echoes the same wording, label, or semantic category already present in the state; if the question can be answered by copying the state language into the scenario, the item is invalid.
+20. Reject questions whose main work is exact timestamp calculation, duration calculation, buffer calculation, generic troubleshooting, or simple fit/capacity matching.
+21. Reject questions where the scenario itself injects the decisive rule and the user state becomes unnecessary.
+22. Before finalizing an item, internally test a reasonable counterfactual version of the state; if the best action would not change, discard that candidate and generate a stronger item.
+23. The reference_answer must not introduce concrete facts, parameters, product specifications, thresholds, or background knowledge that are not explicit in `state_value` or in the question itself.
+24. The reference_answer must not introduce extra methods, tactics, metrics, escalation mechanisms, capacity calculations, or domain-specific tricks unless they are already explicit in `state_value` or in the question.
+25. Make the reference_answer a complete action rather than a vague label or partial sub-step.
+26. Output JSON only, strictly matching schema, with no extra fields.
+
+[Example]
+[Example Input 1]
+state_type: "preference"
+state_key: "learning_modality"
+state_value: {{
+  "statement": "Prefers in-depth, self-paced technical white papers and webinars over large conferences",
+  "signals": [
+    "Completed a self-paced technical certificate program instead of attending a live bootcamp",
+    "Saved several specialist white papers for later review",
+    "Declined a large conference in favor of webinar-based continuing education"
+  ]
+}}
+
+[Example Output 1]
+{{
+  "items": [
+    {{
+      "service_category": "training plan recommendation",
+      "question": "What training format should the assistant arrange for the user's upcoming technical upskilling plan?",
+      "reference_answer": "Arrange a self-paced package of technical white papers and on-demand webinars instead of registering the user for a live conference."
+    }}
+  ]
+}}
+
+[Example Input 2]
+state_type: "habit"
+state_key: "sunday_family_dinner"
+state_value: {{
+  "schedule": {{
+    "frequency_type": "weekly",
+    "days_of_week": [0]
+  }},
+  "timing": {{
+    "start_time": "15:00",
+    "end_time": "17:00"
+  }},
+  "priority": "high"
+}}
+
+[Example Output 2]
+{{
+  "items": [
+    {{
+      "service_category": "notification strategy",
+      "question": "How should the assistant handle non-urgent notifications during the user's recurring Sunday family dinner block?",
+      "reference_answer": "Silence non-urgent notifications until the dinner block ends, and surface only urgent family coordination issues immediately."
+    }}
+  ]
+}}
+
+[Example Input 3]
+state_type: "attribute"
+state_key: "professional_certifications"
+state_value: "Certified to advise clients on new environmental compliance standards for industrial coating operations."
+
+[Example Output 3]
+{{
+  "items": [
+    {{
+      "service_category": "support routing",
+      "question": "How should the assistant route this week's incoming client advisory work for the user?",
+      "reference_answer": "Route environmental compliance advisory requests that match the user's certification to the user, and route generic relationship-management follow-ups elsewhere."
+    }}
+  ]
+}}
+
+[Bad Example]
+- Bad question: "What exact time interval should the assistant reserve for the user's final October budget review if the session needs a 15-minute lead-in and lasts 60 minutes?"
+- Why bad:
+  - It mainly reduces to schedule lookup plus one-step arithmetic.
+  - It does not test a meaningful personalized service decision.
+  - It is likely to fail `service_decision_quality`.
+
+[Bad Example 2]
+- Bad question: "What specific lot-selection strategy should the assistant utilize when the user requests to liquidate a portion of the portfolio for an upcoming expense?"
+- Bad answer: "Prioritize selling investment lots with the highest cost basis to minimize realized capital gains."
+- Why bad:
+  - The answer imports a specific financial tactic that is not explicit in the state or the question.
+  - It is likely to fail `answer_groundedness`.
+
+[Bad Example 3]
+- Bad question: "What type of care recommendation should the assistant prioritize when the user reports a minor, non-acute health issue?"
+- Why bad:
+  - It mainly restates the preference into a matching scenario rather than creating a real service decision.
+  - It can be answered by echoing the same state wording, so it is likely to fail `service_decision_quality`.
+
+[Input/Output Format]
+Input:
+- checkpoint_timestamp: checkpoint timestamp string
+- state_type: one of "attribute", "habit", "preference"
+- state_key: one validated state item key
+- state_value: structured value for that state item
+
+Actual Input:
+- checkpoint_timestamp: {checkpoint_timestamp}
+- state_type: {state_type}
+- state_key: {state_key}
+- state_value: {state_value}
+
+Output JSON ONLY:
+{{
+  "items": [
+    {{
+      "service_category": "...",
+      "question": "...",
+      "reference_answer": "..."
+    }}
+  ]
+}}
+
+[Schema Template]
+{item_template}
+""".format(
+        item_count=item_count,
+        checkpoint_timestamp=checkpoint_timestamp,
+        state_type=json.dumps(state_type, ensure_ascii=False),
+        state_key=json.dumps(state_key, ensure_ascii=False),
+        state_value=json.dumps(state_value, ensure_ascii=False),
+        item_template=json.dumps(item_template, ensure_ascii=False, indent=2),
+    )
+
+
+def _infer_apply_state_type(state_key: str) -> str:
+    prefix = str(state_key or "").split(":", 1)[0].strip().lower()
+    if prefix == "habits_state":
+        return "habit"
+    if prefix == "preferences_state":
+        return "preference"
+    return "attribute"
+
+
+def build_rq3_apply_question_pack_prompt(
+    *,
+    checkpoint_timestamp: str,
+    state_key: str,
+    state_value: Any,
+    item_count: int = 2,
+) -> str:
+    return build_personalized_service_question_pack_prompt(
+        checkpoint_timestamp=checkpoint_timestamp,
+        state_type=_infer_apply_state_type(state_key),
+        state_key=state_key,
+        state_value=state_value,
+        item_count=item_count,
+    )
+
+def build_rq3_apply_answer_prompt(
+    *,
+    question_text: str,
+    context_logs: List[Dict[str, Any]],
+    log_to_text,
+    service_category: str = "",
+    apply_scenario: str = "",
+) -> str:
+    context = "\n<->\n".join(log_to_text(log) for log in context_logs)
+    query_parts = []
+    if str(service_category or "").strip():
+        query_parts.append("Service category:\n{}".format(str(service_category or "").strip()))
+    if str(apply_scenario or "").strip():
+        query_parts.append("Service scenario:\n{}".format(str(apply_scenario or "").strip()))
+    query_parts.append("Question:\n{}".format(question_text))
+    return """[Task]
+Instruction:
+Answer one personalized service question using only the provided user memory.
+
+Query:
+{query_block}
+
+[User memory]
+{context}
+
+[Output format]
+{{
+  "answer": "<concise answer>",
+  "evidence": [
+    {{
+      "app_log_id": "<app_log_id>",
+      "evidence_content": "<supporting snippet from the same log>"
+    }}
+  ]
+}}
+
+[Rules]
+1. Use only information from [User memory].
+2. If the question cannot be answered from [User memory], set "answer" to "".
+3. Keep "answer" short, specific, and directly responsive to the question.
+4. `evidence` must be a list of evidence objects with `app_log_id` and `evidence_content`.
+5. `app_log_id` must exactly match an ID shown in [User memory].
+6. `evidence_content` must be a short quoted or closely paraphrased supporting snippet from the same log as `app_log_id`.
+7. Keep `evidence_content` concise and local to the supporting fact, not a long summary.
+8. If no supporting log exists, set "evidence" to [].
+9. No markdown. No extra fields.
+""".format(
+        query_block="\n\n".join(query_parts).strip(),
+        context=context,
+    )
+
+
+def build_rq3_apply_validation_prompt(
+    *,
+    state_key: str,
+    state_value: Any,
+    service_category: str = "",
+    question: str = "",
+    reference_answer: str = "",
+    apply_scenario: str = "",
+    apply_question: str = "",
+    apply_reference_answer: str = "",
+) -> str:
+    question = str(question or apply_question or "").strip()
+    reference_answer = str(reference_answer or apply_reference_answer or "").strip()
+    service_category = str(service_category or "").strip()
+    criteria_template = [
+        {
+            "criterion": "personalization_necessity",
+            "analysis": "<why the answer does or does not materially depend on the user state>",
+            "pass": "<bool>",
+        },
+        {
+            "criterion": "service_decision_quality",
+            "analysis": "<whether the item asks for a real assistant/service decision rather than recall, lookup, or an explicit option menu>",
+            "pass": "<bool>",
+        },
+        {
+            "criterion": "answer_groundedness",
+            "analysis": "<whether the reference answer stays within information explicit in the state_value or the question>",
+            "pass": "<bool>",
+        },
+    ]
+    return """[Task Instruction]
+Validate whether this apply-service QA item is a strong personalized service decision item.
+Judge the item by three fixed semantic criteria and provide one explicit analysis for each criterion.
+Do not output an overall verdict; only output the structured criterion-level judgments.
+
+[Definitions]
+- personalization_necessity: The correct answer must materially depend on the user's state, not merely on generic service logic or scenario-only constraints.
+- service_decision_quality: The item must ask for a real assistant/service decision rather than a fact lookup, pure classification, raw state recall, or an explicit A/B menu. For habit states, schedule-grounded service execution, conflict handling, batching, silencing, defer/escalate, or routine-protection questions can still pass when they ask what the assistant should do around the routine rather than merely asking what time or date the routine occurs.
+- answer_groundedness: The reference answer must stay within information explicit in the `state_value` or the `question`, and be specific enough that a point-based rubric can score predictions stably.
+- grounded reference answer: a reference answer that uses only information explicit in the `state_value` or the `question`, without adding new concrete facts, thresholds, product specs, or background knowledge.
+- candidate QA: the proposed service category, question, and reference answer to judge.
+
+[Constraints]
+1. Evaluate exactly the three required criteria in this fixed order: personalization_necessity, service_decision_quality, answer_groundedness.
+2. Output exactly one object for each required criterion.
+3. Use the criterion names exactly as given; do not rename, reorder, omit, or add criteria.
+4. Set `pass` to true only when the criterion is clearly satisfied.
+5. Keep each `analysis` concise but specific, and explain why the criterion passes or fails.
+6. Mark `service_decision_quality` as failed if the item mainly collapses to raw state recall, event-name lookup, timestamp/date lookup, one-step arithmetic with no real assistant-action layer, or an explicit A/B or named-option menu instead of a natural assistant service request.
+7. For habit states, allow schedule-grounded service operations such as silence, batch, defer, protect, or flag conflicts when the question is asking what the assistant should do.
+8. Mark `personalization_necessity` as failed if the scenario itself injects the decisive rule and the user state becomes unnecessary.
+9. Mark `answer_groundedness` as failed if the answer is too vague for stable scoring or introduces new concrete facts, thresholds, tactics, metrics, product specs, or background knowledge that are not explicit in `state_value` or `question`.
+10. Output JSON ONLY with no markdown and no extra keys.
+
+[Example]
+[Example Input]
+state_key: "preferences_state:learning_modality"
+state_value: {{"statement": "Prefers in-depth, self-paced technical white papers and webinars over large conferences"}}
+candidate_qa: {{
+  "service_category": "content recommendation",
+  "question": "What professional development resource should be recommended for the user this quarter?",
+  "reference_answer": "Recommend an in-depth self-paced bundle of technical white papers and on-demand webinars."
+}}
+
+[Example Output]
+{{
+  "criteria": [
+    {{
+      "criterion": "personalization_necessity",
+      "analysis": "The best action depends on the user's preference for self-paced, in-depth learning rather than generic quality alone.",
+      "pass": true
+    }},
+    {{
+      "criterion": "service_decision_quality",
+      "analysis": "The item asks the assistant to make one concrete learning-resource decision rather than perform recall or choose from an explicit menu.",
+      "pass": true
+    }},
+    {{
+      "criterion": "answer_groundedness",
+      "analysis": "The reference answer names one bounded service action without importing any new details beyond the state and question.",
+      "pass": true
+    }}
+  ]
+}}
+
+[Input/Output Format]
+Input:
+- state_key: string
+- state_value: object
+- candidate QA: object with `service_category`, `question`, `reference_answer`
+
+Input Payload:
+- state_key: {state_key}
+- state_value: {state_value}
+- candidate_qa: {{
+    "service_category": {service_category},
+    "question": {question},
+    "reference_answer": {reference_answer}
+  }}
+
+Output JSON ONLY:
+{{
+  "criteria": [
+    {{
+      "criterion": "<one required criterion name>",
+      "analysis": "<why it passes or fails>",
+      "pass": "<bool>"
+    }}
+  ]
+}}
+
+[Schema Template]
+{criteria_template}
+""".format(
+        state_key=state_key,
+        state_value=json.dumps(state_value, ensure_ascii=False),
+        service_category=json.dumps(service_category, ensure_ascii=False),
+        question=json.dumps(question, ensure_ascii=False),
+        reference_answer=json.dumps(reference_answer, ensure_ascii=False),
+        criteria_template=json.dumps(criteria_template, ensure_ascii=False, indent=2),
+    )
+
+
+def build_state_questionability_validation_prompt(
+    *,
+    state_key: str,
+    state_value: Any,
+    askable_fields: List[str],
+    state_observability: Dict[str, Any],
+    evidence_logs: List[Dict[str, Any]],
+) -> str:
+    return """[Task Instruction]
+Validate whether this state is inferable from evidence and question-worthy for apply QA generation.
+Evaluate field-level inferability first, then produce a key-level decision.
+Success means only evidence-supported fields are marked valid.
+
+[Definitions]
+- state_key: the state item being validated.
+- state_value: the structured target value for this state_key at checkpoint time.
+- candidate_field_paths: field paths to evaluate for inferability.
+- state_observability: observability metadata for this state key (for example `is_valid`, `evidence_app_log_ids`, `last_app_log_id`).
+- evidence_logs: related app logs up to checkpoint time; these are the primary evidence.
+- field_verdict: one field-level decision with `{{field_name, reason_analysis, is_valid}}`.
+- key-level `is_questionable`: true only when at least one field verdict has `is_valid=true`.
+
+[Constraints]
+1. Evaluate each path in `candidate_field_paths` independently.
+2. Output exactly one `field_verdicts` item per candidate field path.
+3. Use field names exactly from `candidate_field_paths`; do not invent paths.
+4. Set `is_valid=true` only if evidence logs support inferring that field with high confidence.
+5. If evidence is missing or ambiguous, set `is_valid=false` and explain why in `reason_analysis`.
+6. Set top-level `is_questionable=true` only when at least one field has `is_valid=true`.
+7. Keep `reason_codes` concise and machine-friendly (snake_case preferred).
+8. Output JSON ONLY with no markdown and no extra keys.
+
+[Example]
+[Example Input]
+state_key: "habits_state:budget_review"
+candidate_field_paths: ["schedule.days_of_week", "timing.start_time", "timing.end_time"]
+evidence_logs: [{{"app_log_id":"log_0101","api_name":"scheduleService","response":"...Sunday 09:00 reminder..."}}]
+
+[Example Output]
+{{
+  "is_questionable": true,
+  "reason_codes": ["partial_field_support"],
+  "field_verdicts": [
+    {{
+      "field_name": "schedule.days_of_week",
+      "reason_analysis": "Weekly Sunday pattern is explicit in multiple logs.",
+      "is_valid": true
+    }},
+    {{
+      "field_name": "timing.start_time",
+      "reason_analysis": "Start action repeatedly appears at 09:00.",
+      "is_valid": true
+    }},
+    {{
+      "field_name": "timing.end_time",
+      "reason_analysis": "No evidence provides a duration or explicit end time.",
+      "is_valid": false
+    }}
+  ]
+}}
+
+[Input/Output Format]
+Input:
+- state_key: string
+- state_value: object
+- candidate_field_paths: string[]
+- state_observability: object
+- evidence_logs: object[]
+
+Input Payload:
+- state_key: {state_key}
+- state_value: {state_value}
+- candidate_field_paths: {askable_fields}
+- state_observability: {state_observability}
+- evidence_logs: {evidence_logs}
+
+Output JSON ONLY:
+{{
+  "is_questionable": "<bool>",
+  "reason_codes": ["<short_code>", "..."],
+  "field_verdicts": [
+    {{
+      "field_name": "<field path from candidate_field_paths>",
+      "reason_analysis": "<why inferable or not inferable from evidence>",
+      "is_valid": "<bool>"
+    }}
+  ]
+}}
+""".format(
+        state_key=state_key,
+        state_value=json.dumps(state_value, ensure_ascii=False),
+        askable_fields=json.dumps(list(askable_fields or []), ensure_ascii=False),
+        state_observability=json.dumps(state_observability or {}, ensure_ascii=False),
+        evidence_logs=json.dumps(list(evidence_logs or []), ensure_ascii=False),
+    )
+
+
+def build_change_reason_validation_prompt(
+    *,
+    state_key: str,
+    state_value: Any,
+    change_reason: str,
+    state_observability: Dict[str, Any],
+    evidence_logs: List[Dict[str, Any]],
+) -> str:
+    return """[Task Instruction]
+Validate whether one canonical gold change reason is sufficiently supported by evidence logs to be used as a Task B gold reason.
+This is a metadata validation task, not a field-level state validation task.
+
+[Definitions]
+- state_key: the state item whose change reason is being validated.
+- state_value: the structured target value for this state_key at checkpoint time.
+- change_reason: the canonical gold reason text from upstream data construction.
+- state_observability: observability metadata for this state key (for example `is_valid`, `evidence_app_log_ids`, `last_app_log_id`, `last_change_reason`).
+- evidence_logs: related app logs up to checkpoint time; these are the primary evidence.
+- valid change reason: a reason text that is explicitly supported, or strongly and conservatively inferable, from the evidence logs and does not conflict with the state change implied by the evidence.
+
+[Constraints]
+1. Judge only whether `change_reason` is evidence-supported enough to be used as gold metadata for Task B.
+2. Be conservative: if evidence is missing, indirect, or ambiguous, mark the change reason invalid.
+3. Do not rewrite the change reason.
+4. `exists` must be `true` when a non-empty `change_reason` is provided.
+5. Set `is_valid=true` only when the evidence logs support this change reason with high confidence.
+6. If invalid, explain the evidence gap or mismatch in `reason_analysis`.
+7. Keep `reason_codes` concise and machine-friendly (snake_case preferred).
+8. Output JSON ONLY with no markdown and no extra keys.
+
+[Example]
+[Example Input]
+state_key: "profile_state:commute_mode"
+change_reason: "Switched to train commuting after downtown parking fees increased."
+evidence_logs: [{{"app_log_id":"log_0201","api_name":"commutePlanner","response":"...parking fees downtown rose again... train commute selected for weekdays..."}}]
+
+[Example Output]
+{{
+  "exists": true,
+  "reason_analysis": "The evidence explicitly mentions higher downtown parking fees and the switch to train commuting.",
+  "is_valid": true,
+  "reason_codes": []
+}}
+
+[Input/Output Format]
+Input:
+- state_key: string
+- state_value: object
+- change_reason: string
+- state_observability: object
+- evidence_logs: object[]
+
+Input Payload:
+- state_key: {state_key}
+- state_value: {state_value}
+- change_reason: {change_reason}
+- state_observability: {state_observability}
+- evidence_logs: {evidence_logs}
+
+Output JSON ONLY:
+{{
+  "exists": "<bool>",
+  "reason_analysis": "<why the change reason is or is not evidence-supported>",
+  "is_valid": "<bool>",
+  "reason_codes": ["<short_code>", "..."]
+}}
+""".format(
+        state_key=state_key,
+        state_value=json.dumps(state_value, ensure_ascii=False),
+        change_reason=json.dumps(str(change_reason or ""), ensure_ascii=False),
+        state_observability=json.dumps(state_observability or {}, ensure_ascii=False),
+        evidence_logs=json.dumps(list(evidence_logs or []), ensure_ascii=False),
+    )
+
+
+def build_rq3_apply_rewrite_prompt(
+    *,
+    state_key: str,
+    state_value: Any,
+    service_category: str = "",
+    question: str = "",
+    reference_answer: str = "",
+    apply_scenario: str = "",
+    apply_question: str = "",
+    apply_reference_answer: str = "",
+    failed_rules: List[str],
+    semantic_criteria: List[Dict[str, Any]],
+) -> str:
+    service_category = str(service_category or "").strip()
+    question = str(question or apply_question or "").strip()
+    reference_answer = str(reference_answer or apply_reference_answer or "").strip()
+    return """[Task Instruction]
+Rewrite one invalid apply-service QA item so that it becomes a strong personalized service decision item.
+Use the failed rules and semantic-criterion feedback to directly fix the item.
+Do not merely paraphrase the invalid item.
+
+[Definitions]
+- failed_rules: the programmatic failure codes and failed criterion names that must be fixed.
+- semantic criteria feedback: criterion-level judgments explaining which properties failed and why.
+- strong apply item: an item where the correct answer materially depends on the user's state, asks for a concrete service action, requires the assistant to use that state to decide what to do, and has a specific answer that can be scored with points.
+
+[Constraints]
+1. Keep third-person wording about the user; never use "you", "your", or "yours".
+2. Keep exactly one service decision question in one sentence.
+3. Keep the revised reference answer short, specific, and deterministic.
+4. Fix every failed rule and every failed semantic criterion; do not preserve the original framing if it caused the failure.
+5. If `personalization_necessity` failed, rewrite the question so the correct answer materially depends on the user's state.
+6. If `service_decision_quality` failed, rewrite the item so that it asks for a real assistant/service decision rather than raw recall, naked lookup, one-step arithmetic, or an explicit option menu. For habit states, schedule-grounded service operations are allowed when the question asks what the assistant should do around the routine rather than merely recalling the routine time/date.
+7. If `answer_groundedness` failed, make the revised answer more specific and bounded without introducing concrete facts, thresholds, tactics, metrics, product specs, or background knowledge that are not explicit in `state_value` or the question.
+8. Output JSON ONLY with no extra keys.
+
+[Example]
+[Example Input]
+failed_rules: ["personalization_necessity", "service_decision_quality"]
+semantic_criteria: [
+  {{"criterion": "personalization_necessity", "analysis": "The decisive cancellation rule is introduced entirely by the scenario, so the user state is not doing the real work.", "pass": false}},
+  {{"criterion": "service_decision_quality", "analysis": "The item mainly asks the model to identify one date from the schedule instead of deciding what the assistant should do.", "pass": false}},
+  {{"criterion": "answer_groundedness", "analysis": "The answer is grounded enough once the scenario is improved.", "pass": true}}
+]
+
+[Example Output]
+{{
+  "service_category": "notification strategy",
+  "question": "What communication policy should the assistant adopt for the user during recurring technical briefing periods?",
+  "reference_answer": "Hold non-urgent update requests until after the user's standing briefing block finishes, but interrupt immediately for urgent escalation requests."
+}}
+
+[Input/Output Format]
+Input:
+- state_key: string
+- state_value: object
+- invalid QA: object with `service_category`, `question`, `reference_answer`
+- failed_rules: string[]
+- semantic_criteria: object[]
+
+Input Payload:
+- state_key: {state_key}
+- state_value: {state_value}
+- invalid_qa: {{
+    "service_category": {service_category},
+    "question": {question},
+    "reference_answer": {reference_answer}
+  }}
+- failed_rules: {failed_rules}
+- semantic_criteria: {semantic_criteria}
+
+Output JSON ONLY:
+{{
+  "service_category": "...",
+  "question": "...",
+  "reference_answer": "..."
+}}
+""".format(
+        state_key=state_key,
+        state_value=json.dumps(state_value, ensure_ascii=False),
+        service_category=json.dumps(service_category, ensure_ascii=False),
+        question=json.dumps(question, ensure_ascii=False),
+        reference_answer=json.dumps(reference_answer, ensure_ascii=False),
+        failed_rules=json.dumps(list(failed_rules or []), ensure_ascii=False),
+        semantic_criteria=json.dumps(list(semantic_criteria or []), ensure_ascii=False),
+    )
+
+
+def build_value_micro_points_prompt(
+    *,
+    state_key: str,
+    text_value: str,
+    max_points: int,
+) -> str:
+    max_points = max(1, min(3, int(max_points)))
+    template = ["<one atomic scoring point>" for _ in range(max_points)]
+    return """[Task Instruction]
+Break one complex state field into 1 to {max_points} atomic facts.
+Each atomic fact should capture one atomic meaning unit that a model prediction should express.
+
+[Definitions]
+- complex state field: one statement-like field whose meaning should not be judged as one holistic blob.
+- atomic fact: one atomic scoring requirement.
+- scoreable atomic fact: one concrete aspect of correctness that can be judged independently on the shared binary `0/1` hit scale.
+- brittle atomic fact: a fact that depends on unnecessary exact model / spec / parameter / exact wording instead of stable semantic meaning.
+
+[Constraints]
+1. Generate 1 to {max_points} atomic facts.
+2. Each atomic fact must be independently judgeable on the shared binary `0/1` hit scale.
+3. Keep all atomic facts positive.
+4. Every atomic fact must be directly supported by the source text.
+5. Do not add stronger preferences, motivations, or implications that are not stated.
+6. Do not repeat the same meaning in multiple points.
+7. Prefer stable semantic requirements over brittle exact surface forms.
+8. Do not generate multiple points that all hinge on the same narrow identifier, model name, spec, parameter, or exact wording.
+9. Use an exact identifier only when it is itself the canonical memory fact or is necessary to disambiguate two otherwise-confusable meanings.
+10. Output JSON only.
+
+[Example]
+Input source text:
+"Prefers self-paced white papers and webinars over large conferences."
+
+Output JSON ONLY:
+{{
+  "rubric": [
+    "The answer states that self-paced white papers or webinars are the preferred format.",
+    "The answer does not recommend large conferences as the preferred format."
+  ]
+}}
+
+[Input/Output Format]
+Input:
+- state_key: {state_key}
+- text_value: {text_value}
+
+Output JSON ONLY:
+{{
+  "rubric": {template}
+}}
+""".format(
+        max_points=max_points,
+        state_key=json.dumps(str(state_key or ""), ensure_ascii=False),
+        text_value=json.dumps(str(text_value or ""), ensure_ascii=False),
+        template=json.dumps(template, ensure_ascii=False, indent=2),
+    )
+
+
+def build_value_rubric_validation_prompt(
+    *,
+    state_key: str,
+    text_value: str,
+    points: List[Dict[str, Any]],
+) -> str:
+    return """[Task Instruction]
+Validate one generated atomic-fact set for a complex state field.
+Judge whether each atomic fact stays grounded in the source text without drift.
+
+[Definitions]
+- source text: the original state text that the rubric-point set must stay faithful to.
+- atomic fact: one scoreable meaning unit.
+- point_text: the atomic scoring statement that the evaluator will judge independently.
+- drift: the atomic fact changes, overextends, or reverses the meaning of the source text.
+- atomic fact requirement: one fact that checks exactly one concrete aspect of correctness and can be scored independently.
+- over_specific: the atomic fact depends on unnecessary exact model / spec / parameter / exact wording and is therefore too brittle.
+
+[Constraints]
+1. Validate every point independently.
+2. Mark a point as failed if it is unsupported, drifts, is redundant, is over-specific, or is not atomic enough to score independently.
+3. Use only these fail reasons when needed: `unsupported`, `drift`, `not_atomic`, `redundant`, `over_specific`.
+4. Use only these set-level failures when needed: `coverage_gap`.
+5. `set_pass` can be true only if every point passes and there is no set-level failure.
+6. Keep each `analysis` concise and specific.
+7. Output JSON only.
+
+[Example]
+Source text:
+"Prefers self-paced white papers and webinars over large conferences."
+
+Candidate points:
+{{
+  "points": [
+    {{
+      "point_id": "scp_pref_p1",
+      "point_text": "The user only learns effectively through live conferences."
+    }}
+  ]
+}}
+
+Output JSON ONLY:
+{{
+  "points": [
+    {{
+      "point_id": "scp_pref_p1",
+      "analysis": "The point reverses the stated preference and is not supported by the source text.",
+      "pass": false,
+      "fail_reasons": ["drift", "unsupported"]
+    }}
+  ],
+  "set_pass": false,
+  "set_failures": ["coverage_gap"]
+}}
+
+[Input/Output Format]
+Input:
+- state_key: {state_key}
+- text_value: {text_value}
+- points: {points}
+
+Output JSON ONLY:
+{{
+  "points": [
+    {{
+      "point_id": "<point_id from input>",
+      "analysis": "<brief validation analysis>",
+      "pass": "<bool>",
+      "fail_reasons": []
+    }}
+  ],
+  "set_pass": "<bool>",
+  "set_failures": []
+}}
+""".format(
+        state_key=json.dumps(str(state_key or ""), ensure_ascii=False),
+        text_value=json.dumps(str(text_value or ""), ensure_ascii=False),
+        points=json.dumps(points, ensure_ascii=False, indent=2),
+    )
+
+
+def build_value_rubric_rewrite_prompt(
+    *,
+    state_key: str,
+    text_value: str,
+    points: List[Dict[str, Any]],
+    validation_points: List[Dict[str, Any]],
+    set_failures: List[str],
+    max_points: int,
+) -> str:
+    max_points = max(1, min(3, int(max_points)))
+    template = ["<one atomic scoring point>" for _ in range(max_points)]
+    return """[Task Instruction]
+Rewrite an invalid atomic-fact set for one complex state field.
+Return a corrected atomic-fact set that stays faithful to the source text.
+
+[Definitions]
+- atomic fact: one scoreable meaning unit.
+- point_text: one atomic scoring statement that the evaluator will judge independently.
+- faithful rewrite: a rewrite that removes drift, unsupported content, and redundancy while preserving the source meaning.
+- robust rewrite: a rewrite that avoids unnecessary exact model / spec / parameter wording when a broader semantic fact is sufficient.
+
+[Constraints]
+1. Return 1 to {max_points} positive atomic facts.
+2. Each atomic fact must be independently judgeable on the shared binary `0/1` hit scale.
+3. Fix every invalid point so the final set is directly supported by the source text.
+4. Do not add stronger preferences, motivations, or implications that are not stated.
+5. Keep every point atomic and non-redundant.
+6. Repair any `over_specific` or brittle point by rewriting it into a broader, more stable semantic fact unless the exact identifier is truly necessary.
+7. Output JSON only.
+
+[Example]
+Source text:
+"Prefers self-paced white papers and webinars over large conferences."
+
+Invalid points:
+{{
+  "points": [
+    {{
+      "point_id": "scp_pref_p1",
+      "point_text": "The user only learns effectively through live conferences."
+    }}
+  ]
+}}
+
+Validation feedback:
+{{
+  "points": [
+    {{
+      "point_id": "scp_pref_p1",
+      "analysis": "The point reverses the stated preference and introduces unsupported meaning.",
+      "pass": false,
+      "fail_reasons": ["drift", "unsupported"]
+    }}
+  ],
+  "set_failures": ["coverage_gap"]
+}}
+
+Output JSON ONLY:
+{{
+  "rubric": [
+    "The answer states that self-paced white papers or webinars are the preferred format.",
+    "The answer does not recommend large conferences as the preferred format."
+  ]
+}}
+
+[Input/Output Format]
+Input:
+- state_key: {state_key}
+- text_value: {text_value}
+- invalid_points: {points}
+- validation_points: {validation_points}
+- set_failures: {set_failures}
+
+Output JSON ONLY:
+{{
+  "rubric": {template}
+}}
+""".format(
+        max_points=max_points,
+        state_key=json.dumps(str(state_key or ""), ensure_ascii=False),
+        text_value=json.dumps(str(text_value or ""), ensure_ascii=False),
+        points=json.dumps(points, ensure_ascii=False, indent=2),
+        validation_points=json.dumps(validation_points, ensure_ascii=False, indent=2),
+        set_failures=json.dumps(list(set_failures or []), ensure_ascii=False),
+        template=json.dumps(template, ensure_ascii=False, indent=2),
+    )
+
+
+def build_change_reason_scoring_points_prompt(
+    *,
+    state_key: str,
+    before_value: Any,
+    after_value: Any,
+    reference_change_reason: str,
+    max_points: int,
+) -> str:
+    max_points = max(1, min(3, int(max_points)))
+    template = ["<one atomic fact about the gold change reason>" for _ in range(max_points)]
+    return """[Task Instruction]
+Generate atomic facts for evaluating a predicted change reason.
+Each atomic fact should capture one atomic part of the gold change reason text.
+
+[Definitions]
+- gold change reason: the canonical original explanation for why this state changed.
+- atomic fact: one atomic scoring requirement that can be checked independently.
+- transition context: the `before` and `after` values that anchor what changed. The transition context is grounding context, not a substitute for the gold change reason text.
+- brittle atomic fact: a fact that depends on unnecessary exact model / spec / parameter / exact wording instead of stable transition meaning.
+
+[Constraints]
+1. Generate 1 to {max_points} atomic facts.
+2. Each atomic fact must be independently judgeable on the shared binary `0/1` hit scale.
+3. Keep all atomic facts positive.
+4. Every atomic fact must be directly supported by the gold change reason text.
+5. Use the transition context only to disambiguate the gold reason text.
+6. Do not restate unchanged facts unless they are explicitly part of the gold change reason text.
+7. Do not add new causes, motives, or implications that are not stated.
+8. Prefer stable semantic transition facts over brittle exact surface forms.
+9. Do not generate multiple points that all hinge on the same narrow identifier, model name, spec, parameter, or exact wording.
+10. Use an exact identifier only when it is itself the canonical changed fact or is necessary to disambiguate the transition meaning.
+11. Do not repeat the same meaning in multiple atomic facts.
+12. Output JSON only.
+
+[Example]
+Input transition:
+- before_value: "commutes by car"
+- after_value: "commutes by train"
+- reference_change_reason: "Switched to train commuting after downtown parking fees increased."
+
+Output JSON ONLY:
+{{
+  "rubric": [
+    "The answer explains that commuting changed because downtown parking became more expensive.",
+    "The answer ties the transition specifically to switching away from car commuting."
+  ]
+}}
+
+[Input/Output Format]
+Input:
+- state_key: {state_key}
+- before_value: {before_value}
+- after_value: {after_value}
+- reference_change_reason: {reference_change_reason}
+
+Output JSON ONLY:
+{{
+  "rubric": {template}
+}}
+""".format(
+        max_points=max_points,
+        state_key=json.dumps(str(state_key or ""), ensure_ascii=False),
+        before_value=json.dumps(before_value, ensure_ascii=False),
+        after_value=json.dumps(after_value, ensure_ascii=False),
+        reference_change_reason=json.dumps(str(reference_change_reason or ""), ensure_ascii=False),
+        template=json.dumps(template, ensure_ascii=False, indent=2),
+    )
+
+
+def build_change_reason_rubric_validation_prompt(
+    *,
+    state_key: str,
+    before_value: Any,
+    after_value: Any,
+    reference_change_reason: str,
+    points: List[Dict[str, Any]],
+) -> str:
+    return """[Task Instruction]
+Validate one generated atomic-fact set for a state change reason.
+Judge whether each atomic fact is grounded in the gold change reason text and stays faithful to the actual transition.
+
+[Definitions]
+- gold change reason: the canonical original explanation for why the state changed.
+- transition context: the concrete `before_value -> after_value` change that grounds the gold reason.
+- atomic fact: one atomic scoring fact for a change explanation.
+- unsupported fact: a fact that is not justified by the gold change reason plus transition context.
+- drift: a fact that changes or overextends the meaning of the gold change reason.
+- atomic fact requirement: one fact that checks exactly one concrete reason aspect and can be scored independently.
+- over_specific: a fact that depends on unnecessary exact model / spec / parameter / exact wording rather than stable transition meaning.
+
+[Constraints]
+1. Validate every point independently.
+2. Mark a point as failed if it is unsupported, drifts, is not atomic, is redundant, or is over-specific.
+3. Use only these fail reasons when needed: `unsupported`, `drift`, `not_atomic`, `redundant`, `over_specific`.
+4. Use only these set-level failures when needed: `coverage_gap`.
+5. `set_pass` can be true only if every point passes and there is no set-level failure.
+6. Keep each `analysis` concise and specific.
+7. Output JSON only.
+
+[Example]
+Input transition:
+- before_value: "commutes by car"
+- after_value: "commutes by train"
+- reference_change_reason: "Switched to train commuting after downtown parking fees increased."
+
+Candidate points:
+{{
+  "points": [
+    {{
+      "point_id": "crp_commute_p1",
+      "point_text": "The change happened because the user rejected all driving forever."
+    }}
+  ]
+}}
+
+Output JSON ONLY:
+{{
+  "points": [
+    {{
+      "point_id": "crp_commute_p1",
+      "analysis": "The point exaggerates the gold change reason and adds a broader unsupported claim.",
+      "pass": false,
+      "fail_reasons": ["drift", "unsupported"]
+    }}
+  ],
+  "set_pass": false,
+  "set_failures": ["coverage_gap"]
+}}
+
+[Input/Output Format]
+Input:
+- state_key: {state_key}
+- before_value: {before_value}
+- after_value: {after_value}
+- reference_change_reason: {reference_change_reason}
+- points: {points}
+
+Output JSON ONLY:
+{{
+  "points": [
+    {{
+      "point_id": "<point_id from input>",
+      "analysis": "<brief validation analysis>",
+      "pass": "<bool>",
+      "fail_reasons": []
+    }}
+  ],
+  "set_pass": "<bool>",
+  "set_failures": []
+}}
+""".format(
+        state_key=json.dumps(str(state_key or ""), ensure_ascii=False),
+        before_value=json.dumps(before_value, ensure_ascii=False),
+        after_value=json.dumps(after_value, ensure_ascii=False),
+        reference_change_reason=json.dumps(str(reference_change_reason or ""), ensure_ascii=False),
+        points=json.dumps(points, ensure_ascii=False, indent=2),
+    )
+
+
+def build_change_reason_rubric_rewrite_prompt(
+    *,
+    state_key: str,
+    before_value: Any,
+    after_value: Any,
+    reference_change_reason: str,
+    points: List[Dict[str, Any]],
+    validation_points: List[Dict[str, Any]],
+    set_failures: List[str],
+    max_points: int,
+) -> str:
+    max_points = max(1, min(3, int(max_points)))
+    template = ["<one corrected atomic fact about the gold change reason>" for _ in range(max_points)]
+    return """[Task Instruction]
+Rewrite an invalid atomic-fact set for a state change reason.
+Return a corrected atomic-fact set that stays faithful to the gold change reason text and the actual transition.
+
+[Definitions]
+- atomic fact: one atomic scoring fact for a change explanation.
+- faithful rewrite: a rewrite that removes drift, unsupported claims, redundancy, and non-atomic wording while preserving the original gold change reason.
+- robust rewrite: a rewrite that avoids unnecessary exact model / spec / parameter wording when a broader transition fact is sufficient.
+
+[Constraints]
+1. Return 1 to {max_points} positive atomic facts.
+2. Each atomic fact must be independently judgeable on the shared binary `0/1` hit scale.
+3. Every point must stay directly supported by the gold change reason text.
+4. Use the transition context only to disambiguate the gold reason text.
+5. Do not add unsupported causes, motives, or broader claims.
+6. Keep the set non-redundant.
+7. Repair any `over_specific` or brittle point by rewriting it into a broader, more stable transition fact unless the exact identifier is truly necessary.
+8. Output JSON only.
+
+[Example]
+Input transition:
+- before_value: "commutes by car"
+- after_value: "commutes by train"
+- reference_change_reason: "Switched to train commuting after downtown parking fees increased."
+
+Invalid points:
+{{
+  "points": [
+    {{
+      "point_id": "crp_commute_p1",
+      "point_text": "The change happened because the user rejected all driving forever."
+    }}
+  ]
+}}
+
+Validation feedback:
+{{
+  "points": [
+    {{
+      "point_id": "crp_commute_p1",
+      "analysis": "The point exaggerates the gold change reason and adds unsupported meaning.",
+      "pass": false,
+      "fail_reasons": ["drift", "unsupported"]
+    }}
+  ],
+  "set_failures": ["coverage_gap"]
+}}
+
+Output JSON ONLY:
+{{
+  "rubric": [
+    "The answer explains that parking costs increased.",
+    "The answer ties the commuting change to switching away from car travel."
+  ]
+}}
+
+[Input/Output Format]
+Input:
+- state_key: {state_key}
+- before_value: {before_value}
+- after_value: {after_value}
+- reference_change_reason: {reference_change_reason}
+- invalid_points: {points}
+- validation_points: {validation_points}
+- set_failures: {set_failures}
+
+Output JSON ONLY:
+{{
+  "rubric": {template}
+}}
+""".format(
+        max_points=max_points,
+        state_key=json.dumps(str(state_key or ""), ensure_ascii=False),
+        before_value=json.dumps(before_value, ensure_ascii=False),
+        after_value=json.dumps(after_value, ensure_ascii=False),
+        reference_change_reason=json.dumps(str(reference_change_reason or ""), ensure_ascii=False),
+        points=json.dumps(points, ensure_ascii=False, indent=2),
+        validation_points=json.dumps(validation_points, ensure_ascii=False, indent=2),
+        set_failures=json.dumps(list(set_failures or []), ensure_ascii=False),
+        template=json.dumps(template, ensure_ascii=False, indent=2),
+    )
+
+
+def build_apply_rubric_validation_prompt(
+    *,
+    state_key: str,
+    state_value: Any,
+    service_category: str,
+    question: str,
+    reference_answer: str,
+    points: List[Dict[str, Any]],
+) -> str:
+    return """[Task Instruction]
+Validate one generated atomic-fact set for an apply-service QA item.
+Judge whether each atomic fact is grounded in the reference answer, faithful to the user state, and atomic enough for stable scoring.
+
+[Definitions]
+- atomic fact: one atomic scoring fact for the apply answer.
+- grounded fact: a fact directly supported by the reference answer and compatible with the user state.
+- drift: a fact that changes or overextends the intended answer.
+- atomic fact requirement: one fact that checks exactly one concrete aspect of correctness and can be scored independently.
+- over_specific: a fact that depends on unnecessary exact model / spec / parameter / exact wording and is therefore too brittle.
+
+[Constraints]
+1. Validate every point independently.
+2. Mark a point as failed if it is unsupported, drifts, is not atomic, is redundant, or is over-specific.
+3. Use only these fail reasons when needed: `unsupported`, `drift`, `not_atomic`, `redundant`, `over_specific`.
+4. Use only these set-level failures when needed: `coverage_gap`.
+5. `set_pass` can be true only if every point passes and there is no set-level failure.
+6. Keep each `analysis` concise and specific.
+7. Treat `state_value` as grounding context, not optional metadata; a point that fits the answer wording but ignores the user state can still be invalid.
+8. Output JSON only.
+
+[Example]
+Candidate QA:
+{{
+  "question": "What communication policy should the assistant adopt for the user during recurring technical briefing periods?",
+  "reference_answer": "Hold non-urgent update requests until after the user's standing briefing block finishes, but interrupt immediately for urgent escalation requests."
+}}
+
+Candidate points:
+{{
+  "points": [
+    {{
+      "point_id": "aqp_briefing_p1",
+      "point_text": "The answer disables all automated handling for briefing-related requests."
+    }}
+  ]
+}}
+
+Output JSON ONLY:
+{{
+  "points": [
+    {{
+      "point_id": "aqp_briefing_p1",
+      "analysis": "The point conflicts with the reference answer and is not a faithful scoring criterion.",
+      "pass": false,
+      "fail_reasons": ["drift", "unsupported"]
+    }}
+  ],
+  "set_pass": false,
+  "set_failures": ["coverage_gap"]
+}}
+
+[Input/Output Format]
+Input:
+- state_key: {state_key}
+- state_value: {state_value}
+- service_category: {service_category}
+- question: {question}
+- reference_answer: {reference_answer}
+- points: {points}
+
+Output JSON ONLY:
+{{
+  "points": [
+    {{
+      "point_id": "<point_id from input>",
+      "analysis": "<brief validation analysis>",
+      "pass": "<bool>",
+      "fail_reasons": []
+    }}
+  ],
+  "set_pass": "<bool>",
+  "set_failures": []
+}}
+""".format(
+        state_key=json.dumps(str(state_key or ""), ensure_ascii=False),
+        state_value=json.dumps(state_value, ensure_ascii=False),
+        service_category=json.dumps(str(service_category or ""), ensure_ascii=False),
+        question=json.dumps(str(question or ""), ensure_ascii=False),
+        reference_answer=json.dumps(str(reference_answer or ""), ensure_ascii=False),
+        points=json.dumps(points, ensure_ascii=False, indent=2),
+    )
+
+
+def build_apply_rubric_rewrite_prompt(
+    *,
+    state_key: str,
+    state_value: Any,
+    service_category: str,
+    question: str,
+    reference_answer: str,
+    points: List[Dict[str, Any]],
+    validation_points: List[Dict[str, Any]],
+    set_failures: List[str],
+    max_points: int,
+) -> str:
+    template = ["<one corrected atomic fact for the reference answer>" for _ in range(max(1, int(max_points)))]
+    return """[Task Instruction]
+Rewrite an invalid atomic-fact set for one apply-service QA item.
+Return a corrected atomic-fact set that stays faithful to the reference answer and compatible with the user state.
+
+[Definitions]
+- atomic fact: one atomic scoring fact for the apply answer.
+- faithful rewrite: a rewrite that removes drift, unsupported content, non-atomic wording, and redundancy while preserving the intended answer.
+- robust rewrite: a rewrite that avoids unnecessary exact model / spec / parameter wording when a broader semantic fact is sufficient.
+
+[Constraints]
+1. Return 1 to {max_points} atomic facts.
+2. Each atomic fact must be independently judgeable on the shared binary `0/1` hit scale.
+3. Every point must stay directly supported by the reference answer.
+4. Use the user state only to disambiguate or bound the reference answer; do not add new facts beyond the answer.
+5. Fix every invalid point and any set-level coverage gap.
+6. Keep the set non-redundant.
+7. Repair any `over_specific` or brittle point by rewriting it into a broader, more stable semantic fact unless the exact identifier is truly necessary.
+11. Output JSON only.
+
+[Example]
+Candidate QA:
+{{
+  "question": "What communication policy should the assistant adopt for the user during recurring technical briefing periods?",
+  "reference_answer": "Hold non-urgent update requests until after the user's standing briefing block finishes, but interrupt immediately for urgent escalation requests."
+}}
+
+Invalid points:
+{{
+  "points": [
+    {{
+      "point_id": "aqp_briefing_p1",
+      "point_text": "The answer disables all automated handling for briefing-related requests."
+    }}
+  ]
+}}
+
+Validation feedback:
+{{
+  "points": [
+    {{
+      "point_id": "aqp_briefing_p1",
+      "analysis": "The point conflicts with the reference answer and introduces unsupported meaning.",
+      "pass": false,
+      "fail_reasons": ["drift", "unsupported"]
+    }}
+  ],
+  "set_failures": ["coverage_gap"]
+}}
+
+[Example Output]
+{{
+  "rubric": [
+    "The answer delays non-urgent requests until after the standing briefing period.",
+    "The answer still allows urgent escalation requests to interrupt immediately."
+  ]
+}}
+
+[Input/Output Format]
+Input:
+- state_key: {state_key}
+- state_value: {state_value}
+- service_category: {service_category}
+- question: {question}
+- reference_answer: {reference_answer}
+- invalid_points: {points}
+- validation_points: {validation_points}
+- set_failures: {set_failures}
+
+Output JSON ONLY:
+{{
+  "rubric": {template}
+}}
+""".format(
+        max_points=max(1, int(max_points)),
+        state_key=json.dumps(str(state_key or ""), ensure_ascii=False),
+        state_value=json.dumps(state_value, ensure_ascii=False),
+        service_category=json.dumps(str(service_category or ""), ensure_ascii=False),
+        question=json.dumps(str(question or ""), ensure_ascii=False),
+        reference_answer=json.dumps(str(reference_answer or ""), ensure_ascii=False),
+        points=json.dumps(points, ensure_ascii=False, indent=2),
+        validation_points=json.dumps(validation_points, ensure_ascii=False, indent=2),
+        set_failures=json.dumps(list(set_failures or []), ensure_ascii=False),
+        template=json.dumps(template, ensure_ascii=False, indent=2),
+    )
+
+
+def build_apply_answer_scoring_points_prompt(
+    *,
+    state_key: str,
+    state_value: Any,
+    apply_scenario: str,
+    apply_question: str,
+    apply_reference_answer: str,
+    max_points: int,
+) -> str:
+    template = [
+        {
+            "polarity": "positive",
+            "point_text": "<one required answer point or one forbidden mistake>",
+            "reference_value": "<short canonical phrase>",
+        }
+        for _ in range(max(1, int(max_points)))
+    ]
+    return """[Task Instruction]
+Generate scoreable atomic facts for one apply-service QA item.
+You may include both positive atomic facts and negative atomic facts.
+
+[Definitions]
+- positive atomic fact: a meaning unit the predicted answer should include or satisfy.
+- negative atomic fact: a mistake, forbidden recommendation, or ignored hard constraint that should lower the score if violated.
+- grounding context: the combination of `state_value`, `apply_question`, and `apply_reference_answer`; atomic facts must be faithful to all three, not just the question wording.
+- brittle atomic fact: a fact that depends on unnecessary exact model / spec / parameter / exact wording instead of stable semantic meaning.
+
+[Constraints]
+1. Generate 1 to {max_points} atomic facts.
+2. At least one point must be positive.
+3. Negative points are allowed when they make scoring safer.
+4. Each atomic fact must be independently judgeable on the shared binary `0/1` hit scale.
+5. Keep `reference_value` short and canonical.
+6. Use `state_value` together with `apply_question` and `apply_reference_answer` as grounding context.
+7. Prefer stable semantic requirements over brittle exact surface forms.
+8. Do not generate multiple points that all hinge on the same narrow identifier, model name, spec, parameter, or exact wording.
+9. Use an exact identifier only when it is itself the canonical memory fact or is necessary to disambiguate the intended answer.
+10. Do not repeat the same meaning in multiple points.
+11. Output JSON only.
+
+[Input/Output Format]
+Input:
+- state_key: {state_key}
+- state_value: {state_value}
+- apply_scenario: {apply_scenario}
+- apply_question: {apply_question}
+- apply_reference_answer: {apply_reference_answer}
+
+Output JSON ONLY:
+{{
+  "points": {template}
+}}
+""".format(
+        max_points=max(1, int(max_points)),
+        state_key=json.dumps(str(state_key or ""), ensure_ascii=False),
+        state_value=json.dumps(state_value, ensure_ascii=False),
+        apply_scenario=json.dumps(str(apply_scenario or ""), ensure_ascii=False),
+        apply_question=json.dumps(str(apply_question or ""), ensure_ascii=False),
+        apply_reference_answer=json.dumps(str(apply_reference_answer or ""), ensure_ascii=False),
+        template=json.dumps(template, ensure_ascii=False, indent=2),
+    )

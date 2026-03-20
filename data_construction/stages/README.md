@@ -75,7 +75,7 @@ Typical outputs:
 
 ## Recommended Run
 
-Assuming your repo root is `mem_bench/behavior_and_conversation`, run:
+Assuming your repo root is `mem_bench/dynamicmem`, run:
 
 ```bash
 cd data_construction

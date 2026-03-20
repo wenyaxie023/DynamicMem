@@ -7,11 +7,11 @@ bash generation/oracle/run_oracle.sh
 bash generation/oracle/run_oracle_qa.sh
 ```
 
-## Dynamic State Prediction
+## TCE
 
 ```bash
-bash generation/oracle/run_oracle_dynamic_state_prediction.sh
+bash generation/oracle/run_oracle_tce.sh
 ```
 
 Outputs:
-- `generation/oracle/results/<user_id>/prediction/dynamic_state_prediction_results.json`
+- `generation/oracle/results/<user_id>/prediction/tce_results.json`

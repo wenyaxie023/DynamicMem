@@ -1,10 +1,10 @@
 from typing import Callable, Dict
 
-from .base import DspAdapterArgs
+from .base import TceAdapterArgs
 from . import amem, hipporag2, icl, letta, oracle, rag, stubs
 
 
-_ADAPTERS: Dict[str, Callable[[DspAdapterArgs], object]] = {
+_ADAPTERS: Dict[str, Callable[[TceAdapterArgs], object]] = {
     "oracle": oracle.run,
     "icl": icl.run,
     "rag": rag.run,
@@ -24,7 +24,7 @@ def list_adapters():
     return sorted(_ADAPTERS.keys())
 
 
-def run_adapter(args: DspAdapterArgs):
+def run_adapter(args: TceAdapterArgs):
     key = (args.baseline or "").strip().lower()
     if key not in _ADAPTERS:
         raise ValueError(

@@ -1,14 +1,17 @@
 from pathlib import Path
 
-from .base import DspAdapterArgs
+from .base import TceAdapterArgs
 
 
-def run(args: DspAdapterArgs):
-    from generation.HippoRAG2.generation_dsp.dynamic_state_prediction import run_generation
+def run(args: TceAdapterArgs):
+    from generation.HippoRAG2.generation_tce.tce import run_generation
 
     hipporag_dir = args.extras.get("hipporag_dir")
     if not hipporag_dir:
         raise ValueError("hipporag2 adapter requires --hipporag-dir")
+    checkpoint_workers = int(args.extras.get("checkpoint_workers", "1"))
+    within_checkpoint_workers = int(args.extras.get("within_checkpoint_workers", "1"))
+    save_every_generation_keys = int(args.extras.get("save_every_generation_keys", "1"))
 
     return run_generation(
         benchmark_path=args.benchmark,
@@ -24,4 +27,7 @@ def run(args: DspAdapterArgs):
         debug=args.debug,
         debug_dir=args.debug_dir,
         save_prompt_and_raw=args.save_prompt_and_raw,
+        checkpoint_workers=checkpoint_workers,
+        within_checkpoint_workers=within_checkpoint_workers,
+        save_every_generation_keys=save_every_generation_keys,
     )

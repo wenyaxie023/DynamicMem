@@ -1,0 +1,160 @@
+# tce_core
+
+Shared generation/evaluation utilities for TCE:
+- value prediction (`snapshot_state`)
+- evidence prediction (`evidence` with `app_log_id` + `evidence_content` per state key)
+
+Terminology (canonical):
+- `sampling_strategy`: full checkpoint selection rule
+- `sampling_mode`: strategy type (`exposure_token` or `calendar_time`)
+- `checkpoint`: final evaluation unit at one selected cutoff
+
+Notes:
+- "anchor"/"anchor_specs" are kept as internal builder terms for backward
+  compatibility and should not be treated as external API concepts.
+
+Prediction metadata contract:
+- `sampling_mode`: `exposure_token` or `calendar_time`
+- `sampling_params`:
+  - exposure: `{"exposure_percent": int, "tokenizer_model": str}`
+  - calendar: `{"calendar_anchor_freq": str, "anchor_index": int, "anchor_timestamp": str, "actual_tokens_at_cutoff": int, "total_tokens": int, "tokenizer_model": str}`
+
+Change task contract:
+- `change_analysis`:
+  - `<key>` -> `{"before": ..., "after": ..., "change_reason": str, "evidence": [{"app_log_id": ..., "evidence_content": ...}]}`
+
+RQ3 apply-service contract:
+- `know` capability is measured by snapshot fill-the-blank metrics (no separate know QA pack)
+- checkpoint may include `state_questionability` and `rq3_apply_service_qa` with per-key apply QA items
+- prediction may include `rq3_apply_answers` with per-item answer/evidence
+- full protocol: `docs/protocols/tce_rq3_know_apply_contract.md`
+- current Task C write path uses `service_category`, `question`, `reference_answer`, and build-time `rubric[]` -> `answer_scoring_points[]`
+
+RQ3 apply prediction snippet:
+```json
+{
+  "rq3_apply_answers": {
+    "state:key": {
+      "items": [
+        {
+          "qa_id": "q1",
+          "answer": "...",
+          "evidence": [
+            {
+              "app_log_id": "log_0002",
+              "evidence_content": "..."
+            }
+          ]
+        }
+      ]
+    }
+  }
+}
+```
+
+BREAKING CHANGES:
+- Removed legacy `anchor_*` compatibility fields from prediction metadata.
+- Removed legacy parallel API entrypoint.
+- Removed `tce_core/checkpoint_sampler.py`.
+- Change payload uses `change_reason` (replacing `reason`).
+- Removed LLM-judge `evidence_alignment`; evidence quality is measured by app_log_id matching metrics only.
+
+LLM Judge I/O (eval layer):
+
+Snapshot judge input (`value_pairs`):
+```json
+{
+  "habits_state:morning_walk": {
+    "expected_value": {"timing": {"start_time": "06:30"}},
+    "predicted_value": {"timing": {"start_time": "07:00"}}
+  }
+}
+```
+
+Snapshot judge output (`judgments`):
+```json
+{
+  "judgments": [
+    {
+      "key": "habits_state:morning_walk",
+      "reason": "short text",
+      "correctness": 3,
+      "completeness": 4,
+      "specificity": 4
+    }
+  ]
+}
+```
+
+Change judge input (`change_pairs`):
+```json
+{
+  "habits_state:morning_walk": {
+    "expected_before": {"timing": {"start_time": "06:30"}},
+    "expected_after": {"timing": {"start_time": "07:00"}},
+    "predicted_before": {"timing": {"start_time": "06:30"}},
+    "predicted_after": {"timing": {"start_time": "07:00"}},
+    "predicted_change_reason": "routine shifted later",
+    "expected_evidence_ids": ["log_0002"],
+    "predicted_evidence_ids": ["log_0002"]
+  }
+}
+```
+
+Change judge output (`judgments`):
+```json
+{
+  "judgments": [
+    {
+      "key": "habits_state:morning_walk",
+      "reason": "short text",
+      "before_after_correctness": 5,
+      "change_reason": 4
+    }
+  ]
+}
+```
+
+Eval I/O:
+
+Input benchmark (minimal):
+```json
+{
+  "checkpoints": [
+    {
+      "checkpoint_id": "cp_0001",
+      "as_of": {"timestamp": "2025-01-01 08:00:00"},
+      "expected_snapshot_state": {},
+      "state_observability": {}
+    }
+  ]
+}
+```
+
+Input prediction (minimal):
+```json
+{
+  "predictions": [
+    {
+      "checkpoint_id": "cp_0001",
+      "metadata": {"checkpoint_timestamp": "2025-01-01 08:00:00"},
+      "snapshot_state": {},
+      "evidence": {},
+      "change_analysis": {}
+    }
+  ]
+}
+```
+
+Output result (top-level):
+```json
+{
+  "summary": {},
+  "checkpoints": [],
+  "prediction_alignment": {}
+}
+```
+
+```python
+from tce_core import evaluate_checkpoints, normalize_predictions
+```

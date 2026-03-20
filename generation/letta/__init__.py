@@ -1,2 +1,2 @@
-"""Letta baselines for QA and dynamic state prediction."""
+"""Letta baselines for QA and TCE."""
 

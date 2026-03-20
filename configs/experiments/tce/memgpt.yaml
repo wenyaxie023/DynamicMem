@@ -1,0 +1,29 @@
+users:
+  - 001_user_001
+  - 002_user_002
+  - 003_user_003
+
+runtime:
+  baseline: memgpt
+  resume: false
+  debug: false
+  save_prompt_and_raw: true
+
+data:
+  benchmark: data_construction/generated_outputs/gemini_3_flash_preview/{user_id}/tce_benchmark.json
+  app_logs_path: data_construction/generated_outputs/gemini_3_flash_preview/{user_id}/app_log_large.json
+
+output:
+  prediction_path: generation/memgpt/results/{user_id}/prediction/tce_results.json
+
+llm:
+  provider: openai
+  model: gpt-5-mini
+  max_workers: 1
+
+baseline_params:
+  retrieval_top_k: 10
+  letta_mode: sdk
+  allow_local_fallback: true
+  persona: ""
+  human: ""

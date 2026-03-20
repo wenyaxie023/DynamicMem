@@ -1,0 +1,19 @@
+runtime:
+  enable_rq3_apply_service_qa: false
+  rq3_apply_fail_on_missing_pack: false
+  rq3_apply_save_prompt_and_raw: true
+
+llm:
+  provider: openai
+  model: gpt-5-mini
+  max_workers: 1
+
+baseline_params:
+  retrieval_top_k: 5
+  retriever_provider: openai
+  retriever_model: text-embedding-3-large
+  retriever_batch_size: 64
+  rq3_apply_items_per_key: 1
+  rq3_apply_validator_provider: azure
+  rq3_apply_validator_model: gpt-5-mini
+  rq3_apply_validator_max_rewrites: 2

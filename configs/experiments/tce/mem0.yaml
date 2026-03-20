@@ -1,0 +1,21 @@
+users:
+  - 001_user_001
+  - 002_user_002
+  - 003_user_003
+
+runtime:
+  baseline: mem0
+
+data:
+  benchmark: data_construction/generated_outputs/gemini_3_flash_preview/{user_id}/tce_benchmark.json
+  app_logs_path: data_construction/generated_outputs/gemini_3_flash_preview/{user_id}/app_log_large.json
+
+output:
+  prediction_path: generation/mem0/results/{user_id}/prediction/tce_results.json
+
+llm:
+  provider: openai
+  model: gpt-5-mini
+  max_workers: 1
+
+baseline_params: {}

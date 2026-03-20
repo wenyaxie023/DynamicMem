@@ -10,11 +10,11 @@ bash generation/icl/run_icl_qa.sh
 Outputs:
 - `generation/icl/results/<user_id>/prediction/icl_results.json`
 
-## Dynamic State Prediction
+## TCE
 
 ```bash
-bash generation/icl/run_icl_dynamic_state_prediction.sh
+bash generation/icl/run_icl_tce.sh
 ```
 
 Outputs:
-- `generation/icl/results/<user_id>/prediction/dynamic_state_prediction_results.json`
+- `generation/icl/results/<user_id>/prediction/tce_results.json`
