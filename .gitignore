@@ -1,6 +1,7 @@
 __pycache__
 *.json
 logs
+test_azure_models.py
 qdrant_storage
 env
 *DS_Store
@@ -49,3 +50,15 @@ eval/*.csv
 
 # Local presentation drafts/decks
 docs/presentations/
+
+# Documentation drafts (do not commit)
+AGENTS*.md
+
+# Test data and results (do not commit)
+user_data/tce/test_*.yaml
+user_data/tce/*.log
+user_data/tce/*.md
+user_data/tce/*_test.yaml
+user_data/tce/*_report*
+user_data/tce/minimal_test*.yaml
+

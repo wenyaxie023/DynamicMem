@@ -5,3 +5,6 @@
 [submodule "generation/MemAgent/MemAgent_src"]
 	path = generation/MemAgent/MemAgent_src
 	url = https://github.com/BytedTsinghua-SIA/MemAgent.git
+[submodule "generation/zep/graphiti"]
+	path = generation/zep/graphiti
+	url = https://github.com/getzep/graphiti.git

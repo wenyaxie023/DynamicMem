@@ -6,11 +6,18 @@ import json
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-# Add HippoRAG and project roots to path
+# Add project roots to path
 script_dir = os.path.dirname(os.path.abspath(__file__))
 root_dir = os.path.abspath(os.path.join(script_dir, ".."))
 sys.path.append(os.path.join(root_dir, "HippoRAG/src"))
-sys.path.append(os.path.abspath(os.path.join(root_dir, "..", ".."))) # For generation.rag etc.
+sys.path.append(os.path.abspath(os.path.join(root_dir, "..", "..")))
+
+# Load .env from HippoRAG2 directory (where API keys are stored)
+from dotenv import load_dotenv
+hipporag2_root = Path(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
+env_path = hipporag2_root / ".env"
+load_dotenv(override=True)
+load_dotenv(env_path, override=True)
 
 # Monkeypatch for torch load safety (needed for HippoRAG dependencies)
 import transformers.utils.import_utils
@@ -50,12 +57,35 @@ def run_generation(
     debug: bool,
     debug_dir: Optional[Path],
     save_prompt_and_raw: bool,
-    online: bool = False,
+    online: bool = True,
+    embedding_model: str = None,
+    openie_cache_path: Optional[Path] = None,
+    retrieval_top_k: int = 5,
     checkpoint_workers: int = 1,
     within_checkpoint_workers: int = 1,
     save_every_generation_keys: int = 1,
+    enable_rq3_apply_service_qa: bool = True,
+    rq3_apply_items_per_key: int = 1,
+    enable_change_reasoning: bool = False,
 ) -> Dict[str, Any]:
     _, resolved_base_url = setup_provider_env(llm_provider, repo_root=REPO_ROOT_DIR)
+
+    if not embedding_model:
+        raise ValueError("embedding_model must be specified in config (baseline_params.embedding_model)")
+
+    print("=" * 60)
+    print("[INFO] Initializing HippoRAG TCE Pipeline")
+    print("=" * 60)
+    print(f"[INFO] Configuration:")
+    print(f"  - LLM Model: {llm_model}")
+    print(f"  - Embedding Model: {embedding_model}")
+    print(f"  - Provider: {llm_provider}")
+    print(f"  - Base URL: {resolved_base_url}")
+    print(f"  - Temperature: 0.0 (TCE requirement)")
+    print(f"  - Online Mode: {online}")
+    print(f"  - Retrieval Top-K: {retrieval_top_k}")
+    print(f"  - Max Checkpoints: {max_checkpoints or 'unlimited'}")
+    print("=" * 60)
 
     # 1. Initialize LLM Client for Generation (Unified Client)
     client = LLMClient(
@@ -67,7 +97,11 @@ def run_generation(
     # 2. Initialize HippoRAG for Retrieval
     print(f"Initializing HippoRAG from {hipporag_dir}...")
     if not hipporag_dir.exists():
-        raise FileNotFoundError(f"HippoRAG directory not found: {hipporag_dir}")
+        print(f"[INFO] HippoRAG directory not found, creating: {hipporag_dir}")
+        hipporag_dir.mkdir(parents=True, exist_ok=True)
+        # Create logs_json subdirectory for app logs
+        (hipporag_dir / "logs_json").mkdir(exist_ok=True)
+        print(f"[INFO] Created HippoRAG directory structure")
 
     # Use a dummy API key if not present, but we loaded .env so it should be fine.
     # HippoRAG requires an OpenAI key even if we only use it for retrieval/indexing?
@@ -103,40 +137,87 @@ def run_generation(
     # save_dir should be ".../outputs/user_expr"
     real_save_dir = hipporag_dir.parent
     
+    # Determine OpenIE cache path
+    if openie_cache_path:
+        openie_cache = openie_cache_path
+    else:
+        # Default: same location as HippoRAG expects
+        openie_cache = real_save_dir / f"openie_results_ner_{llm_model.replace('/', '_')}.json"
+    
+    # Check if OpenIE cache exists
+    openie_cache_available = openie_cache.exists() if openie_cache else False
+    if openie_cache_available:
+        print(f"[INFO] Found OpenIE cache: {openie_cache}")
+        cache_data = json.loads(openie_cache.read_text(encoding="utf-8"))
+        cached_count = len(cache_data.get("docs", []))
+        print(f"[INFO] OpenIE cache contains {cached_count} pre-processed logs")
+    else:
+        print(f"[WARN] No OpenIE cache found at {openie_cache}. Will perform real-time OpenIE (slow).")
+    
     hipporag = HippoRAG(
         global_config=config,
         save_dir=str(real_save_dir), 
         llm_model_name=llm_model,
-        embedding_model_name="text-embedding-3-small", 
+        embedding_model_name=embedding_model,
     )
     # We still enforce working_dir to be exactly what was passed, just in case
     hipporag.working_dir = str(hipporag_dir.resolve())
     
-    # Re-initialize graph and stores
-    print("Loading HippoRAG graph and embeddings...")
-    hipporag.graph = hipporag.initialize_graph()
+    # CRITICAL: Online mode must start with empty graph to avoid data leakage
+    # Only OpenIE cache is safe to reuse (per-log extraction, no cross-log info)
+    if online:
+        print("[ONLINE] Starting with EMPTY graph (no data leakage)")
+        import igraph as ig
+        hipporag.graph = ig.Graph(directed=config.is_directed_graph)
+        hipporag.global_config.force_index_from_scratch = True
+    else:
+        print("Loading pre-built graph (WARNING: may leak future info for TCE)")
+        hipporag.graph = hipporag.initialize_graph()
     
     from hipporag.embedding_store import EmbeddingStore
-    # We need to re-init these because they point to save_dir by default
-    # And we want them to point to working_dir
-    hipporag.chunk_embedding_store = EmbeddingStore(
-        hipporag.embedding_model,
-        os.path.join(hipporag.working_dir, "chunk_embeddings"),
-        hipporag.global_config.embedding_batch_size, 
-        'chunk'
-    )
-    hipporag.entity_embedding_store = EmbeddingStore(
-        hipporag.embedding_model,
-        os.path.join(hipporag.working_dir, "entity_embeddings"),
-        hipporag.global_config.embedding_batch_size, 
-        'entity'
-    )
-    hipporag.fact_embedding_store = EmbeddingStore(
-        hipporag.embedding_model,
-        os.path.join(hipporag.working_dir, "fact_embeddings"),
-        hipporag.global_config.embedding_batch_size, 
-        'fact'
-    )
+    
+    if online:
+        online_working_dir = os.path.join(hipporag_dir.resolve(), "online_index")
+        os.makedirs(online_working_dir, exist_ok=True)
+        print(f"[ONLINE] Using fresh embedding stores at {online_working_dir}")
+        hipporag.chunk_embedding_store = EmbeddingStore(
+            hipporag.embedding_model,
+            os.path.join(online_working_dir, "chunk_embeddings"),
+            hipporag.global_config.embedding_batch_size, 
+            'chunk'
+        )
+        hipporag.entity_embedding_store = EmbeddingStore(
+            hipporag.embedding_model,
+            os.path.join(online_working_dir, "entity_embeddings"),
+            hipporag.global_config.embedding_batch_size, 
+            'entity'
+        )
+        hipporag.fact_embedding_store = EmbeddingStore(
+            hipporag.embedding_model,
+            os.path.join(online_working_dir, "fact_embeddings"),
+            hipporag.global_config.embedding_batch_size, 
+            'fact'
+        )
+        hipporag.working_dir = online_working_dir
+    else:
+        hipporag.chunk_embedding_store = EmbeddingStore(
+            hipporag.embedding_model,
+            os.path.join(hipporag.working_dir, "chunk_embeddings"),
+            hipporag.global_config.embedding_batch_size, 
+            'chunk'
+        )
+        hipporag.entity_embedding_store = EmbeddingStore(
+            hipporag.embedding_model,
+            os.path.join(hipporag.working_dir, "entity_embeddings"),
+            hipporag.global_config.embedding_batch_size, 
+            'entity'
+        )
+        hipporag.fact_embedding_store = EmbeddingStore(
+            hipporag.embedding_model,
+            os.path.join(hipporag.working_dir, "fact_embeddings"),
+            hipporag.global_config.embedding_batch_size, 
+            'fact'
+        )
     
     # Map app_log_ids for quick lookup
     # We need to know which logs are available in the memory pool.
@@ -184,6 +265,8 @@ def run_generation(
         cp: Dict[str, Any],
         memory_pool: List[Dict[str, Any]],
         target_keys: List[str],
+        task_text: Optional[str] = None,
+        retrieval_top_k_override: Optional[int] = None,
     ) -> Dict[str, Any]:
         import time
         start_time = time.time()
@@ -209,12 +292,12 @@ def run_generation(
             # 2. Index new logs if any
             if new_logs_to_index:
                 print(f"[ONLINE] Indexing {len(new_logs_to_index)} new logs for CP {checkpoint_id}...")
+                if openie_cache_available:
+                    print(f"[ONLINE] Using OpenIE cache (should skip extraction for cached logs)")
                 
                 # Format for indexing (JSON strings)
                 docs = [json.dumps(e, ensure_ascii=False) for e in new_logs_to_index]
                 
-                # We need to use valid indexing method.
-                # HippoRAG.index() usually takes a list of strings
                 try:
                     t_idx_start = time.time()
                     hipporag.index(docs=docs)
@@ -223,12 +306,14 @@ def run_generation(
                 except Exception as e:
                     print(f"[ONLINE] ERROR indexing logs: {e}")
             else:
-                # print(f"[ONLINE] No new logs to index for CP {checkpoint_id}")
                 pass
         # -----------------------------------------
 
-        # 1. Build Query
-        query = _build_retrieval_query(cp, target_keys)
+        # 1. Build Query - USE task_text IF PROVIDED
+        query = task_text or _build_retrieval_query(cp, target_keys)
+        
+        # 2. Set up retrieval_top_k with override
+        effective_retrieval_top_k = retrieval_top_k_override if retrieval_top_k_override is not None else retrieval_top_k
         
         print(f"\n[DEBUG] CP: {checkpoint_id} | Keys: {len(target_keys)} | Query: {query}")
         
@@ -272,7 +357,7 @@ def run_generation(
             log_id = str(log.get("app_log_id"))
             if log_id in pool_ids:
                 selected_logs.append(log)
-                if len(selected_logs) >= 5: # Limit to top-5 valid
+                if len(selected_logs) >= effective_retrieval_top_k:
                     break
         
         total_duration = time.time() - start_time
@@ -284,13 +369,14 @@ def run_generation(
         
         return {
             "context_logs": selected_logs,
-            "context_note": f"HippoRAG retrieved (top-{len(selected_logs)} from memory pool)",
+            "context_note": f"HippoRAG retrieved (top-{len(selected_logs)} from memory pool, config top-k={effective_retrieval_top_k})",
             "retrieval_query": query,
             "metadata": {
                 "hipporag_retrieved_raw_count": len(retrieved_logs_candidates),
                 "retrieved_app_log_ids": [x.get("app_log_id") for x in selected_logs],
                 "retrieval_duration_s": retrieval_duration,
                 "total_retrieval_context_duration_s": total_duration,
+                "retrieval_top_k": effective_retrieval_top_k,
             },
         }
 
@@ -313,6 +399,9 @@ def run_generation(
         checkpoint_workers=checkpoint_workers,
         within_checkpoint_workers=within_checkpoint_workers,
         save_every_generation_keys=save_every_generation_keys,
+        enable_rq3_apply_service_qa=enable_rq3_apply_service_qa,
+        rq3_apply_items_per_key=rq3_apply_items_per_key,
+        enable_change_reasoning=enable_change_reasoning,
     )
 
 def main() -> None:

@@ -1,6 +1,7 @@
 """Shared generation pipeline for TCE baselines."""
 
 import copy
+import inspect
 import json
 import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -183,19 +184,44 @@ def _retrieve_context_with_task_text(
     task_text: str,
     retrieval_top_k_override: Optional[int] = None,
 ) -> Dict[str, Any]:
-    try:
+    """Retrieve context for a single key with key-specific task text.
+    
+    REQUIRES: retrieve_context must accept 'task_text' parameter.
+    Raises TypeError if baseline doesn't accept task_text (fail fast).
+    """
+    # Validate signature upfront - fail fast if missing required params
+    sig = inspect.signature(retrieve_context)
+    params = set(sig.parameters.keys())
+    
+    if 'task_text' not in params:
+        raise TypeError(
+            f"retrieve_context MUST accept 'task_text' parameter for per-key retrieval. "
+            f"Current signature: {sig}. "
+            f"Baseline is using checkpoint-level query instead of per-key query. "
+            f"See: docs/protocols/temporal_checkpoint_evaluation_developer_manual.md:195-201"
+        )
+    
+    # Check for optional parameter (warn but don't fail)
+    if 'retrieval_top_k_override' not in params:
+        import warnings
+        warnings.warn(
+            f"retrieve_context should accept 'retrieval_top_k_override'. "
+            f"Current signature: {sig}. RQ3 apply top_k override will be ignored."
+        )
         return retrieve_context(
             checkpoint,
             memory_pool,
             target_keys,
             task_text=task_text,
-            retrieval_top_k_override=retrieval_top_k_override,
         )
-    except TypeError:
-        try:
-            return retrieve_context(checkpoint, memory_pool, target_keys, task_text=task_text)
-        except TypeError:
-            return retrieve_context(checkpoint, memory_pool, target_keys)
+    
+    return retrieve_context(
+        checkpoint,
+        memory_pool,
+        target_keys,
+        task_text=task_text,
+        retrieval_top_k_override=retrieval_top_k_override,
+    )
 
 
 def align_prediction_to_template(pred_value: Any, template_value: Any) -> Any:

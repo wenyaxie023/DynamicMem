@@ -18,15 +18,20 @@ _DEFAULT_CONCURRENCY_POLICY = BaselineConcurrencyPolicy(
 
 
 BASELINE_CONCURRENCY_POLICIES: Dict[str, BaselineConcurrencyPolicy] = {
-    "rag": BaselineConcurrencyPolicy("allowed", "allowed"),
-    "oracle": BaselineConcurrencyPolicy("allowed", "allowed"),
-    "icl": BaselineConcurrencyPolicy("allowed", "allowed"),
-    "hipporag": BaselineConcurrencyPolicy("allowed", "allowed"),
-    "hipporag2": BaselineConcurrencyPolicy("allowed", "allowed"),
-    "amem_baseline": BaselineConcurrencyPolicy("allowed", "allowed"),
-    # Letta's agent-loop implementation mutates shared memory state while answering,
-    # so both checkpoint-level and within-checkpoint parallelism are disabled.
-    "letta": BaselineConcurrencyPolicy("forbidden", "forbidden"),
+    # Incremental indexing baselines - MUST be sequential
+    # Index order affects graph/DB state, parallel would cause race conditions
+    "hipporag2": BaselineConcurrencyPolicy("forbidden", "forbidden"),  # Online incremental indexing
+    "zep": BaselineConcurrencyPolicy("forbidden", "forbidden"),       # Incremental KG building
+    "simplemem": BaselineConcurrencyPolicy("forbidden", "forbidden"), # Rebuild index per checkpoint
+    
+    # Stateless retrieval baselines - CAN be parallel
+    "rag": BaselineConcurrencyPolicy("allowed", "allowed"),           # Pre-built vector index
+    "oracle": BaselineConcurrencyPolicy("allowed", "allowed"),        # Ground truth lookup
+    "icl": BaselineConcurrencyPolicy("allowed", "allowed"),           # No retrieval, full context
+    "amem": BaselineConcurrencyPolicy("allowed", "allowed"),          # Pre-built index
+    
+    # Agent-based baselines - state mutations
+    "letta": BaselineConcurrencyPolicy("forbidden", "forbidden"),     # Shared memory state mutations
 }
 
 
