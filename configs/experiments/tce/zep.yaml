@@ -3,7 +3,7 @@ users:
 
 runtime:
   baseline: zep
-  resume: false
+  resume: true
   debug: true
   save_prompt_and_raw: true
   max_checkpoints: 1
@@ -22,8 +22,8 @@ llm:
 
 baseline_params:
   embedding_model: text-embedding-3-large
-  batch_size: 1
-  max_coroutines: 1
+  batch_size: 10
+  max_coroutines: 10
   checkpoint_workers: 1
   within_checkpoint_workers: 1
   save_every_generation_keys: 1

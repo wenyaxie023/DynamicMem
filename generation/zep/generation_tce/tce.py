@@ -25,7 +25,6 @@ from graphiti_core.llm_client.openai_generic_client import OpenAIGenericClient
 from graphiti_core.llm_client.config import LLMConfig
 from graphiti_core.driver.kuzu_driver import KuzuDriver
 from graphiti_core.cross_encoder.openai_reranker_client import OpenAIRerankerClient
-from graphiti_core.search.search_config_recipes import EDGE_HYBRID_SEARCH_RRF
 from graphiti_core.search.search_filters import SearchFilters, DateFilter, ComparisonOperator
 from graphiti_core.utils.bulk_utils import RawEpisode
 from openai import AsyncOpenAI, RateLimitError, APIStatusError
@@ -99,12 +98,11 @@ def rate_limited_sleep(min_requests_per_minute: int = 20):
 @dataclass
 class GraphitiConfig:
     db_path: str
-    embedding_model: str  # 必须从配置传入
-    llm_model: str  # 必须从配置传入
-    batch_size: int = 10
-    temperature: float = 0.0
+    embedding_model: str
+    llm_model: str
+    batch_size: int
+    max_coroutines: int
     max_tokens: int = 16384
-    max_coroutines: int = 5
     base_url: Optional[str] = None
     api_key: Optional[str] = None
 
@@ -259,21 +257,16 @@ class ZepGraphitiIndex:
         # logs AFTER checkpoint (wrong semantics). Fixed by removing filter.
         search_filters = None
         
-        # Create a copy of the config to modify the limit
-        search_config = EDGE_HYBRID_SEARCH_RRF.model_copy()
-        search_config.limit = top_k
-        
         if search_filters:
             results = await self.graphiti.search_(
                 query=query,
-                config=search_config,
                 search_filter=search_filters,
             )
         else:
-            # Fixed: search_ is the correct API method
             results = await self.graphiti.search_(query=query)
         
         retrieved_episodes = []
+        
         if hasattr(results, 'episodes') and results.episodes:
             for ep in results.episodes[:top_k]:
                 try:
@@ -281,6 +274,20 @@ class ZepGraphitiIndex:
                     retrieved_episodes.append(episode_data)
                 except (json.JSONDecodeError, AttributeError):
                     continue
+        
+        if hasattr(results, 'edges') and results.edges:
+            seen_episode_ids = set()
+            for edge in results.edges[:top_k]:
+                if hasattr(edge, 'episodes') and edge.episodes:
+                    for ep_uuid in edge.episodes:
+                        if ep_uuid not in seen_episode_ids:
+                            seen_episode_ids.add(ep_uuid)
+                            if hasattr(edge, 'source_episode'):
+                                try:
+                                    episode_data = json.loads(edge.source_episode)
+                                    retrieved_episodes.append(episode_data)
+                                except (json.JSONDecodeError, AttributeError):
+                                    continue
         
         return retrieved_episodes
 

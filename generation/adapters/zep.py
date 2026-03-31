@@ -7,16 +7,34 @@ from .base import TceAdapterArgs
 def run(args: TceAdapterArgs) -> Dict[str, Any]:
     from generation.zep.generation_tce.tce import run_generation
     
-    # 必须从配置文件读取，不使用默认值
     embedding_model = args.extras.get("embedding_model")
     if not embedding_model:
         raise ValueError("embedding_model must be specified in baseline_params")
     
-    batch_size = int(args.extras.get("batch_size", "10"))
-    max_coroutines = int(args.extras.get("max_coroutines", "5"))
-    checkpoint_workers = int(args.extras.get("checkpoint_workers", "1"))
-    within_checkpoint_workers = int(args.extras.get("within_checkpoint_workers", "1"))
-    save_every_generation_keys = int(args.extras.get("save_every_generation_keys", "1"))
+    batch_size = args.extras.get("batch_size")
+    if batch_size is None:
+        raise ValueError("batch_size must be specified in baseline_params")
+    batch_size = int(batch_size)
+    
+    max_coroutines = args.extras.get("max_coroutines")
+    if max_coroutines is None:
+        raise ValueError("max_coroutines must be specified in baseline_params")
+    max_coroutines = int(max_coroutines)
+    
+    checkpoint_workers = args.extras.get("checkpoint_workers")
+    if checkpoint_workers is None:
+        raise ValueError("checkpoint_workers must be specified in baseline_params")
+    checkpoint_workers = int(checkpoint_workers)
+    
+    within_checkpoint_workers = args.extras.get("within_checkpoint_workers")
+    if within_checkpoint_workers is None:
+        raise ValueError("within_checkpoint_workers must be specified in baseline_params")
+    within_checkpoint_workers = int(within_checkpoint_workers)
+    
+    save_every_generation_keys = args.extras.get("save_every_generation_keys")
+    if save_every_generation_keys is None:
+        raise ValueError("save_every_generation_keys must be specified in baseline_params")
+    save_every_generation_keys = int(save_every_generation_keys)
     
     print(f"[Zep Adapter] Using embedding_model: {embedding_model}")
     
