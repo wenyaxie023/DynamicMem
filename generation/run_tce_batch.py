@@ -39,8 +39,37 @@ def _load_benchmark_builder_api():
     return module.build_chain_state_validity, module.build_checkpoints
 
 
+def _derive_run_name(experiment_name: str, run_id: str) -> str:
+    exp = str(experiment_name or "").strip()
+    rid = str(run_id or "").strip() or "main"
+    if rid == "main":
+        return exp
+    if not exp:
+        return rid
+    return "{}__{}".format(exp, rid)
+
+
 def _build_user_cfg(cfg: Dict[str, Any], user_id: str) -> Dict[str, Any]:
-    rendered = render_value(copy.deepcopy(cfg), user_id)
+    runtime = cfg.get("runtime", {}) or {}
+    raw_experiment_name = str(runtime.get("experiment_name", "") or "").strip()
+    experiment_name = raw_experiment_name.format(user_id=user_id) if raw_experiment_name else ""
+    raw_run_id = str(runtime.get("run_id", "") or "").strip()
+    run_id = (
+        raw_run_id.format(user_id=user_id, experiment_name=experiment_name)
+        if raw_run_id
+        else "main"
+    )
+    run_name = _derive_run_name(experiment_name, run_id)
+    rendered = render_value(
+        copy.deepcopy(cfg),
+        user_id=user_id,
+        experiment_name=experiment_name,
+        run_id=run_id,
+        run_name=run_name,
+    )
+    rendered_runtime = rendered.get("runtime", {}) or {}
+    rendered_runtime["user_id"] = user_id
+    rendered["runtime"] = rendered_runtime
     return rendered
 
 

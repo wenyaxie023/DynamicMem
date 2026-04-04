@@ -168,7 +168,8 @@ python -m generation.run_tce --config <config.yaml>
 
 Key runtime config:
 - `runtime.enable_rq3_apply_service_qa: true`
-- `runtime.rq3_apply_fail_on_missing_pack: false`
 - `runtime.rq3_apply_save_prompt_and_raw: true`
-- `baseline_params.rq3_apply_items_per_key: 1`
-- optional `baseline_params.rq3_apply_retrieval_top_k`
+- optional `retrieval.rq3_apply_top_k`
+
+Runtime semantics:
+- generation runtime consumes one apply item per key from `rq3_apply_service_qa`

@@ -1,7 +1,6 @@
 """Shared generation pipeline for TCE baselines."""
 
 import copy
-import inspect
 import json
 import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -19,21 +18,30 @@ except Exception:  # pragma: no cover
 
 from tqdm import tqdm
 from generation.adapters.base import get_baseline_concurrency_policy
+from .orchestrator_protocol import (
+    AnswerExecutionResult,
+    CheckpointHandle,
+    QuerySpec,
+    RetrievalOptions,
+    RetrievalResult,
+    ensure_answer_execution_result,
+    ensure_checkpoint_handle,
+    ensure_retrieval_result,
+)
 from .prompts import (
-    build_change_reasoning_prompt,
-    build_generation_prompt,
-    build_rq3_apply_answer_prompt,
+    build_change_reasoning_prompt_with_agent_memory,
+    build_change_reasoning_prompt_with_inline_memory,
+    build_service_application_prompt_with_agent_memory,
+    build_service_application_prompt_with_inline_memory,
+    build_state_completion_prompt_with_agent_memory,
+    build_state_completion_prompt_with_inline_memory,
 )
 from .task_packs import (
     build_change_targets_from_pack,
-    build_rq3_apply_retrieval_query,
     build_state_completion_targets_from_pack,
 )
 from .task_spec import (
-    build_change_reasoning_instruction,
-    build_change_reasoning_task_text,
     build_prediction_task_from_checkpoint,
-    build_prediction_task_instruction,
 )
 from .exposure_checkpoint_builder import (
     build_calendar_anchor_checkpoints,
@@ -62,17 +70,7 @@ def parse_ts(ts: str) -> datetime:
 
 
 def to_log_text(log: Dict[str, Any]) -> str:
-    return json.dumps(
-        {
-            "app_log_id": log.get("app_log_id"),
-            "timestamp": log.get("timestamp"),
-            "app_name": log.get("app_name"),
-            "api_name": log.get("api_name"),
-            "request": log.get("request"),
-            "response": log.get("response"),
-        },
-        ensure_ascii=False,
-    )
+    return json.dumps(log, ensure_ascii=False)
 
 
 def flatten_snapshot(snapshot: Any) -> Dict[str, Any]:
@@ -176,51 +174,49 @@ def normalize_change_reasoning_output(raw_out: Any, changed_keys: List[str]) -> 
     return out
 
 
-def _retrieve_context_with_task_text(
-    retrieve_context: Callable[..., Dict[str, Any]],
+def _checkpoint_handle_metadata(
     checkpoint: Dict[str, Any],
+    *,
     memory_pool: List[Dict[str, Any]],
+    state_kind: str,
+    state_ref: Any = None,
+    extra_metadata: Optional[Dict[str, Any]] = None,
+) -> CheckpointHandle:
+    metadata = {
+        "checkpoint_timestamp": str(((checkpoint.get("as_of") or {}).get("timestamp") or "")),
+        "checkpoint_app_log_id": str(((checkpoint.get("as_of") or {}).get("app_log_id") or "")),
+        "memory_pool_size": len(memory_pool),
+    }
+    if extra_metadata:
+        metadata.update(extra_metadata)
+    return CheckpointHandle(
+        checkpoint_id=str(checkpoint.get("checkpoint_id") or ""),
+        state_kind=state_kind,
+        state_ref=state_ref,
+        metadata=metadata,
+    )
+
+
+def _build_task_query_spec(
+    *,
+    task_name: str,
+    checkpoint: Dict[str, Any],
+    item_key: str,
     target_keys: List[str],
-    task_text: str,
-    retrieval_top_k_override: Optional[int] = None,
-) -> Dict[str, Any]:
-    """Retrieve context for a single key with key-specific task text.
-    
-    REQUIRES: retrieve_context must accept 'task_text' parameter.
-    Raises TypeError if baseline doesn't accept task_text (fail fast).
-    """
-    # Validate signature upfront - fail fast if missing required params
-    sig = inspect.signature(retrieve_context)
-    params = set(sig.parameters.keys())
-    
-    if 'task_text' not in params:
-        raise TypeError(
-            f"retrieve_context MUST accept 'task_text' parameter for per-key retrieval. "
-            f"Current signature: {sig}. "
-            f"Baseline is using checkpoint-level query instead of per-key query. "
-            f"See: docs/protocols/temporal_checkpoint_evaluation_developer_manual.md:195-201"
-        )
-    
-    # Check for optional parameter (warn but don't fail)
-    if 'retrieval_top_k_override' not in params:
-        import warnings
-        warnings.warn(
-            f"retrieve_context should accept 'retrieval_top_k_override'. "
-            f"Current signature: {sig}. RQ3 apply top_k override will be ignored."
-        )
-        return retrieve_context(
-            checkpoint,
-            memory_pool,
-            target_keys,
-            task_text=task_text,
-        )
-    
-    return retrieve_context(
-        checkpoint,
-        memory_pool,
-        target_keys,
-        task_text=task_text,
-        retrieval_top_k_override=retrieval_top_k_override,
+    task_query_text: str,
+    retrieval_query_text: str,
+    answer_query_text: str,
+    task_payload: Optional[Dict[str, Any]] = None,
+) -> QuerySpec:
+    return QuerySpec(
+        task_name=str(task_name),
+        item_key=str(item_key),
+        target_keys=[str(x) for x in target_keys],
+        checkpoint_timestamp=str(((checkpoint.get("as_of") or {}).get("timestamp") or "")),
+        task_query_text=str(task_query_text or ""),
+        retrieval_query_text=str(retrieval_query_text or ""),
+        answer_query_text=str(answer_query_text or ""),
+        task_payload=dict(task_payload or {}),
     )
 
 
@@ -260,26 +256,100 @@ def _build_value_model(value: Any, model_idx: int, counter: List[int]) -> Any:
     return ScalarValue
 
 
-def build_prompt(
+def _require_nonempty_pack_query(
+    *,
+    task_name: str,
+    checkpoint_id: str,
+    item_key: str,
+    query_text: str,
+) -> str:
+    query = str(query_text or "").strip()
+    if query:
+        return query
+    raise ValueError(
+        "{} requires a non-empty prebuilt retrieval_query for checkpoint {} item {}.".format(
+            task_name,
+            checkpoint_id or "<unknown>",
+            item_key or "<unknown>",
+        )
+    )
+
+
+def _select_state_completion_prompt_builder(memory_prompt_mode: str):
+    if memory_prompt_mode == "inline_memory":
+        return build_state_completion_prompt_with_inline_memory
+    if memory_prompt_mode == "agent_memory":
+        return build_state_completion_prompt_with_agent_memory
+    raise ValueError("Unsupported memory_prompt_mode: {}".format(memory_prompt_mode))
+
+
+def _select_change_reasoning_prompt_builder(memory_prompt_mode: str):
+    if memory_prompt_mode == "inline_memory":
+        return build_change_reasoning_prompt_with_inline_memory
+    if memory_prompt_mode == "agent_memory":
+        return build_change_reasoning_prompt_with_agent_memory
+    raise ValueError("Unsupported memory_prompt_mode: {}".format(memory_prompt_mode))
+
+
+def _select_service_application_prompt_builder(memory_prompt_mode: str):
+    if memory_prompt_mode == "inline_memory":
+        return build_service_application_prompt_with_inline_memory
+    if memory_prompt_mode == "agent_memory":
+        return build_service_application_prompt_with_agent_memory
+    raise ValueError("Unsupported memory_prompt_mode: {}".format(memory_prompt_mode))
+
+
+def build_state_completion_prompt(
     *,
     checkpoint: Dict[str, Any],
-    context_logs: List[Dict[str, Any]],
-    context_note: str,
+    context_logs: Optional[List[Dict[str, Any]]],
     target_keys: List[str],
     target_value_templates: Dict[str, Any],
-    retrieval_query: Optional[str] = None,
+    memory_prompt_mode: str,
+    inline_memory_blocks: Optional[List[str]] = None,
     task_text_override: Optional[str] = None,
 ) -> str:
     task_query = task_text_override or build_prediction_task_from_checkpoint(checkpoint, target_keys)
-    return build_generation_prompt(
+    prompt_builder = _select_state_completion_prompt_builder(memory_prompt_mode)
+    return prompt_builder(
         context_logs=context_logs,
-        task_instruction=build_prediction_task_instruction(),
         task_query=task_query,
         target_keys=target_keys,
         target_value_templates=target_value_templates,
         log_to_text=to_log_text,
-        retrieval_query=retrieval_query,
-        context_note=context_note,
+        inline_memory_blocks=inline_memory_blocks,
+    )
+
+
+def _build_change_prompt_from_queryspec(
+    *,
+    memory_prompt_mode: str,
+    query_spec: QuerySpec,
+    changed_value_templates: Dict[str, Any],
+    retrieval_result: RetrievalResult,
+) -> str:
+    return _select_change_reasoning_prompt_builder(memory_prompt_mode)(
+        context_logs=None,
+        task_query=query_spec.answer_query_text,
+        changed_keys=query_spec.target_keys,
+        changed_value_templates=changed_value_templates,
+        log_to_text=to_log_text,
+        inline_memory_blocks=list(retrieval_result.inline_memory_blocks),
+    )
+
+
+def _build_apply_prompt_from_queryspec(
+    *,
+    memory_prompt_mode: str,
+    query_spec: QuerySpec,
+    retrieval_result: RetrievalResult,
+) -> str:
+    prompt_builder = _select_service_application_prompt_builder(memory_prompt_mode)
+    return prompt_builder(
+        question_text=query_spec.answer_query_text,
+        context_logs=None,
+        log_to_text=to_log_text,
+        inline_memory_blocks=list(retrieval_result.inline_memory_blocks),
     )
 
 
@@ -325,7 +395,6 @@ def normalize_evidence_prediction(raw_evidence: Any, target_keys: List[str]) -> 
 def _extract_rq3_apply_pack_for_checkpoint(
     checkpoint: Dict[str, Any],
     target_keys: List[str],
-    item_count_per_key: int,
 ) -> Dict[str, List[Dict[str, str]]]:
     if "rq3_know_apply" in checkpoint:
         raise ValueError("Legacy field rq3_know_apply is no longer supported. Use rq3_apply_service_qa.")
@@ -361,17 +430,12 @@ def _extract_rq3_apply_pack_for_checkpoint(
                     "service_category": service_category,
                     "apply_scenario": apply_scenario,
                     "apply_question": apply_q,
-                    "retrieval_query": str(item.get("retrieval_query") or "").strip()
-                    or build_rq3_apply_retrieval_query(
-                        service_category=service_category,
-                        question=apply_q,
-                        apply_scenario=apply_scenario,
-                    ),
+                    "retrieval_query": str(item.get("retrieval_query") or "").strip(),
                     "apply_reference_answer": apply_a,
                 }
             )
         if normalized:
-            out[key] = normalized[: max(1, int(item_count_per_key))]
+            out[key] = normalized[:1]
     return out
 
 
@@ -614,26 +678,36 @@ def run_pipeline(
     ask_structured: Optional[Callable[[str, Type[BaseModel]], Any]],
     use_structured_response: bool,
     close: Callable[[], None],
-    retrieve_context: Callable[[Dict[str, Any], List[Dict[str, Any]], List[str]], Dict[str, Any]],
+    prepare_checkpoint_state: Optional[Callable[[Dict[str, Any], List[Dict[str, Any]]], Any]] = None,
+    retrieve_context_for_query: Optional[
+        Callable[[CheckpointHandle, QuerySpec, RetrievalOptions, List[Dict[str, Any]]], Any]
+    ] = None,
+    answer_query: Optional[Callable[[CheckpointHandle, QuerySpec, RetrievalResult], Any]] = None,
+    finalize_checkpoint_state: Optional[Callable[[CheckpointHandle], None]] = None,
     baseline_name: str,
     resume: bool,
     max_checkpoints: Optional[int],
     debug: bool,
     debug_dir: Optional[Path],
     save_prompt_and_raw: bool,
+    memory_prompt_mode: str = "inline_memory",
     predict_per_key: bool = True,
     exposure_anchors: Optional[Sequence[int]] = None,
     calendar_anchor_freq: Optional[str] = None,
     exposure_tokenizer_model: str = "gpt-4o-mini",
     enable_change_reasoning: bool = False,
     enable_rq3_apply_service_qa: bool = False,
-    rq3_apply_fail_on_missing_pack: bool = False,
     rq3_apply_save_prompt_and_raw: bool = True,
-    rq3_apply_items_per_key: int = 2,
     rq3_apply_retrieval_top_k: Optional[int] = None,
+    retrieval_options_backend: Optional[Dict[str, Any]] = None,
     checkpoint_workers: int = 1,
     within_checkpoint_workers: int = 1,
     save_every_generation_keys: int = 1,
+    enable_final_qa: bool = False,
+    final_qa_path: Optional[str] = None,
+    final_qa_output_path: Optional[str] = None,
+    final_qa_retrieval_top_k: Optional[int] = None,
+    final_qa_save_prompt_and_raw: bool = False,
 ) -> Dict[str, Any]:
     benchmark = json.loads(benchmark_path.read_text(encoding="utf-8"))
     app_logs = normalize_app_logs(json.loads(app_logs_path.read_text(encoding="utf-8")))
@@ -649,6 +723,8 @@ def run_pipeline(
     # Sampling strategy resolution:
     # - prebuilt benchmark sampling takes precedence
     # - runtime sampling is used only for legacy/non-prebuilt benchmark payloads
+    
+    ## legacy sampling code
     if has_prebuilt_sampling:
         if exposure_anchors or calendar_anchor_freq:
             print("[TCE] benchmark contains prebuilt sampled checkpoints; runtime sampling params are ignored.")
@@ -668,8 +744,6 @@ def run_pipeline(
         )
     if max_checkpoints is not None:
         checkpoints = checkpoints[:max_checkpoints]
-    changed_items_by_cid = _compute_changed_items_by_checkpoint(checkpoints)
-
     existing: Dict[str, Dict[str, Any]] = {}
     if resume and output_path.exists():
         try:
@@ -704,6 +778,93 @@ def run_pipeline(
             "Checkpoint-level combined retrieval/prompting is no longer supported."
         )
 
+    if prepare_checkpoint_state is None:
+        def prepare_checkpoint_state(cp: Dict[str, Any], memory_pool: List[Dict[str, Any]]) -> CheckpointHandle:
+            return _checkpoint_handle_metadata(
+                cp,
+                memory_pool=memory_pool,
+                state_kind="prepared_memory",
+                state_ref=cp,
+                extra_metadata={"baseline": baseline_name},
+            )
+
+    if retrieve_context_for_query is None:
+        raise ValueError("run_pipeline requires retrieve_context_for_query.")
+
+    if finalize_checkpoint_state is None:
+        def finalize_checkpoint_state(_checkpoint_handle: CheckpointHandle) -> None:
+            return None
+
+    if answer_query is None:
+        def answer_query(
+            checkpoint_handle: CheckpointHandle,
+            query_spec: QuerySpec,
+            retrieval_result: RetrievalResult,
+        ) -> AnswerExecutionResult:
+            prompt = ""
+            raw_out: Any = {}
+            if query_spec.task_name == "Task A":
+                target_value_templates = dict((query_spec.task_payload or {}).get("target_value_templates") or {})
+                prompt = build_state_completion_prompt(
+                    checkpoint=checkpoint_handle.state_ref if isinstance(checkpoint_handle.state_ref, dict) else {},
+                    context_logs=None,
+                    target_keys=query_spec.target_keys,
+                    target_value_templates=target_value_templates,
+                    memory_prompt_mode=memory_prompt_mode,
+                    inline_memory_blocks=list(retrieval_result.inline_memory_blocks),
+                    task_text_override=query_spec.answer_query_text,
+                )
+                if use_structured_response and ask_structured is not None:
+                    model_idx = int((query_spec.task_payload or {}).get("model_idx") or 0)
+                    text_format = build_generation_text_format(
+                        query_spec.target_keys,
+                        target_value_templates,
+                        model_idx,
+                    )
+                    raw_out = ask_structured(prompt, text_format)
+                else:
+                    raw_out = ask_json(prompt)
+            elif query_spec.task_name == "Task B":
+                prompt = _build_change_prompt_from_queryspec(
+                    memory_prompt_mode=memory_prompt_mode,
+                    query_spec=query_spec,
+                    changed_value_templates=dict((query_spec.task_payload or {}).get("changed_value_templates") or {}),
+                    retrieval_result=retrieval_result,
+                )
+                raw_out = ask_json(prompt)
+            elif query_spec.task_name == "Task C":
+                prompt = _build_apply_prompt_from_queryspec(
+                    memory_prompt_mode=memory_prompt_mode,
+                    query_spec=query_spec,
+                    retrieval_result=retrieval_result,
+                )
+                raw_out = ask_json(prompt)
+            elif query_spec.task_name == "Final QA":
+                from .final_checkpoint_qa import (
+                    build_final_qa_prompt_with_agent_memory,
+                    build_final_qa_prompt_with_inline_memory,
+                )
+
+                if memory_prompt_mode == "inline_memory":
+                    prompt = build_final_qa_prompt_with_inline_memory(
+                        question=query_spec.answer_query_text,
+                        context_text="\n<->\n".join(list(retrieval_result.inline_memory_blocks)),
+                    )
+                elif memory_prompt_mode == "agent_memory":
+                    prompt = build_final_qa_prompt_with_agent_memory(question=query_spec.answer_query_text)
+                else:
+                    raise ValueError(
+                        "Unsupported memory_prompt_mode for default answer_query: {}".format(memory_prompt_mode)
+                    )
+                raw_out = ask_json(prompt)
+            else:
+                raise ValueError("Unsupported task_name for default answer_query: {}".format(query_spec.task_name))
+            return AnswerExecutionResult(
+                raw_output=raw_out,
+                prompt=prompt,
+                debug_metadata={"retrieval_metadata": dict(retrieval_result.debug_metadata or {})},
+            )
+
     def _ordered_predictions() -> List[Dict[str, Any]]:
         return [
             copy.deepcopy(predictions_by_cid[cid])
@@ -731,6 +892,11 @@ def run_pipeline(
         observed, cp_dt, cp_ts = observed_logs_for_checkpoint(cp, app_logs)
 
         memory_pool = observed if not max_visible_logs or max_visible_logs <= 0 else observed[-max_visible_logs:]
+        checkpoint_handle = ensure_checkpoint_handle(
+            prepare_checkpoint_state(cp, memory_pool),
+            checkpoint_id=cid,
+        )
+        checkpoint_handle.metadata.setdefault("checkpoint_timestamp", cp_ts)
 
         state_completion_pack_used = False
         prebuilt_state_completion_records: Dict[str, Any] = {}
@@ -744,7 +910,17 @@ def run_pipeline(
             ) = pack_targets
             state_completion_pack_used = True
         else:
-            target_keys, target_value_templates, target_key_status = build_observable_target_templates(cp)
+            raise ValueError(
+                "Task A requires state_completion_pack for checkpoint {}.".format(cid or "<unknown>")
+            )
+
+        for key in target_keys:
+            _require_nonempty_pack_query(
+                task_name="Task A",
+                checkpoint_id=cid,
+                item_key=key,
+                query_text=(prebuilt_state_completion_records.get(key) or {}).get("retrieval_query") or "",
+            )
 
         item: Dict[str, Any] = {
             "checkpoint_id": cid,
@@ -800,366 +976,386 @@ def run_pipeline(
             if save_counter % save_every_generation_keys == 0:
                 _persist_checkpoint_item(item)
 
-        context_logs: List[Dict[str, Any]] = []
-        context_note = "Context app logs"
-
-        if state_completion_pack_used and not target_keys:
-            item["snapshot_state"] = {}
-            item["evidence"] = {}
-            item["metadata"]["retrieval_mode"] = "pack_empty_scope"
-            context_logs = []
-            context_note = "Empty state-completion pack scope"
-            if save_prompt_and_raw:
-                item["metadata"]["prompt"] = []
-                item["metadata"]["raw_model_output"] = {"mode": "pack_empty_scope", "records": []}
-        else:
-            per_key_records_by_key: Dict[str, Dict[str, Any]] = {}
-            per_key_retrieval_by_key: Dict[str, Dict[str, Any]] = {}
-            item["snapshot_state"] = {}
-            item["evidence"] = {}
-            def _run_state_completion_key(key_idx: int, key: str) -> Dict[str, Any]:
-                single_keys = [key]
-                single_template = {key: target_value_templates.get(key)}
-                if state_completion_pack_used:
-                    single_task_text = str(
-                        (prebuilt_state_completion_records.get(key) or {}).get("retrieval_query") or ""
-                    ).strip() or build_prediction_task_from_checkpoint(cp, single_keys)
-                else:
-                    single_task_text = build_prediction_task_from_checkpoint(cp, single_keys)
-                single_ctx_info = _retrieve_context_with_task_text(
-                    retrieve_context,
-                    cp,
-                    memory_pool,
-                    single_keys,
-                    single_task_text,
-                )
-                single_context_logs = single_ctx_info.get("context_logs") or []
-                single_retrieval_query = single_ctx_info.get("retrieval_query")
-                single_context_note = single_ctx_info.get("context_note") or "Context app logs"
-                single_retrieval_meta = single_ctx_info.get("metadata") or {}
-                single_prompt = build_prompt(
-                    checkpoint=cp,
-                    context_logs=single_context_logs,
-                    context_note=single_context_note,
-                    target_keys=single_keys,
-                    target_value_templates=single_template,
-                    retrieval_query=single_retrieval_query,
-                    task_text_override=single_task_text,
-                )
-                single_error_messages: List[str] = []
-                single_raw_out: Any = {}
-                try:
-                    if use_structured_response and ask_structured is not None:
-                        try:
-                            text_format = build_generation_text_format(
-                                single_keys,
-                                single_template,
-                                checkpoint_order.index(cid) * 1000 + key_idx,
-                            )
-                            single_raw_out = ask_structured(single_prompt, text_format)
-                            single_out = normalize_generation_output(single_raw_out, single_keys)
-                        except Exception as exc:
-                            single_error_messages.append(f"structured_call_failed: {exc}")
-                            single_raw_out = ask_json(single_prompt)
-                            single_out = normalize_generation_output(single_raw_out, single_keys)
-                    else:
-                        single_raw_out = ask_json(single_prompt)
-                        single_out = normalize_generation_output(single_raw_out, single_keys)
-                except Exception as exc:
-                    single_error_messages.append(f"json_call_failed: {exc}")
-                    single_raw_out = {
-                        "_error": "; ".join(single_error_messages)
-                        if single_error_messages
-                        else f"llm_call_failed: {exc}"
-                    }
-                    single_out = {"snapshot_state": {}, "evidence": {}}
-
-                if single_error_messages and isinstance(single_raw_out, dict):
-                    single_raw_out = dict(single_raw_out)
-                    single_raw_out["_warnings"] = single_error_messages
-
-                single_snapshot = flatten_snapshot(single_out.get("snapshot_state"))
-                if state_completion_pack_used:
-                    single_snapshot = {key: single_snapshot.get(key)}
-                else:
-                    single_snapshot = {key: drop_excluded_fields(single_snapshot.get(key))}
-                single_evidence = normalize_evidence_prediction(single_out.get("evidence"), single_keys)
-                return {
-                    "key": key,
-                    "snapshot_value": align_prediction_to_template(
-                        single_snapshot.get(key),
-                        target_value_templates.get(key),
-                    ),
-                    "evidence": single_evidence.get(key, []),
-                    "record": {
-                        "key": key,
-                        "prompt": single_prompt,
-                        "retrieval_query": single_retrieval_query,
-                        "retrieval_metadata": single_retrieval_meta,
-                        "raw_model_output": single_raw_out,
-                    },
-                    "retrieval": {
-                        "key": key,
-                        "retrieval_query": single_retrieval_query,
-                        "retrieval_metadata": single_retrieval_meta,
-                        "context_log_ids": [x.get("app_log_id") for x in single_context_logs],
-                    },
-                }
-
-            with ThreadPoolExecutor(max_workers=within_checkpoint_workers) as executor:
-                futures = {
-                    executor.submit(_run_state_completion_key, key_idx, key): key
-                    for key_idx, key in enumerate(target_keys)
-                }
-                for future in as_completed(futures):
-                    result = future.result()
-                    key = result["key"]
-                    item["snapshot_state"][key] = result["snapshot_value"]
-                    item["evidence"][key] = result["evidence"]
-                    per_key_records_by_key[key] = result["record"]
-                    per_key_retrieval_by_key[key] = result["retrieval"]
-                    ordered_records = [
-                        per_key_records_by_key[state_key]
-                        for state_key in target_keys
-                        if state_key in per_key_records_by_key
-                    ]
-                    ordered_retrieval = [
-                        per_key_retrieval_by_key[state_key]
-                        for state_key in target_keys
-                        if state_key in per_key_retrieval_by_key
-                    ]
-                    item["metadata"]["retrieval_mode"] = "per_key_isolated"
-                    item["metadata"]["per_key_retrieval"] = ordered_retrieval
-                    if save_prompt_and_raw:
-                        item["metadata"]["prompt"] = [x["prompt"] for x in ordered_records]
-                        item["metadata"]["raw_model_output"] = {"mode": "per_key", "records": ordered_records}
-                    _maybe_persist()
-
-            context_logs = []
-            context_note = "Per-key isolated retrieval contexts"
-
-        if enable_change_reasoning:
-            change_pack_used = False
-            prebuilt_change_records: Dict[str, Any] = {}
-            pack_change_info = build_change_targets_from_pack(cp)
-            if pack_change_info is not None:
-                changed_keys, changed_templates, prev_cutoff_ts, prebuilt_change_records = pack_change_info
-                change_pack_used = True
+        try:
+            if state_completion_pack_used and not target_keys:
+                item["snapshot_state"] = {}
+                item["evidence"] = {}
+                item["metadata"]["retrieval_mode"] = "pack_empty_scope"
+                if save_prompt_and_raw:
+                    item["metadata"]["prompt"] = []
+                    item["metadata"]["raw_model_output"] = {"mode": "pack_empty_scope", "records": []}
             else:
-                change_info = changed_items_by_cid.get(cid, {})
-                changed_keys = list(change_info.get("changed_keys", []))
-                changed_templates = dict(change_info.get("changed_templates", {}))
-                prev_cutoff_ts = str(change_info.get("previous_cutoff_ts", ""))
-            if changed_keys and prev_cutoff_ts:
-                change_analysis: Dict[str, Any] = {}
-                per_key_records: List[Dict[str, Any]] = []
-                def _run_change_key(key: str) -> Dict[str, Any]:
+                per_key_records_by_key: Dict[str, Dict[str, Any]] = {}
+                per_key_retrieval_by_key: Dict[str, Dict[str, Any]] = {}
+                item["snapshot_state"] = {}
+                item["evidence"] = {}
+
+                def _run_state_completion_key(key_idx: int, key: str) -> Dict[str, Any]:
                     single_keys = [key]
-                    single_templates = {key: changed_templates.get(key, {})}
-                    if change_pack_used:
-                        change_task_text = str(
-                            (prebuilt_change_records.get(key) or {}).get("retrieval_query") or ""
-                        ).strip() or build_change_reasoning_task_text(
-                            cp_ts,
-                            prev_cutoff_ts,
-                            single_templates,
-                        )
-                    else:
-                        change_task_text = build_change_reasoning_task_text(
-                            cp_ts,
-                            prev_cutoff_ts,
-                            single_templates,
-                        )
-                    change_ctx = _retrieve_context_with_task_text(
-                        retrieve_context,
-                        cp,
-                        memory_pool,
-                        single_keys,
-                        change_task_text,
+                    single_template = {key: target_value_templates.get(key)}
+                    pack_record = prebuilt_state_completion_records.get(key) or {}
+                    retrieval_query_text = _require_nonempty_pack_query(
+                        task_name="Task A",
+                        checkpoint_id=cid,
+                        item_key=key,
+                        query_text=pack_record.get("retrieval_query") or "",
                     )
-                    change_context_logs = change_ctx.get("context_logs") or []
-                    change_prompt = build_change_reasoning_prompt(
-                        context_logs=change_context_logs,
-                        task_instruction=build_change_reasoning_instruction(),
-                        task_query=change_task_text,
-                        changed_keys=single_keys,
-                        changed_value_templates=single_templates,
-                        log_to_text=to_log_text,
-                        context_note=change_ctx.get("context_note") or "Context app logs",
+                    answer_query_text = str(pack_record.get("question_text") or retrieval_query_text or "").strip()
+                    query_spec = _build_task_query_spec(
+                        task_name="Task A",
+                        checkpoint=cp,
+                        item_key=key,
+                        target_keys=single_keys,
+                        task_query_text=answer_query_text,
+                        retrieval_query_text=retrieval_query_text,
+                        answer_query_text=answer_query_text,
+                        task_payload={
+                            "target_value_templates": single_template,
+                            "model_idx": checkpoint_order.index(cid) * 1000 + key_idx,
+                        },
                     )
-                    change_raw: Any = {}
+                    retrieval_options = RetrievalOptions(
+                        common={},
+                        backend=dict(retrieval_options_backend or {}),
+                    )
+                    single_error_messages: List[str] = []
+                    single_raw_out: Any = {}
+                    single_prompt = ""
+                    retrieval_result = RetrievalResult(mode="", inline_memory_blocks=[], debug_metadata={})
                     try:
-                        change_raw = ask_json(change_prompt)
-                        parsed_single = normalize_change_reasoning_output(change_raw, single_keys)
+                        retrieval_result = ensure_retrieval_result(
+                            retrieve_context_for_query(checkpoint_handle, query_spec, retrieval_options, memory_pool)
+                        )
+                        answer_result = ensure_answer_execution_result(
+                            answer_query(checkpoint_handle, query_spec, retrieval_result)
+                        )
+                        single_raw_out = answer_result.raw_output
+                        single_prompt = answer_result.prompt
+                        single_out = normalize_generation_output(single_raw_out, single_keys)
                     except Exception as exc:
-                        change_raw = {"_error": f"change_reasoning_failed: {exc}"}
-                        parsed_single = {
-                            key: {"before": None, "after": None, "change_reason": "", "evidence": []}
+                        single_error_messages.append(f"task_a_failed: {exc}")
+                        single_raw_out = {
+                            "_error": "; ".join(single_error_messages)
+                            if single_error_messages
+                            else f"task_a_failed: {exc}"
                         }
+                        single_out = {"snapshot_state": {}, "evidence": {}}
+
+                    if single_error_messages and isinstance(single_raw_out, dict):
+                        single_raw_out = dict(single_raw_out)
+                        single_raw_out["_warnings"] = single_error_messages
+
+                    single_snapshot = flatten_snapshot(single_out.get("snapshot_state"))
+                    if state_completion_pack_used:
+                        single_snapshot = {key: single_snapshot.get(key)}
+                    else:
+                        single_snapshot = {key: drop_excluded_fields(single_snapshot.get(key))}
+                    single_evidence = normalize_evidence_prediction(single_out.get("evidence"), single_keys)
+                    retrieval_meta = dict(retrieval_result.debug_metadata or {})
+                    retrieval_meta.setdefault("checkpoint_state_kind", checkpoint_handle.state_kind)
+                    retrieval_meta.setdefault("retrieval_query", query_spec.retrieval_query_text)
                     return {
                         "key": key,
-                        "change_value": parsed_single.get(
-                            key,
-                            {"before": None, "after": None, "change_reason": "", "evidence": []},
+                        "snapshot_value": align_prediction_to_template(
+                            single_snapshot.get(key),
+                            target_value_templates.get(key),
                         ),
+                        "evidence": single_evidence.get(key, []),
                         "record": {
                             "key": key,
-                            "prompt": change_prompt,
-                            "retrieval_query": change_ctx.get("retrieval_query"),
-                            "retrieval_metadata": change_ctx.get("metadata") or {},
-                            "raw_model_output": change_raw,
+                            "prompt": single_prompt,
+                            "retrieval_query": query_spec.retrieval_query_text,
+                            "retrieval_metadata": retrieval_meta,
+                            "raw_model_output": single_raw_out,
+                        },
+                        "retrieval": {
+                            "key": key,
+                            "retrieval_query": query_spec.retrieval_query_text,
+                            "retrieval_metadata": retrieval_meta,
+                            "context_log_ids": list(retrieval_meta.get("retrieved_app_log_ids") or []),
                         },
                     }
 
                 with ThreadPoolExecutor(max_workers=within_checkpoint_workers) as executor:
-                    futures = {executor.submit(_run_change_key, key): key for key in changed_keys}
+                    futures = {
+                        executor.submit(_run_state_completion_key, key_idx, key): key
+                        for key_idx, key in enumerate(target_keys)
+                    }
                     for future in as_completed(futures):
                         result = future.result()
                         key = result["key"]
-                        change_analysis[key] = result["change_value"]
-                        per_key_records.append(result["record"])
-                        item["change_analysis"] = change_analysis
-                        item["metadata"]["change_reasoning"] = {
-                            "enabled": True,
-                            "mode": "per_key",
-                            "change_tracking_pack_used": change_pack_used,
-                            "changed_keys_groundtruth": changed_keys,
-                            "previous_cutoff_ts": prev_cutoff_ts,
-                            "per_key_records": per_key_records,
-                        }
+                        item["snapshot_state"][key] = result["snapshot_value"]
+                        item["evidence"][key] = result["evidence"]
+                        per_key_records_by_key[key] = result["record"]
+                        per_key_retrieval_by_key[key] = result["retrieval"]
+                        ordered_records = [
+                            per_key_records_by_key[state_key]
+                            for state_key in target_keys
+                            if state_key in per_key_records_by_key
+                        ]
+                        ordered_retrieval = [
+                            per_key_retrieval_by_key[state_key]
+                            for state_key in target_keys
+                            if state_key in per_key_retrieval_by_key
+                        ]
+                        item["metadata"]["retrieval_mode"] = "per_key_isolated"
+                        item["metadata"]["per_key_retrieval"] = ordered_retrieval
+                        if save_prompt_and_raw:
+                            item["metadata"]["prompt"] = [x["prompt"] for x in ordered_records]
+                            item["metadata"]["raw_model_output"] = {"mode": "per_key", "records": ordered_records}
                         _maybe_persist()
-            else:
-                item["change_analysis"] = {}
-                item["metadata"]["change_reasoning"] = {
-                    "enabled": True,
-                    "mode": "per_key",
-                    "change_tracking_pack_used": change_pack_used,
-                    "changed_keys_groundtruth": changed_keys,
-                    "previous_cutoff_ts": prev_cutoff_ts,
-                }
 
-        if enable_rq3_apply_service_qa:
-            rq3_pack = _extract_rq3_apply_pack_for_checkpoint(
-                cp,
-                target_keys=target_keys,
-                item_count_per_key=rq3_apply_items_per_key,
-            )
-            if not rq3_pack:
-                if rq3_apply_fail_on_missing_pack:
+            if enable_change_reasoning:
+                change_pack_used = False
+                prebuilt_change_records: Dict[str, Any] = {}
+                pack_change_info = build_change_targets_from_pack(cp)
+                if pack_change_info is not None:
+                    changed_keys, changed_templates, prev_cutoff_ts, prebuilt_change_records = pack_change_info
+                    change_pack_used = True
+                else:
                     raise ValueError(
-                        f"RQ3 apply is enabled but rq3_apply_service_qa pack is missing/invalid for checkpoint {cid}"
+                        "Task B requires change_tracking_pack for checkpoint {} when enable_change_reasoning=true.".format(
+                            cid or "<unknown>"
+                        )
                     )
-                item["rq3_apply_answers"] = {}
-                item["metadata"]["rq3_apply"] = {
-                    "enabled": True,
-                    "missing_pack": True,
-                    "items_per_key": int(rq3_apply_items_per_key),
-                }
-            else:
-                rq3_answers: Dict[str, Any] = {}
-                rq3_raw_records: List[Dict[str, Any]] = []
-                discard_counts: Dict[str, int] = {}
-                def _run_apply_key(key: str) -> Dict[str, Any]:
-                    item_answers: List[Dict[str, Any]] = []
-                    raw_records: List[Dict[str, Any]] = []
-                    for qa_item in rq3_pack.get(key, []):
-                        qa_id = str(qa_item.get("qa_id") or "")
-                        service_category = str(qa_item.get("service_category") or "")
-                        apply_scenario = str(qa_item.get("apply_scenario") or "")
-                        apply_q = str(qa_item.get("apply_question") or "")
-                        apply_retrieval_query = str(qa_item.get("retrieval_query") or apply_q)
+                if changed_keys and prev_cutoff_ts:
+                    change_analysis: Dict[str, Any] = {}
+                    per_key_records: List[Dict[str, Any]] = []
 
-                        apply_ctx = _retrieve_context_with_task_text(
-                            retrieve_context,
-                            cp,
-                            memory_pool,
-                            [key],
-                            apply_retrieval_query,
-                            retrieval_top_k_override=rq3_apply_retrieval_top_k,
+                    def _run_change_key(key: str) -> Dict[str, Any]:
+                        single_keys = [key]
+                        single_templates = {key: changed_templates.get(key, {})}
+                        pack_record = prebuilt_change_records.get(key) or {}
+                        change_retrieval_query = _require_nonempty_pack_query(
+                            task_name="Task B",
+                            checkpoint_id=cid,
+                            item_key=key,
+                            query_text=pack_record.get("retrieval_query") or "",
                         )
-                        apply_prompt = build_rq3_apply_answer_prompt(
-                            question_text=apply_q,
-                            context_logs=apply_ctx.get("context_logs") or [],
-                            log_to_text=to_log_text,
-                            service_category=service_category,
-                            apply_scenario=apply_scenario,
+                        change_answer_query = str(pack_record.get("question_text") or change_retrieval_query or "").strip()
+                        query_spec = _build_task_query_spec(
+                            task_name="Task B",
+                            checkpoint=cp,
+                            item_key=key,
+                            target_keys=single_keys,
+                            task_query_text=change_answer_query,
+                            retrieval_query_text=change_retrieval_query,
+                            answer_query_text=change_answer_query,
+                            task_payload={"changed_value_templates": single_templates},
                         )
-                        apply_raw: Any = {}
+                        retrieval_result = RetrievalResult(mode="", inline_memory_blocks=[], debug_metadata={})
+                        change_prompt = ""
+                        change_raw: Any = {}
                         try:
-                            apply_raw = ask_json(apply_prompt)
+                            retrieval_result = ensure_retrieval_result(
+                                retrieve_context_for_query(
+                                    checkpoint_handle,
+                                    query_spec,
+                                    RetrievalOptions(common={}, backend=dict(retrieval_options_backend or {})),
+                                    memory_pool,
+                                )
+                            )
+                            answer_result = ensure_answer_execution_result(
+                                answer_query(checkpoint_handle, query_spec, retrieval_result)
+                            )
+                            change_prompt = answer_result.prompt
+                            change_raw = answer_result.raw_output
+                            parsed_single = normalize_change_reasoning_output(change_raw, single_keys)
                         except Exception as exc:
-                            apply_raw = {"_error": f"rq3_apply_failed: {exc}"}
-                        apply_norm = _normalize_rq3_apply_answer_output(apply_raw)
-                        item_answers.append(
-                            {
-                                "qa_id": qa_id,
-                                "service_category": service_category,
-                                "answer": apply_norm.get("answer", ""),
-                                "evidence": apply_norm.get("evidence", []),
+                            change_raw = {"_error": f"change_reasoning_failed: {exc}"}
+                            parsed_single = {
+                                key: {"before": None, "after": None, "change_reason": "", "evidence": []}
                             }
-                        )
-                        raw_records.append(
-                            {
+                        retrieval_meta = dict(retrieval_result.debug_metadata or {})
+                        retrieval_meta.setdefault("checkpoint_state_kind", checkpoint_handle.state_kind)
+                        retrieval_meta.setdefault("retrieval_query", query_spec.retrieval_query_text)
+                        return {
+                            "key": key,
+                            "change_value": parsed_single.get(
+                                key,
+                                {"before": None, "after": None, "change_reason": "", "evidence": []},
+                            ),
+                            "record": {
                                 "key": key,
-                                "qa_id": qa_id,
-                                "scenario": apply_scenario,
-                                "question": apply_q,
-                                "retrieval_query": apply_retrieval_query,
-                                "prompt": apply_prompt,
-                                "retrieval_metadata": apply_ctx.get("metadata") or {},
-                                "raw_model_output": apply_raw,
+                                "prompt": change_prompt,
+                                "retrieval_query": query_spec.retrieval_query_text,
+                                "retrieval_metadata": retrieval_meta,
+                                "raw_model_output": change_raw,
+                            },
+                        }
+
+                    with ThreadPoolExecutor(max_workers=within_checkpoint_workers) as executor:
+                        futures = {executor.submit(_run_change_key, key): key for key in changed_keys}
+                        for future in as_completed(futures):
+                            result = future.result()
+                            key = result["key"]
+                            change_analysis[key] = result["change_value"]
+                            per_key_records.append(result["record"])
+                            item["change_analysis"] = change_analysis
+                            item["metadata"]["change_reasoning"] = {
+                                "enabled": True,
+                                "mode": "per_key",
+                                "change_tracking_pack_used": change_pack_used,
+                                "changed_keys_groundtruth": changed_keys,
+                                "previous_cutoff_ts": prev_cutoff_ts,
+                                "per_key_records": per_key_records,
                             }
-                        )
-                    expected_items = ((cp.get("rq3_apply_service_qa") or {}).get("keys", {}).get(key, {}) or {}).get("items", [])
-                    return {
-                        "key": key,
-                        "answers": {"items": item_answers},
-                        "discard_count": max(0, int(len(expected_items)) - int(len(item_answers))),
-                        "raw_records": raw_records,
+                            _maybe_persist()
+                else:
+                    item["change_analysis"] = {}
+                    item["metadata"]["change_reasoning"] = {
+                        "enabled": True,
+                        "mode": "per_key",
+                        "change_tracking_pack_used": change_pack_used,
+                        "changed_keys_groundtruth": changed_keys,
+                        "previous_cutoff_ts": prev_cutoff_ts,
                     }
 
-                with ThreadPoolExecutor(max_workers=within_checkpoint_workers) as executor:
-                    futures = {executor.submit(_run_apply_key, key): key for key in sorted(rq3_pack.keys())}
-                    for future in as_completed(futures):
-                        result = future.result()
-                        key = result["key"]
-                        rq3_answers[key] = result["answers"]
-                        discard_counts[key] = result["discard_count"]
-                        rq3_raw_records.extend(result["raw_records"])
-                        item["rq3_apply_answers"] = rq3_answers
-                        item["metadata"]["rq3_apply"] = {
-                            "enabled": True,
-                            "missing_pack": False,
-                            "items_per_key": int(rq3_apply_items_per_key),
-                            "rq3_apply_retrieval_top_k": rq3_apply_retrieval_top_k,
-                            "validator_model": str(((cp.get("rq3_apply_service_qa") or {}).get("validator") or {}).get("model", "")),
-                            "discard_counts": discard_counts,
+            if enable_rq3_apply_service_qa:
+                rq3_pack = _extract_rq3_apply_pack_for_checkpoint(
+                    cp,
+                    target_keys=target_keys,
+                )
+                if not rq3_pack:
+                    item["rq3_apply_answers"] = {}
+                    item["metadata"]["rq3_apply"] = {
+                        "enabled": True,
+                    }
+                else:
+                    rq3_answers: Dict[str, Any] = {}
+                    rq3_raw_records: List[Dict[str, Any]] = []
+                    discard_counts: Dict[str, int] = {}
+
+                    def _run_apply_key(key: str) -> Dict[str, Any]:
+                        item_answers: List[Dict[str, Any]] = []
+                        raw_records: List[Dict[str, Any]] = []
+                        for qa_item in rq3_pack.get(key, []):
+                            qa_id = str(qa_item.get("qa_id") or "")
+                            service_category = str(qa_item.get("service_category") or "")
+                            apply_scenario = str(qa_item.get("apply_scenario") or "")
+                            apply_q = str(qa_item.get("apply_question") or "")
+                            apply_retrieval_query = _require_nonempty_pack_query(
+                                task_name="Task C",
+                                checkpoint_id=cid,
+                                item_key="{}::{}".format(key, qa_id or "<unknown>"),
+                                query_text=qa_item.get("retrieval_query") or "",
+                            )
+                            query_spec = _build_task_query_spec(
+                                task_name="Task C",
+                                checkpoint=cp,
+                                item_key="{}::{}".format(key, qa_id or "<unknown>"),
+                                target_keys=[key],
+                                task_query_text=apply_q,
+                                retrieval_query_text=apply_retrieval_query,
+                                answer_query_text=apply_q,
+                                task_payload={
+                                    "service_category": service_category,
+                                    "apply_scenario": apply_scenario,
+                                },
+                            )
+                            retrieval_result = RetrievalResult(mode="", inline_memory_blocks=[], debug_metadata={})
+                            apply_prompt = ""
+                            apply_raw: Any = {}
+                            try:
+                                retrieval_result = ensure_retrieval_result(
+                                    retrieve_context_for_query(
+                                        checkpoint_handle,
+                                        query_spec,
+                                        RetrievalOptions(
+                                            common=(
+                                                {"top_k": int(rq3_apply_retrieval_top_k)}
+                                                if rq3_apply_retrieval_top_k is not None
+                                                else {}
+                                            ),
+                                            backend=dict(retrieval_options_backend or {}),
+                                        ),
+                                        memory_pool,
+                                    )
+                                )
+                                answer_result = ensure_answer_execution_result(
+                                    answer_query(checkpoint_handle, query_spec, retrieval_result)
+                                )
+                                apply_prompt = answer_result.prompt
+                                apply_raw = answer_result.raw_output
+                            except Exception as exc:
+                                apply_raw = {"_error": f"rq3_apply_failed: {exc}"}
+                            apply_norm = _normalize_rq3_apply_answer_output(apply_raw)
+                            item_answers.append(
+                                {
+                                    "qa_id": qa_id,
+                                    "service_category": service_category,
+                                    "answer": apply_norm.get("answer", ""),
+                                    "evidence": apply_norm.get("evidence", []),
+                                }
+                            )
+                            retrieval_meta = dict(retrieval_result.debug_metadata or {})
+                            retrieval_meta.setdefault("checkpoint_state_kind", checkpoint_handle.state_kind)
+                            retrieval_meta.setdefault("retrieval_query", query_spec.retrieval_query_text)
+                            raw_records.append(
+                                {
+                                    "key": key,
+                                    "qa_id": qa_id,
+                                    "scenario": apply_scenario,
+                                    "question": apply_q,
+                                    "retrieval_query": apply_retrieval_query,
+                                    "prompt": apply_prompt,
+                                    "retrieval_metadata": retrieval_meta,
+                                    "raw_model_output": apply_raw,
+                                }
+                            )
+                        expected_items = (((cp.get("rq3_apply_service_qa") or {}).get("keys", {}).get(key, {}) or {}).get("items", []))
+                        return {
+                            "key": key,
+                            "answers": {"items": item_answers},
+                            "discard_count": max(0, int(len(expected_items)) - int(len(item_answers))),
+                            "raw_records": raw_records,
                         }
-                        if rq3_apply_save_prompt_and_raw:
-                            item["metadata"]["rq3_apply"]["records"] = rq3_raw_records
-                        _maybe_persist()
-        else:
-            item["metadata"]["rq3_apply"] = {"enabled": False}
 
-        if debug and debug_dir is not None:
-            write_debug_artifact(
-                debug_dir=debug_dir,
-                checkpoint_id=cid,
-                payload={
-                    "checkpoint_id": cid,
-                    "prompt": item.get("metadata", {}).get("prompt"),
-                    "target_keys": target_keys,
-                    "target_value_templates": target_value_templates,
-                    "context_note": context_note,
-                    "context_log_ids": [x.get("app_log_id") for x in context_logs],
-                    "raw_model_output": item.get("metadata", {}).get("raw_model_output"),
-                    "normalized_prediction": {"snapshot_state": item.get("snapshot_state"), "evidence": item.get("evidence")},
-                },
-            )
+                    with ThreadPoolExecutor(max_workers=within_checkpoint_workers) as executor:
+                        futures = {executor.submit(_run_apply_key, key): key for key in sorted(rq3_pack.keys())}
+                        for future in as_completed(futures):
+                            result = future.result()
+                            key = result["key"]
+                            rq3_answers[key] = result["answers"]
+                            discard_counts[key] = result["discard_count"]
+                            rq3_raw_records.extend(result["raw_records"])
+                            item["rq3_apply_answers"] = rq3_answers
+                            item["metadata"]["rq3_apply"] = {
+                                "enabled": True,
+                                "rq3_apply_retrieval_top_k": rq3_apply_retrieval_top_k,
+                                "validator_model": str(((cp.get("rq3_apply_service_qa") or {}).get("validator") or {}).get("model", "")),
+                                "discard_counts": discard_counts,
+                            }
+                            if rq3_apply_save_prompt_and_raw:
+                                item["metadata"]["rq3_apply"]["records"] = rq3_raw_records
+                            _maybe_persist()
+            else:
+                item["metadata"]["rq3_apply"] = {"enabled": False}
 
-        item["metadata"]["_checkpoint_complete"] = True
-        _persist_checkpoint_item(item)
-        return item
+            if debug and debug_dir is not None:
+                write_debug_artifact(
+                    debug_dir=debug_dir,
+                    checkpoint_id=cid,
+                    payload={
+                        "checkpoint_id": cid,
+                        "checkpoint_state_kind": checkpoint_handle.state_kind,
+                        "target_keys": target_keys,
+                        "target_value_templates": target_value_templates,
+                        "per_key_retrieval": item.get("metadata", {}).get("per_key_retrieval"),
+                        "prompt": item.get("metadata", {}).get("prompt"),
+                        "raw_model_output": item.get("metadata", {}).get("raw_model_output"),
+                        "normalized_prediction": {
+                            "snapshot_state": item.get("snapshot_state"),
+                            "evidence": item.get("evidence"),
+                        },
+                    },
+                )
+
+            item["metadata"]["_checkpoint_complete"] = True
+            _persist_checkpoint_item(item)
+            return item
+        finally:
+            finalize_checkpoint_state(checkpoint_handle)
 
     progress = tqdm(checkpoints, desc=f"{baseline_name.upper()}-TCE checkpoints", unit="cp")
     try:
@@ -1184,10 +1380,155 @@ def run_pipeline(
                 progress.set_postfix({"checkpoint_id": cid})
                 future.result()
                 progress.update(1)
+
+        final_qa_summary: Optional[Dict[str, Any]] = None
+        if enable_final_qa:
+            from .final_checkpoint_qa import (
+                _final_qa_output_path,
+                _item_key,
+                _load_qa_list,
+                _normalize_answer_output,
+                _reference_app_logs,
+                _select_qa_path,
+            )
+
+            if checkpoints:
+                final_checkpoint = checkpoints[-1]
+                final_checkpoint_id = str(final_checkpoint.get("checkpoint_id", "")).strip()
+                observed_logs, _cp_dt, final_cp_ts = observed_logs_for_checkpoint(final_checkpoint, app_logs)
+                memory_pool = (
+                    observed_logs if not max_visible_logs or max_visible_logs <= 0 else observed_logs[-max_visible_logs:]
+                )
+                app_log_by_id: Dict[str, Dict[str, Any]] = {}
+                for log in app_logs:
+                    app_log_id = log.get("app_log_id")
+                    if app_log_id is not None:
+                        app_log_by_id[str(app_log_id).strip()] = log
+
+                qa_path = _select_qa_path(benchmark_path, str(benchmark.get("user_id") or ""), final_qa_path)
+                qa_items = _load_qa_list(qa_path)
+                qa_output = _final_qa_output_path(output_path, final_qa_output_path)
+
+                existing_results: List[Dict[str, Any]] = []
+                done_keys = set()
+                if resume and qa_output.exists():
+                    try:
+                        existing_raw = json.loads(qa_output.read_text(encoding="utf-8"))
+                        if isinstance(existing_raw, list):
+                            existing_results = [item for item in existing_raw if isinstance(item, dict)]
+                            for qa_item in existing_results:
+                                key = _item_key(qa_item)
+                                if key is not None:
+                                    done_keys.add(key)
+                    except Exception:
+                        existing_results = []
+                        done_keys = set()
+
+                final_checkpoint_handle = ensure_checkpoint_handle(
+                    prepare_checkpoint_state(final_checkpoint, memory_pool),
+                    checkpoint_id=final_checkpoint_id,
+                )
+                final_checkpoint_handle.metadata.setdefault("checkpoint_timestamp", final_cp_ts)
+                results = list(existing_results)
+                try:
+                    for qa_item in qa_items:
+                        key = _item_key(qa_item)
+                        if resume and key is not None and key in done_keys:
+                            continue
+
+                        query = str(qa_item.get("query", "") or "")
+                        query_spec = _build_task_query_spec(
+                            task_name="Final QA",
+                            checkpoint=final_checkpoint,
+                            item_key=str(qa_item.get("id") or query or ""),
+                            target_keys=[],
+                            task_query_text=query,
+                            retrieval_query_text=query,
+                            answer_query_text=query,
+                            task_payload={},
+                        )
+                        retrieval_result = ensure_retrieval_result(
+                            retrieve_context_for_query(
+                                final_checkpoint_handle,
+                                query_spec,
+                                RetrievalOptions(
+                                    common=(
+                                        {"top_k": int(final_qa_retrieval_top_k)}
+                                        if final_qa_retrieval_top_k is not None
+                                        else {}
+                                    ),
+                                    backend=dict(retrieval_options_backend or {}),
+                                ),
+                                memory_pool,
+                            )
+                        )
+                        retrieval_meta = dict(retrieval_result.debug_metadata or {})
+                        retrieval_meta.setdefault("checkpoint_state_kind", final_checkpoint_handle.state_kind)
+                        retrieval_meta.setdefault("retrieval_query", query_spec.retrieval_query_text)
+                        t1 = datetime.now().timestamp()
+                        raw = None
+                        try:
+                            answer_result = ensure_answer_execution_result(
+                                answer_query(final_checkpoint_handle, query_spec, retrieval_result)
+                            )
+                            raw = answer_result.raw_output
+                            parsed, parse_error = _normalize_answer_output(raw)
+                            prompt = answer_result.prompt
+                        except Exception as exc:
+                            parsed = {"answer": "", "evidence": []}
+                            parse_error = "LLM request failed: {}".format(exc)
+                            prompt = ""
+                        t2 = datetime.now().timestamp()
+
+                        result_item = {
+                            "id": qa_item.get("id"),
+                            "query": query,
+                            "reference": qa_item.get("reference", ""),
+                            "prediction": parsed.get("answer", ""),
+                            "reference_app_logs": _reference_app_logs(qa_item, app_log_by_id),
+                            "metadata": {
+                                **(qa_item.get("metadata") or {}),
+                                "evidence_prediction": parsed.get("evidence", []),
+                                "response_time": t2 - t1,
+                                "context": list(retrieval_result.inline_memory_blocks),
+                                "num_context_logs": len(retrieval_result.inline_memory_blocks),
+                                "retrieval_query": query_spec.retrieval_query_text,
+                                "retrieval_metadata": retrieval_meta,
+                                "tce_final_checkpoint_id": final_checkpoint_id,
+                                "tce_final_checkpoint_app_log_id": str(
+                                    ((final_checkpoint.get("as_of") or {}).get("app_log_id") or "")
+                                ),
+                            },
+                        }
+                        if parse_error:
+                            result_item["metadata"]["llm_parse_error"] = parse_error
+                        if final_qa_save_prompt_and_raw:
+                            result_item["metadata"]["prompt"] = prompt
+                            result_item["metadata"]["raw_model_output"] = raw
+
+                        results.append(result_item)
+                        qa_output.parent.mkdir(parents=True, exist_ok=True)
+                        qa_output.write_text(json.dumps(results, ensure_ascii=False, indent=2), encoding="utf-8")
+                finally:
+                    finalize_checkpoint_state(final_checkpoint_handle)
+
+                final_qa_summary = {
+                    "enabled": True,
+                    "qa_path": str(qa_path),
+                    "output_path": str(qa_output),
+                    "final_checkpoint_id": final_checkpoint_id,
+                    "qa_count": len(results),
+                }
+            else:
+                final_qa_summary = {"enabled": True, "qa_count": 0, "reason": "no_checkpoints"}
+
+        persisted_result = {"predictions": _ordered_predictions()}
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        output_path.write_text(json.dumps(persisted_result, ensure_ascii=False, indent=2), encoding="utf-8")
+
+        result = {"predictions": persisted_result["predictions"]}
+        if final_qa_summary is not None:
+            result["final_qa"] = final_qa_summary
+        return result
     finally:
         close()
-
-    result = {"predictions": _ordered_predictions()}
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-    output_path.write_text(json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8")
-    return result

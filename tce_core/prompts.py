@@ -2,18 +2,40 @@ import json
 from typing import Any, Dict, List, Optional
 
 
-def build_generation_prompt(
+def _coerce_inline_memory_blocks(
     *,
-    context_logs: List[Dict[str, Any]],
-    task_instruction: str,
+    inline_memory_blocks: Optional[List[str]],
+    context_logs: Optional[List[Dict[str, Any]]],
+    log_to_text,
+) -> List[str]:
+    if inline_memory_blocks is not None:
+        return [str(block) for block in inline_memory_blocks if str(block).strip()]
+    if context_logs is None:
+        return []
+    return [str(log_to_text(log)) for log in context_logs]
+
+
+def _render_inline_memory_section(
+    *,
+    inline_memory_blocks: List[str],
+) -> str:
+    context = "\n<->\n".join(str(block) for block in inline_memory_blocks if str(block).strip())
+    return f"""[Memory]
+{context}"""
+
+
+def _render_agent_memory_section() -> str:
+    return """[Memory]
+    Use your memory about the user to answer the question."""
+
+
+def _build_state_completion_prompt(
+    *,
+    memory_section: str,
     task_query: str,
     target_keys: List[str],
     target_value_templates: Dict[str, Any],
-    log_to_text,
-    retrieval_query: Optional[str] = None,
-    context_note: str = "Context app logs",
 ) -> str:
-    context = "\n<->\n".join(log_to_text(log) for log in context_logs)
     snapshot_template = {k: target_value_templates.get(k, "<fill the blank>") for k in target_keys}
     evidence_template = {
         k: [{"app_log_id": "<app_log_id>", "evidence_content": "<supporting snippet>"}]
@@ -25,15 +47,18 @@ def build_generation_prompt(
     }
     fill_template_block = json.dumps(fill_template, ensure_ascii=False, indent=2)
 
-    return f"""[Task]
-Instruction:
-{task_instruction}
+    return f"""{task_query}
 
-Query:
-{task_query}
+{memory_section}
 
-[User memory]
-{context}
+[Instructions]
+- Answer this user question based on the memory.
+- `evidence` for each key must be a list of objects with:
+  - `app_log_id`: use the exact app log id when it can be identified; otherwise use "".
+  - `evidence_content`: provide one short supporting snippet or close paraphrase. Keep it local and concise.
+- If evidence is unknown, use [].
+- Return JSON only.
+- No extra keys.
 
 [Output format]
 {{
@@ -52,47 +77,75 @@ Query:
   }}
 }}
 
-[Rules]
-1. Use only evidence implied by logs.
-2. MUST include every key in the template exactly once in snapshot_state and evidence.
-3. Keep exactly the same nested key structure in snapshot_state. Only fill leaf values.
-4. If a leaf value is unresolvable from logs, use null.
-5. evidence for each key must be a list of evidence objects with `app_log_id` and `evidence_content`.
-6. `app_log_id` must exactly match an ID shown in [User memory].
-7. `evidence_content` must be a short quoted or closely paraphrased supporting snippet from the same log as `app_log_id`.
-8. Keep `evidence_content` concise and local to the supporting fact, not a long summary.
-9. If evidence is unknown, use empty list.
-10. No markdown. No extra keys.
-
 Template:
 {fill_template_block}
 """
 
 
-def build_change_reasoning_prompt(
+def build_state_completion_prompt_with_inline_memory(
     *,
-    context_logs: List[Dict[str, Any]],
-    task_instruction: str,
+    context_logs: Optional[List[Dict[str, Any]]],
+    task_query: str,
+    target_keys: List[str],
+    target_value_templates: Dict[str, Any],
+    log_to_text,
+    inline_memory_blocks: Optional[List[str]] = None,
+) -> str:
+    return _build_state_completion_prompt(
+        memory_section=_render_inline_memory_section(
+            inline_memory_blocks=_coerce_inline_memory_blocks(
+                inline_memory_blocks=inline_memory_blocks,
+                context_logs=context_logs,
+                log_to_text=log_to_text,
+            )
+        ),
+        task_query=task_query,
+        target_keys=target_keys,
+        target_value_templates=target_value_templates,
+    )
+
+
+def build_state_completion_prompt_with_agent_memory(
+    *,
+    context_logs: Optional[List[Dict[str, Any]]],
+    task_query: str,
+    target_keys: List[str],
+    target_value_templates: Dict[str, Any],
+    log_to_text,
+    inline_memory_blocks: Optional[List[str]] = None,
+) -> str:
+    del context_logs, log_to_text, inline_memory_blocks
+    return _build_state_completion_prompt(
+        memory_section=_render_agent_memory_section(),
+        task_query=task_query,
+        target_keys=target_keys,
+        target_value_templates=target_value_templates,
+    )
+
+
+def _build_change_reasoning_prompt(
+    *,
+    memory_section: str,
     task_query: str,
     changed_keys: List[str],
     changed_value_templates: Dict[str, Any],
-    log_to_text,
-    context_note: str = "Context app logs",
 ) -> str:
-    context = "\n<->\n".join(log_to_text(log) for log in context_logs)
     change_template = {k: changed_value_templates.get(k, {}) for k in changed_keys}
     fill_template = {"change_analysis": change_template}
     fill_template_block = json.dumps(fill_template, ensure_ascii=False, indent=2)
 
-    return f"""[Task]
-Instruction:
-{task_instruction}
+    return f"""{task_query}
 
-Query:
-{task_query}
+{memory_section}
 
-[User memory]
-{context}
+[Instructions]
+- Answer this user question based on the memory.
+- `evidence` for each key must be a list of objects with:
+  - `app_log_id`: use the exact app log id when it can be identified; otherwise use "".
+  - `evidence_content`: provide one short supporting snippet or close paraphrase. Keep it local and concise.
+- If evidence is unknown, use [].
+- Return JSON only.
+- No extra keys.
 
 [Output format]
 {{
@@ -111,23 +164,53 @@ Query:
   }}
 }}
 
-[Rules]
-1. Use only evidence implied by logs.
-2. MUST include every key in the template exactly once.
-3. Keep exactly the same nested structure for before/after values.
-4. If unknown, use null for before/after and empty string for change_reason.
-5. evidence must be a list of evidence objects with `app_log_id` and `evidence_content`.
-6. `app_log_id` must exactly match an ID shown in [User memory].
-7. `evidence_content` must be a short quoted or closely paraphrased supporting snippet from the same log as `app_log_id`.
-8. Keep `evidence_content` concise and local to the supporting fact, not a long summary.
-9. No markdown. No extra keys.
-
 Template:
 {fill_template_block}
 """
 
 
-def build_personalized_service_question_pack_prompt(
+def build_change_reasoning_prompt_with_inline_memory(
+    *,
+    context_logs: Optional[List[Dict[str, Any]]],
+    task_query: str,
+    changed_keys: List[str],
+    changed_value_templates: Dict[str, Any],
+    log_to_text,
+    inline_memory_blocks: Optional[List[str]] = None,
+) -> str:
+    return _build_change_reasoning_prompt(
+        memory_section=_render_inline_memory_section(
+            inline_memory_blocks=_coerce_inline_memory_blocks(
+                inline_memory_blocks=inline_memory_blocks,
+                context_logs=context_logs,
+                log_to_text=log_to_text,
+            )
+        ),
+        task_query=task_query,
+        changed_keys=changed_keys,
+        changed_value_templates=changed_value_templates,
+    )
+
+
+def build_change_reasoning_prompt_with_agent_memory(
+    *,
+    context_logs: Optional[List[Dict[str, Any]]],
+    task_query: str,
+    changed_keys: List[str],
+    changed_value_templates: Dict[str, Any],
+    log_to_text,
+    inline_memory_blocks: Optional[List[str]] = None,
+) -> str:
+    del context_logs, log_to_text, inline_memory_blocks
+    return _build_change_reasoning_prompt(
+        memory_section=_render_agent_memory_section(),
+        task_query=task_query,
+        changed_keys=changed_keys,
+        changed_value_templates=changed_value_templates,
+    )
+
+
+def _build_personalized_service_question_pack_prompt(
     *,
     checkpoint_timestamp: str,
     state_type: str,
@@ -379,7 +462,7 @@ def build_rq3_apply_question_pack_prompt(
     state_value: Any,
     item_count: int = 2,
 ) -> str:
-    return build_personalized_service_question_pack_prompt(
+    return _build_personalized_service_question_pack_prompt(
         checkpoint_timestamp=checkpoint_timestamp,
         state_type=_infer_apply_state_type(state_key),
         state_key=state_key,
@@ -387,30 +470,23 @@ def build_rq3_apply_question_pack_prompt(
         item_count=item_count,
     )
 
-def build_rq3_apply_answer_prompt(
+def _build_service_application_prompt(
     *,
+    memory_section: str,
     question_text: str,
-    context_logs: List[Dict[str, Any]],
-    log_to_text,
-    service_category: str = "",
-    apply_scenario: str = "",
 ) -> str:
-    context = "\n<->\n".join(log_to_text(log) for log in context_logs)
-    query_parts = []
-    if str(service_category or "").strip():
-        query_parts.append("Service category:\n{}".format(str(service_category or "").strip()))
-    if str(apply_scenario or "").strip():
-        query_parts.append("Service scenario:\n{}".format(str(apply_scenario or "").strip()))
-    query_parts.append("Question:\n{}".format(question_text))
-    return """[Task]
-Instruction:
-Answer one personalized service question using only the provided user memory.
+    return """{question_text}
 
-Query:
-{query_block}
+{memory_section}
 
-[User memory]
-{context}
+[Instructions]
+- Answer this user question based on the memory.
+- `evidence` for each key must be a list of objects with:
+  - `app_log_id`: use the exact app log id when it can be identified; otherwise use "".
+  - `evidence_content`: provide one short supporting snippet or close paraphrase. Keep it local and concise.
+- If evidence is unknown, use [].
+- Return JSON only.
+- No extra keys.
 
 [Output format]
 {{
@@ -423,19 +499,42 @@ Query:
   ]
 }}
 
-[Rules]
-1. Use only information from [User memory].
-2. If the question cannot be answered from [User memory], set "answer" to "".
-3. Keep "answer" short, specific, and directly responsive to the question.
-4. `evidence` must be a list of evidence objects with `app_log_id` and `evidence_content`.
-5. `app_log_id` must exactly match an ID shown in [User memory].
-6. `evidence_content` must be a short quoted or closely paraphrased supporting snippet from the same log as `app_log_id`.
-7. Keep `evidence_content` concise and local to the supporting fact, not a long summary.
-8. If no supporting log exists, set "evidence" to [].
-9. No markdown. No extra fields.
 """.format(
-        query_block="\n\n".join(query_parts).strip(),
-        context=context,
+        question_text=question_text,
+        memory_section=memory_section,
+    )
+
+
+def build_service_application_prompt_with_inline_memory(
+    *,
+    question_text: str,
+    context_logs: Optional[List[Dict[str, Any]]],
+    log_to_text,
+    inline_memory_blocks: Optional[List[str]] = None,
+) -> str:
+    return _build_service_application_prompt(
+        memory_section=_render_inline_memory_section(
+            inline_memory_blocks=_coerce_inline_memory_blocks(
+                inline_memory_blocks=inline_memory_blocks,
+                context_logs=context_logs,
+                log_to_text=log_to_text,
+            )
+        ),
+        question_text=question_text,
+    )
+
+
+def build_service_application_prompt_with_agent_memory(
+    *,
+    question_text: str,
+    context_logs: Optional[List[Dict[str, Any]]],
+    log_to_text,
+    inline_memory_blocks: Optional[List[str]] = None,
+) -> str:
+    del context_logs, log_to_text, inline_memory_blocks
+    return _build_service_application_prompt(
+        memory_section=_render_agent_memory_section(),
+        question_text=question_text,
     )
 
 

@@ -149,7 +149,7 @@ For changed-vs-unchanged and per-key temporal trends, run:
 ```bash
 python -m eval.analyze_tce_item_trends \
   --benchmark data_construction/generated_outputs/gemini_3_flash_preview/<user_id>/tce_benchmark.json \
-  --prediction generation/rag/results/<user_id>/prediction/tce_results_topk5_perkey_impl.json \
+  --prediction generation/rag/results/001_user_001/prediction/tce_results_vnext_20260319_formal_topk20_gpt5mini_v14_taskabc.json \
   --output-dir generation/rag/results/<user_id>/analysis/perkey_trends \
   --group-change-mode first_seen \
   --metrics exact,f1 \

@@ -11,35 +11,43 @@ from tce_core.prompts import (
     build_apply_answer_scoring_points_prompt,
     build_apply_rubric_rewrite_prompt,
     build_apply_rubric_validation_prompt,
-    build_change_reasoning_prompt,
-    build_generation_prompt,
+    build_change_reasoning_prompt_with_agent_memory,
+    build_change_reasoning_prompt_with_inline_memory,
+    build_service_application_prompt_with_agent_memory,
+    build_service_application_prompt_with_inline_memory,
+    build_state_completion_prompt_with_agent_memory,
+    build_state_completion_prompt_with_inline_memory,
     build_value_micro_points_prompt,
+)
+from tce_core.final_checkpoint_qa import (
+    build_final_qa_prompt_with_agent_memory,
+    build_final_qa_prompt_with_inline_memory,
 )
 
 
 class TcePromptContractAcceptance(unittest.TestCase):
-    def test_state_completion_prompt_uses_four_block_structure(self) -> None:
-        prompt = build_generation_prompt(
+    def test_state_completion_prompt_uses_direct_question_plus_memory_blocks(self) -> None:
+        prompt = build_state_completion_prompt_with_inline_memory(
             context_logs=[{"app_log_id": "log_0001"}],
-            task_instruction="Predict the user's current state values.",
             task_query="As of 2025-01-01 08:00:00, infer the user's current state for all items in this template: {\"habits_state:morning_walk\": {\"timing\": {\"start_time\": \"<fill the blank>\"}}}.",
             target_keys=["habits_state:morning_walk"],
             target_value_templates={"habits_state:morning_walk": {"timing": {"start_time": "<fill the blank>"}}},
             log_to_text=lambda x: str(x),
         )
-        self.assertIn("[Task]", prompt)
-        self.assertIn("Instruction:", prompt)
-        self.assertIn("Query:", prompt)
-        self.assertIn("[User memory]", prompt)
+        self.assertTrue(prompt.startswith("As of 2025-01-01 08:00:00"))
+        self.assertIn("[Memory]", prompt)
+        self.assertIn("[Instructions]", prompt)
         self.assertIn("[Output format]", prompt)
-        self.assertIn("[Rules]", prompt)
         self.assertIn('"evidence_content"', prompt)
-        self.assertNotIn("Answering task:", prompt)
+        self.assertNotIn("[Task]", prompt)
+        self.assertNotIn("Instruction:", prompt)
+        self.assertNotIn("Query:", prompt)
+        self.assertNotIn("Checkpoint time:", prompt)
+        self.assertNotIn("[Rules]", prompt)
 
     def test_change_prompt_uses_evidence_objects(self) -> None:
-        prompt = build_change_reasoning_prompt(
+        prompt = build_change_reasoning_prompt_with_inline_memory(
             context_logs=[{"app_log_id": "log_0002"}],
-            task_instruction="Infer the latest change details.",
             task_query="As of 2025-02-01 08:00:00, for state items that changed since 2025-01-01 08:00:00, infer the latest change details.",
             changed_keys=["habits_state:morning_walk"],
             changed_value_templates={
@@ -52,11 +60,77 @@ class TcePromptContractAcceptance(unittest.TestCase):
             },
             log_to_text=lambda x: str(x),
         )
-        self.assertIn("[Task]", prompt)
+        self.assertTrue(prompt.startswith("As of 2025-02-01 08:00:00"))
+        self.assertIn("[Memory]", prompt)
         self.assertIn("[Output format]", prompt)
         self.assertIn('"app_log_id"', prompt)
         self.assertIn('"evidence_content"', prompt)
-        self.assertNotIn("Answering task:", prompt)
+        self.assertNotIn("[Task]", prompt)
+        self.assertNotIn("Instruction:", prompt)
+        self.assertNotIn("Query:", prompt)
+        self.assertNotIn("Checkpoint time:", prompt)
+
+    def test_agent_memory_prompt_variants_do_not_require_inline_user_memory(self) -> None:
+        state_prompt = build_state_completion_prompt_with_agent_memory(
+            context_logs=[{"app_log_id": "log_0001"}],
+            task_query="As of 2025-01-01 08:00:00, infer the user's current state for all items in this template.",
+            target_keys=["habits_state:morning_walk"],
+            target_value_templates={"habits_state:morning_walk": {"timing": {"start_time": "<fill the blank>"}}},
+            log_to_text=lambda x: str(x),
+        )
+        change_prompt = build_change_reasoning_prompt_with_agent_memory(
+            context_logs=[{"app_log_id": "log_0002"}],
+            task_query="As of 2025-02-01 08:00:00, infer the latest change details.",
+            changed_keys=["habits_state:morning_walk"],
+            changed_value_templates={
+                "habits_state:morning_walk": {
+                    "before": {"timing": {"start_time": "<fill the blank>"}},
+                    "after": {"timing": {"start_time": "<fill the blank>"}},
+                    "change_reason": "<fill the blank>",
+                    "evidence": [{"app_log_id": "<app_log_id>", "evidence_content": "<supporting snippet>"}],
+                }
+            },
+            log_to_text=lambda x: str(x),
+        )
+        apply_prompt = build_service_application_prompt_with_agent_memory(
+            question_text="What should the assistant recommend?",
+            context_logs=[{"app_log_id": "log_0003"}],
+            log_to_text=lambda x: str(x),
+        )
+
+        for prompt in (state_prompt, change_prompt, apply_prompt):
+            self.assertIn("[Memory]", prompt)
+            self.assertNotIn("[User memory]\n{'app_log_id':", prompt)
+        self.assertTrue(state_prompt.startswith("As of 2025-01-01 08:00:00"))
+        self.assertTrue(change_prompt.startswith("As of 2025-02-01 08:00:00"))
+        self.assertTrue(apply_prompt.startswith("What should the assistant recommend?"))
+        self.assertNotIn("[Task]", state_prompt)
+        self.assertNotIn("Instruction:", state_prompt)
+        self.assertNotIn("Query:", state_prompt)
+        self.assertNotIn("Checkpoint time:", state_prompt)
+        self.assertNotIn("[Task]", change_prompt)
+        self.assertNotIn("Instruction:", change_prompt)
+        self.assertNotIn("Query:", change_prompt)
+        self.assertNotIn("Checkpoint time:", change_prompt)
+        self.assertNotIn("[Task]", apply_prompt)
+        self.assertNotIn("Instruction:", apply_prompt)
+        self.assertNotIn("Query:", apply_prompt)
+        self.assertNotIn("Checkpoint time:", apply_prompt)
+
+    def test_final_qa_prompt_variants_match_memory_modes(self) -> None:
+        inline_prompt = build_final_qa_prompt_with_inline_memory(
+            question="What drink should the assistant recommend?",
+            context_text='{"app_log_id": "log_0002", "response": {"favorite_coffee": "espresso"}}',
+        )
+        agent_prompt = build_final_qa_prompt_with_agent_memory(
+            question="What drink should the assistant recommend?"
+        )
+        self.assertIn("# Retrieved Context", inline_prompt)
+        self.assertIn('"answer": string', inline_prompt)
+        self.assertIn('"evidence": array', inline_prompt)
+        self.assertIn("# Agent memory", agent_prompt)
+        self.assertIn("already stored in the agent", agent_prompt)
+        self.assertNotIn("# Retrieved Context", agent_prompt)
 
     def test_value_micro_points_prompt_uses_clear_rubric_definitions(self) -> None:
         prompt = build_value_micro_points_prompt(

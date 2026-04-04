@@ -377,12 +377,13 @@ def _strip_timestamp_fields(obj: object) -> object:
 
 def build_membench_memory_from_event(event: MemBenchEvent) -> tuple[str, Optional[str]]:
     """
-    Convert a MemBench event into memory content + time.
+    Convert a MemBench event into canonical raw-log payload serialization + time.
 
     Rules:
-    - The entire event is dumped as JSON for the memory payload.
-    - Use the event-level timestamp when present; otherwise fallback to timestamp fields.
-    - No fields are stripped from the payload.
+    - The memory payload is the raw app log object itself, serialized as JSON.
+    - No fields are added, stripped, renamed, or rewritten in the payload.
+    - Use the event-level timestamp when present; otherwise fallback to timestamp fields
+      only for the returned time metadata, not for payload mutation.
     """
     if isinstance(event, tuple) and len(event) == 2 and isinstance(event[1], MemBenchEvent):
         event = event[1]
@@ -403,9 +404,7 @@ def build_membench_memory_from_event(event: MemBenchEvent) -> tuple[str, Optiona
     timestamps: List[str] = []
     _collect_timestamps(payload, timestamps)
     time_str = event_timestamp or (timestamps[0] if timestamps else None)
-    payload_with_time = dict(payload)
-    payload_with_time["memory_timestamp"] = time_str
-    content = json.dumps(payload_with_time, ensure_ascii=False, sort_keys=True)
+    content = json.dumps(payload, ensure_ascii=False)
     return content, time_str
 
 def _parse_qa_list(raw_qa: object) -> List[QA]:

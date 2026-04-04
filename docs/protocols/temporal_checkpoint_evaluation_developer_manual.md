@@ -2,7 +2,7 @@
 
 Status: active
 Owner: DynamicMem team
-Last Updated: 2026-03-19
+Last Updated: 2026-03-28
 
 ## 1. Purpose & Scope
 本手册定义 `Temporal Checkpoint Evaluation`（TCE）的稳定开发规范。
@@ -19,6 +19,9 @@ Out of Scope:
 
 Execution Runbook:
 - `docs/runbooks/tce_execution_runbook.md`
+
+Contributor-facing generation/adapter contract:
+- `docs/protocols/tce_generation_and_adapter_contract.md`
 
 ## 2. Evaluation Landscape (DynamicMem)
 DynamicMem 当前评测协议分为两类：
@@ -38,6 +41,8 @@ Execution semantics (code-aligned):
   - 顶层 `sampling_strategy`
   - 每个 checkpoint 的 `sampling.mode / sampling.params`
 - `generation` 阶段默认直接消费 benchmark 中的 checkpoint；若 benchmark 已标记 `sampling_strategy.stage=benchmark_build`，运行时采样参数应忽略。
+- `generation.run_tce_batch` 的 YAML 模板渲染至少支持 `{user_id}`；当前协议也支持 `{run_id}`、`{run_name}`。
+- 建议将 `runtime.experiment_name` 保持为稳定实验名，将具体运行实例隔离放在 `runtime.run_id`；默认 `run_id=main` 便于 resume，若要新开一轮独立 run，可显式设为自定义标签。
 
 Execution stages (current protocol):
 1. Raw benchmark build:
@@ -52,6 +57,10 @@ Execution stages (current protocol):
 4. Generation / evaluation:
    - 优先消费 prebuilt packs
    - 若 benchmark 缺 pack，则 fallback 到 legacy raw benchmark 逻辑
+5. Optional post-TCE final-memory QA:
+   - 可在最后一个 executed checkpoint 完成后，复用该 checkpoint 的 memory state 运行一轮完整 QA
+   - QA artifact 必须继续遵循 `docs/protocols/qa_generation_and_eval_contract.md`
+   - 该阶段属于 TCE generation 的可选附加阶段，不要求修改原有 `generation.run_qa` / QA adapter 流程
 
 ### 3.1a Baseline Concurrency Policy
 TCE generation 必须显式声明 baseline 的并发策略，至少区分两个维度：
@@ -77,17 +86,91 @@ Code-aligned policy:
 - `hipporag` / `hipporag2`
   - `checkpoint_parallelism = allowed`
   - `within_checkpoint_parallelism = allowed`
-- `amem_baseline`
+- `amem`
+  - `checkpoint_parallelism = forbidden`
+  - `within_checkpoint_parallelism = allowed`
+- `memoryos`
   - `checkpoint_parallelism = allowed`
   - `within_checkpoint_parallelism = allowed`
-- `letta`
+- `mem0`
+  - `checkpoint_parallelism = allowed`
+  - `within_checkpoint_parallelism = allowed`
+- `letta` / `memgpt`
   - `checkpoint_parallelism = forbidden`
   - `within_checkpoint_parallelism = forbidden`
+
+Unified TCE execution route:
+- all baselines must execute through one shared `tce_core` orchestrator
+- the orchestrator must drive three explicit phases:
+  1. `prepare_checkpoint_state`
+  2. `retrieve_context_for_query`
+  3. `answer_query`
+- baseline differences are expressed only through backend hooks, not through separate pipeline contracts
+- `letta` / `memgpt` are not protocol exceptions; they still receive the same task/query contract as other baselines
+- legacy `retrieve_context(...)` callback is not part of the current TCE protocol contract
+- Task A answer prompting must use the pack-authored `question_text` directly as the visible query text.
+- Shared Task A prompt builders must not prepend extra wrapper sections such as `[Task]`, `Instruction:`, `Query:`, or `Checkpoint time:` ahead of that `question_text`.
+- Shared Task A prompt builders should place explanation of output requirements before the JSON template, and do not need a trailing catch-all `Rules` block.
+- explicit-retrieval baselines must consume shared `QuerySpec.retrieval_query_text` directly; baseline-local regeneration or fallback of retrieval query text is not part of the current protocol.
+
+Shared generation config contract:
+- cross-baseline generation knobs must not live in `baseline_params`
+- canonical shared sections are:
+  - `runtime`
+    - `user_id`
+    - `checkpoint_workers`
+    - `within_checkpoint_workers`
+    - `save_every_generation_keys`
+    - `enable_change_reasoning`
+    - `enable_rq3_apply_service_qa`
+    - `rq3_apply_save_prompt_and_raw`
+  - `llm`
+    - answer-model provider / model / decoding settings
+  - `retriever`
+    - shared explicit-retriever backend settings such as provider / model / batch size
+    - this includes retrieval / indexing embedding models for baselines such as `rag`, `amem`, `hipporag2`, and `MemoryOS`
+  - `retrieval`
+    - shared top-k settings such as `top_k`, `rq3_apply_top_k`, `final_qa_top_k`
+  - `final_qa`
+    - `enabled`, `path`, `output_path`, `save_prompt_and_raw`
+- `baseline_params` is reserved for backend-specific knobs only
+- `user_id` is not a backend-specific knob:
+  - batch runs must treat the selected user as shared runtime state
+  - `generation.run_tce_batch` should inject shared `runtime.user_id` from the chosen batch user
+  - direct single-user configs may set `runtime.user_id` explicitly
+  - `baseline_params.user_id` is not part of the current protocol
 
 Implementation requirements:
 - generation runtime 必须将 requested worker counts 与 effective worker counts 一并记录到 prediction metadata。
 - 当某 baseline 的 policy 为 `forbidden` 时，运行时必须把对应 worker 数强制降为 `1`，不能只靠文档约定。
 - 对 stateful memory baseline，只有在“每个 checkpoint 的 context 是只读且 per-question answering 不会改写共享 memory state”时，才允许开启 `within_checkpoint_parallelism`。
+- 对所有 baseline：
+  - 必须按 benchmark checkpoint 顺序 ingest user app logs 或等价地推进 memory state
+  - canonical app-log payload 必须是 raw app log object 本身
+  - 这条约束同时适用于 builder ingest、retrieval / indexing corpus、以及 inline-memory rendering
+  - baseline 可为 backend transport 做 lossless serialization / wrapper，但不得在这些阶段前额外增加、删除、重命名、摘要化或改写 payload 语义字段
+  - 每个 checkpoint 的 retrieval 只能读取该 checkpoint 对应的 prepared state
+  - 回答阶段不得把 Task A/B/C 的问答行为写回共享 memory state
+  - `baseline_params.enable_change_reasoning=true` 是 Task B generation 的规范开关；Task C 继续由 `enable_rq3_apply_service_qa` 控制
+  - generation runtime 默认信任 pack-first benchmark；Task C pack 的完整性与合法性应在 task-pack build 阶段保证，不应在 baseline runtime 再引入 pack-missing gate
+  - 若 baseline 无法证明 query path 为只读，则必须把 `checkpoint_workers` 与 `within_checkpoint_workers` 都强制降为 `1`
+- 对 stateful baseline，必须显式区分两类实现：
+  - agent-loop baseline（例如 `letta` / `memgpt`）
+    - baseline 的正式入口可以是单次 `run_generation(...)`
+    - `prepare_checkpoint_state(...)` 可以顺序推进 baseline-local builder 到当前 checkpoint，并导出该 checkpoint 的 persisted snapshot
+    - shared `run_pipeline(...)` 不直接实现通用 memory builder；stateful build progression 必须通过 baseline 的 `prepare_checkpoint_state(...)` hook 表达
+    - builder progress 只可记录 confirmed progress；遇到 ingest 结果不确定时必须标记 uncertain，而不是回写更早 confirmed index
+    - resume 默认以本地 builder progress 记录的 confirmed prefix 为准；其作用是确定“从哪条 log 继续喂”
+    - live builder attach 只需复用本地记录的 `builder_agent_id`；运行时不应依赖 message-history 重建出的 ingest records 做 resume 决策
+  - checkpoint-snapshot baseline（例如 `amem`）
+    - build phase 与 test phase 必须是两个正式相位
+    - build phase 负责顺序 ingest raw app logs，并产出：
+      - 本地 builder progress（例如 `state.pkl + checkpoint.json`）
+      - required persisted checkpoint artifacts（checkpoint snapshot / `manifest.json`）
+    - test phase 才调用 shared `run_pipeline(...)`
+    - 在这类 baseline 中，`prepare_checkpoint_state(...)` 只能定位当前 checkpoint 的 persisted snapshot / collection；不得在 test phase 内推进 builder
+    - 本地 `state.pkl + checkpoint.json` 等 builder progress 文件是 builder/ingest 级 resume 的唯一 authoritative source
+    - checkpoint snapshot / `manifest.json` 是 required persisted checkpoint artifacts，用于当前 checkpoint 的只读 retrieval 与调试检查，但不应成为 builder/ingest resume 的 authoritative source
 
 ### 3.1b Shared Point Scoring Contract
 vNext 的答案质量评估统一采用 `point` 作为评分单元。
@@ -190,6 +273,7 @@ Input Contract:
 - target key set（优先由 `state_completion_pack.keys` 提供；旧 benchmark fallback 到 raw benchmark）
 - value template（优先由 `state_completion_pack.keys[*].answer_template` 提供）
 - retrieval query（优先由 `state_completion_pack.keys[*].retrieval_query` 提供；query 只承载 item-specific 问题，不承载通用 instruction）
+- checkpoint scope 由 shared `tce_core` 注入到 `QuerySpec` 与执行元数据；baseline 不得在本地 wrapper 中私自补一套额外 checkpoint 语义
 
 Generation granularity contract:
 - Task A 的 state completion generation 必须按 `state_key` 独立执行。
@@ -232,6 +316,35 @@ Scoring Sources:
       - 是否因为不必要的 exact model / spec / parameter wording 变得过于 brittle
     - 若 validation 失败，必须触发 rewrite；若多次 rewrite 后仍失败，必须回退到更保守的 safe rubric
   - eval 时不得再把这些 points 交给 deterministic string matcher 直接打主分
+
+### 3.5 Optional Final-Checkpoint QA Extension
+Objective:
+- 在不改变原 QA runner 的前提下，允许 baseline 复用 TCE 最后一个 executed checkpoint 的 memory state，再额外回答一轮完整 QA 问题集。
+
+Contract:
+- 该阶段是 optional post-hook，不属于 Task A/B/C 主 prediction artifact。
+- final QA retrieval 必须只读取最后一个 executed checkpoint 对应的 snapshot / collection / manifest entry。
+- final QA 提问过程同样不得污染共享 memory state；若 backend query path 可变，必须使用隔离副本。
+- final QA 输出必须是独立 QA prediction artifact，遵循 `docs/protocols/qa_generation_and_eval_contract.md`。
+- 原有 `generation.run_qa`、`generation/qa_adapters/*` 与 QA baseline contract 不因该扩展而改变。
+- 对没有显式 query-time retrieval 的 agent-memory baseline（例如 `letta` / `memgpt`）：
+  - 不应暴露 retrieval-only top-k config
+  - `final_qa_retrieval_top_k` 不适用
+  - Task C 的 `rq3_apply_retrieval_top_k` 也不适用
+
+Recommended implementation shape:
+- 在 baseline 的 TCE adapter 中，先完成标准 TCE Task A/B/C prediction。
+- 然后取最后一个 executed checkpoint：
+  - 复用同一组 shared hooks：
+    - `prepare_checkpoint_state`
+    - `retrieve_context_for_query`
+    - `answer_query`
+  - 以 QA question text 作为 retrieval query
+  - 将输出写入独立 `*_final_qa.json` artifact
+
+Resume semantics:
+- final QA 可以复用 TCE 的 `resume` 语义单独跳过已完成 QA items。
+- final QA artifact 不得回写进主 TCE prediction JSON，也不得作为 evaluator 依赖字段嵌入 TCE 结果。
   - eval 必须把 `scoring_points[]` 当作 slot 集合，交给 LLM judge 对每个 slot 独立判 `correct=true|false`
   - slot-level eval 的 canonical split contract：
     - program-owned `slot_context`
@@ -298,6 +411,8 @@ Metric meanings (Task A):
   - `snapshot_evidence_precision_mean_on_expected`
   - `snapshot_evidence_f1_mean_on_expected`
     - 这些按 `app_log_id` 比较 predicted evidence 与 gold evidence 的重合程度，再对 key 平均。
+    - 这些属于 auxiliary evidence 指标，不是所有 baseline 的强制能力要求。
+    - `rag` / `hipporag2` 应尽量填写非空 `app_log_id`；其他 baseline 可留空。
   - `snapshot_evidence_app_log_id_nonempty_rate_mean_on_expected`
   - `snapshot_evidence_content_nonempty_rate_mean_on_expected`
   - `snapshot_evidence_content_with_id_rate_mean_on_expected`
@@ -374,6 +489,7 @@ Metric meanings (Task B):
   - `change_evidence_precision_mean_on_changed`
   - `change_evidence_f1_mean_on_changed`
     - 基于 `app_log_id` 的 changed-evidence 对齐质量。
+    - 这些属于 auxiliary evidence 指标，不是所有 baseline 的强制能力要求。
   - `change_evidence_app_log_id_nonempty_rate_mean_on_changed`
   - `change_evidence_content_nonempty_rate_mean_on_changed`
   - `change_evidence_content_with_id_rate_mean_on_changed`
@@ -393,6 +509,7 @@ Input Contract:
 - checkpoint 的 apply QA pack（`rq3_apply_service_qa`）
 - retrieval context（优先按 apply item 的 `retrieval_query` 查询）
 - apply QA 输入 state 必须来自 `validated_snapshot_state`
+- generation runtime 对每个 `state_key` 只消费一个 apply item；Task C 不提供 runtime item-count override
 
 Output Contract:
 - `rq3_apply_answers[state_key].items[*].answer`
@@ -471,26 +588,30 @@ Metric meanings (Task C):
   - `rq3_apply_evidence_recall`
   - `rq3_apply_evidence_f1`
     - 基于 `gold_memory_evidence_app_log_ids` 与 predicted evidence ids 的独立 evidence correctness 指标。
+    - 这些属于 auxiliary evidence 指标，不是所有 baseline 的强制能力要求。
   - `rq3_apply_evidence_app_log_id_nonempty_rate`
   - `rq3_apply_evidence_content_nonempty_rate`
   - `rq3_apply_evidence_content_with_id_rate`
     - 这些是 evidence payload 的结构质量指标，不是 answer correctness 指标。
 
-Unified answering-prompt contract for Task A/B/C:
-- final answering prompt 必须统一采用四段结构：
-  - `[Task]`
-  - `[User memory]`
-  - `[Output format]`
-  - `[Rules]`
-- `[Task]` 内部必须包含：
-  - `Instruction:`
-  - `Query:`
-- retrieval query 只使用 `[Task]` 中的 `Query` 部分，不应包含通用 instruction
+Unified answering-prompt contract:
+- Task A / Task B / Task C:
+  - final answering prompt 顶部直接使用 pack-authored问题文本：
+    - Task A uses `question_text`
+    - Task B uses `question_text`
+    - Task C uses `apply_question`
+  - 不再额外包裹 `[Task]` / `Instruction:` / `Query:` / `Checkpoint time:`
+  - 其余结构仍保留：
+    - `[Memory]`
+    - `[Output format]`
+    - `[Rules]`
+- retrieval query 不应包含通用 instruction
 - `definitions` 不单独成块；若需要定义 `evidence_content`、answer granularity、field semantics，必须写入 `[Rules]`
 
 Evidence object contract (all three tasks):
 - `app_log_id`
   - exact app log identifier from the provided user memory when available
+  - 若 baseline 无法稳定把 retrieval payload 回溯到原始 app log，则允许留空字符串
 - `evidence_content`
   - short quoted or closely paraphrased supporting snippet from the same log
   - 应简短、局部、直接支撑答案，不允许长段摘要
@@ -779,6 +900,11 @@ Stage 2 task-pack validation pipeline (all tasks):
 - `predictions[].evidence`
 - `predictions[].change_analysis`（若开启 change 任务）
 - `predictions[].rq3_apply_answers`（若开启 apply 任务）
+- `predictions[].metadata.concurrency_policy`
+- `predictions[].metadata.requested_checkpoint_workers`
+- `predictions[].metadata.requested_within_checkpoint_workers`
+- `predictions[].metadata.effective_checkpoint_workers`
+- `predictions[].metadata.effective_within_checkpoint_workers`
 
 ### 5.3 Eval Output Minimum Fields
 - `summary`
@@ -809,6 +935,7 @@ Stage 2 task-pack validation pipeline (all tasks):
    - Data Contracts
    - Acceptance Gates
 3. `docs/runbooks/tce_execution_runbook.md` 存在且与本文互链。
+4. `docs/protocols/tce_generation_and_adapter_contract.md` 存在且与本文互链。
 
 ### 6.2 Spec-Implementation Consistency Spot-Check
 1. `state_questionability` 字段与本文契约一致。
@@ -822,6 +949,7 @@ Stage 2 task-pack validation pipeline (all tasks):
 1. 10-state pack 构建流程可执行（见 runbook）。
 2. RAG 单 checkpoint 流程可执行（见 runbook）。
 3. eval 输出包含预期指标簇（见 runbook）。
+4. contributor-facing generation contract 与 runner/config/tests 一致（见 `docs/protocols/tce_generation_and_adapter_contract.md`）。
 
 ### 6.4 Stage-Wise Acceptance
 
@@ -954,6 +1082,8 @@ Stage 3: Generation / Evaluation
    - Apply-only wrapper: `data_construction/build_tce_rq3_apply_pack.py`
    - Generation: `tce_core/pipeline.py`
    - Evaluation: `eval/eval_tce.py`
+6. Contributor-facing generation contract:
+   - `docs/protocols/tce_generation_and_adapter_contract.md`
 
 ## 8. Change Control
 - 任何影响任务定义、schema、metric 的改动必须先更新本手册。

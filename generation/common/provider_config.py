@@ -21,17 +21,17 @@ def resolve_openai_compatible_credentials(
     Resolve API key and base URL for OpenAI-compatible providers.
 
     For provider='azure':
-      prefers AZURE_OPENAI_* then OPENAI_*
+      reads only AZURE_OPENAI_*
     For provider='openai' (or others):
-      prefers OPENAI_* then AZURE_OPENAI_*
+      reads only OPENAI_*
     """
     p = (provider or "").strip().lower()
     if p == "azure":
-        api_key = os.getenv("AZURE_OPENAI_API_KEY") or os.getenv("OPENAI_API_KEY")
-        base_url = os.getenv("AZURE_OPENAI_BASE_URL") or os.getenv("OPENAI_BASE_URL")
+        api_key = os.getenv("AZURE_OPENAI_API_KEY")
+        base_url = os.getenv("AZURE_OPENAI_BASE_URL")
     else:
-        api_key = os.getenv("OPENAI_API_KEY") or os.getenv("AZURE_OPENAI_API_KEY")
-        base_url = os.getenv("OPENAI_BASE_URL") or os.getenv("AZURE_OPENAI_BASE_URL")
+        api_key = os.getenv("OPENAI_API_KEY")
+        base_url = os.getenv("OPENAI_BASE_URL")
 
     if require_api_key and not api_key:
         raise RuntimeError(
@@ -47,8 +47,12 @@ def apply_openai_compat_env(api_key: Optional[str], base_url: Optional[str]) -> 
     """
     if api_key:
         os.environ["OPENAI_API_KEY"] = api_key
+    else:
+        os.environ.pop("OPENAI_API_KEY", None)
     if base_url:
         os.environ["OPENAI_BASE_URL"] = base_url
+    else:
+        os.environ.pop("OPENAI_BASE_URL", None)
 
 
 def setup_provider_env(

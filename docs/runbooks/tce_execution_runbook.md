@@ -6,8 +6,11 @@ Last Updated: 2026-03-17
 
 Protocol spec:
 - `docs/protocols/temporal_checkpoint_evaluation_developer_manual.md`
+- `docs/protocols/tce_generation_and_adapter_contract.md`
 
 This runbook only contains executable workflow and operational checks.
+Contributor-facing generation and adapter obligations are maintained in:
+- `docs/protocols/tce_generation_and_adapter_contract.md`
 
 ## 1. Part I - Pack Build Execution (with 10-state eyeball)
 
@@ -203,18 +206,10 @@ python3 debug_utils/build_tce_manual_review_samples.py \
 
 ### 2.3 RAG single-checkpoint smoke
 ```bash
-python3 -m generation.run_tce \
-  --config configs/experiments/tce/rag_per_key_time_quarterly.yaml \
+python3 -m generation.run_tce_batch \
+  --config configs/experiments/tce/rag_user1_v14_top20_c4.yaml \
   --max-checkpoints 1
 ```
-
-Quarterly-time checkpoints:
-- 使用 `build_tce_benchmark.py` 的默认采样（`--sampling-mode calendar --calendar-anchor-freq quarterly`）在 benchmark 构建阶段生成每 3 个月一个 checkpoint。
-- 预测 metadata 将记录 `sampling_params.actual_tokens_at_cutoff`，可在时间轴图上标注 token 规模。
-- generation 阶段应直接消费 benchmark 中已采样 checkpoint；当 benchmark 含 `sampling_strategy.stage=benchmark_build` 时，运行时采样参数会被忽略。
-
-Note:
-- 若 config 路径仍含 `{user_id}` 占位符，请改用 `generation.run_tce_batch` 或在 `generation.run_tce` 中传入显式 `--benchmark/--app-logs-path/--output`。
 - RAG/TCE generation 现在支持：
   - key-level incremental save（通过 `baseline_params.save_every_generation_keys` 控制，推荐 `1`）
   - checkpoint-level concurrency（通过 `baseline_params.checkpoint_workers` 控制）

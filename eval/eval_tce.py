@@ -324,6 +324,7 @@ def _execute_slot_judge_requests(
         provider=llm_provider,
         model_name=llm_model,
         max_workers=llm_max_workers,
+        temperature=None,
     )
     error_count = 0
     deployment_not_found = False

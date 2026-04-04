@@ -5,6 +5,10 @@ from pathlib import Path
 from typing import Dict, Optional
 
 
+SHARED_PIPELINE_SNAPSHOT_ROUTE = "shared_pipeline_snapshot"
+AGENT_LOOP_ROUTE = "agent_loop"
+
+
 @dataclass(frozen=True)
 class BaselineConcurrencyPolicy:
     checkpoint_parallelism: str
@@ -16,22 +20,36 @@ _DEFAULT_CONCURRENCY_POLICY = BaselineConcurrencyPolicy(
     within_checkpoint_parallelism="forbidden",
 )
 
+SHARED_PIPELINE_SNAPSHOT_BASELINES = {
+    "rag",
+    "oracle",
+    "icl",
+    "hipporag",
+    "hipporag2",
+    "amem",
+    "memoryos",
+    "mem0",
+}
+
+AGENT_LOOP_BASELINES = {
+    "letta",
+    "memgpt",
+}
+
 
 BASELINE_CONCURRENCY_POLICIES: Dict[str, BaselineConcurrencyPolicy] = {
-    # Incremental indexing baselines - MUST be sequential
-    # Index order affects graph/DB state, parallel would cause race conditions
-    "hipporag2": BaselineConcurrencyPolicy("forbidden", "forbidden"),  # Online incremental indexing
-    "zep": BaselineConcurrencyPolicy("forbidden", "forbidden"),       # Incremental KG building
-    "simplemem": BaselineConcurrencyPolicy("forbidden", "forbidden"), # Rebuild index per checkpoint
-    
-    # Stateless retrieval baselines - CAN be parallel
-    "rag": BaselineConcurrencyPolicy("allowed", "allowed"),           # Pre-built vector index
-    "oracle": BaselineConcurrencyPolicy("allowed", "allowed"),        # Ground truth lookup
-    "icl": BaselineConcurrencyPolicy("allowed", "allowed"),           # No retrieval, full context
-    "amem": BaselineConcurrencyPolicy("allowed", "allowed"),          # Pre-built index
-    
-    # Agent-based baselines - state mutations
-    "letta": BaselineConcurrencyPolicy("forbidden", "forbidden"),     # Shared memory state mutations
+    "rag": BaselineConcurrencyPolicy("allowed", "allowed"),
+    "oracle": BaselineConcurrencyPolicy("allowed", "allowed"),
+    "icl": BaselineConcurrencyPolicy("allowed", "allowed"),
+    "hipporag": BaselineConcurrencyPolicy("allowed", "allowed"),
+    "hipporag2": BaselineConcurrencyPolicy("allowed", "allowed"),
+    "amem": BaselineConcurrencyPolicy("forbidden", "allowed"),
+    "memoryos": BaselineConcurrencyPolicy("allowed", "allowed"),
+    "mem0": BaselineConcurrencyPolicy("allowed", "allowed"),
+    # Letta's agent-loop implementation mutates shared memory state while answering,
+    # so both checkpoint-level and within-checkpoint parallelism are disabled.
+    "letta": BaselineConcurrencyPolicy("forbidden", "forbidden"),
+    "memgpt": BaselineConcurrencyPolicy("forbidden", "forbidden"),
 }
 
 
@@ -39,9 +57,19 @@ def get_baseline_concurrency_policy(baseline_name: str) -> BaselineConcurrencyPo
     return BASELINE_CONCURRENCY_POLICIES.get(str(baseline_name or "").strip(), _DEFAULT_CONCURRENCY_POLICY)
 
 
+def get_baseline_route_class(baseline_name: str) -> str:
+    key = str(baseline_name or "").strip().lower()
+    if key in SHARED_PIPELINE_SNAPSHOT_BASELINES:
+        return SHARED_PIPELINE_SNAPSHOT_ROUTE
+    if key in AGENT_LOOP_BASELINES:
+        return AGENT_LOOP_ROUTE
+    return SHARED_PIPELINE_SNAPSHOT_ROUTE
+
+
 @dataclass
 class TceAdapterArgs:
     baseline: str
+    user_id: Optional[str]
     benchmark: Path
     app_logs_path: Path
     output: Path
@@ -49,14 +77,30 @@ class TceAdapterArgs:
     llm_provider: str = "openai"
     llm_model: str = "gpt-5-mini"
     llm_max_workers: int = 1
+    llm_temperature: Optional[float] = 0.0
+    llm_top_p: Optional[float] = 1.0
+    llm_top_k: Optional[int] = None
     resume: bool = False
     max_checkpoints: Optional[int] = None
     debug: bool = False
     debug_dir: Optional[Path] = None
     save_prompt_and_raw: bool = False
+    enable_change_reasoning: bool = False
     enable_rq3_apply_service_qa: bool = False
-    rq3_apply_fail_on_missing_pack: bool = False
     rq3_apply_save_prompt_and_raw: bool = True
+    checkpoint_workers: int = 1
+    within_checkpoint_workers: int = 1
+    save_every_generation_keys: int = 1
+    retriever_provider: str = "openai"
+    retriever_model: str = "text-embedding-3-large"
+    retriever_batch_size: int = 64
+    retrieval_top_k: int = 5
+    rq3_apply_retrieval_top_k: Optional[int] = None
+    enable_final_qa: bool = False
+    final_qa_path: Optional[str] = None
+    final_qa_output_path: Optional[str] = None
+    final_qa_retrieval_top_k: Optional[int] = None
+    final_qa_save_prompt_and_raw: bool = False
     extras: Dict[str, str] = None
 
     def __post_init__(self):

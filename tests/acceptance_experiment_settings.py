@@ -21,7 +21,8 @@ class ExperimentSettingsAcceptance(unittest.TestCase):
                 "data": {"benchmark": "a", "app_logs_path": "b"},
                 "output": {"prediction_path": str(out)},
                 "llm": {"provider": "openai", "model": "gpt-5-mini", "max_workers": 1},
-                "baseline_params": {"retrieval_top_k": "5"},
+                "retrieval": {"top_k": 5},
+                "baseline_params": {},
             }
             p = write_run_settings(resolved, out)
             self.assertTrue(p.exists())
