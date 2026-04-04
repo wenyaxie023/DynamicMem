@@ -1,3 +1,5 @@
+from pathlib import Path
+
 from .base import TceAdapterArgs
 
 
@@ -7,36 +9,37 @@ def run(args: TceAdapterArgs):
     allow_local_fallback = args.extras.get("allow_local_fallback", "true").strip().lower() in {
         "1", "true", "yes", "y", "on"
     }
-    rq3_apply_items_per_key = int(args.extras.get("rq3_apply_items_per_key", "1"))
-    rq3_apply_retrieval_top_k_raw = str(args.extras.get("rq3_apply_retrieval_top_k", "")).strip()
-    rq3_apply_retrieval_top_k = int(rq3_apply_retrieval_top_k_raw) if rq3_apply_retrieval_top_k_raw else None
-    checkpoint_workers = int(args.extras.get("checkpoint_workers", "1"))
-    within_checkpoint_workers = int(args.extras.get("within_checkpoint_workers", "1"))
-    save_every_generation_keys = int(args.extras.get("save_every_generation_keys", "1"))
+    checkpoint_agents_dir_raw = str(args.extras.get("checkpoint_agents_dir", "")).strip()
 
     return run_generation(
         benchmark_path=args.benchmark,
         app_logs_path=args.app_logs_path,
         output_path=args.output,
         max_visible_logs=args.max_visible_logs,
-        retrieval_top_k=int(args.extras.get("retrieval_top_k", "10")),
         llm_provider=args.llm_provider,
         llm_model=args.llm_model,
-        llm_max_workers=args.llm_max_workers,
+        letta_embedding=args.extras.get("embedding"),
+        answer_temperature=args.llm_temperature,
+        answer_top_p=args.llm_top_p,
+        answer_top_k=args.llm_top_k,
         letta_mode=args.extras.get("letta_mode", "sdk"),
         allow_local_fallback=allow_local_fallback,
-        checkpoint_state_path=args.extras.get("checkpoint_state_path"),
         resume=args.resume,
         max_checkpoints=args.max_checkpoints,
         debug=args.debug,
         debug_dir=args.debug_dir,
         save_prompt_and_raw=args.save_prompt_and_raw,
+        enable_change_reasoning=args.enable_change_reasoning,
         enable_rq3_apply_service_qa=args.enable_rq3_apply_service_qa,
-        rq3_apply_fail_on_missing_pack=args.rq3_apply_fail_on_missing_pack,
         rq3_apply_save_prompt_and_raw=args.rq3_apply_save_prompt_and_raw,
-        rq3_apply_items_per_key=rq3_apply_items_per_key,
-        rq3_apply_retrieval_top_k=rq3_apply_retrieval_top_k,
-        checkpoint_workers=checkpoint_workers,
-        within_checkpoint_workers=within_checkpoint_workers,
-        save_every_generation_keys=save_every_generation_keys,
+        checkpoint_workers=args.checkpoint_workers,
+        within_checkpoint_workers=args.within_checkpoint_workers,
+        save_every_generation_keys=args.save_every_generation_keys,
+        enable_final_qa=args.enable_final_qa,
+        final_qa_path=args.final_qa_path,
+        final_qa_output_path=args.final_qa_output_path,
+        final_qa_save_prompt_and_raw=args.final_qa_save_prompt_and_raw,
+        query_isolation_mode=args.extras.get("query_isolation_mode", "checkpoint_snapshot"),
+        checkpoint_agents_dir=Path(checkpoint_agents_dir_raw) if checkpoint_agents_dir_raw else None,
+        baseline_name=args.baseline,
     )
