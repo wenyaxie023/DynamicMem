@@ -17,6 +17,97 @@ from openai import OpenAI
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import threading
 
+_USAGE_LOCK = threading.Lock()
+_USAGE_RECORDS = []
+
+
+def _usage_to_dict(raw_usage):
+    if hasattr(raw_usage, "model_dump"):
+        raw_usage = raw_usage.model_dump(mode="json", by_alias=True)
+    elif hasattr(raw_usage, "to_dict"):
+        raw_usage = raw_usage.to_dict()
+    if isinstance(raw_usage, dict):
+        return raw_usage
+    return {}
+
+
+def _record_usage(request_kind, model, usage):
+    usage_dict = _usage_to_dict(usage)
+    completion_details = _usage_to_dict(
+        usage_dict.get("completion_tokens_details") or usage_dict.get("output_tokens_details")
+    )
+    prompt_tokens = int(usage_dict.get("prompt_tokens") or usage_dict.get("input_tokens") or 0)
+    completion_tokens = int(usage_dict.get("completion_tokens") or usage_dict.get("output_tokens") or 0)
+    reasoning_tokens = int(usage_dict.get("reasoning_tokens") or completion_details.get("reasoning_tokens") or 0)
+    total_tokens = int(usage_dict.get("total_tokens") or 0)
+    if total_tokens <= 0:
+        total_tokens = prompt_tokens + completion_tokens
+    record = {
+        "request_kind": str(request_kind or ""),
+        "model": str(model or ""),
+        "prompt_tokens": prompt_tokens,
+        "completion_tokens": completion_tokens,
+        "reasoning_tokens": reasoning_tokens,
+        "total_tokens": total_tokens,
+        "timestamp_unix": time.time(),
+    }
+    with _USAGE_LOCK:
+        _USAGE_RECORDS.append(record)
+    return record
+
+
+def reset_usage_tracker():
+    with _USAGE_LOCK:
+        _USAGE_RECORDS.clear()
+
+
+def get_usage_records():
+    with _USAGE_LOCK:
+        return [dict(x) for x in _USAGE_RECORDS]
+
+
+def get_usage_summary():
+    records = get_usage_records()
+    summary = {
+        "request_count": len(records),
+        "chat_request_count": 0,
+        "embedding_request_count": 0,
+        "prompt_tokens": 0,
+        "completion_tokens": 0,
+        "reasoning_tokens": 0,
+        "total_tokens": 0,
+        "by_model": [],
+    }
+    by_model = {}
+    for record in records:
+        request_kind = str(record.get("request_kind") or "")
+        if request_kind == "chat_completion":
+            summary["chat_request_count"] += 1
+        elif request_kind == "embedding":
+            summary["embedding_request_count"] += 1
+        summary["prompt_tokens"] += int(record.get("prompt_tokens") or 0)
+        summary["completion_tokens"] += int(record.get("completion_tokens") or 0)
+        summary["reasoning_tokens"] += int(record.get("reasoning_tokens") or 0)
+        summary["total_tokens"] += int(record.get("total_tokens") or 0)
+        key = (request_kind, str(record.get("model") or ""))
+        bucket = by_model.setdefault(
+            key,
+            {
+                "request_kind": key[0],
+                "model": key[1],
+                "request_count": 0,
+                "prompt_tokens": 0,
+                "completion_tokens": 0,
+                "total_tokens": 0,
+            },
+        )
+        bucket["request_count"] += 1
+        bucket["prompt_tokens"] += int(record.get("prompt_tokens") or 0)
+        bucket["completion_tokens"] += int(record.get("completion_tokens") or 0)
+        bucket["total_tokens"] += int(record.get("total_tokens") or 0)
+    summary["by_model"] = list(by_model.values())
+    return summary
+
 def clean_reasoning_model_output(text):
     """
     清理推理模型输出中的<think>标签
@@ -62,6 +153,7 @@ class OpenAIClient:
                 request_args["max_tokens"] = max_tokens
                 request_args["temperature"] = temperature
             response = self.client.chat.completions.create(**request_args)
+            _record_usage("chat_completion", model, getattr(response, "usage", None))
             raw_content = response.choices[0].message.content.strip()
             # 自动清理推理模型的<think>标签
             cleaned_content = clean_reasoning_model_output(raw_content)
@@ -348,9 +440,16 @@ def get_embedding(text, model_name="all-MiniLM-L6-v2", use_cache=True, **kwargs)
             request_args["api_base"] = api_base
         if api_key:
             request_args["api_key"] = api_key
-        
-        print("request_args: ", request_args)
+
+        safe_request_args = dict(request_args)
+        if safe_request_args.get("api_key"):
+            safe_request_args["api_key"] = "<redacted>"
+        print("request_args: ", safe_request_args)
         response = litellm_embedding(**request_args)
+        raw_usage = getattr(response, "usage", None)
+        if raw_usage is None and isinstance(response, dict):
+            raw_usage = response.get("usage")
+        _record_usage("embedding", model_name, raw_usage)
         data = getattr(response, "data", None)
         if data is None and isinstance(response, dict):
             data = response.get("data")

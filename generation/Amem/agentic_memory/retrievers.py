@@ -1,4 +1,5 @@
 import json
+import os
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Union
 import ast
@@ -6,14 +7,78 @@ import tempfile
 import atexit
 
 import chromadb
+from chromadb.api.types import Documents, Embeddings
 from chromadb.config import Settings
 from chromadb.utils.embedding_functions import SentenceTransformerEmbeddingFunction
-import chromadb.utils.embedding_functions as embedding_functions
 from nltk.tokenize import word_tokenize
+
+from .llm_controller import record_usage
+
+try:
+    from openai import OpenAI
+except ImportError:  # pragma: no cover - optional runtime dependency
+    OpenAI = None
 
 
 def simple_tokenize(text):
     return word_tokenize(text)
+
+
+class TrackedOpenAIEmbeddingFunction:
+    def __init__(
+        self,
+        *,
+        api_key: Optional[str],
+        api_base: Optional[str],
+        model_name: str,
+    ):
+        if OpenAI is None:
+            raise ImportError("OpenAI package not found. Install it with: pip install openai")
+        self.api_base = api_base
+        client_kwargs: Dict[str, Any] = {"api_key": api_key}
+        if api_base:
+            client_kwargs["base_url"] = api_base
+            if os.getenv("AZURE_OPENAI_API_KEY") or "azure" in api_base.lower():
+                client_kwargs["default_headers"] = {"api-key": api_key}
+        self.client = OpenAI(**client_kwargs)
+        self.model_name = model_name
+
+    @staticmethod
+    def name() -> str:
+        return "openai"
+
+    def embed_query(self, input: Documents) -> Embeddings:
+        return self.__call__(input)
+
+    @staticmethod
+    def default_space() -> str:
+        return "cosine"
+
+    @staticmethod
+    def supported_spaces() -> List[str]:
+        return ["cosine", "l2", "ip"]
+
+    def get_config(self) -> Dict[str, Any]:
+        return {
+            "model_name": self.model_name,
+            "api_base": self.api_base,
+        }
+
+    def __call__(self, input: Documents) -> Embeddings:
+        values = list(input)
+        if not values:
+            return []
+        response = self.client.embeddings.create(
+            model=self.model_name,
+            input=values,
+        )
+        record_usage(
+            request_kind="embedding",
+            provider="openai",
+            model=self.model_name,
+            usage=getattr(response, "usage", None),
+        )
+        return [item.embedding for item in response.data]
 
 
 def _clone_collection(
@@ -58,11 +123,10 @@ class ChromaRetriever:
         """
         self.client = chromadb.Client(Settings(allow_reset=True))
         if embedding_backend == "openai":
-            self.embedding_function = embedding_functions.OpenAIEmbeddingFunction(
+            self.embedding_function = TrackedOpenAIEmbeddingFunction(
                 api_key=openai_api_key,
                 api_base=openai_api_base,
                 model_name=model_name,
-                api_type="openai",
             )
         else:
             self.embedding_function = SentenceTransformerEmbeddingFunction(
@@ -205,7 +269,7 @@ class PersistentChromaRetriever(ChromaRetriever):
             path=str(directory),
         )
         if embedding_backend == "openai":
-            self.embedding_function = embedding_functions.OpenAIEmbeddingFunction(
+            self.embedding_function = TrackedOpenAIEmbeddingFunction(
                 api_key=openai_api_key,
                 api_base=openai_api_base,
                 model_name=model_name,

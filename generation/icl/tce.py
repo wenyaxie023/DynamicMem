@@ -6,7 +6,8 @@ from typing import Any, Dict, List, Optional
 from dotenv import load_dotenv
 
 from generation.icl.client import LLMClient
-from tce_core.pipeline import run_pipeline
+from tce_core.orchestrator_protocol import CheckpointHandle, RetrievalOptions, RetrievalResult
+from tce_core.pipeline import run_pipeline, to_log_text
 
 load_dotenv()
 
@@ -24,10 +25,12 @@ def run_generation(
     debug: bool,
     debug_dir: Optional[Path],
     save_prompt_and_raw: bool,
+    answer_temperature: Optional[float] = 0.0,
+    answer_top_p: Optional[float] = 1.0,
+    answer_top_k: Optional[int] = None,
+    enable_change_reasoning: bool = False,
     enable_rq3_apply_service_qa: bool = False,
-    rq3_apply_fail_on_missing_pack: bool = False,
     rq3_apply_save_prompt_and_raw: bool = True,
-    rq3_apply_items_per_key: int = 1,
     rq3_apply_retrieval_top_k: Optional[int] = None,
     checkpoint_workers: int = 1,
     within_checkpoint_workers: int = 1,
@@ -37,6 +40,9 @@ def run_generation(
         provider=llm_provider,
         model_name=llm_model,
         max_workers=llm_max_workers,
+        temperature=answer_temperature,
+        top_p=answer_top_p,
+        top_k=answer_top_k,
     )
 
     def ask_json(prompt: str) -> Any:
@@ -48,16 +54,34 @@ def run_generation(
     def close() -> None:
         client.close()
 
-    def retrieve_context(
-        _cp: Dict[str, Any],
+    def prepare_checkpoint_state(cp: Dict[str, Any], memory_pool: List[Dict[str, Any]]) -> CheckpointHandle:
+        return CheckpointHandle(
+            checkpoint_id=str(cp.get("checkpoint_id") or ""),
+            state_kind="prefix_logs",
+            state_ref=cp,
+            metadata={
+                "checkpoint_timestamp": str((cp.get("as_of") or {}).get("timestamp", "")),
+                "checkpoint_app_log_id": str((cp.get("as_of") or {}).get("app_log_id") or ""),
+                "memory_pool_size": len(memory_pool),
+            },
+        )
+
+    def retrieve_context_for_query(
+        checkpoint_handle: CheckpointHandle,
+        query_spec,
+        retrieval_options: RetrievalOptions,
         memory_pool: List[Dict[str, Any]],
-        _target_keys: List[str],
-    ) -> Dict[str, Any]:
-        return {
-            "context_logs": memory_pool,
-            "context_note": f"Observed app logs up to this checkpoint ({len(memory_pool)} logs)",
-            "metadata": {},
-        }
+    ) -> RetrievalResult:
+        del checkpoint_handle, query_spec, retrieval_options
+        return RetrievalResult(
+            mode="inline_memory",
+            inline_memory_blocks=[to_log_text(log) for log in memory_pool],
+            debug_metadata={
+                "retrieval_mode": "observed_logs",
+                "num_retrieved_logs": len(memory_pool),
+                "retrieved_app_log_ids": [log.get("app_log_id") for log in memory_pool],
+            },
+        )
 
     return run_pipeline(
         benchmark_path=benchmark_path,
@@ -68,21 +92,23 @@ def run_generation(
         ask_structured=ask_structured,
         use_structured_response=client.supports_structured_response(),
         close=close,
-        retrieve_context=retrieve_context,
+        prepare_checkpoint_state=prepare_checkpoint_state,
+        retrieve_context_for_query=retrieve_context_for_query,
         baseline_name="icl",
+        memory_prompt_mode="inline_memory",
         resume=resume,
         max_checkpoints=max_checkpoints,
         debug=debug,
         debug_dir=debug_dir,
         save_prompt_and_raw=save_prompt_and_raw,
+        enable_change_reasoning=enable_change_reasoning,
         enable_rq3_apply_service_qa=enable_rq3_apply_service_qa,
-        rq3_apply_fail_on_missing_pack=rq3_apply_fail_on_missing_pack,
         rq3_apply_save_prompt_and_raw=rq3_apply_save_prompt_and_raw,
-        rq3_apply_items_per_key=rq3_apply_items_per_key,
         rq3_apply_retrieval_top_k=rq3_apply_retrieval_top_k,
         checkpoint_workers=checkpoint_workers,
         within_checkpoint_workers=within_checkpoint_workers,
         save_every_generation_keys=save_every_generation_keys,
+        retrieval_options_backend={},
     )
 
 

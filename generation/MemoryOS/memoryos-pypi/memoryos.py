@@ -60,9 +60,13 @@ class Memoryos:
             self.embedding_model_kwargs = embedding_model_kwargs
 
 
+        safe_embedding_kwargs = dict(self.embedding_model_kwargs or {})
+        if safe_embedding_kwargs.get("api_key"):
+            safe_embedding_kwargs["api_key"] = "<redacted>"
+
         print(f"Initializing Memoryos for user '{self.user_id}' and assistant '{self.assistant_id}'. Data path: {self.data_storage_path}")
         print(f"Using unified LLM model: {self.llm_model}")
-        print(f"Using embedding model: {self.embedding_model_name} with kwargs: {self.embedding_model_kwargs}")
+        print(f"Using embedding model: {self.embedding_model_name} with kwargs: {safe_embedding_kwargs}")
 
         # Initialize OpenAI Client
         self.client = OpenAIClient(api_key=openai_api_key, base_url=openai_base_url)

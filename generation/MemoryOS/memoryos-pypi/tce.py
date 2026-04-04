@@ -9,7 +9,8 @@ from typing import Any, Dict, List, Optional
 from dotenv import load_dotenv
 
 from client import LLMClient
-from tce_core.pipeline import run_pipeline
+from tce_core.orchestrator_protocol import CheckpointHandle, RetrievalOptions, RetrievalResult
+from tce_core.pipeline import run_pipeline, to_log_text
 from memoryos import Memoryos
 
 load_dotenv(Path(__file__).resolve().parent / ".env")
@@ -64,16 +65,6 @@ def _load_snapshot_bundle(snapshot_root: Path, cp: Dict[str, Any]) -> Dict[str, 
             str(Path(snapshot_id) / "long_term_assistant.json"),
         ),
     }
-
-
-def _build_retrieval_query(cp: Dict[str, Any], target_keys: List[str]) -> str:
-    as_of = cp.get("as_of", {})
-    ts = as_of.get("timestamp", "")
-    keys_hint = ", ".join(target_keys[:20])
-    return (
-        f"Predict values for provided state keys at checkpoint time {ts}. "
-        f"Target keys include: {keys_hint}"
-    )
 
 
 def run_generation(
@@ -131,12 +122,30 @@ def run_generation(
         else (Path(__file__).resolve().parent / "snapshots" / memory_user_id)
     )
 
-    def retrieve_context(
-        cp: Dict[str, Any],
-        memory_pool: List[Dict[str, Any]],
-        target_keys: List[str],
-    ) -> Dict[str, Any]:
+    def prepare_checkpoint_state(cp: Dict[str, Any], memory_pool: List[Dict[str, Any]]) -> CheckpointHandle:
         bundle = _load_snapshot_bundle(snapshot_root, cp)
+        return CheckpointHandle(
+            checkpoint_id=str(cp.get("checkpoint_id") or ""),
+            state_kind="snapshot_bundle",
+            state_ref=bundle,
+            metadata={
+                "retrieval_mode": "memoryos_snapshot",
+                "snapshot_id": bundle.get("snapshot_id"),
+                "snapshot_checkpoint_id": bundle.get("checkpoint_id"),
+                "snapshot_checkpoint_app_log_id": bundle.get("checkpoint_app_log_id"),
+                "checkpoint_timestamp": str((cp.get("as_of") or {}).get("timestamp", "")),
+                "checkpoint_app_log_id": str((cp.get("as_of") or {}).get("app_log_id") or ""),
+                "memory_pool_size": len(memory_pool),
+            },
+        )
+
+    def retrieve_context_for_query(
+        checkpoint_handle: CheckpointHandle,
+        query_spec,
+        retrieval_options: RetrievalOptions,
+        memory_pool: List[Dict[str, Any]],
+    ) -> RetrievalResult:
+        bundle = checkpoint_handle.state_ref if isinstance(checkpoint_handle.state_ref, dict) else {}
         shutil.copyfile(bundle["short_term_path"], memo.short_term_memory.file_path)
         shutil.copyfile(bundle["mid_term_path"], memo.mid_term_memory.file_path)
         shutil.copyfile(bundle["long_term_path"], memo.user_long_term_memory.file_path)
@@ -146,7 +155,9 @@ def run_generation(
         memo.user_long_term_memory.load()
         memo.assistant_long_term_memory.load()
 
-        retrieval_query = _build_retrieval_query(cp, target_keys)
+        retrieval_query = str(query_spec.retrieval_query_text or "").strip()
+        if not retrieval_query:
+            raise ValueError("MemoryOS requires shared QuerySpec.retrieval_query_text.")
         retrieval = memo.retriever.retrieve_context(
             user_query=retrieval_query,
             user_id=memo.user_id,
@@ -184,25 +195,29 @@ def run_generation(
                 selected_ids.append(app_log_id)
                 selected_logs.append(log)
 
-        k = len(memory_pool) if retrieval_top_k <= 0 else min(retrieval_top_k, len(memory_pool))
+        top_k_for_call = retrieval_top_k
+        top_k_override = retrieval_options.common.get("top_k")
+        if isinstance(top_k_override, int):
+            top_k_for_call = int(top_k_override)
+        k = len(memory_pool) if top_k_for_call <= 0 else min(top_k_for_call, len(memory_pool))
         selected_logs = selected_logs[:k]
         selected_ids = selected_ids[:k]
 
-        return {
-            "context_logs": selected_logs,
-            "context_note": f"Retrieved app logs from MemoryOS snapshot (top-{k})",
-            "retrieval_query": retrieval_query,
-            "metadata": {
+        return RetrievalResult(
+            mode="inline_memory",
+            inline_memory_blocks=[to_log_text(log) for log in selected_logs],
+            debug_metadata={
                 "retrieval_mode": "memoryos_snapshot",
                 "snapshot_id": bundle.get("snapshot_id"),
                 "snapshot_checkpoint_id": bundle.get("checkpoint_id"),
                 "snapshot_checkpoint_app_log_id": bundle.get("checkpoint_app_log_id"),
-                "retrieval_top_k": retrieval_top_k,
+                "retrieval_top_k": top_k_for_call,
                 "num_retrieved_logs": len(selected_logs),
                 "retrieved_app_log_ids": selected_ids,
                 "embedding_model_name": embedding_model_name,
+                "retrieval_query": retrieval_query,
             },
-        }
+        )
 
     def ask_json(prompt: str) -> Any:
 
@@ -224,13 +239,16 @@ def run_generation(
         ask_structured=ask_structured,
         use_structured_response=client.supports_structured_response(),
         close=close,
-        retrieve_context=retrieve_context,
+        prepare_checkpoint_state=prepare_checkpoint_state,
+        retrieve_context_for_query=retrieve_context_for_query,
         baseline_name="memoryos",
+        memory_prompt_mode="inline_memory",
         resume=resume,
         max_checkpoints=max_checkpoints,
         debug=debug,
         debug_dir=debug_dir,
         save_prompt_and_raw=save_prompt_and_raw,
+        retrieval_options_backend={"embedding_model_name": embedding_model_name},
     )
 
 

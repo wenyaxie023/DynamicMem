@@ -13,8 +13,10 @@ Use explicit groups instead of mixing all methods in one pool.
 2. `Prompted direct baselines (same core TCE prompt template)`
 - `icl` (`generation/icl/tce.py`)
 - `rag` (`generation/rag/rag_tce.py`)
-- `amem` (`generation/Amem/amem_tce.py`)
+- `amem` (`generation/Amem/tce.py`)
 - `hipporag2` (`generation/HippoRAG2/generation_tce/tce.py`)
+- `memoryos` (`generation/MemoryOS/tce_adapter.py`)
+- `mem0` (`generation/mem0/tce.py`)
 - These run through shared pipeline/prompt assembly (`tce_core/pipeline.py`, `tce_core/prompts.py`), but retrieval context differs.
 
 3. `Agent-loop / non-equivalent prompting`
@@ -22,8 +24,8 @@ Use explicit groups instead of mixing all methods in one pool.
 - This path intentionally ignores pipeline prompt and uses its own agent prompt; report separately from “same-prompt” baselines.
 
 4. `Not implemented in TCE adapter layer (do not include as comparable TCE results yet)`
-- `mem0`, `memoryos`, `nemori`, `zep` are stubs in `generation/adapters/registry.py`.
-- Their YAML presence under `configs/experiments/tce/*.yaml` does not imply runnable comparable TCE adapter support.
+- `nemori`, `zep` remain stubs in `generation/adapters/registry.py`.
+- YAML presence under `configs/experiments/tce/*.yaml` is not sufficient; compare only baselines with runnable adapter support.
 
 ## 2. Core Comparability Rule
 
@@ -81,8 +83,8 @@ For each experiment table, lock these fields across baselines unless explicitly 
 - If unintentional, unify provider/model or stratify results by provider.
 
 2. Unequal user sets in configs
-- Example: `configs/experiments/tce/rag.yaml` currently lists only `002_user_002`, while others list `001~003`.
-- Must align user set for fair comparison.
+- Example: `configs/experiments/tce/rag_user1_v14_top20_c4.yaml` is explicitly a single-user config.
+- Must align user set / benchmark scope for fair comparison.
 
 3. `letta` prompt protocol differs
 - `ask_json` ignores pipeline prompt and uses agent-specific prompt (`generation/letta/tce.py`).
@@ -122,4 +124,3 @@ For each baseline, report:
 - [ ] Same evaluation command and same judge settings
 - [ ] No stale/partial outputs included unintentionally (resume policy documented)
 - [ ] Final table includes both quality and context-budget statistics
-

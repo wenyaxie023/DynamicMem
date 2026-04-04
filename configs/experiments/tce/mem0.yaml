@@ -1,13 +1,20 @@
 users:
   - 001_user_001
-  - 002_user_002
-  - 003_user_003
 
 runtime:
   baseline: mem0
+  resume: true
+  debug: false
+  save_prompt_and_raw: true
+  enable_change_reasoning: true
+  enable_rq3_apply_service_qa: true
+  rq3_apply_save_prompt_and_raw: true
+  checkpoint_workers: 1
+  within_checkpoint_workers: 1
+  save_every_generation_keys: 5
 
 data:
-  benchmark: data_construction/generated_outputs/gemini_3_flash_preview/{user_id}/tce_benchmark.json
+  benchmark: data_construction/generated_outputs/gemini_3_flash_preview/{user_id}/tce_benchmark_vnext_20260319_formal_crv_task_packs_v14.json
   app_logs_path: data_construction/generated_outputs/gemini_3_flash_preview/{user_id}/app_log_large.json
 
 output:
@@ -18,4 +25,18 @@ llm:
   model: gpt-5-mini
   max_workers: 1
 
-baseline_params: {}
+retriever:
+  provider: openai
+  model: text-embedding-3-large
+
+retrieval:
+  top_k: 20
+  rq3_apply_top_k: 20
+  final_qa_top_k: 20
+
+final_qa:
+  enabled: true
+
+baseline_params:
+  collection_name: membench_mem0_{user_id}_v14
+  checkpoint_dir: generation/mem0/checkpoints

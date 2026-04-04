@@ -1,4 +1,3 @@
-import keyword
 from typing import List, Dict, Optional, Any, Tuple
 import uuid
 from datetime import datetime
@@ -6,18 +5,9 @@ from .llm_controller import LLMController
 from .retrievers import PersistentChromaRetriever
 import json
 import logging
-from rank_bm25 import BM25Okapi
-from sentence_transformers import SentenceTransformer
-import numpy as np
-from sklearn.metrics.pairwise import cosine_similarity
 import os
-from abc import ABC, abstractmethod
-from transformers import AutoModel, AutoTokenizer
-from nltk.tokenize import word_tokenize
 import pickle
 from pathlib import Path
-from litellm import completion
-import time
 
 logger = logging.getLogger(__name__)
 
@@ -801,7 +791,6 @@ class AgenticMemorySystem:
                 if missing:
                     raise KeyError(f"Missing keys in response: {sorted(missing)}")
 
-                print("response:", response)
                 should_evolve = response_json["should_evolve"]
 
                 if should_evolve:

@@ -21,10 +21,8 @@ llm:
   model: gpt-5-mini
   max_workers: 1
 
+retriever:
+  model: text-embedding-3-large
+
 baseline_params:
   hipporag_dir: generation/HippoRAG2/outputs/{user_id}_large/gpt-5-mini_text-embedding-3-large
-  online: true
-  embedding_model: text-embedding-3-large
-  retrieval_top_k: 5
-  checkpoint_workers: 1
-  within_checkpoint_workers: 1

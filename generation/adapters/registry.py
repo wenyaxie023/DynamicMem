@@ -1,7 +1,7 @@
 from typing import Callable, Dict
 
 from .base import TceAdapterArgs
-from . import amem, hipporag2, icl, letta, oracle, rag, simplemem, stubs, zep
+from . import amem, hipporag2, icl, letta, mem0, memoryos, oracle, rag, simplemem, stubs, zep
 
 
 _ADAPTERS: Dict[str, Callable[[TceAdapterArgs], object]] = {
@@ -9,13 +9,13 @@ _ADAPTERS: Dict[str, Callable[[TceAdapterArgs], object]] = {
     "icl": icl.run,
     "rag": rag.run,
     "hipporag2": hipporag2.run,
-    "memoryos": stubs.not_implemented("memoryos"),
+    "memoryos": memoryos.run,
     "amem": amem.run,
     "letta": letta.run,
     "memgpt": letta.run,
     "nemori": stubs.not_implemented("nemori"),
     "zep": zep.run,
-    "mem0": stubs.not_implemented("mem0"),
+    "mem0": mem0.run,
     "simplemem": simplemem.run,
 }
 

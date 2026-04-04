@@ -5,13 +5,19 @@ import logging
 import shutil
 import sys
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Set
+from typing import Any, Callable, Dict, List, Optional, Set
 from datetime import datetime
 
-import nltk
+try:
+    import nltk
+except Exception:  # pragma: no cover - optional in stripped test environments
+    nltk = None  # type: ignore[assignment]
 from dotenv import load_dotenv
 
-from agentic_memory.memory_system import AgenticMemorySystem
+try:
+    from generation.Amem.agentic_memory.memory_system import AgenticMemorySystem
+except Exception:  # pragma: no cover - optional in test environments without chromadb
+    AgenticMemorySystem = None  # type: ignore[assignment]
 
 load_dotenv(Path(__file__).resolve().parent / ".env")
 
@@ -20,7 +26,7 @@ DATA_DIR = GENERATION_DIR / "data"
 if str(GENERATION_DIR) not in sys.path:
     sys.path.append(str(GENERATION_DIR))
 
-from load_dataset import build_membench_memory_from_event, load_membench_dataset  # type: ignore
+from generation.load_dataset import build_membench_memory_from_event, load_membench_dataset
 
 
 def _env_value(*keys: str) -> Optional[str]:
@@ -41,6 +47,8 @@ def _env_value(*keys: str) -> Optional[str]:
 
 
 def _ensure_nltk() -> None:
+    if nltk is None:
+        raise RuntimeError("Missing nltk package. Install it to run Amem.")
     try:
         nltk.data.find("tokenizers/punkt")
     except LookupError as e:
@@ -137,6 +145,17 @@ def _atomic_write_json(path: Path, payload: Dict[str, Any]) -> None:
     with tmp_path.open("w", encoding="utf-8") as f:
         json.dump(payload, f, ensure_ascii=False, indent=2)
     os.replace(tmp_path, path)
+
+
+def _load_checkpoints_from_benchmark(benchmark_path: Path) -> List[Dict[str, Any]]:
+    with benchmark_path.open("r", encoding="utf-8") as f:
+        payload: Any = json.load(f)
+    checkpoints = payload.get("checkpoints", []) if isinstance(payload, dict) else []
+    if not isinstance(checkpoints, list):
+        raise ValueError(
+            f"Invalid checkpoint format in {benchmark_path}: expected top-level 'checkpoints' list."
+        )
+    return checkpoints
 
 
 def _snapshot_entry_sort_key(entry: Dict[str, Any]) -> tuple[int, datetime]:
@@ -344,6 +363,7 @@ def evaluate_membench(
     user_id: str,
     *,
     app_log_path: Optional[str] = None,
+    benchmark_path: Optional[str] = None,
     size: str = "small",
     embedding_model_name: str = "all-MiniLM-L6-v2",
     embedding_backend: Optional[str] = None,
@@ -363,8 +383,11 @@ def evaluate_membench(
     resume_from_snapshot: bool = True,
     embedding_api_key: Optional[str] = None,
     embedding_api_base_url: Optional[str] = None,
+    progress_callback: Optional[Callable[[Dict[str, Any]], None]] = None,
 ) -> dict:
     _ensure_nltk()
+    if AgenticMemorySystem is None:
+        raise RuntimeError("Amem builder requires AgenticMemorySystem and its retrieval dependencies.")
 
     embedding_api_key = embedding_api_key or _env_value("embedding_api_key", "EMBEDDING_API_KEY")
     embedding_api_base_url = embedding_api_base_url or _env_value(
@@ -515,16 +538,20 @@ def evaluate_membench(
     if processed <= 0:
         processed = start_index
 
-    loaded = load_membench_dataset(
+    samples = load_membench_dataset(
         resolved_app_log_path,
         user_id=user_id,
         size=size,
-        load_ckpts=True,
+        load_ckpts=False,
     )
-    samples, checkpoints = loaded
     if not samples:
         raise ValueError(f"User id not found in dataset: {user_id}")
     sample = samples[0]
+    if benchmark_path:
+        checkpoints = _load_checkpoints_from_benchmark(Path(benchmark_path))
+    else:
+        app_log_file, _ = _resolve_user_app_log_file(resolved_app_log_path, user_id, size)
+        checkpoints = _load_checkpoints_from_benchmark(app_log_file.parent / "tce_benchmark.json")
 
     checkpoint_by_app_log_id: Dict[str, List[Dict[str, Any]]] = {}
     expected_checkpoint_ids: Set[str] = set()
@@ -571,6 +598,17 @@ def evaluate_membench(
             processed += 1
             last_event_idx = idx
             print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] {processed} processed")
+            if callable(progress_callback):
+                try:
+                    progress_callback(
+                        {
+                            "phase": "build_memory",
+                            "events_processed": processed,
+                            "last_event_idx": last_event_idx,
+                        }
+                    )
+                except Exception as e:
+                    logger.warning("Amem progress callback failed after event %d: %s", last_event_idx, e)
 
             if save_every > 0 and processed % save_every == 0:
                 memory_system.save_state(state_path)
@@ -600,7 +638,7 @@ def evaluate_membench(
         interrupted_exc = exc
         logger.warning("Run interrupted (%s). Saving checkpoint.", type(exc).__name__)
     finally:
-        if resume_requested and last_event_idx >= 0:
+        if last_event_idx >= 0:
             memory_system.save_state(state_path)
             _write_checkpoint(checkpoint_path, last_event_idx, processed)
     if interrupted_exc is not None:
@@ -641,8 +679,14 @@ def main() -> None:
     )
     parser.add_argument("--user-id", required=True, help="User/sample id to ingest")
     parser.add_argument("--app-log", type=str, default=str(DATA_DIR), help="App log path")
+    parser.add_argument(
+        "--benchmark-path",
+        type=str,
+        default=None,
+        help="Optional benchmark path providing the checkpoint list for snapshot triggers.",
+    )
     parser.add_argument("--size", type=str, default="small", help="Dataset size: small|medium|large")
-    parser.add_argument("--embedding-model-name", "--model-name", dest="embedding_model_name", type=str, default="openrouter/openai/text-embedding-3-large", help="Embedding model")
+    parser.add_argument("--embedding-model-name", "--model-name", dest="embedding_model_name", type=str, default="text-embedding-3-large", help="Embedding model")
     parser.add_argument("--embedding-backend", type=str, default="openai", help="Embedding backend")
     parser.add_argument("--collection-name", type=str, default="memories", help="ChromaDB collection name")
     parser.add_argument("--llm-controller-backend", "--llm-backend", dest="llm_controller_backend", type=str, default="openai", help="LLM backend")
@@ -701,6 +745,7 @@ def main() -> None:
     summary = evaluate_membench(
         user_id=args.user_id,
         app_log_path=args.app_log,
+        benchmark_path=args.benchmark_path,
         size=args.size,
         embedding_model_name=args.embedding_model_name,
         embedding_backend=args.embedding_backend or None,

@@ -3,6 +3,7 @@
 This folder contains contributor-facing generation entrypoints for two protocols:
 - DSP (dynamic state prediction)
 - QA (question answering)
+- TCE (temporal checkpoint evaluation)
 
 Use this README as the operational guide.
 
@@ -33,6 +34,7 @@ Dry-run config resolution (no execution):
 ```bash
 python -m generation.run_dsp --config <config.yaml> --dry-run
 python -m generation.run_qa --config configs/experiments/qa/<baseline>.yaml --dry-run
+python -m generation.run_tce --config configs/experiments/tce/<baseline>.yaml --dry-run
 ```
 
 ## Output Layout
@@ -61,6 +63,16 @@ Canonical QA protocol contract is maintained in:
 - `docs/protocols/qa_generation_and_eval_contract.md`
 
 If this README conflicts with that QA contract file, follow the QA contract file.
+
+## TCE Contract
+
+Canonical TCE generation and adapter contract is maintained in:
+- `docs/protocols/tce_generation_and_adapter_contract.md`
+
+Normative TCE protocol spec remains in:
+- `docs/protocols/temporal_checkpoint_evaluation_developer_manual.md`
+
+If this README conflicts with the TCE contract file, follow the TCE contract file.
 
 ## DSP Architecture
 

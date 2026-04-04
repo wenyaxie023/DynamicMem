@@ -3,12 +3,22 @@ import argparse
 import json
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
-from dotenv import load_dotenv
+try:
+    from dotenv import load_dotenv
+except Exception:  # pragma: no cover - optional runtime dependency
+    def load_dotenv(*args, **kwargs):
+        return False
 
-from tce_core.pipeline import run_pipeline
-from generation.Amem.agentic_memory.retrievers import PersistentChromaRetriever
+from tce_core.orchestrator_protocol import CheckpointHandle, RetrievalOptions, RetrievalResult
+from tce_core.pipeline import run_pipeline, to_log_text
+from generation.Amem.amem import (
+    _ensure_nltk,
+    _load_manifest,
+    _snapshot_root,
+    setup_logger,
+)
 from generation.Amem.client import LLMClient
 
 load_dotenv(Path(__file__).resolve().parent / ".env")
@@ -22,8 +32,7 @@ def _load_snapshot_bundle(snapshot_root: Path, manifest_entry: Dict[str, Any]) -
     checkpoint_path = Path(
         str(manifest_entry.get("checkpoint_path", str(Path(snapshot_id) / "checkpoint.json")))
     )
-    meta_path = Path(str(manifest_entry.get("meta_path", str(Path(snapshot_id) / "meta.json")))
-    )
+    meta_path = Path(str(manifest_entry.get("meta_path", str(Path(snapshot_id) / "meta.json"))))
     chroma_dir = Path(str(manifest_entry.get("chroma_dir", str(Path(snapshot_id) / "chroma"))))
 
     if not checkpoint_path.is_absolute():
@@ -40,12 +49,13 @@ def _load_snapshot_bundle(snapshot_root: Path, manifest_entry: Dict[str, Any]) -
         meta_payload = json.load(f)
 
     collection_name = meta_payload.get("collection_name") or manifest_entry.get("collection_name")
-
-    last_event_idx_raw = checkpoint_payload.get("last_event_idx", manifest_entry.get("last_event_idx", -1))
-    last_event_idx = int(last_event_idx_raw)
-
+    last_event_idx = int(checkpoint_payload.get("last_event_idx", manifest_entry.get("last_event_idx", -1)))
     created_at_raw = manifest_entry.get("created_at")
-    created_at = datetime.fromisoformat(created_at_raw) if isinstance(created_at_raw, str) and created_at_raw else datetime.min
+    created_at = (
+        datetime.fromisoformat(created_at_raw)
+        if isinstance(created_at_raw, str) and created_at_raw
+        else datetime.min
+    )
     checkpoint_id = checkpoint_payload.get("checkpoint_id", manifest_entry.get("checkpoint_id"))
     checkpoint_app_log_id = checkpoint_payload.get(
         "checkpoint_app_log_id",
@@ -68,93 +78,141 @@ def _load_snapshot_bundle(snapshot_root: Path, manifest_entry: Dict[str, Any]) -
     }
 
 
-
-def _build_retrieval_query(checkpoint: Dict[str, Any], target_keys: List[str]) -> str:
-    as_of = checkpoint.get("as_of", {})
-    ts = as_of.get("timestamp", "")
-    keys_hint = ", ".join(target_keys[:20])
-    return (
-        f"Predict values for provided state keys at checkpoint time {ts}. "
-        f"Target keys include: {keys_hint}"
-    )
-
-
 def run_generation(
     benchmark_path: Path,
     app_logs_path: Path,
     output_path: Path,
     user_id: str,
     size: str,
-    snapshot_dir: Optional[str],
-    checkpoint_dir: Optional[str],
-    retrieval_top_k: int,
-    max_visible_logs: Optional[int],
-    llm_provider: str,
-    llm_model: str,
-    llm_max_workers: int,
-    embedding_backend: str,
-    embedding_model_name: str,
-    embedding_api_key: Optional[str],
-    embedding_api_base_url: Optional[str],
-    resume: bool,
-    max_checkpoints: Optional[int],
-    debug: bool,
-    debug_dir: Optional[Path],
-    save_prompt_and_raw: bool,
+    snapshot_dir: Optional[str] = None,
+    checkpoint_dir: Optional[str] = None,
+    retrieval_top_k: int = 5,
+    max_visible_logs: Optional[int] = None,
+    llm_provider: str = "openai",
+    llm_model: str = "gpt-5-mini",
+    llm_max_workers: int = 1,
+    embedding_backend: str = "openai",
+    embedding_model_name: str = "text-embedding-3-large",
+    embedding_api_key: Optional[str] = None,
+    embedding_api_base_url: Optional[str] = None,
+    resume: bool = False,
+    max_checkpoints: Optional[int] = None,
+    debug: bool = False,
+    debug_dir: Optional[Path] = None,
+    save_prompt_and_raw: bool = False,
+    answer_temperature: Optional[float] = 0.0,
+    answer_top_p: Optional[float] = 1.0,
+    answer_top_k: Optional[int] = None,
+    enable_change_reasoning: bool = False,
     enable_rq3_apply_service_qa: bool = False,
-    rq3_apply_fail_on_missing_pack: bool = False,
     rq3_apply_save_prompt_and_raw: bool = True,
-    rq3_apply_items_per_key: int = 1,
     rq3_apply_retrieval_top_k: Optional[int] = None,
     snapshot_root: Optional[str] = None,
     checkpoint_workers: int = 1,
     within_checkpoint_workers: int = 1,
     save_every_generation_keys: int = 1,
+    enable_final_qa: bool = False,
+    final_qa_path: Optional[str] = None,
+    final_qa_output_path: Optional[str] = None,
+    final_qa_retrieval_top_k: Optional[int] = None,
+    final_qa_save_prompt_and_raw: bool = False,
+    usage_callback: Optional[Callable[[Dict[str, Any]], None]] = None,
 ) -> Dict[str, Any]:
+    _ensure_nltk()
     client = LLMClient(
         provider=llm_provider,
         model_name=llm_model,
         max_workers=llm_max_workers,
+        temperature=answer_temperature,
+        top_p=answer_top_p,
+        top_k=answer_top_k,
     )
 
     default_checkpoint_root = Path(checkpoint_dir) if checkpoint_dir else Path(__file__).resolve().parent / "checkpoints"
     resolved_snapshot_root = (
         Path(snapshot_root)
         if snapshot_root
-        else (Path(snapshot_dir) if snapshot_dir else default_checkpoint_root / "chroma_snapshots") / user_id / size
+        else _snapshot_root(snapshot_dir, default_checkpoint_root, user_id, size)
     )
     manifest_path = resolved_snapshot_root / "manifest.json"
-    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-    entries = [x for x in manifest.get("snapshots", []) if isinstance(x, dict)]
-    bundles = [_load_snapshot_bundle(resolved_snapshot_root, entry) for entry in entries]
-    bundles.sort(
-        key=lambda x: (int(x.get("last_event_idx", -1)), x.get("created_at", datetime.min)),
-        reverse=True,
-    )
+    log_dir = Path(__file__).resolve().parent / "logs"
+    log_dir.mkdir(parents=True, exist_ok=True)
+    logger = setup_logger(log_dir / f"amem_tce_{user_id}_{datetime.now().strftime('%Y-%m-%d-%H-%M')}.log")
+
     bundle_by_checkpoint_id: Dict[str, Dict[str, Any]] = {}
     bundle_by_app_log_id: Dict[str, Dict[str, Any]] = {}
-    for bundle in bundles:
+
+    def _register_snapshot_entry(entry: Dict[str, Any]) -> Dict[str, Any]:
+        bundle = _load_snapshot_bundle(resolved_snapshot_root, entry)
         checkpoint_id = str(bundle.get("checkpoint_id", "")).strip()
         checkpoint_app_log_id = str(bundle.get("checkpoint_app_log_id", "")).strip()
-        if checkpoint_id and checkpoint_id not in bundle_by_checkpoint_id:
+        if checkpoint_id:
             bundle_by_checkpoint_id[checkpoint_id] = bundle
-        if checkpoint_app_log_id and checkpoint_app_log_id not in bundle_by_app_log_id:
+        if checkpoint_app_log_id:
             bundle_by_app_log_id[checkpoint_app_log_id] = bundle
+        return bundle
 
-    retriever_cache: Dict[Tuple[str, str], PersistentChromaRetriever] = {}
+    def _refresh_snapshot_index() -> None:
+        bundle_by_checkpoint_id.clear()
+        bundle_by_app_log_id.clear()
+        if not manifest_path.exists():
+            return
+        manifest = _load_manifest(manifest_path)
+        entries = [x for x in manifest.get("snapshots", []) if isinstance(x, dict)]
+        entries.sort(
+            key=lambda entry: (
+                int(entry.get("last_event_idx", -1)) if isinstance(entry.get("last_event_idx", -1), int) else -1,
+                str(entry.get("created_at", "")),
+            ),
+            reverse=True,
+            )
+        for entry in entries:
+            _register_snapshot_entry(entry)
+
+    if not manifest_path.exists():
+        raise FileNotFoundError(
+            "Amem test phase requires prebuilt checkpoint snapshots. "
+            f"Missing manifest: {manifest_path}"
+        )
+    _refresh_snapshot_index()
+    retriever_cache: Dict[Tuple[str, str], Any] = {}
+    answer_llm_usage: Dict[str, Any] = {}
+
+    def _emit_usage_update() -> None:
+        if not callable(usage_callback):
+            return
+        usage_summary_fn = getattr(client, "usage_summary", None)
+        answer_usage: Dict[str, Any] = {}
+        if callable(usage_summary_fn):
+            raw_usage = usage_summary_fn()
+            if isinstance(raw_usage, dict):
+                answer_usage = raw_usage
+        usage_callback(answer_usage)
 
     def ask_json(prompt: str) -> Any:
-        return client.ask(prompt, response_type="json")
+        result = client.ask(prompt, response_type="json")
+        _emit_usage_update()
+        return result
 
     def ask_structured(prompt: str, text_format: Any) -> Any:
-        return client.ask_structured(prompt, text_format=text_format)
+        result = client.ask_structured(prompt, text_format=text_format)
+        _emit_usage_update()
+        return result
 
     def close() -> None:
+        nonlocal answer_llm_usage
+        usage_summary_fn = getattr(client, "usage_summary", None)
+        if callable(usage_summary_fn):
+            raw_usage = usage_summary_fn()
+            answer_llm_usage = raw_usage if isinstance(raw_usage, dict) else {}
+        _emit_usage_update()
         client.close()
 
-    def _get_retriever(bundle: Dict[str, Any]) -> PersistentChromaRetriever:
+    def _get_retriever(bundle: Dict[str, Any]) -> Any:
         cache_key = (str(bundle["chroma_dir"]), str(bundle["collection_name"]))
         if cache_key not in retriever_cache:
+            from generation.Amem.agentic_memory.retrievers import PersistentChromaRetriever
+
             retriever_cache[cache_key] = PersistentChromaRetriever(
                 directory=cache_key[0],
                 collection_name=cache_key[1],
@@ -166,11 +224,8 @@ def run_generation(
             )
         return retriever_cache[cache_key]
 
-    def retrieve_context(
-        cp: Dict[str, Any],
-        memory_pool: List[Dict[str, Any]],
-        target_keys: List[str],
-    ) -> Dict[str, Any]:
+    def prepare_checkpoint_state(cp: Dict[str, Any], memory_pool: List[Dict[str, Any]]) -> CheckpointHandle:
+        _refresh_snapshot_index()
         checkpoint_id = str(cp.get("checkpoint_id", "")).strip()
         as_of = cp.get("as_of")
         as_of = as_of if isinstance(as_of, dict) else {}
@@ -178,39 +233,68 @@ def run_generation(
             str(as_of.get("app_log_id")).strip() if as_of.get("app_log_id") is not None else ""
         )
         bundle = bundle_by_checkpoint_id.get(checkpoint_id) or bundle_by_app_log_id.get(checkpoint_app_log_id)
-        if bundle is None and bundles:
-            bundle = bundles[0]
-
         if bundle is None:
             raise FileNotFoundError(
-                "No pre-resolved snapshot bundle found while retrieving context. "
-                f"checkpoint_id={checkpoint_id}, app_log_id={as_of.get('app_log_id')}, "
-                f"manifest={manifest_path}."
+                "Amem checkpoint snapshot not found for "
+                f"checkpoint_id={checkpoint_id or '<unknown>'}, "
+                f"checkpoint_app_log_id={checkpoint_app_log_id or '<unknown>'}. "
+                "Run the Amem builder phase first."
             )
 
-        retrieval_query = _build_retrieval_query(cp, target_keys)
+        return CheckpointHandle(
+            checkpoint_id=checkpoint_id,
+            state_kind="snapshot_bundle",
+            state_ref=bundle,
+            metadata={
+                "retrieval_mode": "amem_snapshot_chroma",
+                "snapshot_id": bundle.get("snapshot_id"),
+                "snapshot_checkpoint_id": bundle.get("checkpoint_id"),
+                "snapshot_checkpoint_app_log_id": bundle.get("checkpoint_app_log_id"),
+                "checkpoint_timestamp": str((cp.get("as_of") or {}).get("timestamp", "")),
+                "checkpoint_app_log_id": checkpoint_app_log_id,
+                "memory_pool_size": len(memory_pool),
+            },
+        )
 
-        k = len(memory_pool) if retrieval_top_k <= 0 else min(retrieval_top_k, len(memory_pool))
+    def retrieve_context_for_query(
+        checkpoint_handle: CheckpointHandle,
+        query_spec,
+        retrieval_options: RetrievalOptions,
+        memory_pool: List[Dict[str, Any]],
+    ) -> RetrievalResult:
+        bundle = checkpoint_handle.state_ref if isinstance(checkpoint_handle.state_ref, dict) else {}
+        retrieval_query = str(query_spec.retrieval_query_text or "").strip()
+        if not retrieval_query:
+            raise ValueError("Amem requires shared QuerySpec.retrieval_query_text.")
+        top_k_for_call = retrieval_top_k
+        top_k_override = retrieval_options.common.get("top_k")
+        if isinstance(top_k_override, int):
+            try:
+                top_k_for_call = int(top_k_override)
+            except Exception:
+                top_k_for_call = retrieval_top_k
+        k = len(memory_pool) if top_k_for_call <= 0 else min(top_k_for_call, len(memory_pool))
         if k <= 0:
-            return {
-                "context_logs": [],
-                "context_note": "Retrieved app logs from snapshot Chroma (top-0)",
-                "retrieval_query": retrieval_query,
-                "metadata": {
+            return RetrievalResult(
+                mode="inline_memory",
+                inline_memory_blocks=[],
+                debug_metadata={
                     "retrieval_mode": "amem_snapshot_chroma",
                     "snapshot_id": bundle.get("snapshot_id"),
                     "snapshot_checkpoint_id": bundle.get("checkpoint_id"),
                     "snapshot_checkpoint_app_log_id": bundle.get("checkpoint_app_log_id"),
-                    "retrieval_top_k": retrieval_top_k,
+                    "retrieval_top_k": top_k_for_call,
                     "num_retrieved_logs": 0,
                     "retrieved_app_log_ids": [],
                     "embedding_backend": embedding_backend,
                     "embedding_model_name": embedding_model_name,
+                    "retrieval_query": retrieval_query,
                 },
-            }
+            )
 
         retriever = _get_retriever(bundle)
         results = retriever.search(retrieval_query, k=k)
+        _emit_usage_update()
 
         memory_pool_by_id: Dict[str, Dict[str, Any]] = {}
         for i, log in enumerate(memory_pool):
@@ -241,24 +325,24 @@ def run_generation(
             selected_ids.append(app_log_id)
             selected_logs.append(log)
 
-        return {
-            "context_logs": selected_logs,
-            "context_note": f"Retrieved app logs from snapshot Chroma (top-{k})",
-            "retrieval_query": retrieval_query,
-            "metadata": {
+        return RetrievalResult(
+            mode="inline_memory",
+            inline_memory_blocks=[to_log_text(log) for log in selected_logs],
+            debug_metadata={
                 "retrieval_mode": "amem_snapshot_chroma",
                 "snapshot_id": bundle.get("snapshot_id"),
                 "snapshot_checkpoint_id": bundle.get("checkpoint_id"),
                 "snapshot_checkpoint_app_log_id": bundle.get("checkpoint_app_log_id"),
-                "retrieval_top_k": retrieval_top_k,
+                "retrieval_top_k": top_k_for_call,
                 "num_retrieved_logs": len(selected_logs),
                 "retrieved_app_log_ids": selected_ids,
                 "embedding_backend": embedding_backend,
                 "embedding_model_name": embedding_model_name,
+                "retrieval_query": retrieval_query,
             },
-        }
+        )
 
-    return run_pipeline(
+    result = run_pipeline(
         benchmark_path=benchmark_path,
         app_logs_path=app_logs_path,
         output_path=output_path,
@@ -267,27 +351,40 @@ def run_generation(
         ask_structured=ask_structured,
         use_structured_response=client.supports_structured_response(),
         close=close,
-        retrieve_context=retrieve_context,
-        baseline_name="amem_baseline",
+        prepare_checkpoint_state=prepare_checkpoint_state,
+        retrieve_context_for_query=retrieve_context_for_query,
+        baseline_name="amem",
+        memory_prompt_mode="inline_memory",
         resume=resume,
         max_checkpoints=max_checkpoints,
         debug=debug,
         debug_dir=debug_dir,
         save_prompt_and_raw=save_prompt_and_raw,
+        enable_change_reasoning=enable_change_reasoning,
         enable_rq3_apply_service_qa=enable_rq3_apply_service_qa,
-        rq3_apply_fail_on_missing_pack=rq3_apply_fail_on_missing_pack,
         rq3_apply_save_prompt_and_raw=rq3_apply_save_prompt_and_raw,
-        rq3_apply_items_per_key=rq3_apply_items_per_key,
         rq3_apply_retrieval_top_k=rq3_apply_retrieval_top_k,
+        retrieval_options_backend={
+            "embedding_backend": embedding_backend,
+            "embedding_model_name": embedding_model_name,
+        },
         checkpoint_workers=checkpoint_workers,
         within_checkpoint_workers=within_checkpoint_workers,
         save_every_generation_keys=save_every_generation_keys,
+        enable_final_qa=enable_final_qa,
+        final_qa_path=final_qa_path,
+        final_qa_output_path=final_qa_output_path,
+        final_qa_retrieval_top_k=final_qa_retrieval_top_k,
+        final_qa_save_prompt_and_raw=final_qa_save_prompt_and_raw,
     )
+    if isinstance(result, dict):
+        result["answer_llm_usage"] = dict(answer_llm_usage)
+    return result
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description="Snapshot-backed Amem baseline generation for TCE."
+        description="Amem baseline generation for TCE."
     )
     parser.add_argument("--benchmark", type=Path, required=True, help="Path to tce_benchmark.json")
     parser.add_argument(
@@ -320,7 +417,7 @@ def main() -> None:
         "--snapshot-root",
         type=str,
         default=None,
-        help="Exact path to the snapshot root directory (contains manifest.json).",
+        help="Exact path to the snapshot root directory.",
     )
     parser.add_argument(
         "--retrieval-top-k",
@@ -346,7 +443,7 @@ def main() -> None:
     parser.add_argument(
         "--embedding-model-name",
         type=str,
-        default="openrouter/openai/text-embedding-3-large",
+        default="text-embedding-3-large",
         help="Embedding model name used for snapshot retrieval.",
     )
     parser.add_argument("--embedding-api-key", type=str, default=None, help="Embedding API key")

@@ -10,8 +10,8 @@ from openai import OpenAI
 from dotenv import load_dotenv
 
 from generation.rag.client import LLMClient
-from tce_core.pipeline import run_pipeline
-from tce_core.retrieval_query import build_retrieval_query
+from tce_core.orchestrator_protocol import CheckpointHandle, RetrievalOptions, RetrievalResult
+from tce_core.pipeline import run_pipeline, to_log_text
 
 load_dotenv()
 
@@ -20,12 +20,16 @@ def _build_openai_client(provider: str) -> OpenAI:
     if provider not in {"openai", "azure"}:
         raise ValueError(f"Unsupported retriever provider for embeddings: {provider}")
 
-    api_key = os.getenv("OPENAI_API_KEY") or os.getenv("AZURE_OPENAI_API_KEY")
-    base_url = os.getenv("OPENAI_BASE_URL") or os.getenv("AZURE_OPENAI_BASE_URL")
+    if provider == "azure":
+        api_key = os.getenv("AZURE_OPENAI_API_KEY")
+        base_url = os.getenv("AZURE_OPENAI_BASE_URL")
+    else:
+        api_key = os.getenv("OPENAI_API_KEY")
+        base_url = os.getenv("OPENAI_BASE_URL")
     client_kwargs: Dict[str, Any] = {"api_key": api_key}
     if base_url:
         client_kwargs["base_url"] = base_url
-        if os.getenv("AZURE_OPENAI_API_KEY") or "azure" in base_url:
+        if provider == "azure":
             client_kwargs["default_headers"] = {"api-key": api_key}
     return OpenAI(**client_kwargs)
 
@@ -39,14 +43,7 @@ def _normalize_rows(x: np.ndarray) -> np.ndarray:
 
 
 def _log_search_text(log: Dict[str, Any]) -> str:
-    return " ".join(
-        [
-            str(log.get("app_name", "")),
-            str(log.get("api_name", "")),
-            json.dumps(log.get("request", {}), ensure_ascii=False),
-            json.dumps(log.get("response", {}), ensure_ascii=False),
-        ]
-    )
+    return to_log_text(log)
 
 
 def _embed_texts(
@@ -84,24 +81,33 @@ def run_generation(
     debug: bool,
     debug_dir: Optional[Path],
     save_prompt_and_raw: bool,
+    answer_temperature: Optional[float] = 0.0,
+    answer_top_p: Optional[float] = 1.0,
+    answer_top_k: Optional[int] = None,
     predict_per_key: bool = True,
     exposure_anchors: Optional[List[int]] = None,
     calendar_anchor_freq: Optional[str] = None,
     exposure_tokenizer_model: str = "gpt-4o-mini",
     enable_change_reasoning: bool = False,
     enable_rq3_apply_service_qa: bool = False,
-    rq3_apply_fail_on_missing_pack: bool = False,
     rq3_apply_save_prompt_and_raw: bool = True,
-    rq3_apply_items_per_key: int = 1,
     rq3_apply_retrieval_top_k: Optional[int] = None,
     checkpoint_workers: int = 1,
     within_checkpoint_workers: int = 1,
     save_every_generation_keys: int = 1,
+    enable_final_qa: bool = False,
+    final_qa_path: Optional[str] = None,
+    final_qa_output_path: Optional[str] = None,
+    final_qa_retrieval_top_k: Optional[int] = None,
+    final_qa_save_prompt_and_raw: bool = False,
 ) -> Dict[str, Any]:
     client = LLMClient(
         provider=llm_provider,
         model_name=llm_model,
         max_workers=llm_max_workers,
+        temperature=answer_temperature,
+        top_p=answer_top_p,
+        top_k=answer_top_k,
     )
 
     embed_client = _build_openai_client(retriever_provider)
@@ -137,34 +143,49 @@ def run_generation(
     def close() -> None:
         client.close()
 
-    def retrieve_context(
-        cp: Dict[str, Any],
+    def prepare_checkpoint_state(cp: Dict[str, Any], memory_pool: List[Dict[str, Any]]) -> CheckpointHandle:
+        return CheckpointHandle(
+            checkpoint_id=str(cp.get("checkpoint_id") or ""),
+            state_kind="prefix_logs",
+            state_ref=cp,
+            metadata={
+                "checkpoint_timestamp": str((cp.get("as_of") or {}).get("timestamp", "")),
+                "checkpoint_app_log_id": str((cp.get("as_of") or {}).get("app_log_id") or ""),
+                "memory_pool_size": len(memory_pool),
+            },
+        )
+
+    def retrieve_context_for_query(
+        checkpoint_handle: CheckpointHandle,
+        query_spec,
+        retrieval_options: RetrievalOptions,
         memory_pool: List[Dict[str, Any]],
-        target_keys: List[str],
-        task_text: Optional[str] = None,
-        retrieval_top_k_override: Optional[int] = None,
-    ) -> Dict[str, Any]:
-        query_text = task_text or build_retrieval_query(cp, target_keys)
+    ) -> RetrievalResult:
+        query_text = str(query_spec.retrieval_query_text or "").strip()
+        if not query_text:
+            raise ValueError("RAG requires shared QuerySpec.retrieval_query_text.")
         top_k_for_call = retrieval_top_k
-        if retrieval_top_k_override is not None:
+        top_k_override = retrieval_options.common.get("top_k")
+        if isinstance(top_k_override, int):
             try:
-                top_k_for_call = int(retrieval_top_k_override)
+                top_k_for_call = int(top_k_override)
             except Exception:
                 top_k_for_call = retrieval_top_k
         if not memory_pool:
-            return {
-                "context_logs": [],
-                "context_note": "Retrieved app logs (top-0)",
-                "retrieval_query": query_text,
-                "metadata": {
+            return RetrievalResult(
+                mode="inline_memory",
+                inline_memory_blocks=[],
+                debug_metadata={
+                    "retrieval_mode": "rag_embedding",
                     "retrieval_top_k": top_k_for_call,
                     "num_retrieved_logs": 0,
                     "retriever_provider": retriever_provider,
                     "retriever_model": retriever_model,
                     "retrieved_app_log_ids": [],
                     "top20_similarity": [],
+                    "retrieval_query": query_text,
                 },
-            }
+            )
 
         indices = []
         for i, log in enumerate(memory_pool):
@@ -215,19 +236,20 @@ def run_generation(
             for rank, i in enumerate(top20_idx)
         ]
 
-        return {
-            "context_logs": retrieved,
-            "context_note": f"Retrieved app logs (top-{k} from memory pool)",
-            "retrieval_query": retrieval_query,
-            "metadata": {
+        return RetrievalResult(
+            mode="inline_memory",
+            inline_memory_blocks=[to_log_text(log) for log in retrieved],
+            debug_metadata={
+                "retrieval_mode": "rag_embedding",
                 "retrieval_top_k": top_k_for_call,
                 "num_retrieved_logs": len(retrieved),
                 "retriever_provider": retriever_provider,
                 "retriever_model": retriever_model,
                 "retrieved_app_log_ids": [x.get("app_log_id") for x in retrieved],
                 "top20_similarity": top20_similarity,
+                "retrieval_query": retrieval_query,
             },
-        }
+        )
 
     return run_pipeline(
         benchmark_path=benchmark_path,
@@ -238,8 +260,10 @@ def run_generation(
         ask_structured=ask_structured,
         use_structured_response=client.supports_structured_response(),
         close=close,
-        retrieve_context=retrieve_context,
+        prepare_checkpoint_state=prepare_checkpoint_state,
+        retrieve_context_for_query=retrieve_context_for_query,
         baseline_name="rag",
+        memory_prompt_mode="inline_memory",
         resume=resume,
         max_checkpoints=max_checkpoints,
         debug=debug,
@@ -251,13 +275,21 @@ def run_generation(
         exposure_tokenizer_model=exposure_tokenizer_model,
         enable_change_reasoning=enable_change_reasoning,
         enable_rq3_apply_service_qa=enable_rq3_apply_service_qa,
-        rq3_apply_fail_on_missing_pack=rq3_apply_fail_on_missing_pack,
         rq3_apply_save_prompt_and_raw=rq3_apply_save_prompt_and_raw,
-        rq3_apply_items_per_key=rq3_apply_items_per_key,
         rq3_apply_retrieval_top_k=rq3_apply_retrieval_top_k,
+        retrieval_options_backend={
+            "retriever_provider": retriever_provider,
+            "retriever_model": retriever_model,
+            "retriever_batch_size": retriever_batch_size,
+        },
         checkpoint_workers=checkpoint_workers,
         within_checkpoint_workers=within_checkpoint_workers,
         save_every_generation_keys=save_every_generation_keys,
+        enable_final_qa=enable_final_qa,
+        final_qa_path=final_qa_path,
+        final_qa_output_path=final_qa_output_path,
+        final_qa_retrieval_top_k=final_qa_retrieval_top_k,
+        final_qa_save_prompt_and_raw=final_qa_save_prompt_and_raw,
     )
 
 
@@ -364,7 +396,6 @@ def main() -> None:
         help="Disable saving rq3 apply prompt/raw metadata.",
     )
     parser.set_defaults(rq3_apply_save_prompt_and_raw=True)
-    parser.add_argument("--rq3-apply-items-per-key", type=int, default=1)
     parser.add_argument("--rq3-apply-retrieval-top-k", type=int, default=None)
     args = parser.parse_args()
     exposure_anchors = [
@@ -396,9 +427,7 @@ def main() -> None:
         exposure_tokenizer_model=args.exposure_tokenizer_model,
         enable_change_reasoning=args.enable_change_reasoning,
         enable_rq3_apply_service_qa=args.enable_rq3_apply_service_qa,
-        rq3_apply_fail_on_missing_pack=args.rq3_apply_fail_on_missing_pack,
         rq3_apply_save_prompt_and_raw=args.rq3_apply_save_prompt_and_raw,
-        rq3_apply_items_per_key=args.rq3_apply_items_per_key,
         rq3_apply_retrieval_top_k=args.rq3_apply_retrieval_top_k,
     )
 

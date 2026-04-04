@@ -24,18 +24,10 @@ from hipporag.utils.config_utils import BaseConfig
 
 from generation.rag.client import LLMClient
 from generation.common.provider_config import setup_provider_env
-from tce_core.pipeline import run_pipeline, observed_logs_for_checkpoint
+from tce_core.orchestrator_protocol import CheckpointHandle, RetrievalOptions, RetrievalResult
+from tce_core.pipeline import observed_logs_for_checkpoint, run_pipeline, to_log_text
 
 REPO_ROOT_DIR = Path(os.path.abspath(os.path.join(root_dir, "..", "..")))
-
-def _build_retrieval_query(checkpoint: Dict[str, Any], target_keys: List[str]) -> str:
-    as_of = checkpoint.get("as_of", {})
-    ts = as_of.get("timestamp", "")
-    keys_hint = ", ".join(target_keys[:20])
-    return (
-        f"Predict values for provided state keys at checkpoint time {ts}. "
-        f"Target keys include: {keys_hint}"
-    )
 
 class OnlineDSPRunner:
     def __init__(self, hipporag: HippoRAG, all_logs: List[Dict[str, Any]], batch_size: int):
@@ -44,12 +36,30 @@ class OnlineDSPRunner:
         self.batch_size = batch_size
         self.last_indexed_idx = -1
 
-    def retrieve_context(
+    def prepare_checkpoint_state(
         self,
         cp: Dict[str, Any],
         memory_pool: List[Dict[str, Any]],
-        target_keys: List[str],
-    ) -> Dict[str, Any]:
+    ) -> CheckpointHandle:
+        return CheckpointHandle(
+            checkpoint_id=str(cp.get("checkpoint_id") or ""),
+            state_kind="graph_index",
+            state_ref=cp,
+            metadata={
+                "checkpoint_timestamp": str((cp.get("as_of") or {}).get("timestamp", "")),
+                "checkpoint_app_log_id": str((cp.get("as_of") or {}).get("app_log_id") or ""),
+                "memory_pool_size": len(memory_pool),
+            },
+        )
+
+    def retrieve_context_for_query(
+        self,
+        checkpoint_handle: CheckpointHandle,
+        query_spec,
+        retrieval_options: RetrievalOptions,
+        memory_pool: List[Dict[str, Any]],
+    ) -> RetrievalResult:
+        cp = checkpoint_handle.state_ref if isinstance(checkpoint_handle.state_ref, dict) else {}
         checkpoint_id = cp.get("checkpoint_id", "unknown")
         
         # 1. Identify cutoff
@@ -77,18 +87,24 @@ class OnlineDSPRunner:
             print(f"[ONLINE] Indexing complete. Total indexed: {self.last_indexed_idx + 1}")
         
         # 3. Retrieve
-        query = _build_retrieval_query(cp, target_keys)
+        query = str(query_spec.retrieval_query_text or "").strip()
+        if not query:
+            raise ValueError("HippoRAG2 requires shared QuerySpec.retrieval_query_text.")
         retrieval_start = time.time()
         solutions = self.hipporag.retrieve(queries=[query])
         retrieval_duration = time.time() - retrieval_start
         print(f"[ONLINE] HippoRAG retrieval took {retrieval_duration:.2f}s")
-        
+
         if not solutions:
-            return {
-                "context_logs": [],
-                "retrieval_query": query,
-                "metadata": {"retrieval_mode": "online_hipporag", "retrieval_duration_s": retrieval_duration},
-            }
+            return RetrievalResult(
+                mode="inline_memory",
+                inline_memory_blocks=[],
+                debug_metadata={
+                    "retrieval_mode": "online_hipporag",
+                    "retrieval_duration_s": retrieval_duration,
+                    "retrieval_query": query,
+                },
+            )
             
         sol = solutions[0]
         retrieved_logs = []
@@ -99,16 +115,22 @@ class OnlineDSPRunner:
                 except:
                     pass
         
-        return {
-            "context_logs": retrieved_logs,
-            "context_note": f"Online HippoRAG retrieved (top-5)",
-            "retrieval_query": query,
-            "metadata": {
+        top_k_for_call = retrieval_options.common.get("top_k")
+        if isinstance(top_k_for_call, int) and top_k_for_call >= 0:
+            retrieved_logs = retrieved_logs[:top_k_for_call] if top_k_for_call > 0 else list(retrieved_logs)
+
+        return RetrievalResult(
+            mode="inline_memory",
+            inline_memory_blocks=[to_log_text(log) for log in retrieved_logs],
+            debug_metadata={
+                "retrieval_mode": "online_hipporag",
                 "retrieval_duration_s": retrieval_duration,
                 "cutoff_idx": cutoff_idx,
-                "last_indexed_idx": self.last_indexed_idx
+                "last_indexed_idx": self.last_indexed_idx,
+                "retrieval_query": query,
+                "retrieved_app_log_ids": [log.get("app_log_id") for log in retrieved_logs],
             },
-        }
+        )
 
 def run_online_generation(
     benchmark_path: Path,
@@ -186,13 +208,16 @@ def run_online_generation(
         ask_structured=lambda p, fmt: client.ask_structured(p, text_format=fmt),
         use_structured_response=client.supports_structured_response(),
         close=lambda: None,
-        retrieve_context=runner.retrieve_context,
+        prepare_checkpoint_state=runner.prepare_checkpoint_state,
+        retrieve_context_for_query=runner.retrieve_context_for_query,
         baseline_name="hipporag_online",
+        memory_prompt_mode="inline_memory",
         resume=resume,
         max_checkpoints=max_checkpoints,
         debug=debug,
         debug_dir=debug_dir,
         save_prompt_and_raw=save_prompt_and_raw,
+        retrieval_options_backend={"embedding_model": embedding_model, "batch_size": batch_size},
     )
 
 def main():

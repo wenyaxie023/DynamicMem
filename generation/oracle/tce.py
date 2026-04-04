@@ -7,7 +7,8 @@ from typing import Any, Dict, List, Optional
 from dotenv import load_dotenv
 
 from generation.oracle.client import LLMClient
-from tce_core.pipeline import run_pipeline
+from tce_core.orchestrator_protocol import CheckpointHandle, RetrievalOptions, RetrievalResult
+from tce_core.pipeline import run_pipeline, to_log_text
 
 load_dotenv()
 
@@ -53,11 +54,12 @@ def run_generation(
     debug: bool,
     debug_dir: Optional[Path],
     save_prompt_and_raw: bool,
+    answer_temperature: Optional[float] = 0.0,
+    answer_top_p: Optional[float] = 1.0,
+    answer_top_k: Optional[int] = None,
     enable_change_reasoning: bool = False,
     enable_rq3_apply_service_qa: bool = False,
-    rq3_apply_fail_on_missing_pack: bool = False,
     rq3_apply_save_prompt_and_raw: bool = True,
-    rq3_apply_items_per_key: int = 1,
     rq3_apply_retrieval_top_k: Optional[int] = None,
     checkpoint_workers: int = 1,
     within_checkpoint_workers: int = 1,
@@ -67,6 +69,9 @@ def run_generation(
         provider=llm_provider,
         model_name=llm_model,
         max_workers=llm_max_workers,
+        temperature=answer_temperature,
+        top_p=answer_top_p,
+        top_k=answer_top_k,
     )
 
     all_logs_payload = json.loads(app_logs_path.read_text(encoding="utf-8"))
@@ -87,15 +92,30 @@ def run_generation(
     def close() -> None:
         client.close()
 
-    def retrieve_context(
-        cp: Dict[str, Any],
+    def prepare_checkpoint_state(cp: Dict[str, Any], memory_pool: List[Dict[str, Any]]) -> CheckpointHandle:
+        return CheckpointHandle(
+            checkpoint_id=str(cp.get("checkpoint_id") or ""),
+            state_kind="oracle_observability",
+            state_ref=cp,
+            metadata={
+                "checkpoint_timestamp": str((cp.get("as_of") or {}).get("timestamp", "")),
+                "checkpoint_app_log_id": str((cp.get("as_of") or {}).get("app_log_id") or ""),
+                "memory_pool_size": len(memory_pool),
+            },
+        )
+
+    def retrieve_context_for_query(
+        checkpoint_handle: CheckpointHandle,
+        query_spec,
+        retrieval_options: RetrievalOptions,
         memory_pool: List[Dict[str, Any]],
-        target_keys: List[str],
-    ) -> Dict[str, Any]:
+    ) -> RetrievalResult:
+        del retrieval_options
+        cp = checkpoint_handle.state_ref if isinstance(checkpoint_handle.state_ref, dict) else {}
         obs_flat = _flatten_observability(cp.get("state_observability") or {})
 
         target_ids: List[str] = []
-        for key in target_keys:
+        for key in query_spec.target_keys:
             obs = obs_flat.get(key)
             if not isinstance(obs, dict):
                 continue
@@ -126,15 +146,16 @@ def run_generation(
             if log is not None:
                 selected.append(log)
 
-        return {
-            "context_logs": selected,
-            "context_note": f"Oracle evidence logs for target keys ({len(selected)} logs)",
-            "metadata": {
+        return RetrievalResult(
+            mode="inline_memory",
+            inline_memory_blocks=[to_log_text(log) for log in selected],
+            debug_metadata={
                 "num_retrieved_logs": len(selected),
                 "retrieved_app_log_ids": [x.get("app_log_id") for x in selected],
                 "retrieval_mode": "oracle_evidence_from_state_observability",
+                "retrieval_query": query_spec.retrieval_query_text,
             },
-        }
+        )
 
     return run_pipeline(
         benchmark_path=benchmark_path,
@@ -145,8 +166,10 @@ def run_generation(
         ask_structured=ask_structured,
         use_structured_response=client.supports_structured_response(),
         close=close,
-        retrieve_context=retrieve_context,
+        prepare_checkpoint_state=prepare_checkpoint_state,
+        retrieve_context_for_query=retrieve_context_for_query,
         baseline_name="oracle",
+        memory_prompt_mode="inline_memory",
         resume=resume,
         max_checkpoints=max_checkpoints,
         debug=debug,
@@ -154,13 +177,12 @@ def run_generation(
         save_prompt_and_raw=save_prompt_and_raw,
         enable_change_reasoning=enable_change_reasoning,
         enable_rq3_apply_service_qa=enable_rq3_apply_service_qa,
-        rq3_apply_fail_on_missing_pack=rq3_apply_fail_on_missing_pack,
         rq3_apply_save_prompt_and_raw=rq3_apply_save_prompt_and_raw,
-        rq3_apply_items_per_key=rq3_apply_items_per_key,
         rq3_apply_retrieval_top_k=rq3_apply_retrieval_top_k,
         checkpoint_workers=checkpoint_workers,
         within_checkpoint_workers=within_checkpoint_workers,
         save_every_generation_keys=save_every_generation_keys,
+        retrieval_options_backend={},
     )
 
 
