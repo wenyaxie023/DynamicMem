@@ -33,18 +33,46 @@ class _FakeLLMClient:
         return None
 
     def _extract_entries(self, prompt: str):
-        return list(self._LOG_RE.findall(prompt))
+        entries = list(self._LOG_RE.findall(prompt))
+        if entries:
+            return entries
+        normalized = prompt.replace('\\"', '"')
+        return list(self._LOG_RE.findall(normalized))
+
+    def _select_current_and_previous(self, prompt: str):
+        entries = self._extract_entries(prompt)
+        is_amem_native_context = "talk start time:" in prompt and "memory content:" in prompt
+        if is_amem_native_context:
+            current = entries[0] if entries else ("", None)
+            previous = entries[1] if len(entries) >= 2 else ("", None)
+        else:
+            current = entries[-1] if entries else ("", None)
+            previous = entries[-2] if len(entries) >= 2 else ("", None)
+        return entries, current, previous
 
     def ask(self, prompt: str, response_type: str = "json"):
-        entries = self._extract_entries(prompt)
-        last_log_id = entries[-1][0] if entries else ""
-        last_value = entries[-1][1] if entries else None
+        if "generate several keywords" in prompt.lower() and '"keywords"' in prompt.lower():
+            if "espresso" in prompt:
+                payload = {"keywords": "espresso, coffee"}
+            elif "latte" in prompt:
+                payload = {"keywords": "latte, coffee"}
+            else:
+                payload = {"keywords": "coffee, preference"}
+            if response_type == "text":
+                return payload["keywords"]
+            return payload
+        if response_type == "text":
+            return prompt
+        entries, current_entry, previous_entry = self._select_current_and_previous(prompt)
+        current_log_id = current_entry[0] if entries else ""
+        current_value = current_entry[1] if entries else None
+        previous_value = previous_entry[1] if len(entries) >= 2 else None
         if '"change_analysis"' in prompt:
-            before_value = entries[-2][1] if len(entries) >= 2 else None
-            after_value = last_value
+            before_value = previous_value
+            after_value = current_value
             evidence = []
-            if last_log_id and after_value is not None:
-                evidence = [{"app_log_id": last_log_id, "evidence_content": "favorite_coffee {}".format(after_value)}]
+            if current_log_id and after_value is not None:
+                evidence = [{"app_log_id": current_log_id, "evidence_content": "favorite_coffee {}".format(after_value)}]
             return {
                 "change_analysis": {
                     "profile_state:favorite_coffee": {
@@ -57,17 +85,17 @@ class _FakeLLMClient:
             }
         if '"answer"' in prompt and '"snapshot_state"' not in prompt:
             evidence = []
-            if last_log_id and last_value is not None:
-                evidence = [{"app_log_id": last_log_id, "evidence_content": "favorite_coffee {}".format(last_value)}]
+            if current_log_id and current_value is not None:
+                evidence = [{"app_log_id": current_log_id, "evidence_content": "favorite_coffee {}".format(current_value)}]
             return {
-                "answer": "Recommend {}".format(last_value) if last_value is not None else "",
+                "answer": "Recommend {}".format(current_value) if current_value is not None else "",
                 "evidence": evidence,
             }
         evidence = []
-        if last_log_id and last_value is not None:
-            evidence = [{"app_log_id": last_log_id, "evidence_content": "favorite_coffee {}".format(last_value)}]
+        if current_log_id and current_value is not None:
+            evidence = [{"app_log_id": current_log_id, "evidence_content": "favorite_coffee {}".format(current_value)}]
         return {
-            "snapshot_state": {"profile_state:favorite_coffee": last_value},
+            "snapshot_state": {"profile_state:favorite_coffee": current_value},
             "evidence": {"profile_state:favorite_coffee": evidence},
         }
 
@@ -140,12 +168,14 @@ class _FakeAmemRetriever:
         return None
 
     def search(self, query: str, k: int = 1):
+        del query
         docs_path = self.directory / "documents.json"
         if not docs_path.exists():
-            return {"documents": [[]]}
+            return []
         documents = json.loads(docs_path.read_text(encoding="utf-8"))
-        selected = list(documents)[-max(1, min(k, len(documents))):]
-        return {"documents": [selected]}
+        count = max(1, min(k, len(documents)))
+        start_index = len(documents) - count
+        return list(range(len(documents) - 1, start_index - 1, -1))
 
 
 class _FakeAmemLiveRetriever:
@@ -202,7 +232,14 @@ class _FakeAmemMemorySystem:
         self.retriever = _FakeAmemLiveRetriever(self)
 
     def add_note(self, content: str, time: str = None, **kwargs):
-        payload = json.loads(content)
+        del time, kwargs
+        try:
+            payload = json.loads(content)
+        except Exception:
+            lines = [line.strip() for line in str(content).splitlines() if line.strip()]
+            if not lines or not lines[0].startswith("User:"):
+                raise
+            payload = json.loads(lines[0].split("User:", 1)[1].strip())
         app_log_id = str(payload.get("app_log_id") or "")
         _FakeAmemMemorySystem.added_app_log_ids.append(app_log_id)
         if (
@@ -249,7 +286,6 @@ def _run_fake_amem_builder(
             checkpoint_dir=str(checkpoint_dir),
             save_every=5,
             snapshot_dir=str(snapshot_root),
-            resume_from_snapshot=False,
         )
     return summary, resolved_snapshot_root
 
@@ -276,6 +312,12 @@ class _FakeJsonStore:
             self.knowledge_base = payload.get("knowledge_base", [])
             self.assistant_knowledge = payload.get("assistant_knowledge", [])
 
+    def get_all(self):
+        return list(self.memory)
+
+    def get_raw_user_profile(self, user_id: str):
+        return (self.user_profiles.get(user_id) or {}).get("data", "None")
+
 
 class _FakeMemoryOSRetriever:
     def __init__(self, owner):
@@ -285,16 +327,87 @@ class _FakeMemoryOSRetriever:
         return {"retrieved_pages": list(self.owner.short_term_memory.memory)}
 
 
+class _FakeMemoryOSClient:
+    def __init__(self, owner):
+        self.owner = owner
+
+    def chat_completion(self, model, messages, temperature=0.7, max_tokens=2000):
+        del model, temperature, max_tokens
+        prompt = messages[-1]["content"]
+        payload = self.owner._response_payload(prompt)
+        return json.dumps(payload, ensure_ascii=False)
+
+
 class _FakeMemoryOS:
     def __init__(self, data_storage_root: Path, memory_user_id: str):
         root = Path(data_storage_root)
         root.mkdir(parents=True, exist_ok=True)
         self.user_id = memory_user_id
+        self.llm_model = "gpt-5-mini"
         self.short_term_memory = _FakeJsonStore(root / "short_term.json")
         self.mid_term_memory = _FakeJsonStore(root / "mid_term.json")
         self.user_long_term_memory = _FakeJsonStore(root / "long_term_user.json")
         self.assistant_long_term_memory = _FakeJsonStore(root / "long_term_assistant.json")
         self.retriever = _FakeMemoryOSRetriever(self)
+        self.client = _FakeMemoryOSClient(self)
+
+    def _favorite_coffee(self) -> str:
+        for item in reversed(self.short_term_memory.memory):
+            user_input = str(item.get("user_input", "")).strip()
+            if user_input.startswith("[APP_LOG] "):
+                user_input = user_input.split("[APP_LOG] ", 1)[1].strip()
+            try:
+                payload = json.loads(user_input)
+            except Exception:
+                continue
+            response = payload.get("response") if isinstance(payload, dict) else None
+            if isinstance(response, dict) and response.get("favorite_coffee"):
+                return str(response["favorite_coffee"])
+        return "latte"
+
+    def _last_app_log_id(self) -> str:
+        for item in reversed(self.short_term_memory.memory):
+            user_input = str(item.get("user_input", "")).strip()
+            if user_input.startswith("[APP_LOG] "):
+                user_input = user_input.split("[APP_LOG] ", 1)[1].strip()
+            try:
+                payload = json.loads(user_input)
+            except Exception:
+                continue
+            app_log_id = payload.get("app_log_id") if isinstance(payload, dict) else None
+            if app_log_id:
+                return str(app_log_id)
+        return "log_0001"
+
+    def _response_payload(self, prompt: str):
+        coffee = self._favorite_coffee()
+        app_log_id = self._last_app_log_id()
+        target_key = "profile_state:backup_coffee" if "profile_state:backup_coffee" in prompt else "profile_state:favorite_coffee"
+        if '"change_analysis"' in prompt:
+            return {"change_analysis": {}}
+        if '"snapshot_state"' in prompt:
+            return {
+                "snapshot_state": {target_key: coffee},
+                "evidence": {
+                    target_key: [
+                        {"app_log_id": app_log_id, "evidence_content": f"favorite_coffee {coffee}"}
+                    ]
+                },
+            }
+        return {
+            "answer": f"Recommend {coffee}",
+            "evidence": [{"app_log_id": app_log_id, "evidence_content": f"favorite_coffee {coffee}"}],
+        }
+
+    def add_memory(self, user_input: str, agent_response: str, timestamp: str = None, meta_data: dict = None):
+        del meta_data
+        self.short_term_memory.memory.append(
+            {
+                "user_input": user_input,
+                "agent_response": agent_response,
+                "timestamp": timestamp or "",
+            }
+        )
 
 
 class _FakeMem0Memory:
@@ -464,7 +577,7 @@ class SnapshotBaselineAcceptance(unittest.TestCase):
             app_logs_path.write_text(json.dumps(app_logs, ensure_ascii=False, indent=2), encoding="utf-8")
 
             fake_retrievers_module = types.ModuleType("generation.Amem.agentic_memory.retrievers")
-            fake_retrievers_module.PersistentChromaRetriever = _FakeAmemRetriever
+            fake_retrievers_module.SimpleEmbeddingRetriever = _FakeAmemRetriever
             _, resolved_snapshot_root = _run_fake_amem_builder(
                 benchmark_path=benchmark_path,
                 app_logs_path=app_logs_path,
@@ -510,13 +623,26 @@ class SnapshotBaselineAcceptance(unittest.TestCase):
                     save_every_generation_keys=1,
                 )
             manifest_exists = (resolved_snapshot_root / "manifest.json").exists()
+            manifest_payload = json.loads((resolved_snapshot_root / "manifest.json").read_text(encoding="utf-8"))
+            snapshot_entry = manifest_payload["snapshots"][0]
+            docs_path = resolved_snapshot_root / snapshot_entry["chroma_dir"] / "documents.json"
+            snapshot_documents = json.loads(docs_path.read_text(encoding="utf-8"))
 
         prediction = result["predictions"][0]
+        retrieval_record = prediction["metadata"]["per_key_retrieval"][0]
+        retrieval_meta = retrieval_record["retrieval_metadata"]
         self.assertEqual(prediction["snapshot_state"]["profile_state:favorite_coffee"], "latte")
         self.assertEqual(prediction["metadata"]["baseline"], "amem")
         self.assertEqual(prediction["metadata"]["requested_checkpoint_workers"], 1)
         self.assertEqual(prediction["metadata"]["effective_checkpoint_workers"], 1)
         self.assertTrue(manifest_exists)
+        self.assertEqual(retrieval_record["retrieval_query"], "Infer the user's current favorite coffee.")
+        self.assertEqual(retrieval_meta["retrieval_mode"], "amem_snapshot_native")
+        self.assertEqual(retrieval_meta["generated_keywords"], "coffee, preference")
+        self.assertEqual(retrieval_meta["retrieved_app_log_ids"], ["log_0001"])
+        self.assertIn('"app_log_id": "log_0001"', retrieval_meta["native_raw_context"])
+        self.assertTrue(snapshot_documents[0].startswith('{"app_log_id": "log_0001"'))
+        self.assertFalse(snapshot_documents[0].startswith("User:"))
         self.assertTrue(prediction["metadata"]["rq3_apply"]["enabled"])
         self.assertEqual(
             prediction["rq3_apply_answers"]["profile_state:favorite_coffee"]["items"][0]["answer"],
@@ -615,6 +741,10 @@ class SnapshotBaselineAcceptance(unittest.TestCase):
         self.assertEqual(prediction["metadata"]["baseline"], "memoryos")
         self.assertEqual(prediction["metadata"]["requested_checkpoint_workers"], 1)
         self.assertEqual(prediction["metadata"]["effective_checkpoint_workers"], 1)
+        self.assertEqual(
+            prediction["metadata"]["per_key_retrieval"][0]["retrieval_metadata"]["retrieval_mode"],
+            "memoryos_snapshot",
+        )
         self.assertTrue(prediction["metadata"]["rq3_apply"]["enabled"])
         self.assertEqual(
             prediction["rq3_apply_answers"]["profile_state:favorite_coffee"]["items"][0]["answer"],
@@ -639,7 +769,7 @@ class SnapshotBaselineAcceptance(unittest.TestCase):
             qa_path.write_text(json.dumps(qa_list, ensure_ascii=False, indent=2), encoding="utf-8")
 
             fake_retrievers_module = types.ModuleType("generation.Amem.agentic_memory.retrievers")
-            fake_retrievers_module.PersistentChromaRetriever = _FakeAmemRetriever
+            fake_retrievers_module.SimpleEmbeddingRetriever = _FakeAmemRetriever
             _, resolved_snapshot_root = _run_fake_amem_builder(
                 benchmark_path=benchmark_path,
                 app_logs_path=app_logs_path,
@@ -714,7 +844,7 @@ class SnapshotBaselineAcceptance(unittest.TestCase):
             app_logs_path.write_text(json.dumps(app_logs, ensure_ascii=False, indent=2), encoding="utf-8")
 
             fake_retrievers_module = types.ModuleType("generation.Amem.agentic_memory.retrievers")
-            fake_retrievers_module.PersistentChromaRetriever = _FakeAmemRetriever
+            fake_retrievers_module.SimpleEmbeddingRetriever = _FakeAmemRetriever
 
             with self.assertRaises(RuntimeError):
                 _run_fake_amem_builder(
@@ -1103,14 +1233,18 @@ class SnapshotBaselineAcceptance(unittest.TestCase):
         )
         self.assertEqual(len(manifest["checkpoints"]), 1)
         self.assertEqual(manifest["checkpoints"][0]["builder_collection_name"], "membench_mem0_user1")
+        self.assertEqual(
+            manifest["checkpoints"][0]["snapshot_collection_name"],
+            "membench_mem0_user1__snapshot__cp_0001",
+        )
         self.assertEqual(len(_FakeMem0Memory.store_by_collection["membench_mem0_user1"]), 1)
-        query_collections = {
+        snapshot_collections = {
             name: rows
             for name, rows in _FakeMem0Memory.store_by_collection.items()
-            if name.startswith("membench_mem0_user1__query__")
+            if name.startswith("membench_mem0_user1__snapshot__")
         }
-        self.assertTrue(query_collections)
-        self.assertTrue(all(len(rows) == 0 for rows in query_collections.values()))
+        self.assertTrue(snapshot_collections)
+        self.assertTrue(all(len(rows) > 0 for rows in snapshot_collections.values()))
 
     def test_mem0_stateful_checkpoint_semantics_and_non_polluting_queries(self):
         _FakeMem0Memory.store_by_collection = {}
@@ -1202,28 +1336,33 @@ class SnapshotBaselineAcceptance(unittest.TestCase):
                 )
 
         self.assertEqual(len(_FakeMem0Memory.store_by_collection["membench_mem0_user1_v14"]), len(values))
-        query_collections = {
+        snapshot_collections = {
             name: rows
             for name, rows in _FakeMem0Memory.store_by_collection.items()
-            if name.startswith("membench_mem0_user1_v14__query__")
+            if name.startswith("membench_mem0_user1_v14__snapshot__")
         }
-        self.assertTrue(query_collections)
-        self.assertTrue(all(len(rows) == 0 for rows in query_collections.values()))
+        self.assertEqual(len(snapshot_collections), 5)
+        self.assertEqual(sorted(len(rows) for rows in snapshot_collections.values()), [1, 2, 3, 4, 5])
         self.assertEqual(
             {int(event["before"]) for event in _FakeMem0Memory.search_events},
             {1, 2, 3, 4, 5},
         )
         self.assertTrue(
             all(
-                str(event["collection"]).startswith("membench_mem0_user1_v14__query__")
+                str(event["collection"]).startswith("membench_mem0_user1_v14__snapshot__")
                 for event in _FakeMem0Memory.search_events
             )
         )
 
         for idx, (entry, snapshot_payload) in enumerate(zip(manifest["checkpoints"], snapshot_payloads), start=1):
             self.assertEqual(entry["builder_collection_name"], "membench_mem0_user1_v14")
+            self.assertEqual(
+                entry["snapshot_collection_name"],
+                "membench_mem0_user1_v14__snapshot__cp_{:04d}".format(idx),
+            )
             self.assertEqual(snapshot_payload["snapshot_id"], entry["snapshot_id"])
             self.assertEqual(snapshot_payload["checkpoint_id"], entry["checkpoint_id"])
+            self.assertEqual(snapshot_payload["snapshot_collection_name"], entry["snapshot_collection_name"])
             self.assertEqual(snapshot_payload["last_event_idx"], idx - 1)
             self.assertEqual(len(snapshot_payload["app_logs"]), idx)
 

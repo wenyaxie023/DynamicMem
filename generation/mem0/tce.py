@@ -1,13 +1,15 @@
 #!/usr/bin/env python3
 import argparse
+import copy
 import importlib
 import json
 import os
 import re
-import uuid
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Set
+from urllib import error as urllib_error
+from urllib import request as urllib_request
 
 from generation.common.llm_client import LLMClient
 from tce_core.orchestrator_protocol import CheckpointHandle, RetrievalOptions, RetrievalResult
@@ -100,6 +102,66 @@ def _patch_mem0_openai_llm_for_gpt5() -> None:
 
     openai_llm_cls.generate_response = _generate_response
     openai_llm_cls._dynamicmem_gpt5_patch_applied = True
+
+
+def _patch_mem0_qdrant_client() -> None:
+    try:
+        qdrant_mod = importlib.import_module("mem0.vector_stores.qdrant")
+        qdrant_client_mod = importlib.import_module("qdrant_client")
+    except Exception:
+        return
+
+    qdrant_cls = getattr(qdrant_mod, "Qdrant", None)
+    qdrant_client_cls = getattr(qdrant_client_mod, "QdrantClient", None)
+    if qdrant_cls is None or qdrant_client_cls is None:
+        return
+    if getattr(qdrant_cls, "_dynamicmem_qdrant_patch_applied", False):
+        return
+
+    def _init(
+        self,
+        collection_name: str,
+        embedding_model_dims: int,
+        client: Any = None,
+        host: Optional[str] = None,
+        port: Optional[int] = None,
+        path: Optional[str] = None,
+        url: Optional[str] = None,
+        api_key: Optional[str] = None,
+        on_disk: bool = False,
+    ) -> None:
+        if client is not None:
+            self.client = client
+        else:
+            params: Dict[str, Any] = {}
+            if api_key:
+                params["api_key"] = api_key
+            if url:
+                params["url"] = url
+                params["check_compatibility"] = False
+                params["timeout"] = 60
+            if host and port:
+                params["host"] = host
+                params["port"] = int(port)
+                params["prefer_grpc"] = False
+                params["check_compatibility"] = False
+                params["timeout"] = 60
+            if not params:
+                params["path"] = path
+                if not on_disk and path and os.path.exists(path) and os.path.isdir(path):
+                    import shutil
+
+                    shutil.rmtree(path)
+
+            self.client = qdrant_client_cls(**params)
+
+        self.collection_name = collection_name
+        self.embedding_model_dims = embedding_model_dims
+        self.on_disk = on_disk
+        self.create_col(embedding_model_dims, on_disk)
+
+    qdrant_cls.__init__ = _init
+    qdrant_cls._dynamicmem_qdrant_patch_applied = True
 
 
 def _normalize_mem0_provider(provider: Optional[str]) -> str:
@@ -330,11 +392,20 @@ def _snapshot_path(root: Path, checkpoint_id: str) -> Path:
     return root / "snapshots" / "{}.json".format(_safe_name(checkpoint_id))
 
 
+def _checkpoint_collection_name(base_collection_name: str, checkpoint_id: str) -> str:
+    return "{}__snapshot__{}".format(_safe_name(base_collection_name), _safe_name(checkpoint_id))
+
+
 def _snapshot_exists_for_entry(root: Path, entry: Dict[str, Any]) -> bool:
     snapshot_path_raw = str(entry.get("snapshot_path", "")).strip()
     if not snapshot_path_raw:
         return False
     return (root / snapshot_path_raw).exists()
+
+
+def _snapshot_collection_ready(entry: Dict[str, Any]) -> bool:
+    name = str(entry.get("snapshot_collection_name", "")).strip()
+    return bool(name)
 
 
 def _latest_manifest_entry(root: Path) -> Optional[Dict[str, Any]]:
@@ -348,10 +419,6 @@ def _latest_manifest_entry(root: Path) -> Optional[Dict[str, Any]]:
             str(entry.get("checkpoint_id", "")).strip(),
         ),
     )
-
-
-def _collection_name_for_query(base_collection_name: str, checkpoint_id: str) -> str:
-    return "{}__query__{}".format(_safe_name(base_collection_name), _safe_name(checkpoint_id))
 
 
 def _checkpoint_cut_index(cp: Dict[str, Any], app_logs: List[Dict[str, Any]]) -> int:
@@ -382,6 +449,160 @@ def _add_app_log_to_memory(memory: Any, log: Dict[str, Any], user_id: str) -> No
         },
         user_id=user_id,
     )
+
+
+def _qdrant_request(
+    *,
+    host: str,
+    port: int,
+    method: str,
+    path: str,
+    payload: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    body = None
+    headers = {}
+    if payload is not None:
+        body = json.dumps(payload).encode("utf-8")
+        headers["Content-Type"] = "application/json"
+    req = urllib_request.Request(
+        "http://{}:{}{}".format(host, int(port), path),
+        data=body,
+        headers=headers,
+        method=method,
+    )
+    try:
+        with urllib_request.urlopen(req, timeout=60) as resp:
+            raw = resp.read().decode("utf-8")
+    except urllib_error.HTTPError as exc:
+        detail = exc.read().decode("utf-8", errors="replace")
+        raise RuntimeError("qdrant {} {} failed: {} {}".format(method, path, exc.code, detail))
+    except urllib_error.URLError as exc:
+        raise RuntimeError("qdrant {} {} failed: {}".format(method, path, exc))
+    return json.loads(raw) if raw.strip() else {}
+
+
+def _clone_qdrant_collection(
+    *,
+    host: str,
+    port: int,
+    source_collection_name: str,
+    target_collection_name: str,
+) -> None:
+    source_name = str(source_collection_name or "").strip()
+    target_name = str(target_collection_name or "").strip()
+    if not source_name or not target_name:
+        raise ValueError("qdrant collection clone requires source and target collection names")
+    if source_name == target_name:
+        return
+    Memory = _load_mem0_class()
+    store_by_collection = getattr(Memory, "store_by_collection", None)
+    if isinstance(store_by_collection, dict):
+        store_by_collection[target_name] = copy.deepcopy(list(store_by_collection.get(source_name, [])))
+        return
+
+    source_info = _qdrant_request(
+        host=host,
+        port=port,
+        method="GET",
+        path="/collections/{}".format(source_name),
+    )
+    source_result = source_info.get("result") if isinstance(source_info, dict) else {}
+    source_config = (source_result or {}).get("config") if isinstance(source_result, dict) else {}
+    source_params = (source_config or {}).get("params") if isinstance(source_config, dict) else {}
+
+    exists_payload = _qdrant_request(
+        host=host,
+        port=port,
+        method="GET",
+        path="/collections",
+    )
+    collections = ((exists_payload.get("result") or {}).get("collections") or []) if isinstance(exists_payload, dict) else []
+    if any(str(item.get("name", "")).strip() == target_name for item in collections if isinstance(item, dict)):
+        _qdrant_request(
+            host=host,
+            port=port,
+            method="DELETE",
+            path="/collections/{}".format(target_name),
+        )
+
+    create_payload = {
+        "vectors": source_params.get("vectors"),
+        "shard_number": source_params.get("shard_number"),
+        "replication_factor": source_params.get("replication_factor"),
+        "write_consistency_factor": source_params.get("write_consistency_factor"),
+        "on_disk_payload": source_params.get("on_disk_payload"),
+        "hnsw_config": (source_config or {}).get("hnsw_config"),
+        "optimizers_config": (source_config or {}).get("optimizer_config"),
+        "wal_config": (source_config or {}).get("wal_config"),
+        "quantization_config": (source_config or {}).get("quantization_config"),
+        "strict_mode_config": (source_config or {}).get("strict_mode_config"),
+        "init_from": {"collection": source_name},
+    }
+    sparse_vectors = source_params.get("sparse_vectors")
+    if sparse_vectors is not None:
+        create_payload["sparse_vectors"] = sparse_vectors
+    sharding_method = source_params.get("sharding_method")
+    if sharding_method is not None:
+        create_payload["sharding_method"] = sharding_method
+    create_payload = {k: v for k, v in create_payload.items() if v is not None}
+
+    _qdrant_request(
+        host=host,
+        port=port,
+        method="PUT",
+        path="/collections/{}".format(target_name),
+        payload=create_payload,
+    )
+
+
+def _materialize_checkpoint_collection_from_logs(
+    *,
+    collection_name: str,
+    logs: List[Dict[str, Any]],
+    user_id: str,
+    config_path: Optional[str],
+    qdrant_host: str,
+    qdrant_port: int,
+    retriever_provider: str,
+    embedder_api_key: Optional[str],
+    embedder_api_base: Optional[str],
+    embedder_azure_deployment: Optional[str],
+    embedder_azure_api_version: Optional[str],
+    llm_provider: str,
+    llm_api_key: Optional[str],
+    llm_api_base: Optional[str],
+    llm_azure_deployment: Optional[str],
+    llm_azure_api_version: Optional[str],
+    embedder_model: Optional[str],
+    llm_model: Optional[str],
+) -> None:
+    Memory = _load_mem0_class()
+    snapshot_memory = Memory.from_config(
+        load_mem0_config(
+            config_path=config_path,
+            collection_name=collection_name,
+            host=qdrant_host,
+            port=qdrant_port,
+            embedder_provider=retriever_provider,
+            embedder_api_key=embedder_api_key,
+            embedder_api_base=embedder_api_base,
+            embedder_azure_deployment=embedder_azure_deployment,
+            embedder_azure_api_version=embedder_azure_api_version,
+            llm_provider=llm_provider,
+            llm_api_key=llm_api_key,
+            llm_api_base=llm_api_base,
+            llm_azure_deployment=llm_azure_deployment,
+            llm_azure_api_version=llm_azure_api_version,
+            embedder_model=embedder_model,
+            llm_model=llm_model,
+        )
+    )
+    try:
+        snapshot_memory.delete_all_memories()
+    except Exception:
+        pass
+    for log in logs:
+        _add_app_log_to_memory(snapshot_memory, log, user_id)
 
 
 def _materialize_checkpoint_snapshots(
@@ -432,7 +653,12 @@ def _materialize_checkpoint_snapshots(
         for checkpoint_id in existing_entries_by_id
         if checkpoint_id
     }
-    if not reset_collections and required_checkpoint_ids and required_checkpoint_ids.issubset(existing_ids):
+    if (
+        not reset_collections
+        and required_checkpoint_ids
+        and required_checkpoint_ids.issubset(existing_ids)
+        and all(_snapshot_collection_ready(existing_entries_by_id[checkpoint_id]) for checkpoint_id in required_checkpoint_ids)
+    ):
         return root
 
     Memory = _load_mem0_class()
@@ -525,8 +751,46 @@ def _materialize_checkpoint_snapshots(
         as_of = as_of if isinstance(as_of, dict) else {}
         cut_index = _checkpoint_cut_index(cp, app_logs)
         existing_entry = existing_entries_by_id.get(checkpoint_id)
-        if existing_entry is not None and cut_index <= last_event_idx:
+        if (
+            existing_entry is not None
+            and cut_index <= last_event_idx
+            and _snapshot_collection_ready(existing_entry)
+        ):
             manifest_entries.append(existing_entry)
+            continue
+        checkpoint_collection_name = _checkpoint_collection_name(collection_name, checkpoint_id)
+        if existing_entry is not None and cut_index <= last_event_idx:
+            existing_payload = _load_snapshot_payload(root, existing_entry)
+            existing_logs = [
+                log
+                for log in (existing_payload.get("app_logs") or [])
+                if isinstance(log, dict)
+            ]
+            _materialize_checkpoint_collection_from_logs(
+                collection_name=checkpoint_collection_name,
+                logs=existing_logs,
+                user_id=user_id,
+                config_path=config_path,
+                qdrant_host=qdrant_host,
+                qdrant_port=qdrant_port,
+                retriever_provider=retriever_provider,
+                embedder_api_key=embedder_api_key,
+                embedder_api_base=embedder_api_base,
+                embedder_azure_deployment=embedder_azure_deployment,
+                embedder_azure_api_version=embedder_azure_api_version,
+                llm_provider=mem0_llm_provider,
+                llm_api_key=llm_api_key,
+                llm_api_base=llm_api_base,
+                llm_azure_deployment=llm_azure_deployment,
+                llm_azure_api_version=llm_azure_api_version,
+                embedder_model=embedder_model,
+                llm_model=answer_llm_model,
+            )
+            updated_entry = dict(existing_entry)
+            updated_entry["snapshot_collection_name"] = checkpoint_collection_name
+            updated_entry["updated_at"] = datetime.now().isoformat()
+            existing_entries_by_id[checkpoint_id] = updated_entry
+            manifest_entries.append(updated_entry)
             continue
 
         for idx in range(last_event_idx + 1, cut_index + 1):
@@ -542,6 +806,34 @@ def _materialize_checkpoint_snapshots(
             )
 
         snapshot_path = _snapshot_path(root, checkpoint_id)
+        try:
+            _clone_qdrant_collection(
+                host=qdrant_host,
+                port=qdrant_port,
+                source_collection_name=collection_name,
+                target_collection_name=checkpoint_collection_name,
+            )
+        except Exception:
+            _materialize_checkpoint_collection_from_logs(
+                collection_name=checkpoint_collection_name,
+                logs=app_logs[: cut_index + 1],
+                user_id=user_id,
+                config_path=config_path,
+                qdrant_host=qdrant_host,
+                qdrant_port=qdrant_port,
+                retriever_provider=retriever_provider,
+                embedder_api_key=embedder_api_key,
+                embedder_api_base=embedder_api_base,
+                embedder_azure_deployment=embedder_azure_deployment,
+                embedder_azure_api_version=embedder_azure_api_version,
+                llm_provider=mem0_llm_provider,
+                llm_api_key=llm_api_key,
+                llm_api_base=llm_api_base,
+                llm_azure_deployment=llm_azure_deployment,
+                llm_azure_api_version=llm_azure_api_version,
+                embedder_model=embedder_model,
+                llm_model=answer_llm_model,
+            )
         _atomic_write_json(
             snapshot_path,
             {
@@ -550,6 +842,7 @@ def _materialize_checkpoint_snapshots(
                 "checkpoint_app_log_id": str(as_of.get("app_log_id", "")).strip(),
                 "last_event_idx": cut_index,
                 "builder_collection_name": collection_name,
+                "snapshot_collection_name": checkpoint_collection_name,
                 "app_logs": app_logs[: cut_index + 1],
                 "updated_at": datetime.now().isoformat(),
             },
@@ -560,6 +853,7 @@ def _materialize_checkpoint_snapshots(
             "checkpoint_app_log_id": str(as_of.get("app_log_id", "")).strip(),
             "snapshot_path": str(snapshot_path.relative_to(root)),
             "builder_collection_name": collection_name,
+            "snapshot_collection_name": checkpoint_collection_name,
             "last_event_idx": cut_index,
             "updated_at": datetime.now().isoformat(),
         }
@@ -699,6 +993,7 @@ def run_generation(
     final_qa_save_prompt_and_raw: bool = False,
 ) -> Dict[str, Any]:
     _patch_mem0_openai_llm_for_gpt5()
+    _patch_mem0_qdrant_client()
     resolved_embedder_model = embedder_model or retriever_model
     resolved_mem0_llm_model = answer_llm_model or llm_model
 
@@ -751,55 +1046,23 @@ def run_generation(
         memory_pool: List[Dict[str, Any]],
     ) -> CheckpointHandle:
         entry = _resolve_manifest_entry(manifest_root, cp)
-        snapshot_payload = _load_snapshot_payload(manifest_root, entry)
-        temp_collection_name = "{}__{}".format(
-            _collection_name_for_query(collection_name, str(entry.get("checkpoint_id", ""))),
-            uuid.uuid4().hex[:8],
-        )
-        Memory = _load_mem0_class()
-        query_memory = Memory.from_config(
-            load_mem0_config(
-                config_path=config_path,
-                collection_name=temp_collection_name,
-                host=qdrant_host,
-                port=qdrant_port,
-                embedder_provider=retriever_provider,
-                embedder_api_key=embedder_api_key,
-                embedder_api_base=embedder_api_base,
-                embedder_azure_deployment=embedder_azure_deployment,
-                embedder_azure_api_version=embedder_azure_api_version,
-                llm_provider=llm_provider,
-                llm_api_key=llm_api_key,
-                llm_api_base=llm_api_base,
-                llm_azure_deployment=llm_azure_deployment,
-                llm_azure_api_version=llm_azure_api_version,
-                embedder_model=resolved_embedder_model,
-                llm_model=resolved_mem0_llm_model,
+        snapshot_collection_name = str(entry.get("snapshot_collection_name", "")).strip()
+        if not snapshot_collection_name:
+            raise FileNotFoundError(
+                "mem0 snapshot collection is missing for checkpoint {}".format(entry.get("checkpoint_id"))
             )
-        )
-        try:
-            query_memory.delete_all_memories()
-        except Exception:
-            pass
-        snapshot_logs = [
-            log
-            for log in (snapshot_payload.get("app_logs") or [])
-            if isinstance(log, dict)
-        ]
-        for log in snapshot_logs:
-            _add_app_log_to_memory(query_memory, log, user_id)
         return CheckpointHandle(
             checkpoint_id=str(entry.get("checkpoint_id", "") or cp.get("checkpoint_id") or ""),
             state_kind="mem0_snapshot",
             state_ref={
                 "manifest_root": str(manifest_root),
                 "entry": dict(entry),
-                "query_collection_name": temp_collection_name,
+                "snapshot_collection_name": snapshot_collection_name,
             },
             metadata={
                 "retrieval_mode": "mem0_checkpoint_snapshot",
                 "builder_collection_name": collection_name,
-                "query_collection_name": temp_collection_name,
+                "snapshot_collection_name": snapshot_collection_name,
                 "checkpoint_id": entry.get("checkpoint_id"),
                 "checkpoint_app_log_id": entry.get("checkpoint_app_log_id"),
                 "snapshot_id": entry.get("snapshot_id"),
@@ -837,7 +1100,7 @@ def run_generation(
                 debug_metadata={
                     "retrieval_mode": "mem0_checkpoint_snapshot",
                     "builder_collection_name": collection_name,
-                    "query_collection_name": state_ref.get("query_collection_name"),
+                    "snapshot_collection_name": state_ref.get("snapshot_collection_name"),
                     "checkpoint_id": entry.get("checkpoint_id"),
                     "checkpoint_app_log_id": entry.get("checkpoint_app_log_id"),
                     "snapshot_id": entry.get("snapshot_id"),
@@ -852,7 +1115,7 @@ def run_generation(
         query_memory = Memory.from_config(
             load_mem0_config(
                 config_path=config_path,
-                collection_name=str(state_ref.get("query_collection_name", "")),
+                collection_name=str(state_ref.get("snapshot_collection_name", "")),
                 host=qdrant_host,
                 port=qdrant_port,
                 embedder_provider=retriever_provider,
@@ -900,7 +1163,7 @@ def run_generation(
             debug_metadata={
                 "retrieval_mode": "mem0_checkpoint_snapshot",
                 "builder_collection_name": collection_name,
-                "query_collection_name": state_ref.get("query_collection_name"),
+                "snapshot_collection_name": state_ref.get("snapshot_collection_name"),
                 "checkpoint_id": entry.get("checkpoint_id"),
                 "checkpoint_app_log_id": entry.get("checkpoint_app_log_id"),
                 "snapshot_id": entry.get("snapshot_id"),
@@ -912,35 +1175,7 @@ def run_generation(
         )
 
     def finalize_checkpoint_state(checkpoint_handle: CheckpointHandle) -> None:
-        state_ref = checkpoint_handle.state_ref if isinstance(checkpoint_handle.state_ref, dict) else {}
-        query_collection_name = str(state_ref.get("query_collection_name", "")).strip()
-        if not query_collection_name:
-            return
-        Memory = _load_mem0_class()
-        query_memory = Memory.from_config(
-            load_mem0_config(
-                config_path=config_path,
-                collection_name=query_collection_name,
-                host=qdrant_host,
-                port=qdrant_port,
-                embedder_provider=retriever_provider,
-                embedder_api_key=embedder_api_key,
-                embedder_api_base=embedder_api_base,
-                embedder_azure_deployment=embedder_azure_deployment,
-                embedder_azure_api_version=embedder_azure_api_version,
-                llm_provider=llm_provider,
-                llm_api_key=llm_api_key,
-                llm_api_base=llm_api_base,
-                llm_azure_deployment=llm_azure_deployment,
-                llm_azure_api_version=llm_azure_api_version,
-                embedder_model=resolved_embedder_model,
-                llm_model=resolved_mem0_llm_model,
-            )
-        )
-        try:
-            query_memory.delete_all_memories()
-        except Exception:
-            return
+        return None
 
     return run_pipeline(
         benchmark_path=benchmark_path,

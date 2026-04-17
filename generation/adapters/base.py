@@ -29,6 +29,8 @@ SHARED_PIPELINE_SNAPSHOT_BASELINES = {
     "amem",
     "memoryos",
     "mem0",
+    "zep",
+    "simplemem",
 }
 
 AGENT_LOOP_BASELINES = {
@@ -46,6 +48,8 @@ BASELINE_CONCURRENCY_POLICIES: Dict[str, BaselineConcurrencyPolicy] = {
     "amem": BaselineConcurrencyPolicy("forbidden", "allowed"),
     "memoryos": BaselineConcurrencyPolicy("allowed", "allowed"),
     "mem0": BaselineConcurrencyPolicy("allowed", "allowed"),
+    "zep": BaselineConcurrencyPolicy("forbidden", "forbidden"),
+    "simplemem": BaselineConcurrencyPolicy("forbidden", "forbidden"),
     # Letta's agent-loop implementation mutates shared memory state while answering,
     # so both checkpoint-level and within-checkpoint parallelism are disabled.
     "letta": BaselineConcurrencyPolicy("forbidden", "forbidden"),

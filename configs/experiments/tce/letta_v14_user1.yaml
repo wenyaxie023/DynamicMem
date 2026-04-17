@@ -3,7 +3,7 @@ users:
 
 runtime:
   baseline: letta
-  experiment_name: letta_v14_user1_local_selfhost
+  experiment_name: letta_v14_user1_local_selfhost_ctx16k_h8k
   run_id: main
   resume: false
   debug: false
@@ -31,6 +31,9 @@ final_qa:
 
 baseline_params:
   embedding: azure/text-embedding-3-large
+  context_window_limit: 16000
+  human_block_limit_chars: 8000
+  client_timeout_seconds: 600
   letta_mode: sdk
   allow_local_fallback: false
   query_isolation_mode: checkpoint_snapshot

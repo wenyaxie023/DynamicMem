@@ -20,7 +20,7 @@ Current implementation uses **agent-loop ingestion**:
 - Dynamic state prediction:
   - `generation/letta/results/<user_id>/prediction/dynamic_state_prediction_results.json`
 - TCE:
-  - `generation/letta/results/<user_id>/prediction/tce_results.json`
+  - `generation/letta/results/<user_id>/prediction/<run_name>/tce_results_v14_taskabc.json`
   - v14 minimal Task A smoke:
     - `generation/letta/results/<user_id>/prediction/tce_results_v14_taska.json`
 - Agent artifacts:

@@ -1,5 +1,5 @@
 users:
-  - user_001
+  - 001_user_001
 
 runtime:
   baseline: zep
@@ -7,23 +7,29 @@ runtime:
   debug: true
   save_prompt_and_raw: true
   max_checkpoints: 1
-
-data:
-  benchmark: user_data/tce/tce_benchmark_vnext_20260319_formal_crv_task_packs_v14.json
-  app_logs_path: user_data/001_user_001/app_log_large.json
-
-output:
-  prediction_path: generation/zep/results/{user_id}/prediction/tce_results.json
-
-llm:
-  provider: openai
-  model: gpt-5-mini
-  max_workers: 1
-
-baseline_params:
-  embedding_model: text-embedding-3-large
-  batch_size: 10
-  max_coroutines: 10
   checkpoint_workers: 1
   within_checkpoint_workers: 1
   save_every_generation_keys: 1
+
+data:
+  benchmark: data_construction/generated_outputs/gemini_3_flash_preview/{user_id}/tce_benchmark_vnext_20260319_formal_crv_task_packs_v14.json
+  app_logs_path: data_construction/generated_outputs/gemini_3_flash_preview/{user_id}/app_log_large.json
+
+output:
+  prediction_path: generation/zep/results/{user_id}/prediction/tce_results_v14_taskabc.json
+
+llm:
+  provider: azure
+  model: gpt-5-mini
+  max_workers: 1
+
+retriever:
+  provider: azure
+  model: text-embedding-3-large
+  batch_size: 10
+
+retrieval:
+  top_k: 5
+
+baseline_params:
+  max_coroutines: 1

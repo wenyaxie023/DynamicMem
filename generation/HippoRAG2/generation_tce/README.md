@@ -1,34 +1,31 @@
-# TCE (TCE) using HippoRAG
+# HippoRAG2 TCE Runtime
 
-This directory contains the implementation for MemBench TCE using HippoRAG.
+This directory contains the protocol-aligned TCE runtime for `hipporag2`.
 
-> [!IMPORTANT]
-> **Version Note**: This is the **canonical location** for MemBench TCE code.
-> Always run TCE scripts from this directory (or via the wrapper `run_tce.sh`) to ensure compatibility with HippoRAG v2 indices.
+## Canonical Entry
 
-## Key Files
-- `tce.py`: Main driver script.
-- `run_tce.sh`: Runner script with default arguments.
-- `analyze_generation_tokens.py`: Token usage analysis for TCE generation.
-- `deep_log_investigation.py`: Deep dive log analysis.
-- `final_verify.py`: Final verification script.
+- Runtime: `generation/HippoRAG2/generation_tce/online_tce.py`
+- Compatibility wrapper: `generation/HippoRAG2/generation_tce/tce.py`
+- Adapter: `generation/adapters/hipporag2.py`
+- Preferred runner: `python -m generation.run_tce --config configs/experiments/tce/hipporag2.yaml`
 
-## How to Run
-```bash
-# Run from parent directory or using relative paths
-bash run_tce.sh --max-checkpoints 30
-```
+## Current Design
 
-## Tips for Complexity
-- **Checkpoints 1-5**: Simple (1-3 keys), fast retrieval.
-- **Checkpoints 6+**: Complex (8-15+ keys). Retrieval may take >10s (up to 5 mins for massive queries).
-- **LLM Timeout**: The logic includes a 60s timeout + retry to handle complex Schema generation.
+- `hipporag2` runs through shared `tce_core.run_pipeline(...)`.
+- A build phase first ingests raw app logs in chronological order and persists checkpoint snapshots plus builder progress under `baseline_params.save_dir`.
+- Test-time `prepare_checkpoint_state(...)` is load-only and opens the persisted HippoRAG snapshot for the requested checkpoint.
+- Retrieval is read-only and consumes shared `QuerySpec.retrieval_query_text` directly.
+- Task A / Task B / Task C all require a pack-first benchmark artifact.
 
-## Online/Global Prefetch Mode
-To run the optimized online mode with global prefetching:
-```bash
-# Recommended command for high throughput (adjust batch-size as needed)
-nohup sh generation_tce/run_online.sh --batch-size <LARGE_BATCH_SIZE> > outputs/online_test_u003/nohup_run.log 2>&1 &
-```
-- **Global Prefetch**: The script will now pre-compute OpenIE for ALL logs before starting the pipeline.
-- **Large Batch Size**: Ensures efficient utilization of TPM and reduces total runtime.
+## Config Notes
+
+- Shared embedding backend settings come from `retriever.provider`, `retriever.model`, `retriever.batch_size`.
+- Shared retrieval budget comes from `retrieval.top_k`, `retrieval.rq3_apply_top_k`, `retrieval.final_qa_top_k`.
+- Backend-specific storage root uses `baseline_params.save_dir`.
+- Periodic builder persistence cadence uses `baseline_params.builder_save_every_logs` and defaults to `5`.
+- `baseline_params.hipporag_dir` is still accepted as a compatibility alias, but new configs should use `save_dir`.
+
+## Benchmarks
+
+- Formal config currently targets the available pack-first user1 benchmark artifact.
+- Smoke config targets `generation/HippoRAG2/smoke3/{user_id}/tce_benchmark_3cp_task_packs_vnext_20260310.json`.

@@ -288,6 +288,108 @@ Rules:
         self.assertEqual(captured_create["model_settings"]["top_p"], 1.0)
         self.assertEqual(captured_create["model_settings"]["top_k"], 25)
 
+    def test_sdk_backend_uses_explicit_context_window_when_provided(self):
+        captured_create = {}
+
+        class _FakeAgents:
+            def create(self, **kwargs):
+                captured_create.update(kwargs)
+                return SimpleNamespace(id="agent-1")
+
+        class _FakeLetta:
+            def __init__(self, **kwargs):
+                self.agents = _FakeAgents()
+
+        fake_module = type(sys)("letta_client")
+        fake_module.Letta = _FakeLetta
+
+        with mock.patch.dict(sys.modules, {"letta_client": fake_module}):
+            LettaAgentLoop(
+                mode="sdk",
+                allow_local_fallback=False,
+                llm_model="azure/gpt-5-mini",
+                embedding="azure/text-embedding-3-large",
+                context_window_limit=16000,
+            )
+
+        self.assertEqual(captured_create["context_window_limit"], 16000)
+
+    def test_sdk_backend_uses_explicit_human_block_limit_when_provided(self):
+        captured_create = {}
+
+        class _FakeAgents:
+            def create(self, **kwargs):
+                captured_create.update(kwargs)
+                return SimpleNamespace(id="agent-1")
+
+        class _FakeLetta:
+            def __init__(self, **kwargs):
+                self.agents = _FakeAgents()
+
+        fake_module = type(sys)("letta_client")
+        fake_module.Letta = _FakeLetta
+
+        with mock.patch.dict(sys.modules, {"letta_client": fake_module}):
+            LettaAgentLoop(
+                mode="sdk",
+                allow_local_fallback=False,
+                llm_model="azure/gpt-5-mini",
+                embedding="azure/text-embedding-3-large",
+                human_block_limit_chars=8000,
+            )
+
+        human_block = next(x for x in captured_create["memory_blocks"] if x["label"] == "human")
+        self.assertEqual(human_block["limit"], 8000)
+
+    def test_sdk_backend_ignores_human_block_limit_env_without_explicit_config(self):
+        captured_create = {}
+
+        class _FakeAgents:
+            def create(self, **kwargs):
+                captured_create.update(kwargs)
+                return SimpleNamespace(id="agent-1")
+
+        class _FakeLetta:
+            def __init__(self, **kwargs):
+                self.agents = _FakeAgents()
+
+        fake_module = type(sys)("letta_client")
+        fake_module.Letta = _FakeLetta
+
+        with mock.patch.dict(sys.modules, {"letta_client": fake_module}):
+            with mock.patch.dict(os.environ, {"LETTA_HUMAN_BLOCK_LIMIT_CHARS": "8000"}, clear=False):
+                LettaAgentLoop(
+                    mode="sdk",
+                    allow_local_fallback=False,
+                    llm_model="azure/gpt-5-mini",
+                    embedding="azure/text-embedding-3-large",
+                )
+
+        human_block = next(x for x in captured_create["memory_blocks"] if x["label"] == "human")
+        self.assertEqual(human_block["limit"], 100000)
+
+    def test_sdk_backend_passes_explicit_client_timeout_when_provided(self):
+        captured = {}
+
+        class _FakeLetta:
+            def __init__(self, **kwargs):
+                captured.update(kwargs)
+                self.agents = SimpleNamespace(create=lambda **_kwargs: SimpleNamespace(id="agent-1"))
+
+        fake_module = type(sys)("letta_client")
+        fake_module.Letta = _FakeLetta
+
+        with mock.patch.dict(sys.modules, {"letta_client": fake_module}):
+            LettaAgentLoop(
+                mode="sdk",
+                allow_local_fallback=False,
+                llm_model="azure/gpt-5-mini",
+                embedding="azure/text-embedding-3-large",
+                client_timeout_seconds=600,
+            )
+
+        self.assertEqual(captured["timeout"], 600.0)
+
     def test_sdk_backend_records_usage_from_messages_create(self):
         class _FakeResponse:
             def __init__(self):
@@ -386,9 +488,9 @@ Rules:
         self.assertEqual(len(payload), 1)
         resolved = payload[0]
         self.assertEqual(resolved["runtime"]["baseline"], "letta")
-        self.assertEqual(resolved["runtime"]["experiment_name"], "letta_v14_user1_local_selfhost")
+        self.assertEqual(resolved["runtime"]["experiment_name"], "letta_v14_user1_local_selfhost_ctx16k_h8k")
         self.assertEqual(resolved["runtime"]["run_id"], "main")
-        self.assertEqual(resolved["runtime"]["run_name"], "letta_v14_user1_local_selfhost")
+        self.assertEqual(resolved["runtime"]["run_name"], "letta_v14_user1_local_selfhost_ctx16k_h8k")
         self.assertEqual(resolved["runtime"]["user_id"], "001_user_001")
         self.assertTrue(resolved["runtime"]["enable_change_reasoning"])
         self.assertTrue(resolved["runtime"]["enable_rq3_apply_service_qa"])
@@ -415,6 +517,9 @@ Rules:
         self.assertEqual(resolved["baseline_params"]["query_isolation_mode"], "checkpoint_snapshot")
         self.assertEqual(resolved["baseline_params"]["allow_local_fallback"], "False")
         self.assertEqual(resolved["baseline_params"]["embedding"], "azure/text-embedding-3-large")
+        self.assertEqual(resolved["baseline_params"]["context_window_limit"], "16000")
+        self.assertEqual(resolved["baseline_params"]["human_block_limit_chars"], "8000")
+        self.assertEqual(resolved["baseline_params"]["client_timeout_seconds"], "600")
         self.assertTrue(
             resolved["output"]["prediction_path"].endswith(
                 "/prediction/{}/tce_results_v14_taskabc.json".format(resolved["runtime"]["experiment_name"])

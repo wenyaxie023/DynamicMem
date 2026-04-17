@@ -521,6 +521,9 @@ def _load_or_init_builder_agent(
     lease_registry_path: Path,
     progress_path: Path,
     letta_embedding: Optional[str] = None,
+    context_window_limit: Optional[int] = None,
+    human_block_limit_chars: Optional[int] = None,
+    client_timeout_seconds: Optional[float] = None,
 ) -> Tuple[LettaAgentLoop, Dict[str, Any], Dict[str, Any], int]:
     checkpoint_targets = _load_checkpoint_targets(benchmark_path)
     checkpoint_id_to_idx = {checkpoint_id: idx for idx, checkpoint_id in checkpoint_targets}
@@ -542,6 +545,9 @@ def _load_or_init_builder_agent(
         llm_provider=llm_provider,
         llm_model=llm_model,
         embedding=letta_embedding,
+        context_window_limit=context_window_limit,
+        human_block_limit_chars=human_block_limit_chars,
+        client_timeout_seconds=client_timeout_seconds,
         answer_temperature=answer_temperature,
         answer_top_p=answer_top_p,
         answer_top_k=answer_top_k,
@@ -636,6 +642,9 @@ def run_generation(
     query_isolation_mode: str = "checkpoint_snapshot",
     checkpoint_agents_dir: Optional[Path] = None,
     letta_embedding: Optional[str] = None,
+    context_window_limit: Optional[int] = None,
+    human_block_limit_chars: Optional[int] = None,
+    client_timeout_seconds: Optional[float] = None,
     baseline_name: str = "letta",
 ) -> Dict[str, Any]:
     # Load the canonical app-log stream once; every checkpoint is a prefix of this sequence.
@@ -682,6 +691,9 @@ def run_generation(
             llm_provider=llm_provider,
             llm_model=llm_model,
             letta_embedding=letta_embedding,
+            context_window_limit=context_window_limit,
+            human_block_limit_chars=human_block_limit_chars,
+            client_timeout_seconds=client_timeout_seconds,
             answer_temperature=answer_temperature,
             answer_top_p=answer_top_p,
             answer_top_k=answer_top_k,

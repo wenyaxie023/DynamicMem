@@ -56,6 +56,7 @@ baseline_params:
             "rag",
             "hipporag2",
             "memoryos",
+            "simplemem",
             "letta",
             "amem",
             "nemori",
@@ -208,6 +209,21 @@ baseline_params:
             )
             payload = json.loads(proc.stdout)
             self.assertTrue(payload["runtime"]["resume"])
+
+    def test_zep_formal_config_dry_run_uses_shared_sections(self):
+        proc = subprocess.run(
+            ["python3", "-m", "generation.run_tce", "--config", "configs/experiments/tce/zep.yaml", "--dry-run"],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            universal_newlines=True,
+            check=True,
+        )
+        payload = json.loads(proc.stdout)
+        self.assertEqual(payload["runtime"]["baseline"], "zep")
+        self.assertEqual(payload["runtime"]["user_id"], "001_user_001")
+        self.assertEqual(payload["retriever"]["model"], "text-embedding-3-large")
+        self.assertEqual(payload["retrieval"]["top_k"], 5)
+        self.assertEqual(payload["baseline_params"]["max_coroutines"], "10")
 
     def test_runtime_user_id_rejects_legacy_baseline_params_user_id(self):
         with tempfile.TemporaryDirectory() as td:

@@ -165,6 +165,9 @@ class LettaAgentLoop:
         llm_provider: str = "openai",
         llm_model: Optional[str] = None,
         embedding: Optional[str] = None,
+        context_window_limit: Optional[int] = None,
+        human_block_limit_chars: Optional[int] = None,
+        client_timeout_seconds: Optional[float] = None,
         answer_temperature: Optional[float] = 0.0,
         answer_top_p: Optional[float] = 1.0,
         answer_top_k: Optional[int] = None,
@@ -180,6 +183,13 @@ class LettaAgentLoop:
         self._llm_provider = str(llm_provider or "openai")
         self._llm_model = str(llm_model or os.getenv("LETTA_MODEL", "openai/gpt-5-mini"))
         self._embedding = str(embedding or os.getenv("LETTA_EMBEDDING", "openai/text-embedding-3-large"))
+        self._context_window_limit = (
+            _normalize_optional_int(context_window_limit or os.getenv("LETTA_CONTEXT_WINDOW_LIMIT")) or 32000
+        )
+        self._human_block_limit_chars = _normalize_optional_int(human_block_limit_chars) or 100000
+        self._client_timeout_seconds = _normalize_optional_float(
+            client_timeout_seconds or os.getenv("LETTA_CLIENT_TIMEOUT_SECONDS")
+        )
         self._answer_temperature = _normalize_optional_float(answer_temperature)
         self._answer_top_p = _normalize_optional_float(answer_top_p)
         self._answer_top_k = _normalize_optional_int(answer_top_k)
@@ -216,6 +226,8 @@ class LettaAgentLoop:
             kwargs = {"api_key": api_key}
             if base_url:
                 kwargs["base_url"] = base_url
+            if self._client_timeout_seconds is not None:
+                kwargs["timeout"] = self._client_timeout_seconds
             self.client = Letta(**kwargs)
         except Exception:
             if not self._allow_local_fallback:
@@ -250,7 +262,7 @@ class LettaAgentLoop:
             agent_type="letta_v1_agent",
             model=self._llm_model,
             embedding=self._embedding,
-            context_window_limit=32000,
+            context_window_limit=self._context_window_limit,
             memory_blocks=[
                 {
                     "label": "persona",
@@ -261,6 +273,7 @@ class LettaAgentLoop:
                     "label": "human",
                     "value": self._human,
                     "description": "User context for the active task.",
+                    "limit": self._human_block_limit_chars,
                 },
             ],
             system="""You are a stateful agent processing long-term user logs. You should both accurately remember details and maintain an efficient, abstracted memory or state representation. Here are some guidelines to help you manage your memory and reasoning:
