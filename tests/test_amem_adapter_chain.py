@@ -74,7 +74,6 @@ class AmemAdapterChainTest(unittest.TestCase):
             self.assertEqual(builder_kwargs["benchmark_path"], "/tmp/bench.json")
             self.assertEqual(builder_kwargs["size"], "large")
             self.assertEqual(builder_kwargs["save_every"], 5)
-            self.assertFalse(builder_kwargs["resume_from_snapshot"])
             self.assertEqual(builder_kwargs["embedding_api_key"], "retriever-key")
             self.assertEqual(builder_kwargs["embedding_api_base_url"], "https://retriever.example")
             self.assertEqual(builder_kwargs["llm_controller_api_key"], "llm-key")

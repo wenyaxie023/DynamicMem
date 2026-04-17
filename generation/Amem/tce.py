@@ -1,8 +1,11 @@
 #!/usr/bin/env python3
 import argparse
 import json
+import pickle
+import re
 from datetime import datetime
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
 try:
@@ -12,7 +15,7 @@ except Exception:  # pragma: no cover - optional runtime dependency
         return False
 
 from tce_core.orchestrator_protocol import CheckpointHandle, RetrievalOptions, RetrievalResult
-from tce_core.pipeline import run_pipeline, to_log_text
+from tce_core.pipeline import run_pipeline
 from generation.Amem.amem import (
     _ensure_nltk,
     _load_manifest,
@@ -24,6 +27,106 @@ from generation.Amem.client import LLMClient
 load_dotenv(Path(__file__).resolve().parent / ".env")
 
 
+_KEYWORD_SPLIT_RE = re.compile(r"(?:\bcosmos\b|[\n,]+)", re.IGNORECASE)
+_APP_LOG_ID_RE = re.compile(r'"app_log_id"\s*:\s*"([^"]+)"')
+
+
+def _build_keyword_generation_prompt(question: str) -> str:
+    return (
+        "Given the following question, generate several keywords, using 'cosmos' as the separator.\n\n"
+        f"Question: {question}\n\n"
+        'Format your response as a JSON object with a "keywords" field containing the selected text.\n\n'
+        'Example response format:\n{"keywords": "keyword1 cosmos keyword2 cosmos keyword3"}'
+    )
+
+
+def _parse_generated_keywords(raw_text: Any, fallback: str) -> str:
+    if isinstance(raw_text, dict):
+        kw_value = raw_text.get("keywords")
+        if isinstance(kw_value, str):
+            candidate = kw_value
+        else:
+            return fallback
+        pieces = [piece.strip() for piece in _KEYWORD_SPLIT_RE.split(candidate) if piece.strip()]
+        return ", ".join(pieces) if pieces else fallback
+    if not isinstance(raw_text, str):
+        return fallback
+    candidate = str(raw_text).strip()
+    try:
+        parsed = json.loads(candidate)
+        if isinstance(parsed, dict):
+            kw_value = parsed.get("keywords")
+            if isinstance(kw_value, str):
+                candidate = kw_value
+    except Exception:
+        pass
+    pieces = [piece.strip() for piece in _KEYWORD_SPLIT_RE.split(candidate) if piece.strip()]
+    return ", ".join(pieces) if pieces else fallback
+
+
+def _extract_app_log_ids_from_native_context(raw_context: Any) -> List[str]:
+    if not isinstance(raw_context, str):
+        return []
+    seen = set()
+    out: List[str] = []
+    for value in _APP_LOG_ID_RE.findall(raw_context):
+        app_log_id = str(value or "").strip()
+        if not app_log_id or app_log_id in seen:
+            continue
+        seen.add(app_log_id)
+        out.append(app_log_id)
+    return out
+
+
+class _NativeAnswerPathRetriever:
+    """Thin adapter that reuses the upstream/native retrieval path only."""
+
+    def __init__(self, *, memory_system: Any, ask_json_fn: Callable[[str], Any], retrieve_k: int):
+        self.memory_system = memory_system
+        self.ask_json = ask_json_fn
+        self.retrieve_k = int(retrieve_k)
+
+    def retrieve_memory(self, content: str, k: int = 10) -> str:
+        return self.memory_system.find_related_memories_raw(content, k=k)
+
+    def generate_query_llm(self, question: str) -> str:
+        prompt = _build_keyword_generation_prompt(question)
+        response = self.ask_json(prompt)
+        return _parse_generated_keywords(response, question)
+
+    def retrieve_context(self, question: str, *, k: Optional[int] = None) -> Tuple[str, str]:
+        effective_k = self.retrieve_k if k is None else int(k)
+        keywords = self.generate_query_llm(question)
+        raw_context = self.retrieve_memory(keywords, k=effective_k)
+        return keywords, raw_context
+
+
+def _load_ordered_snapshot_memories(state_path: Path) -> Tuple[List[str], List[Any]]:
+    with state_path.open("rb") as f:
+        payload = pickle.load(f)
+    if isinstance(payload, dict) and isinstance(payload.get("documents"), list):
+        ordered_ids = [f"note_{idx}" for idx in range(1, len(payload["documents"]) + 1)]
+        ordered_memories = [
+            SimpleNamespace(
+                id=memory_id,
+                content=str(document),
+                links=[],
+                timestamp="",
+                context="General",
+                keywords=[],
+                tags=[],
+                category="Uncategorized",
+            )
+            for memory_id, document in zip(ordered_ids, payload["documents"])
+        ]
+        return ordered_ids, ordered_memories
+    if isinstance(payload, dict):
+        ordered_ids = list(payload.keys())
+        ordered_memories = [payload[memory_id] for memory_id in ordered_ids]
+        return ordered_ids, ordered_memories
+    return [], []
+
+
 def _load_snapshot_bundle(snapshot_root: Path, manifest_entry: Dict[str, Any]) -> Dict[str, Any]:
     snapshot_id = manifest_entry.get("snapshot_id")
     if not isinstance(snapshot_id, str) or not snapshot_id:
@@ -32,11 +135,14 @@ def _load_snapshot_bundle(snapshot_root: Path, manifest_entry: Dict[str, Any]) -
     checkpoint_path = Path(
         str(manifest_entry.get("checkpoint_path", str(Path(snapshot_id) / "checkpoint.json")))
     )
+    state_path = Path(str(manifest_entry.get("state_path", str(Path(snapshot_id) / "state.pkl"))))
     meta_path = Path(str(manifest_entry.get("meta_path", str(Path(snapshot_id) / "meta.json"))))
     chroma_dir = Path(str(manifest_entry.get("chroma_dir", str(Path(snapshot_id) / "chroma"))))
 
     if not checkpoint_path.is_absolute():
         checkpoint_path = snapshot_root / checkpoint_path
+    if not state_path.is_absolute():
+        state_path = snapshot_root / state_path
     if not meta_path.is_absolute():
         meta_path = snapshot_root / meta_path
     if not chroma_dir.is_absolute():
@@ -66,6 +172,7 @@ def _load_snapshot_bundle(snapshot_root: Path, manifest_entry: Dict[str, Any]) -
         "snapshot_id": snapshot_id,
         "chroma_dir": chroma_dir,
         "checkpoint_path": checkpoint_path,
+        "state_path": state_path,
         "meta_path": meta_path,
         "collection_name": collection_name,
         "last_event_idx": last_event_idx,
@@ -176,6 +283,8 @@ def run_generation(
         )
     _refresh_snapshot_index()
     retriever_cache: Dict[Tuple[str, str], Any] = {}
+    snapshot_state_cache: Dict[str, Tuple[List[str], List[Any]]] = {}
+    native_memory_system_cache: Dict[str, Any] = {}
     answer_llm_usage: Dict[str, Any] = {}
 
     def _emit_usage_update() -> None:
@@ -209,11 +318,11 @@ def run_generation(
         client.close()
 
     def _get_retriever(bundle: Dict[str, Any]) -> Any:
-        cache_key = (str(bundle["chroma_dir"]), str(bundle["collection_name"]))
+        cache_key = (str(bundle["chroma_dir"]), str(bundle.get("collection_name") or "memories"))
         if cache_key not in retriever_cache:
-            from generation.Amem.agentic_memory.retrievers import PersistentChromaRetriever
+            from generation.Amem.agentic_memory.retrievers import SimpleEmbeddingRetriever
 
-            retriever_cache[cache_key] = PersistentChromaRetriever(
+            retriever_cache[cache_key] = SimpleEmbeddingRetriever(
                 directory=cache_key[0],
                 collection_name=cache_key[1],
                 model_name=embedding_model_name,
@@ -223,6 +332,30 @@ def run_generation(
                 extend=True,
             )
         return retriever_cache[cache_key]
+
+    def _get_snapshot_memories(bundle: Dict[str, Any]) -> Tuple[List[str], List[Any]]:
+        cache_key = str(bundle.get("state_path") or "")
+        if cache_key not in snapshot_state_cache:
+            state_path = bundle.get("state_path")
+            if not isinstance(state_path, Path):
+                raise ValueError("Amem snapshot bundle missing state_path.")
+            snapshot_state_cache[cache_key] = _load_ordered_snapshot_memories(state_path)
+        return snapshot_state_cache[cache_key]
+
+    def _get_native_memory_system(bundle: Dict[str, Any]) -> Any:
+        cache_key = str(bundle.get("state_path") or "")
+        if cache_key not in native_memory_system_cache:
+            from generation.Amem.agentic_memory.memory_system import AgenticMemorySystem
+
+            ordered_ids, ordered_memories = _get_snapshot_memories(bundle)
+            memory_system = AgenticMemorySystem.__new__(AgenticMemorySystem)
+            memory_system.memories = {
+                memory_id: memory
+                for memory_id, memory in zip(ordered_ids, ordered_memories)
+            }
+            memory_system.retriever = _get_retriever(bundle)
+            native_memory_system_cache[cache_key] = memory_system
+        return native_memory_system_cache[cache_key]
 
     def prepare_checkpoint_state(cp: Dict[str, Any], memory_pool: List[Dict[str, Any]]) -> CheckpointHandle:
         _refresh_snapshot_index()
@@ -246,7 +379,7 @@ def run_generation(
             state_kind="snapshot_bundle",
             state_ref=bundle,
             metadata={
-                "retrieval_mode": "amem_snapshot_chroma",
+                "retrieval_mode": "amem_snapshot_native",
                 "snapshot_id": bundle.get("snapshot_id"),
                 "snapshot_checkpoint_id": bundle.get("checkpoint_id"),
                 "snapshot_checkpoint_app_log_id": bundle.get("checkpoint_app_log_id"),
@@ -262,6 +395,7 @@ def run_generation(
         retrieval_options: RetrievalOptions,
         memory_pool: List[Dict[str, Any]],
     ) -> RetrievalResult:
+        del memory_pool
         bundle = checkpoint_handle.state_ref if isinstance(checkpoint_handle.state_ref, dict) else {}
         retrieval_query = str(query_spec.retrieval_query_text or "").strip()
         if not retrieval_query:
@@ -273,72 +407,56 @@ def run_generation(
                 top_k_for_call = int(top_k_override)
             except Exception:
                 top_k_for_call = retrieval_top_k
-        k = len(memory_pool) if top_k_for_call <= 0 else min(top_k_for_call, len(memory_pool))
+        memory_system = _get_native_memory_system(bundle)
+        k = len(getattr(memory_system, "memories", {}) or {}) if top_k_for_call <= 0 else int(top_k_for_call)
         if k <= 0:
             return RetrievalResult(
                 mode="inline_memory",
                 inline_memory_blocks=[],
                 debug_metadata={
-                    "retrieval_mode": "amem_snapshot_chroma",
+                    "retrieval_mode": "amem_snapshot_native",
                     "snapshot_id": bundle.get("snapshot_id"),
                     "snapshot_checkpoint_id": bundle.get("checkpoint_id"),
                     "snapshot_checkpoint_app_log_id": bundle.get("checkpoint_app_log_id"),
                     "retrieval_top_k": top_k_for_call,
                     "num_retrieved_logs": 0,
                     "retrieved_app_log_ids": [],
+                    "generated_keywords": "",
+                    "primary_memory_indices": [],
+                    "neighbor_memory_indices": [],
+                    "retrieved_memory_indices": [],
                     "embedding_backend": embedding_backend,
                     "embedding_model_name": embedding_model_name,
                     "retrieval_query": retrieval_query,
                 },
             )
 
-        retriever = _get_retriever(bundle)
-        results = retriever.search(retrieval_query, k=k)
+        native_retriever = _NativeAnswerPathRetriever(
+            memory_system=memory_system,
+            ask_json_fn=ask_json,
+            retrieve_k=k,
+        )
+        generated_keywords, raw_context = native_retriever.retrieve_context(retrieval_query, k=k)
         _emit_usage_update()
-
-        memory_pool_by_id: Dict[str, Dict[str, Any]] = {}
-        for i, log in enumerate(memory_pool):
-            app_log_id = log.get("app_log_id")
-            key = str(app_log_id).strip() if app_log_id is not None else f"pool_{i}"
-            if key and key not in memory_pool_by_id:
-                memory_pool_by_id[key] = log
-
-        raw_documents = results.get("documents", [])
-        documents = raw_documents[0] if raw_documents and isinstance(raw_documents[0], list) else []
-        selected_logs: List[Dict[str, Any]] = []
-        selected_ids: List[str] = []
-        seen_ids = set()
-        for doc in documents:
-            payload = json.loads(str(doc))
-            if not isinstance(payload, dict):
-                continue
-            app_log_id = payload.get("app_log_id")
-            if app_log_id is None:
-                continue
-            app_log_id = str(app_log_id).strip()
-            if not app_log_id or app_log_id in seen_ids:
-                continue
-            log = memory_pool_by_id.get(app_log_id)
-            if log is None:
-                continue
-            seen_ids.add(app_log_id)
-            selected_ids.append(app_log_id)
-            selected_logs.append(log)
+        selected_ids = _extract_app_log_ids_from_native_context(raw_context)
+        inline_memory_blocks = [raw_context] if str(raw_context or "").strip() else []
 
         return RetrievalResult(
             mode="inline_memory",
-            inline_memory_blocks=[to_log_text(log) for log in selected_logs],
+            inline_memory_blocks=inline_memory_blocks,
             debug_metadata={
-                "retrieval_mode": "amem_snapshot_chroma",
+                "retrieval_mode": "amem_snapshot_native",
                 "snapshot_id": bundle.get("snapshot_id"),
                 "snapshot_checkpoint_id": bundle.get("checkpoint_id"),
                 "snapshot_checkpoint_app_log_id": bundle.get("checkpoint_app_log_id"),
                 "retrieval_top_k": top_k_for_call,
-                "num_retrieved_logs": len(selected_logs),
+                "num_retrieved_logs": len(selected_ids),
+                "generated_keywords": generated_keywords,
                 "retrieved_app_log_ids": selected_ids,
                 "embedding_backend": embedding_backend,
                 "embedding_model_name": embedding_model_name,
                 "retrieval_query": retrieval_query,
+                "native_raw_context": str(raw_context or ""),
             },
         )
 
@@ -386,7 +504,12 @@ def main() -> None:
     parser = argparse.ArgumentParser(
         description="Amem baseline generation for TCE."
     )
-    parser.add_argument("--benchmark", type=Path, required=True, help="Path to tce_benchmark.json")
+    parser.add_argument(
+        "--benchmark",
+        type=Path,
+        required=True,
+        help="Path to the pack-first TCE benchmark JSON (for example tce_benchmark_vnext_*task_packs*.json).",
+    )
     parser.add_argument(
         "--app-logs-path",
         type=Path,
@@ -397,7 +520,7 @@ def main() -> None:
         "--output",
         type=Path,
         required=True,
-        help="Output path for tce_results.json",
+        help="Output path for TCE predictions JSON (for example tce_results_v14_taskabc.json).",
     )
     parser.add_argument("--user-id", type=str, required=True, help="User identifier (e.g., 001_user_001)")
     parser.add_argument("--size", type=str, default="small", help="Snapshot size label: small|medium|large")

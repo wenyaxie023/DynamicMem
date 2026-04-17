@@ -263,7 +263,6 @@ def run(args: TceAdapterArgs):
         checkpoint_dir=args.extras.get("checkpoint_dir"),
         save_every=int(args.extras.get("save_every", 50)),
         snapshot_dir=args.extras.get("snapshot_dir"),
-        resume_from_snapshot=False,
         embedding_api_key=embedding_api_key,
         embedding_api_base_url=embedding_api_base_url,
         progress_callback=_builder_progress_callback,

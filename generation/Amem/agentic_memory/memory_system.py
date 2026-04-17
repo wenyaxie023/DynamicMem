@@ -2,7 +2,7 @@ from typing import List, Dict, Optional, Any, Tuple
 import uuid
 from datetime import datetime
 from .llm_controller import LLMController
-from .retrievers import PersistentChromaRetriever
+from .retrievers import SimpleEmbeddingRetriever
 import json
 import logging
 import os
@@ -102,7 +102,7 @@ class AgenticMemorySystem:
             embedding_backend: Embedding backend (sentence-transformers/openai)
             embedding_api_key: API key for embedding provider (optional)
             embedding_api_base_url: Base URL for embedding provider (optional)
-            collection_name: ChromaDB collection name
+            collection_name: Snapshot collection label retained for TCE compatibility
             llm_controller_backend: LLM backend to use (openai/ollama)
             llm_controller_model_name: Name of the LLM model
             llm_controller_api_key: API key for the LLM service (optional)
@@ -120,37 +120,14 @@ class AgenticMemorySystem:
         self.llm_controller_model_name = llm_controller_model_name
         self.llm_controller_api_key = llm_controller_api_key or embedding_api_key
         self.llm_controller_api_base_url = llm_controller_api_base_url or embedding_api_base_url
-        # Initialize ChromaDB retriever with empty collection (optional)
-        if reset_collection:
-            try:
-                # Attempt to remove only the target collection (safer than client.reset()).
-                temp_retriever = PersistentChromaRetriever(
-                    directory=self.retriever_directory,
-                    collection_name=collection_name,
-                    model_name=self.embedding_model_name,
-                    embedding_backend=self.embedding_backend,
-                    openai_api_key=self.embedding_api_key,
-                    openai_api_base=self.embedding_api_base_url,
-                    extend=True,
-                )
-                try:
-                    existing = [col.name for col in temp_retriever.client.list_collections()]
-                    if collection_name in existing:
-                        temp_retriever.client.delete_collection(collection_name)
-                except Exception:
-                    temp_retriever.client.delete_collection(collection_name)
-            except Exception as e:
-                logger.warning(f"Could not reset ChromaDB collection: {e}")
-            
-        # Create a fresh retriever instance
-        self.retriever = PersistentChromaRetriever(
-            directory=self.retriever_directory,
-            collection_name=self.collection_name,
+        self.retriever = SimpleEmbeddingRetriever(
             model_name=self.embedding_model_name,
             embedding_backend=self.embedding_backend,
             openai_api_key=self.embedding_api_key,
             openai_api_base=self.embedding_api_base_url,
-            extend=True,
+            directory=self.retriever_directory,
+            extend=not reset_collection,
+            collection_name=self.collection_name,
         )
         
         # Initialize LLM controller
@@ -196,6 +173,30 @@ class AgenticMemorySystem:
                                 }}
                                 '''
 
+    @staticmethod
+    def _normalize_link_index(value: Any) -> Optional[int]:
+        if isinstance(value, bool):
+            return None
+        if isinstance(value, int):
+            return value
+        if isinstance(value, str):
+            token = value.strip()
+            if not token:
+                return None
+            try:
+                return int(token)
+            except ValueError:
+                return None
+        return None
+
+    def _ordered_memory_items(self) -> List[Tuple[str, MemoryNote]]:
+        return list(self.memories.items())
+
+    @staticmethod
+    def _rebuild_retriever_document(memory: MemoryNote) -> str:
+        metadata_text = f"{memory.context} {' '.join(memory.keywords)} {' '.join(memory.tags)}"
+        return f"{memory.content} , {metadata_text}"
+
     def save_state(self, path: Path) -> None:
         """Persist in-memory notes to disk for resuming runs."""
         path = Path(path)
@@ -213,36 +214,18 @@ class AgenticMemorySystem:
 
     def rebuild_retriever(self) -> None:
         """Rebuild retriever from in-memory notes to ensure sync."""
-        try:
-            self.retriever.client.delete_collection(self.collection_name)
-        except Exception:
-            pass
-
-        self.retriever = PersistentChromaRetriever(
-            directory=self.retriever_directory,
-            collection_name=self.collection_name,
+        self.retriever = SimpleEmbeddingRetriever(
             model_name=self.embedding_model_name,
             embedding_backend=self.embedding_backend,
             openai_api_key=self.embedding_api_key,
             openai_api_base=self.embedding_api_base_url,
-            extend=True,
+            directory=self.retriever_directory,
+            extend=False,
+            collection_name=self.collection_name,
         )
 
         for memory in self.memories.values():
-            metadata = {
-                "id": memory.id,
-                "content": memory.content,
-                "keywords": memory.keywords,
-                "links": memory.links,
-                "retrieval_count": memory.retrieval_count,
-                "timestamp": memory.timestamp,
-                "last_accessed": memory.last_accessed,
-                "context": memory.context,
-                "evolution_history": memory.evolution_history,
-                "category": memory.category,
-                "tags": memory.tags
-            }
-            self.retriever.add_document(memory.content, metadata, memory.id)
+            self.retriever.add_documents([self._rebuild_retriever_document(memory)])
         
     def analyze_content(self, content: str) -> Dict:            
         """Analyze content using LLM to extract semantic metadata.
@@ -324,12 +307,26 @@ class AgenticMemorySystem:
         if time is not None:
             kwargs['timestamp'] = time
         note = MemoryNote(content=content, **kwargs)
+
+        needs_analysis = (
+            not note.keywords or
+            note.context == "General" or
+            not note.tags
+        )
+        if needs_analysis:
+            analysis = self.analyze_content(content)
+            if not note.keywords:
+                note.keywords = list(analysis.get("keywords") or [])
+            if note.context == "General":
+                note.context = str(analysis.get("context") or "General")
+            if not note.tags:
+                note.tags = list(analysis.get("tags") or [])
         
         # Update retriever with all documents
         evo_label, note = self.process_memory(note)
         self.memories[note.id] = note
         
-        # Add to ChromaDB with complete metadata
+        # Add to retriever with complete metadata
         metadata = {
             "id": note.id,
             "content": note.content,
@@ -353,95 +350,83 @@ class AgenticMemorySystem:
     
     def consolidate_memories(self):
         """Consolidate memories: update retriever with new documents"""
-        # Reset ChromaDB collection
-        try:
-            self.retriever.client.delete_collection(self.collection_name)
-        except Exception:
-            pass
-
-        self.retriever = PersistentChromaRetriever(
-            directory=self.retriever_directory,
-            collection_name=self.collection_name,
+        self.retriever = SimpleEmbeddingRetriever(
             model_name=self.embedding_model_name,
             embedding_backend=self.embedding_backend,
             openai_api_key=self.embedding_api_key,
             openai_api_base=self.embedding_api_base_url,
-            extend=True,
+            directory=self.retriever_directory,
+            extend=False,
+            collection_name=self.collection_name,
         )
         
         # Re-add all memory documents with their complete metadata
         for memory in self.memories.values():
-            metadata = {
-                "id": memory.id,
-                "content": memory.content,
-                "keywords": memory.keywords,
-                "links": memory.links,
-                "retrieval_count": memory.retrieval_count,
-                "timestamp": memory.timestamp,
-                "last_accessed": memory.last_accessed,
-                "context": memory.context,
-                "evolution_history": memory.evolution_history,
-                "category": memory.category,
-                "tags": memory.tags
-            }
-            self.retriever.add_document(memory.content, metadata, memory.id)
+            self.retriever.add_documents([self._rebuild_retriever_document(memory)])
     
     def find_related_memories(self, query: str, k: int = 5) -> Tuple[str, List[int]]:
-        """Find related memories using ChromaDB retrieval"""
+        """Find related memories using the original SimpleEmbeddingRetriever path."""
         if not self.memories:
             return "", []
             
         try:
-            # Get results from ChromaDB
-            results = self.retriever.search(query, k)
-            
-            # Convert to list of memories
+            ordered_items = self._ordered_memory_items()
+            ordered_memories = [memory for _, memory in ordered_items]
+            indices = self.retriever.search(query, k)
+
             memory_str = ""
-            indices = []
-            
-            if 'ids' in results and results['ids'] and len(results['ids']) > 0 and len(results['ids'][0]) > 0:
-                for i, doc_id in enumerate(results['ids'][0]):
-                    # Get metadata from ChromaDB results
-                    if i < len(results['metadatas'][0]):
-                        metadata = results['metadatas'][0][i]
-                        # Format memory string
-                        memory_str += f"memory index:{i}\ttalk start time:{metadata.get('timestamp', '')}\tmemory content: {metadata.get('content', '')}\tmemory context: {metadata.get('context', '')}\tmemory keywords: {str(metadata.get('keywords', []))}\tmemory tags: {str(metadata.get('tags', []))}\n"
-                        indices.append(i)
+            normalized_indices: List[int] = []
+            for memory_index in indices:
+                if memory_index < 0 or memory_index >= len(ordered_memories):
+                    continue
+                memory = ordered_memories[memory_index]
+                memory_str += (
+                    f"memory index:{memory_index}\ttalk start time:{memory.timestamp}"
+                    f"\tmemory content: {memory.content}"
+                    f"\tmemory context: {memory.context}"
+                    f"\tmemory keywords: {str(memory.keywords)}"
+                    f"\tmemory tags: {str(memory.tags)}\n"
+                )
+                normalized_indices.append(memory_index)
                     
-            return memory_str, indices
+            return memory_str, normalized_indices
         except Exception as e:
             logger.error(f"Error in find_related_memories: {str(e)}")
             return "", []
 
     def find_related_memories_raw(self, query: str, k: int = 5) -> str:
-        """Find related memories using ChromaDB retrieval in raw format"""
+        """Find related memories using raw note content plus linked neighbors."""
         if not self.memories:
             return ""
             
-        # Get results from ChromaDB
-        results = self.retriever.search(query, k)
-        
-        # Convert to list of memories
+        primary_indices = self.find_related_memories(query, k=k)[1]
+        ordered_memories = [memory for _, memory in self._ordered_memory_items()]
         memory_str = ""
-        
-        if 'ids' in results and results['ids'] and len(results['ids']) > 0:
-            for i, doc_id in enumerate(results['ids'][0][:k]):
-                if i < len(results['metadatas'][0]):
-                    # Get metadata from ChromaDB results
-                    metadata = results['metadatas'][0][i]
-                    
-                    # Add main memory info
-                    memory_str += f"talk start time:{metadata.get('timestamp', '')}\tmemory content: {metadata.get('content', '')}\tmemory context: {metadata.get('context', '')}\tmemory keywords: {str(metadata.get('keywords', []))}\tmemory tags: {str(metadata.get('tags', []))}\n"
-                    
-                    # Add linked memories if available
-                    links = metadata.get('links', [])
-                    j = 0
-                    for link_id in links:
-                        if link_id in self.memories and j < k:
-                            neighbor = self.memories[link_id]
-                            memory_str += f"talk start time:{neighbor.timestamp}\tmemory content: {neighbor.content}\tmemory context: {neighbor.context}\tmemory keywords: {str(neighbor.keywords)}\tmemory tags: {str(neighbor.tags)}\n"
-                            j += 1
-                            
+
+        for primary_idx in primary_indices[:k]:
+            if primary_idx < 0 or primary_idx >= len(ordered_memories):
+                continue
+            memory = ordered_memories[primary_idx]
+            memory_str += (
+                f"talk start time:{memory.timestamp}\tmemory content: {memory.content}"
+                f"\tmemory context: {memory.context}\tmemory keywords: {str(memory.keywords)}"
+                f"\tmemory tags: {str(memory.tags)}\n"
+            )
+            neighbor_count = 0
+            for raw_link in memory.links:
+                link_idx = self._normalize_link_index(raw_link)
+                if link_idx is None or link_idx < 0 or link_idx >= len(ordered_memories):
+                    continue
+                neighbor = ordered_memories[link_idx]
+                memory_str += (
+                    f"talk start time:{neighbor.timestamp}\tmemory content: {neighbor.content}"
+                    f"\tmemory context: {neighbor.context}\tmemory keywords: {str(neighbor.keywords)}"
+                    f"\tmemory tags: {str(neighbor.tags)}\n"
+                )
+                neighbor_count += 1
+                if neighbor_count >= k:
+                    break
+
         return memory_str
 
     def read(self, memory_id: str) -> Optional[MemoryNote]:
@@ -475,7 +460,7 @@ class AgenticMemorySystem:
             if hasattr(note, key):
                 setattr(note, key, value)
                 
-        # Update in ChromaDB
+        # Update in retriever
         metadata = {
             "id": note.id,
             "content": note.content,
@@ -506,188 +491,33 @@ class AgenticMemorySystem:
             bool: True if memory was deleted, False if not found
         """
         if memory_id in self.memories:
-            # Delete from ChromaDB
+            # Delete from retriever
             self.retriever.delete_document(memory_id)
             # Delete from local storage
             del self.memories[memory_id]
             return True
         return False
     
-    def _search_raw(self, query: str, k: int = 5) -> List[Dict[str, Any]]:
-        """Internal search method that returns raw results from ChromaDB.
-        
-        This is used internally by the memory evolution system to find
-        related memories for potential evolution.
-        
-        Args:
-            query (str): The search query text
-            k (int): Maximum number of results to return
-            
-        Returns:
-            List[Dict[str, Any]]: Raw search results from ChromaDB
-        """
-        results = self.retriever.search(query, k)
-        return [{'id': doc_id, 'score': score} 
-                for doc_id, score in zip(results['ids'][0], results['distances'][0])]
-                
     def search(self, query: str, k: int = 5) -> List[Dict[str, Any]]:
-        """Search for memories using a hybrid retrieval approach."""
-        # Get results from ChromaDB (only do this once)
-        search_results = self.retriever.search(query, k)
+        """Search for memories using the original SimpleEmbeddingRetriever backend."""
+        search_indices = self.retriever.search(query, k)
+        ordered_items = self._ordered_memory_items()
         memories = []
         
-        # Process ChromaDB results
-        for i, doc_id in enumerate(search_results['ids'][0]):
-            memory = self.memories.get(doc_id)
-            if memory:
-                memories.append({
-                    'id': doc_id,
-                    'content': memory.content,
-                    'context': memory.context,
-                    'keywords': memory.keywords,
-                    'score': search_results['distances'][0][i]
-                })
+        for idx in search_indices:
+            if idx < 0 or idx >= len(ordered_items):
+                continue
+            doc_id, memory = ordered_items[idx]
+            memories.append({
+                'id': doc_id,
+                'content': memory.content,
+                'context': memory.context,
+                'keywords': memory.keywords,
+                'score': 0.0,
+            })
         
         return memories[:k]
     
-    def _search(self, query: str, k: int = 5) -> List[Dict[str, Any]]:
-        """Search for memories using a hybrid retrieval approach.
-        
-        This method combines results from both:
-        1. ChromaDB vector store (semantic similarity)
-        2. Embedding-based retrieval (dense vectors)
-        
-        The results are deduplicated and ranked by relevance.
-        
-        Args:
-            query (str): The search query text
-            k (int): Maximum number of results to return
-            
-        Returns:
-            List[Dict[str, Any]]: List of search results, each containing:
-                - id: Memory ID
-                - content: Memory content
-                - score: Similarity score
-                - metadata: Additional memory metadata
-        """
-        # Get results from ChromaDB
-        chroma_results = self.retriever.search(query, k)
-        memories = []
-        
-        # Process ChromaDB results
-        for i, doc_id in enumerate(chroma_results['ids'][0]):
-            memory = self.memories.get(doc_id)
-            if memory:
-                memories.append({
-                    'id': doc_id,
-                    'content': memory.content,
-                    'context': memory.context,
-                    'keywords': memory.keywords,
-                    'score': chroma_results['distances'][0][i]
-                })
-                
-        # Get results from embedding retriever
-        embedding_results = self.retriever.search(query, k)
-        
-        # Combine results with deduplication
-        seen_ids = set(m['id'] for m in memories)
-        for result in embedding_results:
-            memory_id = result.get('id')
-            if memory_id and memory_id not in seen_ids:
-                memory = self.memories.get(memory_id)
-                if memory:
-                    memories.append({
-                        'id': memory_id,
-                        'content': memory.content,
-                        'context': memory.context,
-                        'keywords': memory.keywords,
-                        'score': result.get('score', 0.0)
-                    })
-                    seen_ids.add(memory_id)
-                    
-        return memories[:k]
-
-    def search_agentic(self, query: str, k: int = 5) -> List[Dict[str, Any]]:
-        """Search for memories using ChromaDB retrieval."""
-        if not self.memories:
-            return []
-            
-        try:
-            # Get results from ChromaDB
-            results = self.retriever.search(query, k)
-            
-            # Process results
-            memories = []
-            seen_ids = set()
-            
-            # Check if we have valid results
-            if ('ids' not in results or not results['ids'] or 
-                len(results['ids']) == 0 or len(results['ids'][0]) == 0):
-                return []
-                
-            # Process ChromaDB results
-            for i, doc_id in enumerate(results['ids'][0][:k]):
-                if doc_id in seen_ids:
-                    continue
-                    
-                if i < len(results['metadatas'][0]):
-                    metadata = results['metadatas'][0][i]
-                    
-                    # Create result dictionary with all metadata fields
-                    memory_dict = {
-                        'id': doc_id,
-                        'content': metadata.get('content', ''),
-                        'context': metadata.get('context', ''),
-                        'keywords': metadata.get('keywords', []),
-                        'tags': metadata.get('tags', []),
-                        'timestamp': metadata.get('timestamp', ''),
-                        'category': metadata.get('category', 'Uncategorized'),
-                        'is_neighbor': False
-                    }
-                    
-                    # Add score if available
-                    if 'distances' in results and len(results['distances']) > 0 and i < len(results['distances'][0]):
-                        memory_dict['score'] = results['distances'][0][i]
-                        
-                    memories.append(memory_dict)
-                    seen_ids.add(doc_id)
-            
-            # Add linked memories (neighbors)
-            neighbor_count = 0
-            for memory in list(memories):  # Use a copy to avoid modification during iteration
-                if neighbor_count >= k:
-                    break
-                    
-                # Get links from metadata
-                links = memory.get('links', [])
-                if not links and 'id' in memory:
-                    # Try to get links from memory object
-                    mem_obj = self.memories.get(memory['id'])
-                    if mem_obj:
-                        links = mem_obj.links
-                        
-                for link_id in links:
-                    if link_id not in seen_ids and neighbor_count < k:
-                        neighbor = self.memories.get(link_id)
-                        if neighbor:
-                            memories.append({
-                                'id': link_id,
-                                'content': neighbor.content,
-                                'context': neighbor.context,
-                                'keywords': neighbor.keywords,
-                                'tags': neighbor.tags,
-                                'timestamp': neighbor.timestamp,
-                                'category': neighbor.category,
-                                'is_neighbor': True
-                            })
-                            seen_ids.add(link_id)
-                            neighbor_count += 1
-            
-            return memories[:k]
-        except Exception as e:
-            logger.error(f"Error in search_agentic: {str(e)}")
-            return []
-
     def process_memory(self, note: MemoryNote) -> Tuple[bool, MemoryNote]:
         """Process a memory note and determine if it should evolve.
         
@@ -735,7 +565,7 @@ class AgenticMemorySystem:
                     "suggested_connections": {
                         "type": "array",
                         "items": {
-                            "type": "string"
+                            "type": "integer"
                         }
                     },
                     "new_context_neighborhood": {
@@ -797,43 +627,38 @@ class AgenticMemorySystem:
                     actions = response_json["actions"]
                     for action in actions:
                         if action == "strengthen":
-                            suggest_connections = response_json["suggested_connections"]
+                            suggest_connections = []
+                            for raw_link in response_json["suggested_connections"]:
+                                link_idx = self._normalize_link_index(raw_link)
+                                if link_idx is None:
+                                    continue
+                                suggest_connections.append(link_idx)
                             new_tags = response_json["tags_to_update"]
                             note.links.extend(suggest_connections)
                             note.tags = new_tags
                         elif action == "update_neighbor":
                             new_context_neighborhood = response_json["new_context_neighborhood"]
                             new_tags_neighborhood = response_json["new_tags_neighborhood"]
-                            noteslist = list(self.memories.values())
-                            notes_id = list(self.memories.keys())
+                            noteslist = [memory for _, memory in self._ordered_memory_items()]
+                            notes_id = [memory_id for memory_id, _ in self._ordered_memory_items()]
 
                             for i in range(min(len(indices), len(new_tags_neighborhood))):
-                                # Skip if we don't have enough neighbors
-                                if i >= len(indices):
-                                    continue
-
                                 tag = new_tags_neighborhood[i]
                                 if i < len(new_context_neighborhood):
                                     context = new_context_neighborhood[i]
                                 else:
-                                    # Since indices are just numbers now, we need to find the memory
-                                    # In memory list using its index number
-                                    if i < len(noteslist):
-                                        context = noteslist[i].context
-                                    else:
-                                        continue
-
-                                # Get index from the indices list
-                                if i < len(indices):
                                     memorytmp_idx = indices[i]
-                                    # Make sure the index is valid
-                                    if memorytmp_idx < len(noteslist):
-                                        notetmp = noteslist[memorytmp_idx]
-                                        notetmp.tags = tag
-                                        notetmp.context = context
-                                        # Make sure the index is valid
-                                        if memorytmp_idx < len(notes_id):
-                                            self.memories[notes_id[memorytmp_idx]] = notetmp
+                                    if memorytmp_idx < 0 or memorytmp_idx >= len(noteslist):
+                                        continue
+                                    context = noteslist[memorytmp_idx].context
+
+                                memorytmp_idx = indices[i]
+                                if memorytmp_idx < 0 or memorytmp_idx >= len(noteslist):
+                                    continue
+                                notetmp = noteslist[memorytmp_idx]
+                                notetmp.tags = tag
+                                notetmp.context = context
+                                self.memories[notes_id[memorytmp_idx]] = notetmp
 
                 return should_evolve, note
 

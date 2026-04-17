@@ -4,6 +4,7 @@ import json
 import logging
 import shutil
 import sys
+import time
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Set
 from datetime import datetime
@@ -18,6 +19,25 @@ try:
     from generation.Amem.agentic_memory.memory_system import AgenticMemorySystem
 except Exception:  # pragma: no cover - optional in test environments without chromadb
     AgenticMemorySystem = None  # type: ignore[assignment]
+from generation.Amem.usage_sidecar import (
+    build_usage_sidecar_paths,
+    empty_usage_summary,
+    load_usage_sidecar,
+    merge_usage_summary,
+    write_build_usage_sidecar,
+)
+
+try:
+    from generation.Amem.agentic_memory.llm_controller import (
+        get_usage_summary as amem_usage_summary,
+        reset_usage_tracker as reset_amem_usage_tracker,
+    )
+except Exception:  # pragma: no cover - optional in stripped test environments
+    def amem_usage_summary() -> Dict[str, Any]:
+        return empty_usage_summary()
+
+    def reset_amem_usage_tracker() -> None:
+        return None
 
 load_dotenv(Path(__file__).resolve().parent / ".env")
 
@@ -44,8 +64,6 @@ def _env_value(*keys: str) -> Optional[str]:
         if value:
             return value
     return None
-
-
 def _ensure_nltk() -> None:
     if nltk is None:
         raise RuntimeError("Missing nltk package. Install it to run Amem.")
@@ -156,97 +174,6 @@ def _load_checkpoints_from_benchmark(benchmark_path: Path) -> List[Dict[str, Any
             f"Invalid checkpoint format in {benchmark_path}: expected top-level 'checkpoints' list."
         )
     return checkpoints
-
-
-def _snapshot_entry_sort_key(entry: Dict[str, Any]) -> tuple[int, datetime]:
-    last_event_idx_raw = entry.get("last_event_idx", -1)
-    try:
-        last_event_idx = int(last_event_idx_raw)
-    except (TypeError, ValueError):
-        last_event_idx = -1
-    created_at_raw = entry.get("created_at")
-    created_at_dt = datetime.min
-    if isinstance(created_at_raw, str) and created_at_raw:
-        try:
-            created_at_dt = datetime.fromisoformat(created_at_raw)
-        except ValueError:
-            created_at_dt = datetime.min
-    return last_event_idx, created_at_dt
-
-
-def _manifest_entry_path(snapshot_root: Path, path_value: Any) -> Path:
-    p = Path(str(path_value))
-    if p.is_absolute():
-        return p
-    return snapshot_root / p
-
-
-def _resolve_snapshot_resume_bundle(snapshot_root: Path) -> Dict[str, Any]:
-    manifest_path = _snapshot_manifest_path(snapshot_root)
-    if not manifest_path.exists():
-        raise FileNotFoundError(f"Snapshot manifest not found: {manifest_path}")
-
-    manifest = _load_manifest(manifest_path)
-    entries = [x for x in manifest.get("snapshots", []) if isinstance(x, dict)]
-    if not entries:
-        raise FileNotFoundError(f"No snapshots recorded in manifest: {manifest_path}")
-
-    for entry in sorted(entries, key=_snapshot_entry_sort_key, reverse=True):
-        snapshot_id = entry.get("snapshot_id")
-        if not isinstance(snapshot_id, str) or not snapshot_id:
-            continue
-        state_path = _manifest_entry_path(
-            snapshot_root, entry.get("state_path", str(Path(snapshot_id) / "state.pkl"))
-        )
-        checkpoint_path = _manifest_entry_path(
-            snapshot_root, entry.get("checkpoint_path", str(Path(snapshot_id) / "checkpoint.json"))
-        )
-        chroma_dir = _manifest_entry_path(
-            snapshot_root, entry.get("chroma_dir", str(Path(snapshot_id) / "chroma"))
-        )
-        meta_path = _manifest_entry_path(
-            snapshot_root, entry.get("meta_path", str(Path(snapshot_id) / "meta.json"))
-        )
-
-        if not state_path.exists():
-            continue
-        if not checkpoint_path.exists():
-            continue
-        if not chroma_dir.exists():
-            continue
-        if not meta_path.exists():
-            continue
-
-        with checkpoint_path.open("r", encoding="utf-8") as f:
-            checkpoint_payload = json.load(f)
-        with meta_path.open("r", encoding="utf-8") as f:
-            meta_payload = json.load(f)
-
-        last_event_idx = int(checkpoint_payload.get("last_event_idx", -1))
-        events_processed = int(checkpoint_payload.get("events_processed", last_event_idx + 1))
-        collection_name = (
-            meta_payload.get("collection_name")
-            or entry.get("collection_name")
-        )
-        if not isinstance(collection_name, str) or not collection_name:
-            continue
-
-        return {
-            "snapshot_id": snapshot_id,
-            "state_path": state_path,
-            "checkpoint_path": checkpoint_path,
-            "chroma_dir": chroma_dir,
-            "meta_path": meta_path,
-            "collection_name": collection_name,
-            "start_index": max(0, last_event_idx + 1),
-            "events_processed": max(0, events_processed),
-            "last_event_idx": last_event_idx,
-        }
-
-    raise FileNotFoundError(
-        f"No valid snapshot bundle found under {snapshot_root}. "
-        "Manifest exists but entries are missing required files."
-    )
 
 
 def _write_snapshot_bundle(
@@ -363,7 +290,7 @@ def evaluate_membench(
     user_id: str,
     *,
     app_log_path: Optional[str] = None,
-    benchmark_path: Optional[str] = None,
+    benchmark_path: str,
     size: str = "small",
     embedding_model_name: str = "all-MiniLM-L6-v2",
     embedding_backend: Optional[str] = None,
@@ -372,15 +299,10 @@ def evaluate_membench(
     llm_controller_model_name: str = "gpt-4o-mini",
     llm_controller_api_key: Optional[str] = None,
     llm_controller_api_base_url: Optional[str] = None,
-    sglang_host: str = "http://localhost",
-    sglang_port: int = 30000,
     resume: bool = False,
-    resume_from_size: Optional[str] = None,
     checkpoint_dir: Optional[str] = None,
     save_every: int = 50,
     snapshot_dir: Optional[str] = None,
-    snapshot_every: Optional[int] = None,
-    resume_from_snapshot: bool = True,
     embedding_api_key: Optional[str] = None,
     embedding_api_base_url: Optional[str] = None,
     progress_callback: Optional[Callable[[Dict[str, Any]], None]] = None,
@@ -388,6 +310,9 @@ def evaluate_membench(
     _ensure_nltk()
     if AgenticMemorySystem is None:
         raise RuntimeError("Amem builder requires AgenticMemorySystem and its retrieval dependencies.")
+
+    reset_amem_usage_tracker()
+    build_t0 = time.time()
 
     embedding_api_key = embedding_api_key or _env_value("embedding_api_key", "EMBEDDING_API_KEY")
     embedding_api_base_url = embedding_api_base_url or _env_value(
@@ -416,86 +341,50 @@ def evaluate_membench(
 
     ckpt_dir = Path(checkpoint_dir) if checkpoint_dir else (Path(__file__).resolve().parent / "checkpoints")
     state_path, checkpoint_path = _checkpoint_paths(ckpt_dir, user_id, size)
-    resume_state_path = state_path
-    resume_checkpoint_path = checkpoint_path
-    resume_label = size
-
-    if resume_from_size:
-        resume_state_path, resume_checkpoint_path = _checkpoint_paths(
-            ckpt_dir, user_id, resume_from_size
+    final_usage_sidecar_path, live_usage_sidecar_path = build_usage_sidecar_paths(ckpt_dir)
+    accumulated_duration_s = 0.0
+    accumulated_usage: Dict[str, Any] = {}
+    if resume:
+        existing_usage_payload = load_usage_sidecar(final_usage_sidecar_path)
+        if not existing_usage_payload:
+            existing_usage_payload = load_usage_sidecar(live_usage_sidecar_path)
+        existing_timing = (
+            existing_usage_payload.get("timing")
+            if isinstance(existing_usage_payload.get("timing"), dict)
+            else {}
         )
-        resume_label = resume_from_size
+        existing_usage = (
+            existing_usage_payload.get("usage")
+            if isinstance(existing_usage_payload.get("usage"), dict)
+            else {}
+        )
+        accumulated_duration_s = float(existing_timing.get("build_memory_duration_s") or 0.0)
+        accumulated_usage = (
+            existing_usage.get("build_memory")
+            if isinstance(existing_usage.get("build_memory"), dict)
+            else {}
+        )
 
     snapshot_root = _snapshot_root(snapshot_dir, ckpt_dir, user_id, size)
-    if snapshot_every is not None and snapshot_every > 0:
-        logger.info(
-            "snapshot_every=%d is ignored in checkpoint-only snapshot mode.",
-            snapshot_every,
-        )
-
-    resume_requested = resume or resume_from_size is not None
     resume_enabled = False
-    resume_snapshot_bundle: Optional[Dict[str, Any]] = None
     start_index = 0
     processed = 0
-    if resume_requested and resume_from_snapshot:
-        resume_snapshot_root = _snapshot_root(snapshot_dir, ckpt_dir, user_id, resume_label)
-        try:
-            resume_snapshot_bundle = _resolve_snapshot_resume_bundle(resume_snapshot_root)
-        except FileNotFoundError as e:
-            raise FileNotFoundError(
-                f"{e} Set --no-resume-from-snapshot to use legacy checkpoint resume."
-            ) from e
+    if resume and state_path.exists() and checkpoint_path.exists():
         resume_enabled = True
-        start_index = int(resume_snapshot_bundle["start_index"])
-        processed = int(resume_snapshot_bundle["events_processed"])
-    else:
-        if resume_from_size:
-            if not resume_state_path.exists() or not resume_checkpoint_path.exists():
-                missing = []
-                if not resume_state_path.exists():
-                    missing.append(str(resume_state_path))
-                if not resume_checkpoint_path.exists():
-                    missing.append(str(resume_checkpoint_path))
-                raise FileNotFoundError(
-                    "Resume checkpoint not found for size "
-                    f"'{resume_from_size}': {', '.join(missing)}"
-                )
-            resume_enabled = True
-        elif resume and resume_state_path.exists() and resume_checkpoint_path.exists():
-            resume_enabled = True
+        last_event_idx, processed = _load_checkpoint(checkpoint_path, logger)
+        start_index = last_event_idx + 1
+        if start_index < 0:
+            start_index = 0
 
-        if resume_enabled:
-            last_event_idx, processed = _load_checkpoint(resume_checkpoint_path, logger)
-            start_index = last_event_idx + 1
-            if start_index < 0:
-                start_index = 0
-
-    retriever_directory = (
-        str(resume_snapshot_bundle["chroma_dir"])
-        if resume_snapshot_bundle is not None
-        else None
-    )
-    active_collection_name = (
-        str(resume_snapshot_bundle["collection_name"])
-        if resume_snapshot_bundle is not None
-        else collection_name
-    )
-    resume_snapshot_id = (
-        str(resume_snapshot_bundle["snapshot_id"])
-        if resume_snapshot_bundle is not None
-        else None
-    )
     logger.info(
-        "Embedding config: backend=%s model=%s active_collection=%s snapshot_id=%s",
+        "Embedding config: backend=%s model=%s collection=%s",
         embedding_backend,
         embedding_model_name,
-        active_collection_name,
-        resume_snapshot_id,
+        collection_name,
     )
 
     memory_system = AgenticMemorySystem(
-        collection_name=active_collection_name,
+        collection_name=collection_name,
         embedding_model_name=embedding_model_name,
         embedding_backend=embedding_backend,
         embedding_api_key=embedding_api_key,
@@ -504,36 +393,38 @@ def evaluate_membench(
         llm_controller_model_name=llm_controller_model_name,
         llm_controller_api_key=llm_controller_api_key,
         llm_controller_api_base_url=llm_controller_api_base_url,
-        retriever_directory=retriever_directory,
+        retriever_directory=None,
         reset_collection=not resume_enabled,
     )
 
-    if resume_enabled:
-        if resume_snapshot_bundle is not None:
-            memory_system.load_state(Path(resume_snapshot_bundle["state_path"]))
-            logger.info(
-                "Resuming from snapshot: id=%s start_index=%d",
-                resume_snapshot_bundle["snapshot_id"],
-                start_index,
-            )
-        else:
-            memory_system.load_state(resume_state_path)
-            memory_system.rebuild_retriever()
-            if resume_label != size:
-                logger.info(
-                    "Resuming from checkpoint size=%s -> target size=%s: start_index=%d",
-                    resume_label,
-                    size,
-                    start_index,
-                )
-            else:
-                logger.info("Resuming from checkpoint: start_index=%d", start_index)
-    elif resume_label != size:
-        logger.info(
-            "Starting fresh target size=%s (resume label %s not active).",
-            size,
-            resume_label,
+    llm_provider_label = str(llm_controller_backend or "openai")
+    retriever_provider_label = str(embedding_backend or "openai")
+
+    def _current_build_usage_snapshot() -> Dict[str, Any]:
+        current_usage = amem_usage_summary()
+        return merge_usage_summary(accumulated_usage, current_usage)
+
+    def _current_build_duration_s() -> float:
+        return accumulated_duration_s + max(time.time() - build_t0, 0.0)
+
+    def _write_live_usage_snapshot() -> None:
+        write_build_usage_sidecar(
+            sidecar_path=live_usage_sidecar_path,
+            state_path=state_path,
+            checkpoint_path=checkpoint_path,
+            llm_provider=llm_provider_label,
+            llm_model=llm_controller_model_name,
+            retriever_provider=retriever_provider_label,
+            embedding_model_name=embedding_model_name,
+            build_duration_s=_current_build_duration_s(),
+            build_memory_usage=_current_build_usage_snapshot(),
+            is_live=True,
         )
+
+    if resume_enabled:
+        memory_system.load_state(state_path)
+        memory_system.rebuild_retriever()
+        logger.info("Resuming from checkpoint: start_index=%d", start_index)
 
     if processed <= 0:
         processed = start_index
@@ -547,11 +438,7 @@ def evaluate_membench(
     if not samples:
         raise ValueError(f"User id not found in dataset: {user_id}")
     sample = samples[0]
-    if benchmark_path:
-        checkpoints = _load_checkpoints_from_benchmark(Path(benchmark_path))
-    else:
-        app_log_file, _ = _resolve_user_app_log_file(resolved_app_log_path, user_id, size)
-        checkpoints = _load_checkpoints_from_benchmark(app_log_file.parent / "tce_benchmark.json")
+    checkpoints = _load_checkpoints_from_benchmark(Path(benchmark_path))
 
     checkpoint_by_app_log_id: Dict[str, List[Dict[str, Any]]] = {}
     expected_checkpoint_ids: Set[str] = set()
@@ -593,8 +480,11 @@ def evaluate_membench(
         for idx, event in enumerate(sample.app_logs):
             if idx < start_index:
                 continue
-            content, time_str = build_membench_memory_from_event(event)
-            memory_system.add_note(content, time=time_str)
+            raw_payload_text, time_str = build_membench_memory_from_event(event)
+            memory_system.add_note(
+                raw_payload_text,
+                time=time_str,
+            )
             processed += 1
             last_event_idx = idx
             print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] {processed} processed")
@@ -613,6 +503,7 @@ def evaluate_membench(
             if save_every > 0 and processed % save_every == 0:
                 memory_system.save_state(state_path)
                 _write_checkpoint(checkpoint_path, last_event_idx, processed)
+                _write_live_usage_snapshot()
 
             event_id = str(event.event_id)
             for cp in checkpoint_by_app_log_id.get(event_id, []):
@@ -641,6 +532,7 @@ def evaluate_membench(
         if last_event_idx >= 0:
             memory_system.save_state(state_path)
             _write_checkpoint(checkpoint_path, last_event_idx, processed)
+        _write_live_usage_snapshot()
     if interrupted_exc is not None:
         raise interrupted_exc
 
@@ -666,6 +558,19 @@ def evaluate_membench(
     )
     snapshots_written += 1
 
+    write_build_usage_sidecar(
+        sidecar_path=final_usage_sidecar_path,
+        state_path=state_path,
+        checkpoint_path=checkpoint_path,
+        llm_provider=llm_provider_label,
+        llm_model=llm_controller_model_name,
+        retriever_provider=retriever_provider_label,
+        embedding_model_name=embedding_model_name,
+        build_duration_s=_current_build_duration_s(),
+        build_memory_usage=_current_build_usage_snapshot(),
+        is_live=False,
+    )
+
     return {
         "user_id": user_id,
         "events_processed": processed,
@@ -682,8 +587,8 @@ def main() -> None:
     parser.add_argument(
         "--benchmark-path",
         type=str,
-        default=None,
-        help="Optional benchmark path providing the checkpoint list for snapshot triggers.",
+        required=True,
+        help="Benchmark path providing the checkpoint list for snapshot triggers.",
     )
     parser.add_argument("--size", type=str, default="small", help="Dataset size: small|medium|large")
     parser.add_argument("--embedding-model-name", "--model-name", dest="embedding_model_name", type=str, default="text-embedding-3-large", help="Embedding model")
@@ -700,37 +605,10 @@ def main() -> None:
         default=None,
         help="LLM API base URL",
     )
-    parser.add_argument("--sglang-host", type=str, default="http://localhost", help="SGLang host")
-    parser.add_argument("--sglang-port", type=int, default=30000, help="SGLang port")
     parser.add_argument("--resume", action="store_true", help="Resume from last checkpoint if available")
-    parser.add_argument(
-        "--resume-from-size",
-        type=str,
-        default=None,
-        help="Resume from a checkpoint generated with a different dataset size (e.g. small)",
-    )
     parser.add_argument("--checkpoint-dir", type=str, default=None, help="Checkpoint directory")
     parser.add_argument("--save-every", type=int, default=50, help="Save checkpoint every N events")
     parser.add_argument("--snapshot-dir", type=str, default=None, help="Root directory for durable snapshot bundles")
-    parser.add_argument(
-        "--snapshot-every",
-        type=int,
-        default=None,
-        help="Compatibility arg (ignored in checkpoint-only snapshot mode).",
-    )
-    parser.add_argument(
-        "--resume-from-snapshot",
-        dest="resume_from_snapshot",
-        action="store_true",
-        help="Resume from latest durable snapshot bundle when --resume is set (default).",
-    )
-    parser.add_argument(
-        "--no-resume-from-snapshot",
-        dest="resume_from_snapshot",
-        action="store_false",
-        help="Use legacy checkpoint resume (pickle + rebuild) when --resume is set.",
-    )
-    parser.set_defaults(resume_from_snapshot=True)
     parser.add_argument("--embedding-api-key", type=str, default=None, help="Embedding API key")
     parser.add_argument(
         "--embedding-api-base-url",
@@ -754,15 +632,10 @@ def main() -> None:
         llm_controller_model_name=args.llm_controller_model_name,
         llm_controller_api_key=args.llm_controller_api_key,
         llm_controller_api_base_url=args.llm_controller_api_base_url,
-        sglang_host=args.sglang_host,
-        sglang_port=args.sglang_port,
         resume=args.resume,
-        resume_from_size=args.resume_from_size,
         checkpoint_dir=args.checkpoint_dir,
         save_every=args.save_every,
         snapshot_dir=args.snapshot_dir,
-        snapshot_every=args.snapshot_every,
-        resume_from_snapshot=args.resume_from_snapshot,
         embedding_api_key=args.embedding_api_key,
         embedding_api_base_url=args.embedding_api_base_url,
     )
