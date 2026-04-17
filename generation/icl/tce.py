@@ -72,14 +72,18 @@ def run_generation(
         retrieval_options: RetrievalOptions,
         memory_pool: List[Dict[str, Any]],
     ) -> RetrievalResult:
-        del checkpoint_handle, query_spec, retrieval_options
+        del checkpoint_handle, retrieval_options
+        retrieved_app_log_ids = [log.get("app_log_id") for log in memory_pool]
         return RetrievalResult(
             mode="inline_memory",
             inline_memory_blocks=[to_log_text(log) for log in memory_pool],
             debug_metadata={
-                "retrieval_mode": "observed_logs",
+                "retrieval_mode": "icl_full_prefix",
+                "retrieval_query": str(query_spec.retrieval_query_text or ""),
+                "num_input_context_logs": len(memory_pool),
+                "input_context_app_log_ids": list(retrieved_app_log_ids),
                 "num_retrieved_logs": len(memory_pool),
-                "retrieved_app_log_ids": [log.get("app_log_id") for log in memory_pool],
+                "retrieved_app_log_ids": list(retrieved_app_log_ids),
             },
         )
 
@@ -114,7 +118,12 @@ def run_generation(
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="ICL baseline generation for TCE.")
-    parser.add_argument("--benchmark", type=Path, required=True, help="Path to tce_benchmark.json")
+    parser.add_argument(
+        "--benchmark",
+        type=Path,
+        required=True,
+        help="Path to the pack-first TCE benchmark JSON (for example tce_benchmark_vnext_*task_packs*.json).",
+    )
     parser.add_argument(
         "--app-logs-path",
         type=Path,
@@ -125,7 +134,7 @@ def main() -> None:
         "--output",
         type=Path,
         required=True,
-        help="Output path for tce_results.json",
+        help="Output path for TCE predictions JSON (for example tce_results_v14_taskabc.json).",
     )
     parser.add_argument(
         "--max-visible-logs",

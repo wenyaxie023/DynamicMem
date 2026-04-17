@@ -2,6 +2,11 @@ from .base import TceAdapterArgs
 
 
 def run(args: TceAdapterArgs):
+    if args.enable_final_qa:
+        raise ValueError(
+            "ICL TCE baseline currently supports only the main Task A/B/C flow; final_qa is not supported."
+        )
+
     from generation.icl.tce import run_generation
 
     return run_generation(

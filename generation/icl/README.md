@@ -17,4 +17,4 @@ bash generation/icl/run_icl_tce.sh
 ```
 
 Outputs:
-- `generation/icl/results/<user_id>/prediction/tce_results.json`
+- `generation/icl/results/<user_id>/prediction/tce_results_v14_taskabc.json`
