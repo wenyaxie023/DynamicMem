@@ -1,4 +1,4 @@
-# TCE RQ3 Apply-Service Contract
+# TCE Task C Personalized-Service Contract
 
 Status: active supplement
 
@@ -7,9 +7,32 @@ Canonical protocol:
 
 This file only records Task C / apply-specific additions beyond the shared TCE manual.
 
-RQ3 now measures **Know vs Apply gap** with:
-- `know`: snapshot cloze/fill-the-blank score (existing TCE snapshot task)
-- `apply`: apply-service QA score (new apply-only QA pack)
+Legacy note:
+- the filename keeps `rq3_know_apply` for backward compatibility
+- under the current `taskabc_v2` contract, Task C belongs to `RQ3: Personalization Utility`
+- `Task C - Task A` is still a useful diagnostic gap, but it is not the task's canonical name
+- `taskabc_v1` keeps the legacy apply-QA-style Task C contract
+- `taskabc_v2` uses the structured proactive service-completion contract documented here
+
+Under `taskabc_v2`, Task C measures personalized-service utility with:
+- `Task C`: mixed-family proactive personalized-service score
+- optional diagnostic gap: `Task C - Task A`
+
+Current Task C v2 design:
+- move from apply-QA-style outputs to structured proactive personalized-service completion
+- keep `user_communication` in natural-language assistant-response form
+- use three service-interface families:
+  - `Habit-Conditioned User Communication`
+  - `Preference-Conditioned Filtering Parameter Completion`
+  - `Attribute-Conditioned Action Configuration`
+- use the strict canonical construction mapping:
+  - `habits -> Habit-Conditioned User Communication`
+  - `preferences -> Preference-Conditioned Filtering Parameter Completion`
+  - `attributes -> Attribute-Conditioned Action Configuration`
+- treat `full-field dependency` and `point_pairability` as build-time validity rules
+- use family-appropriate point-based scoring as the primary direction
+- require a family-appropriate service object rather than a raw copy of the source state
+- preserve one required output leaf per source leaf in the same source-leaf order so slot pairing stays deterministic
 
 ## Benchmark Extension
 
@@ -26,7 +49,7 @@ Each checkpoint may include:
     }
   },
   "rq3_apply_service_qa": {
-    "version": "v1",
+    "version": "v9",
     "generator": {
       "provider": "openai",
       "model": "gpt-5",
@@ -46,24 +69,31 @@ Each checkpoint may include:
         "items": [
           {
             "qa_id": "q1",
-            "service_category": "...",
-            "question": "...",
-            "reference_answer": "...",
+            "service_family": "user_communication",
+            "scenario": "...",
+            "task_instruction": "...",
+            "reference_answer": "Send a reminder that the user's regular morning run window starts at 06:30.",
             "answer_scoring_points": [
               {
                 "point_id": "ap_q1_p1",
                 "point_type": "micro",
                 "polarity": "positive",
-                "point_text": "..."
+                "point_text": "The answer mentions that the reminder is for a recurring morning run.",
+                "reference_value": "06:30"
               }
             ],
             "gold_memory_evidence_app_log_ids": ["log_0001"],
             "retrieval_query": "...",
-            "validation": {
+            "item_validation": {
               "is_valid": true,
               "semantic_criteria": [],
               "failed_rules": [],
               "rewrite_attempts": 1
+            },
+            "scoring_validation": {
+              "is_valid": true,
+              "failed_rules": [],
+              "rewrite_attempts": 0
             }
           }
         ]
@@ -82,7 +112,7 @@ Each checkpoint may include:
       "items": [
         {
           "qa_id": "q1",
-          "answer": "...",
+          "answer": "Send a reminder that the user's regular morning run window starts at 06:30.",
           "evidence": [
             {
               "app_log_id": "log_0001",
@@ -97,30 +127,49 @@ Each checkpoint may include:
 ```
 
 Prediction contract notes:
-- vNext Task C prediction does **not** include `analysis`.
+- `taskabc_v1` prediction continues to use `{answer, evidence}`.
+- `taskabc_v2` prediction uses:
+  - `{answer, evidence}` for `user_communication`
+  - `{output, evidence}` for `information_request_construction` / `action_configuration`
 - `gold_memory_evidence_app_log_ids` are benchmark-side memory evidence anchors, not generated text.
-- `validation` 不再单独暴露 `contract_checks`；programmatic structural failures、semantic failures、以及 rubric validation failures 统一进入 `failed_rules`
-- build-time generator prompt now emits `service_category`, `question`, `reference_answer`, and atomic `rubric[]`; pack build converts `rubric[]` into `answer_scoring_points[]`
-- `answer_scoring_points[]` are scored as binary `0/1` atomic-fact hits and averaged per item
-- Task C programmatic structural check is intentionally minimal:
-  - it only validates generated `rubric[]` shape
-  - it does not invalidate items for question length, wording style, punctuation, or missing gold evidence anchors
-  - question quality remains the responsibility of semantic validation
-  - scoring quality remains the responsibility of rubric validation
+- build-time generator prompt in `taskabc_v2` emits one structured service-completion item:
+  - `scenario`
+  - `task_instruction`
+  - `reference_answer` for `user_communication`
+  - `output_template` / `reference_output` for structured families
+- `taskabc_v2` structured-family `output_template` and `reference_output` must form a family-appropriate top-level service object
+- they must not be a raw copy of the current contracted `state_value`
+- they must preserve every source leaf exactly once
+- required output leaves must appear in source-leaf order
+- for `preferences -> Preference-Conditioned Filtering Parameter Completion`, the contracted Task C v2 source input is `{"statement": ...}` only
+- auxiliary preference `signals` may remain benchmark-side support metadata, but they are not shown to the answering assistant and are not part of paired slot scoring
+- `taskabc_v2` `answer_scoring_points[]` are:
+  - natural-language answer points for `user_communication`
+  - positive-only paired field points for structured families
+- missing / empty `answer_scoring_points[]` is a Task C protocol violation for current pack-first eval; evaluator must fail
+- `taskabc_v2` programmatic structural checks must validate:
+  - canonical family mapping
+  - family-appropriate structured service object
+  - non-empty scenario / task instruction
+  - source/output field coverage for paired points
+  - deterministic source-leaf-order pairing
 
 Final answering prompt contract:
-- four-block structure only:
-  - `[Task]`
-  - `[User memory]`
-  - `[Output format]`
-  - `[Rules]`
-- `[Task]` must include:
-  - `Instruction:`
-  - `Query:`
+- shared Task C prompting comes from `tce_core/prompts.py`
+- Task C v2 synthesis prompt must dispatch by `service_family`
+- each Task C v2 family uses a separate generation prompt with family-specific example and wording
+- each family-specific generation prompt should state one fixed canonical source `state_type`, not a generic `attribute|habit|preference` menu
+- builder-side normalization should inject the final `service_family` field; synthesis output may omit it
+- the stable runtime family id `information_request_construction` is retained for compatibility, but its paper-facing meaning is now `Preference-Conditioned Filtering Parameter Completion`
+- `taskabc_v1` visible prompt uses the pack-authored item `question`
+- `taskabc_v2` visible prompt uses:
+  - `scenario + task_instruction` for `user_communication`
+  - `scenario + task_instruction + output_template` for structured families
 - retrieval query for apply answering comes from `items[*].retrieval_query`
-- apply answering prompt must include the item `question`
-- `service_category` may be included as lightweight context, but no option-style scenario block is required
-- `definitions` such as `evidence_content` granularity are expressed inside `[Rules]`, not a separate block
+- `taskabc_v2` answering prompt must require:
+  - one short assistant response for `user_communication`
+  - a structured `output` object for structured families
+- `service_family` may be included as lightweight context
 
 ## Eval Metrics
 
@@ -135,8 +184,9 @@ Final answering prompt contract:
 - `rq3_apply_evidence_content_with_id_rate`
 
 Legacy note:
-- old option-based apply metrics may still appear when reading legacy artifacts
-- new write paths must not require option labels
+- old option-based apply metrics may still appear only when reading legacy artifacts
+- old “know vs apply gap” wording may still appear in historical analysis outputs
+- new write paths and current eval must not require option labels
 
 ## Execution
 
@@ -173,3 +223,4 @@ Key runtime config:
 
 Runtime semantics:
 - generation runtime consumes one apply item per key from `rq3_apply_service_qa`
+- under `taskabc_v2`, the builder canonicalizes `pair_count_per_key` to `1`

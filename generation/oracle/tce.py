@@ -188,7 +188,12 @@ def run_generation(
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Oracle baseline generation for TCE.")
-    parser.add_argument("--benchmark", type=Path, required=True, help="Path to tce_benchmark.json")
+    parser.add_argument(
+        "--benchmark",
+        type=Path,
+        required=True,
+        help="Path to the pack-first TCE benchmark JSON (for example tce_benchmark_vnext_*task_packs*.json).",
+    )
     parser.add_argument(
         "--app-logs-path",
         type=Path,
@@ -199,7 +204,7 @@ def main() -> None:
         "--output",
         type=Path,
         required=True,
-        help="Output path for tce_results.json",
+        help="Output path for TCE predictions JSON (for example tce_results_v14_taskabc.json).",
     )
     parser.add_argument(
         "--max-visible-logs",

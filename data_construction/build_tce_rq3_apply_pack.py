@@ -2,6 +2,7 @@
 """Compatibility wrapper for TCE apply-pack build after pipeline split."""
 
 import argparse
+import json
 from pathlib import Path
 from typing import Any, Dict, Optional
 
@@ -13,6 +14,11 @@ except Exception:  # pragma: no cover
 from data_construction.build_tce_state_validation import build_validated_benchmark
 from data_construction.build_tce_task_packs import build_benchmark_task_packs
 from tce_core.state_validation import write_state_validation_reports
+from tce_contracts import (
+    infer_canonical_research_doc,
+    infer_research_frame_version,
+    infer_task_contract_version,
+)
 
 
 def build_apply_pack(
@@ -57,6 +63,11 @@ def build_apply_pack(
             resume=resume,
         )
 
+    benchmark_payload = json.loads(benchmark_path.read_text(encoding="utf-8"))
+    inherited_contract_version = infer_task_contract_version(benchmark_payload)
+    inherited_research_frame_version = infer_research_frame_version(benchmark_payload)
+    inherited_canonical_research_doc = infer_canonical_research_doc(benchmark_payload) or ""
+
     return build_benchmark_task_packs(
         benchmark_path=benchmark_path,
         output_path=output_path,
@@ -72,6 +83,9 @@ def build_apply_pack(
         save_raw=save_raw,
         max_rewrites=max_rewrites,
         save_every_apply_keys=save_every_apply_keys,
+        task_contract_version=inherited_contract_version,
+        research_frame_version=inherited_research_frame_version,
+        canonical_research_doc=inherited_canonical_research_doc,
     )
 
 

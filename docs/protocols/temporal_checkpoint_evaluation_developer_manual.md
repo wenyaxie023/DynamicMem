@@ -30,6 +30,33 @@ DynamicMem 当前评测协议分为两类：
 
 ## 3. Task Contracts
 
+### 3.0 Task-Contract Versioning
+- benchmark / prediction / eval artifact 顶层应带：
+  - `task_contract_version`
+  - `research_frame_version`
+  - `canonical_research_doc`（若有）
+- supported contract families:
+  - `taskabc_v1`
+    - 历史冻结合同
+    - 对 `2026-04-13` 之前生成且缺少显式 `task_contract_version` 的旧 artifact，读取方默认按 `taskabc_v1` 解释
+  - `taskabc_v2`
+    - 当前 active 合同
+    - 新构建 benchmark / task packs / prediction / eval 默认写入该值
+- compatibility rules:
+  - `state_completion_pack` / `change_tracking_pack` / `rq3_apply_service_qa` 这些 pack 名称在 `v1` 和 `v2` 中保持不变
+  - 合同升级首先通过 top-level `task_contract_version` 区分，而不是通过 pack 名字或文件名中的 `RQ1/RQ2/RQ3`
+  - 历史文件名若仍保留 legacy `rq1/rq2/rq3` 前缀，解释时以 artifact 内部 metadata 和当前协议文档为准
+- current research-facing mapping under `taskabc_v2`:
+  - `RQ1 = State Reconstruction`
+    - primary benchmark object: `Task A`
+  - `RQ2 = State Updating`
+    - no standalone Task B in the active v2 contract
+    - primary analysis object: `Task A` on `changed` vs `unchanged` states
+    - `changed` 的定义：与前一个 checkpoint 都存在且 current-state value 发生变化的 key
+  - `RQ3 = Personalization Utility`
+    - primary benchmark object: `Task C`
+    - `Task C - Task A` 可以作为 utility diagnostic gap，但不是 Task C 的定义本身
+
 ### 3.1 Checkpoint Definition
 - checkpoint 是时间切片下的评测单元。
 - 每个 checkpoint 都有统一的目标 key 集与 ground truth 状态视图。
@@ -53,7 +80,8 @@ Execution stages (current protocol):
    - 产出：`state_questionability`、`validated_snapshot_state`、`state_validation_summary`
 3. Prebuilt task packs:
    - 入口：`data_construction/build_tce_task_packs.py`
-   - 产出：`state_completion_pack`、`change_tracking_pack`、`rq3_apply_service_qa`
+   - 产出：`state_completion_pack`、`rq3_apply_service_qa`
+   - `taskabc_v1` 额外产出：`change_tracking_pack`
 4. Generation / evaluation:
    - 优先消费 prebuilt packs
    - 若 benchmark 缺 pack，则 fallback 到 legacy raw benchmark 逻辑
@@ -95,6 +123,12 @@ Code-aligned policy:
 - `mem0`
   - `checkpoint_parallelism = allowed`
   - `within_checkpoint_parallelism = allowed`
+- `zep`
+  - `checkpoint_parallelism = forbidden`
+  - `within_checkpoint_parallelism = forbidden`
+- `simplemem`
+  - `checkpoint_parallelism = forbidden`
+  - `within_checkpoint_parallelism = forbidden`
 - `letta` / `memgpt`
   - `checkpoint_parallelism = forbidden`
   - `within_checkpoint_parallelism = forbidden`
@@ -106,7 +140,7 @@ Unified TCE execution route:
   2. `retrieve_context_for_query`
   3. `answer_query`
 - baseline differences are expressed only through backend hooks, not through separate pipeline contracts
-- `letta` / `memgpt` are not protocol exceptions; they still receive the same task/query contract as other baselines
+- `letta` / `memgpt` are not protocol exceptions; until they migrate to the required snapshot-builder route, they should be treated as pending compliance work rather than carve-outs
 - legacy `retrieve_context(...)` callback is not part of the current TCE protocol contract
 - Task A answer prompting must use the pack-authored `question_text` directly as the visible query text.
 - Shared Task A prompt builders must not prepend extra wrapper sections such as `[Task]`, `Instruction:`, `Query:`, or `Checkpoint time:` ahead of that `question_text`.
@@ -147,30 +181,47 @@ Implementation requirements:
 - 对所有 baseline：
   - 必须按 benchmark checkpoint 顺序 ingest user app logs 或等价地推进 memory state
   - canonical app-log payload 必须是 raw app log object 本身
-  - 这条约束同时适用于 builder ingest、retrieval / indexing corpus、以及 inline-memory rendering
-  - baseline 可为 backend transport 做 lossless serialization / wrapper，但不得在这些阶段前额外增加、删除、重命名、摘要化或改写 payload 语义字段
+  - builder ingest 必须直接消费 raw app log object 本身
+  - 若 baseline 的原生 builder 只接受 dialogue turns 而不接受 raw event objects，则允许使用 lossless dialogue transport wrapper：
+    - 每条 raw app log object 可以投影成两条 dialogue turn
+    - turn 1 必须是 `User: {raw_json}`
+    - turn 2 必须是 `Assistant: [ingested]`
+    - `raw_json` 必须是该 raw app log object 的 lossless serialization
+    - `[ingested]` 必须是 literal acknowledgement，不得承载额外语义内容
+    - 该 wrapper 只是一种 backend transport；source lineage 仍必须能精确回到原始 `app_log_id`
+  - shared inline-memory rendering 应直接承载 backend retrieval 阶段返回的 memory content
+  - 对 stateful baseline，checkpoint snapshot 的 retrieval-visible memory state 可以是从 raw app logs 推导出的 derived memory units；shared prompt 中的 inline memory 应直接使用这些 backend-derived memory units 的 lossless serialization，而不是强制 rematerialize 成 raw app log object
+    - 若 backend memory unit 保留 raw-log lineage，则调试 metadata 应尽可能保留这些 source ids 以支持审计
+    - 若 backend memory unit 不保留 raw-log lineage，则 adapter 不应伪造或臆造 raw app log 映射
+    - adapter 不得在 backend 官方 retrieval payload 之外额外加入本地包装说明、重写标签或二次改写的 rematerialized view
+  - 对采用 backend-native retrieval-content mode 的 baseline，shared prompt 直接看到 backend 官方 `retrieve_context(...)` 返回内容是 canonical 行为；inline memory 应是该 retrieval payload 的 lossless serialization
+    - debug metadata 仍应尽可能保留 backend memory ids、payload counts，以及在可恢复时的 raw app log ids/source ids
+  - 除上述 derived memory unit 例外外，baseline 可为 backend transport 做 lossless serialization / wrapper，但不得在这些阶段前额外增加、删除、重命名、摘要化或改写 payload 语义字段
   - 每个 checkpoint 的 retrieval 只能读取该 checkpoint 对应的 prepared state
   - 回答阶段不得把 Task A/B/C 的问答行为写回共享 memory state
   - `baseline_params.enable_change_reasoning=true` 是 Task B generation 的规范开关；Task C 继续由 `enable_rq3_apply_service_qa` 控制
   - generation runtime 默认信任 pack-first benchmark；Task C pack 的完整性与合法性应在 task-pack build 阶段保证，不应在 baseline runtime 再引入 pack-missing gate
   - 若 baseline 无法证明 query path 为只读，则必须把 `checkpoint_workers` 与 `within_checkpoint_workers` 都强制降为 `1`
-- 对 stateful baseline，必须显式区分两类实现：
-  - agent-loop baseline（例如 `letta` / `memgpt`）
-    - baseline 的正式入口可以是单次 `run_generation(...)`
-    - `prepare_checkpoint_state(...)` 可以顺序推进 baseline-local builder 到当前 checkpoint，并导出该 checkpoint 的 persisted snapshot
-    - shared `run_pipeline(...)` 不直接实现通用 memory builder；stateful build progression 必须通过 baseline 的 `prepare_checkpoint_state(...)` hook 表达
-    - builder progress 只可记录 confirmed progress；遇到 ingest 结果不确定时必须标记 uncertain，而不是回写更早 confirmed index
-    - resume 默认以本地 builder progress 记录的 confirmed prefix 为准；其作用是确定“从哪条 log 继续喂”
-    - live builder attach 只需复用本地记录的 `builder_agent_id`；运行时不应依赖 message-history 重建出的 ingest records 做 resume 决策
-  - checkpoint-snapshot baseline（例如 `amem`）
-    - build phase 与 test phase 必须是两个正式相位
-    - build phase 负责顺序 ingest raw app logs，并产出：
-      - 本地 builder progress（例如 `state.pkl + checkpoint.json`）
-      - required persisted checkpoint artifacts（checkpoint snapshot / `manifest.json`）
-    - test phase 才调用 shared `run_pipeline(...)`
-    - 在这类 baseline 中，`prepare_checkpoint_state(...)` 只能定位当前 checkpoint 的 persisted snapshot / collection；不得在 test phase 内推进 builder
-    - 本地 `state.pkl + checkpoint.json` 等 builder progress 文件是 builder/ingest 级 resume 的唯一 authoritative source
-    - checkpoint snapshot / `manifest.json` 是 required persisted checkpoint artifacts，用于当前 checkpoint 的只读 retrieval 与调试检查，但不应成为 builder/ingest resume 的 authoritative source
+  - 对 agent-memory baseline，若 backend 暴露 native retrieval+answer API（例如 `ask()`）：
+    - shared visible task prompt 仍必须来自 `QuerySpec.answer_query_text` 对应的 shared agent-memory prompt builder
+    - backend-native retrieval 的 driving question 必须来自 `QuerySpec.retrieval_query_text`
+    - `retrieve_context_for_query(...)` 必须执行或 materialize 可复用的 backend retrieval state，并在 `debug_metadata` 中写出可审计的 retrieval metadata（至少包括 `retrieval_query` 以及 backend-exposed retrieval ids / source ids when available）
+    - `answer_query(...)` 可以复用该 retrieval state 调用 backend-native `ask()` / answer generator，但不得 silently regenerate a different retrieval question
+- 对所有 stateful baseline：
+  - 必须采用统一的 checkpoint-snapshot 路线；不再存在 test-phase 内推进 builder 的允许路径
+  - build phase 与 test phase 必须是两个正式相位
+  - build phase 负责顺序 ingest raw app logs，并产出：
+    - 本地 builder progress（authoritative builder resume source）
+    - required persisted checkpoint artifacts（checkpoint snapshot / `manifest.json`）
+  - build phase 可以额外维护 full-corpus 的 local per-log preprocessing cache（例如 OpenIE / embedding 结果），并允许在该 cache 构建阶段使用并行
+  - 这类 preprocessing cache 不是 retrieval-visible memory state；它只能作为后续 builder replay 的本地输入
+  - 若使用 preprocessing cache，checkpoint memory state 仍必须按 confirmed prefix 顺序 replay / materialize；不得先基于全量 future logs 直接建成可检索图或可检索集合
+  - test phase 才调用 shared `run_pipeline(...)`
+  - `prepare_checkpoint_state(...)` 在 test phase 中只能定位并加载当前 checkpoint 的 persisted snapshot / collection；不得推进 builder
+  - 本地 builder progress 只可记录 confirmed progress；遇到 ingest 结果不确定时必须标记 uncertain，而不是回写更早 confirmed index
+  - resume 默认以本地 builder progress 记录的 confirmed prefix 为准；其作用是确定“从哪条 log 继续喂”
+  - checkpoint snapshot / `manifest.json` 是 required persisted checkpoint artifacts，用于当前 checkpoint 的只读 retrieval 与调试检查，但不应成为 builder/ingest resume 的 authoritative source
+  - 当前尚未迁移到该路线的 stateful baseline 应标记为 pending compliance work，而不是协议例外
 
 ### 3.1b Shared Point Scoring Contract
 vNext 的答案质量评估统一采用 `point` 作为评分单元。
@@ -224,6 +275,14 @@ Task A current-state projection:
 - transition-style state：
   - `task_a_ground_truth = validated_state_value.to`
 - 若无法得到 `task_a_ground_truth`（例如只有 `from`、没有 `to`），该 key 必须从 `state_completion_pack` 过滤掉
+- under `taskabc_v2`, Task A pack build must additionally remove excluded derived / bookkeeping fields before authoring `answer_template`, `retrieval_query`, and `scoring_points`
+  - current exclusion set:
+    - `schedule_date`
+    - `schedule_dates`
+    - `priority`
+  - rationale:
+    - these fields are not part of the intended explicit current-state benchmark object in v2
+    - leaving them inside Task A would inflate slot count and pollute the overall score with derived/date-expansion details
 
 Task B before/after resolution:
 - transition-style current validated state：
@@ -426,6 +485,10 @@ Metric meanings (Task A):
     - 这是最严格的 checkpoint-level 诊断指标。
 
 ### 3.3 Task B: Change Tracking & Attribution (Cloze)
+Legacy note:
+- this section describes the frozen `taskabc_v1` Task B contract
+- under active `taskabc_v2`, standalone Task B is not part of the benchmark contract and should not be built by default
+
 Objective:
 - 评估模型是否能预测 changed keys 的最近两次状态，并给出变化归因。
 
@@ -501,52 +564,80 @@ Metric meanings (Task B):
   - `change_before_after_correctness_mean_on_changed`
     - strict exact equality 下，`before` 与 `after` 是否都完全匹配；仅作诊断。
 
-### 3.4 Task C: Personalized Service Application (Apply QA)
+### 3.4 Task C: Personalized Service Completion
 Objective:
 - 评估模型是否能把已知 state 用于个性化服务决策。
 
+Implementation status note:
+- `taskabc_v1` continues to use the legacy apply-QA-style Task C contract
+- `taskabc_v2` uses structured proactive personalized-service completion
+- v1/v2 compatibility is controlled by top-level `task_contract_version`, not by pack name
+
 Input Contract:
-- checkpoint 的 apply QA pack（`rq3_apply_service_qa`）
+- checkpoint 的 Task C pack（`rq3_apply_service_qa`）
 - retrieval context（优先按 apply item 的 `retrieval_query` 查询）
 - apply QA 输入 state 必须来自 `validated_snapshot_state`
 - generation runtime 对每个 `state_key` 只消费一个 apply item；Task C 不提供 runtime item-count override
+- `taskabc_v2` 下，Task C build-time construction uses a strict canonical mapping:
+  - `habits -> Habit-Conditioned User Communication`
+  - `preferences -> Preference-Conditioned Filtering Parameter Completion`
+  - `attributes -> Attribute-Conditioned Action Configuration`
 
 Output Contract:
-- `rq3_apply_answers[state_key].items[*].answer`
-- `rq3_apply_answers[state_key].items[*].evidence = [{"app_log_id": str, "evidence_content": str}, ...]`
+- `taskabc_v1`:
+  - `rq3_apply_answers[state_key].items[*].answer`
+  - `rq3_apply_answers[state_key].items[*].evidence = [{"app_log_id": str, "evidence_content": str}, ...]`
+- `taskabc_v2`:
+  - `rq3_apply_answers[state_key].items[*].answer` for `user_communication`
+  - `rq3_apply_answers[state_key].items[*].output` for `information_request_construction` / `action_configuration`
+  - `rq3_apply_answers[state_key].items[*].evidence = [{"app_log_id": str, "evidence_content": str}, ...]`
 
 Scoring Sources:
 - slot-level LLM judge for answer atomic facts
   - 每个 apply item 必须带：
-    - `qa_id`（由程序按 item 顺序分配，例如 `q1`, `q2`；不由 LLM 生成）
+    - `qa_id`
+    - `answer_scoring_points[]`
+    - `gold_memory_evidence_app_log_ids`
+  - `taskabc_v1` items additionally carry the legacy QA fields:
     - `service_category`
     - `question`
     - `reference_answer`
-    - `answer_scoring_points[]`
     - `qa_validation`
     - `atomic_fact_validation`
-    - `gold_memory_evidence_app_log_ids`
-  - Task C 必须采用两阶段构造：
-    1. build-time 先只生成 QA：
-       - `service_category`
-       - `question`
-       - `reference_answer`
-    2. 只有 QA 通过 question-level validation 后，才生成 `answer_scoring_points[]`
-  - `answer_scoring_points[]` 是正式评分契约，也是 Task C eval 的 slot 集合
-  - `rubric[]` 若落盘，只能作为从最终 `answer_scoring_points[].point_text` 派生的人类可读兼容 alias；不得再作为 LLM 生成 QA 阶段的正式输出字段
-  - `answer_scoring_points[]` 中的每条 atomic point 必须能被独立评分
-  - eval 时，Task C 不再使用 option-style summary 或 whole-item `1..5` judge
-  - 每个 apply item 的 judge 输入必须至少包含：
-    - `state_key`
-    - `qa_id`
-    - `question`
+  - `taskabc_v2` items carry the structured service-completion fields:
+    - `service_family`
+    - `scenario`
+    - `task_instruction`
+    - `item_validation`
+    - `scoring_validation`
+  - `taskabc_v2` `user_communication` items additionally carry:
     - `reference_answer`
-    - `predicted_answer`
-    - `answer_scoring_points[]`
-  - 每个 `answer_scoring_points[]` slot 的 judge 输出只允许：
-    - `point_id`
-    - `analysis`
-    - `correct`
+  - `taskabc_v2` `information_request_construction` / `action_configuration` items additionally carry:
+    - `output_template`
+    - `reference_output`
+  - `taskabc_v2` structured families must define a family-appropriate structured service object:
+    - both must be top-level JSON objects
+    - `output_template` replaces every required output leaf with `"<fill>"`
+    - `reference_output` has the same exact shape as `output_template`
+    - they do not need to mirror the raw `state_value` schema
+    - they must preserve every non-derived source leaf value exactly once
+    - required output leaves must appear in the same order as the source leaves so paired slot scoring stays deterministic
+    - a raw copy of the source state schema is not a valid v2 service object
+    - for `preferences -> Preference-Conditioned Filtering Parameter Completion`, the v2-contracted source input is statement-only:
+      - if the underlying preference state includes `statement` plus auxiliary `signals`, only `statement` is shown to the answering assistant
+      - only that contracted `statement` field participates in paired slot scoring
+  - `taskabc_v2` structured-family `answer_scoring_points[]` must be positive-only paired field points:
+    - `point_type = "field"`
+    - `polarity = "positive"`
+    - each point must include:
+      - `source_field_path`
+      - `output_field_path`
+      - `target_path`
+      - `reference_value`
+  - every non-derived leaf in the v2-contracted `state_value` must appear in at least one scoring point
+  - `answer_scoring_points[]` is the formal scoring contract for both v1 and v2
+  - `answer_scoring_points[]` 缺失、为空或 schema 非法时，Task C eval 必须视为 pack/protocol violation 并直接失败
+  - eval 时，Task C 不再使用 whole-item `1..5` judge
   - main eval JSON 必须使用 split canonical structure：
     - `rq3_apply_slot_eval_by_item[item_id]`
     - 每个 item 只包含：
@@ -556,22 +647,6 @@ Scoring Sources:
       - `slot_count`
       - `slot_context`
       - `judgments`
-  - Task C build-time question contract 还必须满足：
-    - `question` 不得把两个候选动作显式列成 A/B 选项或命名菜单
-    - `question` 不得只是把 `state_value` 中已有的语义标签或措辞轻微改写后塞进场景；若问题本质上可以靠复述 state wording 回答，则该 item 无效
-    - Task C question archetype 应优先是 bounded policy / service-decision 问题，例如：
-      - defer vs escalate policy
-      - route / prioritize policy
-      - recommend / avoid policy
-      - configure / suppress / surface policy
-    - Task C question archetype 不应退化成：
-      - exact capacity calculation
-      - lot / tactic optimization
-      - monitoring-rule design
-      - threshold-setting
-      - exact inventory / participant arithmetic
-    - `reference_answer` 不得引入 `state_value` 或 `question` 中未显式给出的具体事实、参数、产品规格或背景知识
-    - `reference_answer` 也不得额外引入具体方法、策略、阈值、指标、升级机制、容量计算或领域技巧，除非这些内容已在 `state_value` 或 `question` 中被显式给出
 - evidence 指标分两组并列报告：
   - id-based correctness metrics
   - content-based structural metrics
@@ -596,17 +671,15 @@ Metric meanings (Task C):
 
 Unified answering-prompt contract:
 - Task A / Task B / Task C:
-  - final answering prompt 顶部直接使用 pack-authored问题文本：
-    - Task A uses `question_text`
-    - Task B uses `question_text`
-    - Task C uses `apply_question`
-  - 不再额外包裹 `[Task]` / `Instruction:` / `Query:` / `Checkpoint time:`
-  - 其余结构仍保留：
-    - `[Memory]`
-    - `[Output format]`
-    - `[Rules]`
-- retrieval query 不应包含通用 instruction
-- `definitions` 不单独成块；若需要定义 `evidence_content`、answer granularity、field semantics，必须写入 `[Rules]`
+  - Task A uses pack-authored `question_text`
+  - Task B uses pack-authored `question_text`
+  - Task C v1 uses pack-authored `question`
+  - Task C v2 `user_communication` uses pack-authored `scenario + task_instruction`
+  - Task C v2 structured families use pack-authored `scenario + task_instruction + output_template`
+  - retrieval query 不应包含通用 instruction
+  - Task C v2 final output format must be:
+    - `user_communication`: `{"answer": <natural-language response>, "evidence": [...]}`
+    - structured families: `{"output": <filled object>, "evidence": [...]}`
 
 Evidence object contract (all three tasks):
 - `app_log_id`
@@ -616,6 +689,45 @@ Evidence object contract (all three tasks):
   - short quoted or closely paraphrased supporting snippet from the same log
   - 应简短、局部、直接支撑答案，不允许长段摘要
   - 必须与同一个 evidence object 内的 `app_log_id` 对齐
+
+Task C v2 service-interface taxonomy:
+- `Habit-Conditioned User Communication`
+  - user-facing proactive communication actions
+- `Preference-Conditioned Filtering Parameter Completion`
+  - paper-facing name for the preference family
+  - the assistant fills structured filtering parameters for a downstream retrieval / screening / recommendation step
+  - this task does not ask for a final recommendation; it asks for the value of filtering fields that will later guide a downstream information system
+- `Attribute-Conditioned Action Configuration`
+  - the assistant fills structured configuration parameters for a downstream tool / workflow / executable service action
+  - this task is about how a service should be configured or executed, not about what information should be retrieved
+
+Runtime compatibility note:
+- the stable internal Task C v2 family ids remain:
+  - `user_communication`
+  - `information_request_construction`
+  - `action_configuration`
+- for backward compatibility, the internal id `information_request_construction` now corresponds to the paper-facing preference task name `Preference-Conditioned Filtering Parameter Completion`
+
+Task C v2 synthesis-prompt contract:
+- Task C v2 generation prompt must be selected by `service_family`, not shared across all families
+- `user_communication`, `information_request_construction`, and `action_configuration` each require their own family-specific synthesis prompt with targeted definitions, constraints, and example
+- family-specific prompt examples should match the canonical service interface of that family rather than relying on one generic example across all state types
+- each family-specific synthesis prompt should declare its own canonical source `state_type` exactly, rather than describing `state_type` as a generic multi-way choice
+- the builder should inject `service_family` programmatically after synthesis; the family-specific LLM output does not need to generate that field
+
+Task C v2 item validity rules:
+- `user_communication`: output is one short natural-language assistant response
+- `structured-completion`: structured families output a bounded JSON object
+- `full-field dependency`: all required non-derived state fields are needed for the gold output
+- `schema-groundedness`: structured families use a family-appropriate service object instead of a raw state copy
+- `point-pairability`: structured families score one paired source/output field at a time; `user_communication` uses point-based natural-language scoring against `reference_answer`
+- `unique gold`: under the provided context and schema, the gold output is stable enough for deterministic slot scoring
+
+Task C v2 scoring target:
+- primary metric:
+  - `user_communication`: point-based correctness against `reference_answer`
+  - structured families: required structured slot accuracy
+- evidence metrics remain auxiliary and separate from answer correctness
 
 ## 4. Validation Policy (State + QA)
 
@@ -876,25 +988,39 @@ Stage 2 task-pack validation pipeline (all tasks):
 ## 5. Data Contracts (Benchmark / Prediction / Eval IO)
 
 ### 5.1 Benchmark Minimum Fields
+- top-level `task_contract_version`
+- top-level `research_frame_version`
 - `checkpoints[].checkpoint_id`
 - `checkpoints[].expected_snapshot_state`
 - `checkpoints[].state_observability`
 - `checkpoints[].state_questionability`
 - `checkpoints[].validated_snapshot_state`
 - `checkpoints[].state_completion_pack.keys[state_key].scoring_points`
-- `checkpoints[].change_tracking_pack.keys[state_key].before_scoring_points`
-- `checkpoints[].change_tracking_pack.keys[state_key].after_scoring_points`
-- `checkpoints[].change_tracking_pack.keys[state_key].reference_change_reason`
-- `checkpoints[].change_tracking_pack.keys[state_key].change_reason_scoring_points`
 - `checkpoints[].rq3_apply_service_qa.keys[state_key].items[*].answer_scoring_points`
-- `checkpoints[].rq3_apply_service_qa.keys[state_key].items[*].service_category`
-- `checkpoints[].rq3_apply_service_qa.keys[state_key].items[*].question`
-- `checkpoints[].rq3_apply_service_qa.keys[state_key].items[*].reference_answer`
 - `checkpoints[].rq3_apply_service_qa.keys[state_key].items[*].gold_memory_evidence_app_log_ids`
-- `checkpoints[].rq3_apply_service_qa.keys[state_key].items[*].qa_validation`
-- `checkpoints[].rq3_apply_service_qa.keys[state_key].items[*].atomic_fact_validation`
+- `taskabc_v1` additionally requires:
+  - `checkpoints[].rq3_apply_service_qa.keys[state_key].items[*].service_category`
+  - `checkpoints[].rq3_apply_service_qa.keys[state_key].items[*].question`
+  - `checkpoints[].rq3_apply_service_qa.keys[state_key].items[*].reference_answer`
+  - `checkpoints[].rq3_apply_service_qa.keys[state_key].items[*].qa_validation`
+  - `checkpoints[].rq3_apply_service_qa.keys[state_key].items[*].atomic_fact_validation`
+- `taskabc_v2` additionally requires:
+  - `checkpoints[].rq3_apply_service_qa.keys[state_key].items[*].service_family`
+  - `checkpoints[].rq3_apply_service_qa.keys[state_key].items[*].scenario`
+  - `checkpoints[].rq3_apply_service_qa.keys[state_key].items[*].task_instruction`
+  - `checkpoints[].rq3_apply_service_qa.keys[state_key].items[*].output_template`
+  - `checkpoints[].rq3_apply_service_qa.keys[state_key].items[*].reference_output`
+  - `checkpoints[].rq3_apply_service_qa.keys[state_key].items[*].item_validation`
+  - `checkpoints[].rq3_apply_service_qa.keys[state_key].items[*].scoring_validation`
+- `taskabc_v1` additionally requires:
+  - `checkpoints[].change_tracking_pack.keys[state_key].before_scoring_points`
+  - `checkpoints[].change_tracking_pack.keys[state_key].after_scoring_points`
+  - `checkpoints[].change_tracking_pack.keys[state_key].reference_change_reason`
+  - `checkpoints[].change_tracking_pack.keys[state_key].change_reason_scoring_points`
 
 ### 5.2 Prediction Minimum Fields
+- top-level `task_contract_version`
+- top-level `research_frame_version`
 - `predictions[].checkpoint_id`
 - `predictions[].snapshot_state`
 - `predictions[].evidence`
@@ -907,18 +1033,22 @@ Stage 2 task-pack validation pipeline (all tasks):
 - `predictions[].metadata.effective_within_checkpoint_workers`
 
 ### 5.3 Eval Output Minimum Fields
+- top-level `task_contract_version`
+- top-level `research_frame_version`
 - `summary`
 - `checkpoints[]`
 - `prediction_alignment`
 - `summary.snapshot_point_score_mean_on_expected_mean`
-- `summary.change_state_predict_point_score_mean_on_changed_mean`
-- `summary.change_reason_point_score_mean_on_changed_mean`
 - `summary.rq3_apply_answer_point_score_mean_mean`
 - `checkpoints[].snapshot_slot_eval_by_key`
-- `checkpoints[].change_slot_eval_by_key`
 - `checkpoints[].rq3_apply_slot_eval_by_item`
+- `taskabc_v1` additionally requires:
+  - `summary.change_state_predict_point_score_mean_on_changed_mean`
+  - `summary.change_reason_point_score_mean_on_changed_mean`
+  - `checkpoints[].change_slot_eval_by_key`
 - 注：
-  - Task A / B continuity 指标仍保留 `value_f1`
+  - Task A continuity 指标仍保留 `value_f1`
+  - under `taskabc_v2`, `RQ2` should be derived from Task A changed-vs-unchanged slices rather than from standalone Task B metrics
   - Task C vNext 不再要求 option-style summary 字段
   - TCE eval 不再要求 whole-state / whole-change `1..5` LLM judge 输出
   - judge prompt / raw output / request-level audit payload 不得写入 main eval JSON
@@ -1014,9 +1144,10 @@ Stage 2: Prebuilt Task Packs
   2. Task A pack 验收：
      - 仅从 `validated_snapshot_state` 出题
      - `state_completion_pack.keys[*].answer_template` 结构与 validated state 对齐
+     - under `taskabc_v2`, `answer_template` / `scoring_points` 不得包含 `schedule_date` / `schedule_dates` / `priority`
      - `state_completion_pack.keys[*].scoring_points` 存在且 schema 合法
      - 若 `scoring_points` 中包含 LLM 生成的 `micro` atomic facts，则必须经过 point-set validation；失败时必须触发 rewrite 或 safe fallback
-  3. Task B pack 验收：
+  3. Task B pack 验收（仅 `taskabc_v1`）：
      - 仅对相邻 checkpoint 的 validated state 交集且值变化的 key 出题
      - `change_tracking_pack.keys[*]` 不得包含“仅新出现/仅消失但不在交集”的 key
      - `before_scoring_points / after_scoring_points / change_reason_scoring_points` 均存在且 schema 合法
@@ -1030,8 +1161,8 @@ Stage 2: Prebuilt Task Packs
       - 每条 accepted item 含 `validation`
   5. Stage 2 产物必须包含：
      - `state_completion_pack`
-     - `change_tracking_pack`
      - `rq3_apply_service_qa`
+     - `taskabc_v1` additionally includes `change_tracking_pack`
 - Blockers:
   - 用 raw benchmark 直接构建 Stage 2
   - Task A/B scope 未对齐 validated state

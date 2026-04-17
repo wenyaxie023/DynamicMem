@@ -13,6 +13,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from eval.build_tce_analysis_pack import build_analysis_pack
+from tce_contracts import CURRENT_TASK_CONTRACT_VERSION, RESEARCH_FRAME_VERSION_V2
 
 
 class TceAnalysisPackAcceptance(unittest.TestCase):
@@ -185,6 +186,246 @@ class TceAnalysisPackAcceptance(unittest.TestCase):
                     for row in result["rq3_gap_state_rows"]
                 )
             )
+
+    def test_v2_analysis_pack_omits_task_b_and_builds_rq2_from_task_a_slices(self):
+        benchmark = {
+            "user_id": "001_user_001",
+            "task_contract_version": CURRENT_TASK_CONTRACT_VERSION,
+            "research_frame_version": RESEARCH_FRAME_VERSION_V2,
+            "checkpoints": [
+                {
+                    "checkpoint_id": "cp1",
+                    "as_of": {"timestamp": "2025-01-01 08:00:00"},
+                    "sampling": {"params": {"actual_tokens_at_cutoff": 100, "total_tokens": 200}},
+                    "validated_snapshot_state": {
+                        "habits_state": {
+                            "morning_walk": {
+                                "timing": {"start_time": "06:30"},
+                                "schedule_dates": ["2025-01-01"],
+                                "priority": "high",
+                            }
+                        },
+                        "preferences_state": {"favorite_coffee": "latte"},
+                    },
+                    "expected_snapshot_state": {
+                        "habits_state": {
+                            "morning_walk": {
+                                "timing": {"start_time": "06:30"},
+                                "schedule_dates": ["2025-01-01"],
+                                "priority": "high",
+                            }
+                        },
+                        "preferences_state": {"favorite_coffee": "latte"},
+                    },
+                    "state_observability": {
+                        "habits_state": {"morning_walk": {"evidence_app_log_ids": ["log_0001"]}},
+                        "preferences_state": {"favorite_coffee": {"evidence_app_log_ids": ["log_0002"]}},
+                    },
+                    "rq3_apply_service_qa": {
+                        "keys": {
+                            "preferences_state:favorite_coffee": {
+                                "items": [
+                                    {
+                                        "qa_id": "q1",
+                                        "question": "Which coffee should the assistant remember?",
+                                        "reference_answer": "Remember latte.",
+                                        "gold_memory_evidence_app_log_ids": ["log_0002"],
+                                    }
+                                ]
+                            }
+                        }
+                    },
+                },
+                {
+                    "checkpoint_id": "cp2",
+                    "as_of": {"timestamp": "2025-02-01 08:00:00"},
+                    "sampling": {"params": {"actual_tokens_at_cutoff": 150, "total_tokens": 200}},
+                    "validated_snapshot_state": {
+                        "habits_state": {
+                            "morning_walk": {
+                                "timing": {"start_time": "07:00"},
+                                "schedule_dates": ["2025-02-01"],
+                                "priority": "low",
+                            }
+                        },
+                        "preferences_state": {"favorite_coffee": "latte"},
+                    },
+                    "expected_snapshot_state": {
+                        "habits_state": {
+                            "morning_walk": {
+                                "timing": {"start_time": "07:00"},
+                                "schedule_dates": ["2025-02-01"],
+                                "priority": "low",
+                            }
+                        },
+                        "preferences_state": {"favorite_coffee": "latte"},
+                    },
+                    "state_observability": {
+                        "habits_state": {"morning_walk": {"evidence_app_log_ids": ["log_0003"]}},
+                        "preferences_state": {"favorite_coffee": {"evidence_app_log_ids": ["log_0002"]}},
+                    },
+                    "rq3_apply_service_qa": {
+                        "keys": {
+                            "preferences_state:favorite_coffee": {
+                                "items": [
+                                    {
+                                        "qa_id": "q1",
+                                        "question": "Which coffee should the assistant remember?",
+                                        "reference_answer": "Remember latte.",
+                                        "gold_memory_evidence_app_log_ids": ["log_0002"],
+                                    }
+                                ]
+                            }
+                        }
+                    },
+                },
+            ],
+        }
+        prediction = {
+            "predictions": [
+                {
+                    "checkpoint_id": "cp1",
+                    "snapshot_state": {
+                        "habits_state:morning_walk": {"timing": {"start_time": "06:30"}},
+                        "preferences_state:favorite_coffee": "latte",
+                    },
+                    "evidence": {
+                        "habits_state:morning_walk": ["log_0001"],
+                        "preferences_state:favorite_coffee": ["log_0002"],
+                    },
+                    "rq3_apply_answers": {
+                        "preferences_state:favorite_coffee": {
+                            "items": [{"qa_id": "q1", "answer": "latte", "evidence": ["log_0002"]}]
+                        }
+                    },
+                },
+                {
+                    "checkpoint_id": "cp2",
+                    "snapshot_state": {
+                        "habits_state:morning_walk": {"timing": {"start_time": "06:45"}},
+                        "preferences_state:favorite_coffee": "latte",
+                    },
+                    "evidence": {
+                        "habits_state:morning_walk": ["log_0003"],
+                        "preferences_state:favorite_coffee": ["log_0002"],
+                    },
+                    "rq3_apply_answers": {
+                        "preferences_state:favorite_coffee": {
+                            "items": [{"qa_id": "q1", "answer": "latte", "evidence": ["log_0002"]}]
+                        }
+                    },
+                },
+            ]
+        }
+        eval_payload = {
+            "task_contract_version": CURRENT_TASK_CONTRACT_VERSION,
+            "research_frame_version": RESEARCH_FRAME_VERSION_V2,
+            "checkpoints": [
+                {
+                    "checkpoint_id": "cp1",
+                    "snapshot_point_score_mean_on_expected": 1.0,
+                    "snapshot_evidence_f1_mean_on_expected": 1.0,
+                    "snapshot_slot_eval_by_key": {
+                        "habits_state:morning_walk": {"score_0_1": 1.0, "slot_count": 1},
+                        "preferences_state:favorite_coffee": {"score_0_1": 1.0, "slot_count": 1},
+                    },
+                    "rq3_apply_answer_point_score_mean": 1.0,
+                    "rq3_apply_evidence_f1": 1.0,
+                    "rq3_apply_slot_eval_by_item": {
+                        "preferences_state:favorite_coffee::q1": {
+                            "state_key": "preferences_state:favorite_coffee",
+                            "qa_id": "q1",
+                            "score_0_1": 1.0,
+                            "slot_count": 1,
+                        }
+                    },
+                },
+                {
+                    "checkpoint_id": "cp2",
+                    "snapshot_point_score_mean_on_expected": 0.75,
+                    "snapshot_evidence_f1_mean_on_expected": 1.0,
+                    "snapshot_slot_eval_by_key": {
+                        "habits_state:morning_walk": {"score_0_1": 0.5, "slot_count": 1},
+                        "preferences_state:favorite_coffee": {"score_0_1": 1.0, "slot_count": 1},
+                    },
+                    "rq3_apply_answer_point_score_mean": 1.0,
+                    "rq3_apply_evidence_f1": 1.0,
+                    "rq3_apply_slot_eval_by_item": {
+                        "preferences_state:favorite_coffee::q1": {
+                            "state_key": "preferences_state:favorite_coffee",
+                            "qa_id": "q1",
+                            "score_0_1": 1.0,
+                            "slot_count": 1,
+                        }
+                    },
+                },
+            ],
+        }
+
+        expected_files = {
+            "checkpoint_summary.csv",
+            "rq1_task_scores_by_checkpoint.csv",
+            "rq2_taska_changed_vs_unchanged_by_checkpoint.csv",
+            "rq2_transition_units.csv",
+            "rq3_know_apply_gap_by_checkpoint.csv",
+            "correlation_summary.csv",
+            "task_a_units.csv",
+            "task_c_units.csv",
+            "rq1_task_scores_vs_checkpoint.png",
+            "rq2_taska_changed_vs_unchanged_vs_checkpoint.png",
+            "rq3_know_apply_gap_vs_checkpoint.png",
+            "task_a_state_heatmap.png",
+            "task_c_state_heatmap.png",
+            "rq3_gap_heatmap.png",
+            "task_a_state_lines_vs_checkpoint.png",
+            "task_c_state_lines_vs_checkpoint.png",
+            "task_a_evidence_vs_score_scatter.png",
+            "task_c_evidence_vs_score_scatter.png",
+            "task_a_top_variable_states.csv",
+            "task_c_top_variable_states.csv",
+            "rq3_top_positive_gap_states.csv",
+            "rq3_top_negative_gap_states.csv",
+            "milestone1_analysis_summary.md",
+        }
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            outdir = Path(tmpdir) / "analysis_pack_v2"
+            result = build_analysis_pack(
+                benchmark_payload=benchmark,
+                prediction_payload=prediction,
+                eval_payload=eval_payload,
+                output_dir=outdir,
+                artifact_paths={
+                    "benchmark": "benchmark.json",
+                    "prediction": "prediction.json",
+                    "eval": "eval.json",
+                    "output_dir": str(outdir),
+                },
+            )
+
+            self.assertEqual({p.name for p in outdir.iterdir()}, expected_files)
+            self.assertEqual(result["task_b_units"], [])
+            self.assertEqual(len(result["rq2_transition_units"]), 2)
+
+            with (outdir / "checkpoint_summary.csv").open() as f:
+                checkpoint_rows = list(csv.DictReader(f))
+            self.assertEqual(checkpoint_rows[0]["task_b_state_score"], "")
+            self.assertEqual(checkpoint_rows[1]["task_b_state_score"], "")
+            self.assertEqual(checkpoint_rows[1]["rq2_changed_state_count"], "1")
+            self.assertEqual(checkpoint_rows[1]["rq2_unchanged_state_count"], "1")
+            self.assertAlmostEqual(float(checkpoint_rows[1]["rq2_changed_task_a_score"]), 0.5, places=6)
+            self.assertAlmostEqual(float(checkpoint_rows[1]["rq2_unchanged_task_a_score"]), 1.0, places=6)
+            self.assertAlmostEqual(float(checkpoint_rows[1]["rq2_update_gap"]), -0.5, places=6)
+
+            with (outdir / "rq2_transition_units.csv").open() as f:
+                transition_rows = list(csv.DictReader(f))
+            status_by_key = {row["state_key"]: row["change_status"] for row in transition_rows}
+            self.assertEqual(status_by_key["habits_state:morning_walk"], "changed")
+            self.assertEqual(status_by_key["preferences_state:favorite_coffee"], "unchanged")
+
+            summary_text = (outdir / "milestone1_analysis_summary.md").read_text(encoding="utf-8")
+            self.assertIn("`RQ2` is not a standalone Task B", summary_text)
+            self.assertIn("omitted Task B CSV/PNG artifacts are intentional", summary_text)
 
 
 if __name__ == "__main__":

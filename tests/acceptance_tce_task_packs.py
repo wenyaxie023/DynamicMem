@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 import copy
+import json
 import unittest
 from unittest.mock import patch
 
@@ -11,9 +12,259 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from tce_core.task_packs import build_task_packs
+from tce_contracts import (
+    CANONICAL_RESEARCH_DOC_V2,
+    CURRENT_TASK_CONTRACT_VERSION,
+    LEGACY_TASK_CONTRACT_VERSION,
+    RESEARCH_FRAME_VERSION_V2,
+)
 
 
 class TceTaskPackAcceptance(unittest.TestCase):
+    def test_build_task_packs_stamps_current_contract_metadata_when_missing(self):
+        benchmark = {
+            "user_id": "001_user_001",
+            "checkpoints": [
+                {
+                    "checkpoint_id": "cp1",
+                    "as_of": {"timestamp": "2025-01-01 08:00:00"},
+                    "state_questionability": {
+                        "profile_state:favorite_coffee": {"is_questionable": True}
+                    },
+                    "validated_snapshot_state": {
+                        "profile_state": {"favorite_coffee": "latte"}
+                    },
+                }
+            ],
+        }
+
+        result = build_task_packs(
+            benchmark=copy.deepcopy(benchmark),
+            tasks=["state_completion"],
+        )
+
+        self.assertEqual(result["task_contract_version"], CURRENT_TASK_CONTRACT_VERSION)
+        self.assertEqual(result["research_frame_version"], RESEARCH_FRAME_VERSION_V2)
+        self.assertEqual(result["canonical_research_doc"], CANONICAL_RESEARCH_DOC_V2)
+
+    def test_v2_all_builds_only_task_a_and_task_c(self):
+        benchmark = {
+            "user_id": "001_user_001",
+            "checkpoints": [
+                {
+                    "checkpoint_id": "cp1",
+                    "as_of": {"timestamp": "2025-01-01 08:00:00"},
+                    "state_questionability": {
+                        "preferences_state:favorite_coffee": {"is_questionable": True}
+                    },
+                    "validated_snapshot_state": {
+                        "preferences_state": {"favorite_coffee": {"statement": "latte"}}
+                    },
+                    "state_observability": {
+                        "preferences_state": {
+                            "favorite_coffee": {"evidence_app_log_ids": ["log_0001"]}
+                        }
+                    },
+                }
+            ],
+        }
+
+        class _FakeApplyGeneratorClient:
+            def ask(self, prompt: str, response_type: str = "json"):
+                if "Generate exactly one low-leakage benchmark item for a preference-conditioned Information Request Construction task." in prompt:
+                    return {
+                        "items": [
+                            {
+                                "scenario": "The assistant is preparing the structured information-request object for the user's coffee-ordering preferences before a recurring office order.",
+                                "task_instruction": "Fill the structured information-request payload.",
+                                "output_template": {"request_profile": {"preferred_profile": "<fill>"}},
+                                "reference_output": {"request_profile": {"preferred_profile": "latte"}},
+                            }
+                        ]
+                    }
+                return {}
+
+        class _FakeApplyValidatorClient:
+            def ask(self, prompt: str, response_type: str = "json"):
+                if "Validate whether this Task C v2 item is a strong structured proactive personalized-service completion item." in prompt:
+                    return {
+                        "criteria": [
+                            {"criterion": "service_completion_quality", "pass": True, "analysis": "ok"},
+                            {"criterion": "full_field_dependency", "pass": True, "analysis": "ok"},
+                            {"criterion": "schema_groundedness", "pass": True, "analysis": "ok"},
+                            {"criterion": "point_pairability", "pass": True, "analysis": "ok"},
+                        ]
+                    }
+                return {}
+
+        result = build_task_packs(
+            benchmark=copy.deepcopy(benchmark),
+            tasks=["all"],
+            generator_client=_FakeApplyGeneratorClient(),
+            validator_client=_FakeApplyValidatorClient(),
+            provider="test",
+            model="generator",
+            validator_provider="test",
+            validator_model="validator",
+            item_count_per_key=1,
+            max_rewrites=0,
+            apply_workers=1,
+        )
+
+        cp = result["checkpoints"][0]
+        self.assertIn("state_completion_pack", cp)
+        self.assertIn("rq3_apply_service_qa", cp)
+        self.assertNotIn("change_tracking_pack", cp)
+        item = cp["rq3_apply_service_qa"]["keys"]["preferences_state:favorite_coffee"]["items"][0]
+        self.assertEqual(cp["rq3_apply_service_qa"]["version"], "v9")
+        self.assertEqual(cp["rq3_apply_service_qa"]["pair_count_per_key"], 1)
+        self.assertEqual(item["service_family"], "information_request_construction")
+        self.assertEqual(item["output_template"], {"request_profile": {"preferred_profile": "<fill>"}})
+        self.assertEqual(item["reference_output"], {"request_profile": {"preferred_profile": "latte"}})
+        self.assertEqual(len(item["answer_scoring_points"]), 1)
+        point = item["answer_scoring_points"][0]
+        self.assertEqual(point["point_id"], "aqp_preferences_state_favorite_coffee_q1_p1")
+        self.assertEqual(point["point_type"], "field")
+        self.assertEqual(point["polarity"], "positive")
+        self.assertEqual(point["source_field_path"], "statement")
+        self.assertEqual(point["output_field_path"], "request_profile.preferred_profile")
+        self.assertEqual(point["target_path"], "request_profile.preferred_profile")
+        self.assertEqual(point["reference_value"], "latte")
+        self.assertTrue(item["item_validation"]["is_valid"])
+        self.assertTrue(item["scoring_validation"]["is_valid"])
+
+    def test_v2_preference_task_c_contracts_state_to_statement_only(self):
+        benchmark = {
+            "user_id": "001_user_001",
+            "checkpoints": [
+                {
+                    "checkpoint_id": "cp1",
+                    "as_of": {"timestamp": "2025-01-01 08:00:00"},
+                    "state_questionability": {
+                        "preferences_state:learning_modality": {"is_questionable": True}
+                    },
+                    "validated_snapshot_state": {
+                        "preferences_state": {
+                            "learning_modality": {
+                                "statement": "prefers self-paced webinars",
+                                "signals": [
+                                    "downloaded a white paper",
+                                    "joined a webinar",
+                                ],
+                            }
+                        }
+                    },
+                    "state_observability": {
+                        "preferences_state": {
+                            "learning_modality": {"evidence_app_log_ids": ["log_0001"]}
+                        }
+                    },
+                }
+            ],
+        }
+
+        class _FakeApplyGeneratorClient:
+            prompts: list[str] = []
+
+            def ask(self, prompt: str, response_type: str = "json"):
+                self.prompts.append(prompt)
+                return {
+                    "items": [
+                        {
+                            "scenario": "A training-resource lookup is about to run for the next study step.",
+                            "task_instruction": "As the assistant, complete the structured information request below so it can be sent to the downstream information system.",
+                            "output_template": {"request_profile": {"primary_preference": "<fill>"}},
+                            "reference_output": {"request_profile": {"primary_preference": "prefers self-paced webinars"}},
+                        }
+                    ]
+                }
+
+        class _FakeApplyValidatorClient:
+            def ask(self, prompt: str, response_type: str = "json"):
+                return {
+                    "criteria": [
+                        {"criterion": "service_completion_quality", "pass": True, "analysis": "ok"},
+                        {"criterion": "full_field_dependency", "pass": True, "analysis": "ok"},
+                        {"criterion": "schema_groundedness", "pass": True, "analysis": "ok"},
+                        {"criterion": "point_pairability", "pass": True, "analysis": "ok"},
+                    ]
+                }
+
+        generator = _FakeApplyGeneratorClient()
+        result = build_task_packs(
+            benchmark=copy.deepcopy(benchmark),
+            tasks=["apply"],
+            generator_client=generator,
+            validator_client=_FakeApplyValidatorClient(),
+            provider="test",
+            model="generator",
+            validator_provider="test",
+            validator_model="validator",
+            item_count_per_key=1,
+            max_rewrites=0,
+            apply_workers=1,
+        )
+
+        prompt_text = generator.prompts[0]
+        self.assertIn('"statement": "prefers self-paced webinars"', prompt_text)
+        self.assertNotIn('"signals": [', prompt_text)
+
+        item = result["checkpoints"][0]["rq3_apply_service_qa"]["keys"]["preferences_state:learning_modality"]["items"][0]
+        self.assertEqual(len(item["answer_scoring_points"]), 1)
+        point = item["answer_scoring_points"][0]
+        self.assertEqual(point["source_field_path"], "statement")
+        self.assertEqual(point["reference_value"], "prefers self-paced webinars")
+
+    def test_v2_task_a_filters_schedule_date_like_fields_from_template_and_scoring(self):
+        benchmark = {
+            "user_id": "001_user_001",
+            "checkpoints": [
+                {
+                    "checkpoint_id": "cp1",
+                    "as_of": {"timestamp": "2025-01-01 08:00:00"},
+                    "state_questionability": {
+                        "habits_state:weekend_woodworking_session": {"is_questionable": True}
+                    },
+                    "validated_snapshot_state": {
+                        "habits_state": {
+                            "weekend_woodworking_session": {
+                                "location": "basement workshop",
+                                "priority": "high",
+                                "schedule": {
+                                    "days_of_week": [5],
+                                    "frequency_type": "weekly",
+                                },
+                                "schedule_dates": ["2025-01-04", "2025-01-11"],
+                            }
+                        }
+                    },
+                }
+            ],
+        }
+
+        result = build_task_packs(
+            benchmark=copy.deepcopy(benchmark),
+            tasks=["state_completion"],
+        )
+
+        item = result["checkpoints"][0]["state_completion_pack"]["keys"]["habits_state:weekend_woodworking_session"]
+        self.assertEqual(
+            item["answer_template"],
+            {
+                "location": "<fill the blank>",
+                "schedule": {
+                    "days_of_week": ["<fill the blank>"],
+                    "frequency_type": "<fill the blank>",
+                },
+            },
+        )
+        serialized_question = json.dumps(item["answer_template"], ensure_ascii=False, sort_keys=True)
+        self.assertNotIn("schedule_dates", serialized_question)
+        self.assertNotIn("priority", serialized_question)
+        scoring_paths = {str(point.get("target_path") or "") for point in item["scoring_points"]}
+        self.assertFalse(any("schedule_dates" in path for path in scoring_paths))
+        self.assertFalse(any("priority" in path for path in scoring_paths))
+
     def test_state_completion_reuses_and_change_tracking_scopes_to_validated_intersection(self):
         benchmark = {
             "user_id": "001_user_001",
@@ -577,6 +828,7 @@ class TceTaskPackAcceptance(unittest.TestCase):
 
         benchmark = {
             "user_id": "001_user_001",
+            "task_contract_version": LEGACY_TASK_CONTRACT_VERSION,
             "checkpoints": [
                 {
                     "checkpoint_id": "cp2",

@@ -58,6 +58,22 @@ class LoCoMoSample:
     observation: Observation
     session_summary: Dict[str, str]
 
+
+def _resolve_tce_benchmark_path(base_dir: Path) -> Path:
+    candidates = (
+        "tce_benchmark_vnext_*task_packs*.json",
+        "tce_benchmark*task_packs*.json",
+        "tce_benchmark.json",
+    )
+    for pattern in candidates:
+        matches = sorted(base_dir.glob(pattern))
+        if matches:
+            return matches[-1]
+    raise FileNotFoundError(
+        f"Checkpoint benchmark file not found under {base_dir} "
+        "(expected current task-pack benchmark or legacy tce_benchmark.json)"
+    )
+
 def parse_session(session_data: List[dict], session_id: int, date_time: str) -> Session:
     """Parse a single session's data, including turns with images by using their captions."""
     turns = []
@@ -536,11 +552,7 @@ def load_membench_dataset(
     if not load_ckpts:
         return samples
 
-    benchmark_path = app_log_file.parent / "tce_benchmark.json"
-    if not benchmark_path.exists():
-        raise FileNotFoundError(
-            f"Checkpoint benchmark file not found for user '{sample_id}': {benchmark_path}"
-        )
+    benchmark_path = _resolve_tce_benchmark_path(app_log_file.parent)
     with open(benchmark_path, "r", encoding="utf-8") as f:
         benchmark_payload: Any = json.load(f)
     checkpoints = benchmark_payload.get("checkpoints", []) if isinstance(benchmark_payload, dict) else []

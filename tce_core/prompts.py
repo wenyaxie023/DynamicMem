@@ -1,6 +1,8 @@
 import json
 from typing import Any, Dict, List, Optional
 
+from tce_contracts import CURRENT_TASK_CONTRACT_VERSION, normalize_task_c_source_value
+
 
 def _coerce_inline_memory_blocks(
     *,
@@ -455,6 +457,14 @@ def _infer_apply_state_type(state_key: str) -> str:
     return "attribute"
 
 
+def _fill_placeholder_template(value: Any) -> Any:
+    if isinstance(value, dict):
+        return {str(key): _fill_placeholder_template(child) for key, child in value.items()}
+    if isinstance(value, list):
+        return [_fill_placeholder_template(child) for child in value]
+    return "<fill>"
+
+
 def build_rq3_apply_question_pack_prompt(
     *,
     checkpoint_timestamp: str,
@@ -469,6 +479,1144 @@ def build_rq3_apply_question_pack_prompt(
         state_value=state_value,
         item_count=item_count,
     )
+
+def _build_task_c_v2_user_communication_question_pack_prompt(
+    *,
+    checkpoint_timestamp: str,
+    state_type: str,
+    state_key: str,
+    state_value: Any,
+) -> str:
+    if str(state_type or "").strip() != "habit":
+        raise ValueError("Task C v2 user_communication prompt requires state_type='habit'.")
+
+    fixed_task_instruction = (
+        "As the assistant, what single message should be sent to the user right now? "
+        "Make it complete for this moment by using the user's routine details, not a generic reminder."
+    )
+
+    return """[Task]
+Generate exactly one low-leakage benchmark item for a habit-conditioned User Communication task.
+
+The answering assistant will see:
+- state_value
+- scenario
+- task_instruction
+
+Your job is to create an item where a fully correct answer requires using the habit information in state_value, not just the scenario.
+
+[What the answering assistant must do]
+The answer must be exactly one proactive assistant-to-user message for this moment.
+It must be free-form natural language.
+
+[Definitions]
+- terminal field: one leaf field in state_value whose value is scalar or array-valued and not further decomposed.
+- leaf path: the path to a terminal field using dot notation, for example: schedule.days_of_week or timing.start_time.
+- low leakage: scenario does not restate, paraphrase, or strongly imply user-state facts that should instead be recovered from state_value.
+- world-background scenario: a short third-person description of what is true right now in the world. It is not spoken by the assistant, not spoken by the user, and not written from the user's point of view.
+
+[Hard Constraints]
+1. Generate exactly one item.
+2. Output JSON only with exactly one top-level key: "item".
+3. item must contain exactly these keys:
+   - "scenario"
+   - "task_instruction"
+   - "reference_answer"
+   - "scoring_rubric"
+4. task_instruction must be exactly this string:
+   {fixed_task_instruction}
+5. scenario must be short, concrete, and written as third-person world background.
+6. scenario must not use first-person or second-person wording such as "I", "we", "you", "your", or "you've".
+7. scenario must anchor the current moment clearly enough for the task to be answerable:
+   - for weekly routines: include weekday + clock time;
+   - for monthly or date-like routines: include calendar anchor + clock time.
+8. scenario may include only:
+   - the current moment,
+   - whether something has or has not happened yet,
+   - whether something has or has not been prepared,
+   - at most one additional situational fact that plausibly matters right now.
+9. scenario must not restate or paraphrase the routine action, frequency, scheduled day, start time, end time, location, priority, or any other fact already present in state_value, except that it may state the current day/date/time as part of the world background.
+10. reference_answer must be exactly one natural assistant-to-user message, not a meta description.
+11. reference_answer must be complete enough that a fully correct answer would satisfy all rubric criteria.
+12. scoring_rubric must be a JSON object with exactly one key: "criteria".
+13. scoring_rubric.criteria must be a list of criterion objects.
+14. Each criterion object must have exactly these keys:
+   - "id"
+   - "description"
+15. There must be exactly one correctness criterion for each terminal field in state_value.
+16. Each criterion must explicitly name the corresponding leaf path in its id or description.
+17. Do not add global style, naturalness, service-family-fit, or generic quality criteria.
+18. Before finalizing, silently check:
+   - if state_value were hidden, the task would become substantially underdetermined;
+   - every terminal field in state_value is necessary for full credit;
+   - the scenario does not leak the state;
+   - the current moment is anchored clearly enough to make the item answerable.
+
+[Good Example A Input]
+state_key: "habits_state:home_strength_training"
+state_value: {{
+  "action": "home_strength_training",
+  "frequency": "3 times per week",
+  "week_of_day": ["Monday", "Wednesday", "Friday"],
+  "start_time": "07:00"
+}}
+
+[Good Example A Output]
+{{
+  "item": {{
+    "scenario": "It is Wednesday at 06:50. Nothing has been started yet this morning.",
+    "task_instruction": {fixed_task_instruction},
+    "reference_answer": "Your home strength session starts at 7:00, and Wednesday is one of your Monday-Wednesday-Friday workout days. Getting started on time will keep this three-times-a-week routine on track.",
+    "scoring_rubric": {{
+      "criteria": [
+        {{
+          "id": "action",
+          "description": "The message correctly uses state_value.action by identifying the routine as home_strength_training rather than a different or generic activity."
+        }},
+        {{
+          "id": "frequency",
+          "description": "The message correctly uses state_value.frequency by making clear that this is a three-times-per-week routine."
+        }},
+        {{
+          "id": "week_of_day",
+          "description": "The message correctly uses state_value.week_of_day by making clear that the current Wednesday moment matches the Monday-Wednesday-Friday schedule."
+        }},
+        {{
+          "id": "start_time",
+          "description": "The message correctly uses state_value.start_time by relating the current 06:50 moment to the 07:00 start."
+        }}
+      ]
+    }}
+  }}
+}}
+
+[Good Example B Input]
+state_key: "habits_state:sunday_family_dinner"
+state_value: {{
+  "action": "sunday_family_dinner",
+  "frequency": "weekly",
+  "week_of_day": ["Sunday"],
+  "start_time": "18:30"
+}}
+
+[Good Example B Output]
+{{
+  "item": {{
+    "scenario": "It is Sunday at 16:45. Everyone is home, and nothing has been prepared yet.",
+    "task_instruction": {fixed_task_instruction},
+    "reference_answer": "It’s Sunday, and your weekly family dinner is at 6:30 tonight. Now is a good time to get the plan settled so the evening stays easy.",
+    "scoring_rubric": {{
+      "criteria": [
+        {{
+          "id": "action",
+          "description": "The message correctly uses state_value.action by identifying the routine as sunday_family_dinner rather than a generic meal or unrelated event."
+        }},
+        {{
+          "id": "frequency",
+          "description": "The message correctly uses state_value.frequency by making clear that this is a weekly routine."
+        }},
+        {{
+          "id": "week_of_day",
+          "description": "The message correctly uses state_value.week_of_day by making clear that the current Sunday moment is the scheduled day for the routine."
+        }},
+        {{
+          "id": "start_time",
+          "description": "The message correctly uses state_value.start_time by connecting the current 16:45 moment to the 18:30 dinner time."
+        }}
+      ]
+    }}
+  }}
+}}
+
+[Good Example C Input]
+state_key: "habits_state:investment_transfer"
+state_value: {{
+  "action": "investment_transfer",
+  "frequency": "once per month",
+  "week_of_day": ["day 1 of each month"],
+  "start_time": "09:00"
+}}
+
+[Good Example C Output]
+{{
+  "item": {{
+    "scenario": "It is the 2nd day of the month at 08:30. Nothing was completed yesterday during the expected window.",
+    "task_instruction": {fixed_task_instruction},
+    "reference_answer": "Yesterday’s 9:00 investment transfer for your first-of-the-month routine didn’t happen. It’s worth taking care of it this morning so the monthly habit doesn’t slip.",
+    "scoring_rubric": {{
+      "criteria": [
+        {{
+          "id": "action",
+          "description": "The message correctly uses state_value.action by identifying the routine as investment_transfer rather than a generic finance task."
+        }},
+        {{
+          "id": "frequency",
+          "description": "The message correctly uses state_value.frequency by making clear that this is a once-per-month routine."
+        }},
+        {{
+          "id": "week_of_day",
+          "description": "The message correctly uses state_value.week_of_day by making clear that the missed routine belongs to day 1 of each month."
+        }},
+        {{
+          "id": "start_time",
+          "description": "The message correctly uses state_value.start_time by referring to the missed 09:00 transfer window."
+        }}
+      ]
+    }}
+  }}
+}}
+
+[Bad Example — Do Not Imitate]
+{{
+  "item": {{
+    "scenario": "It is 07:50, and you've just sat down at your desk for the morning.",
+    "task_instruction": {fixed_task_instruction},
+    "reference_answer": "Your weekly review starts soon.",
+    "scoring_rubric": {{
+      "criteria": [
+        {{
+          "id": "frequency",
+          "description": "The message mentions that the routine is weekly."
+        }}
+      ]
+    }}
+  }}
+}}
+
+Why the bad example fails:
+- The scenario is written as if the assistant were inhabiting the user's perspective.
+- The current moment is weakly grounded.
+- The reference answer is too generic.
+- The rubric is incomplete and does not cover every terminal field.
+
+[Input]
+- checkpoint_timestamp: {checkpoint_timestamp}
+- state_key: {state_key}
+- state_value: {state_value}
+
+[Output JSON ONLY]
+{{
+  "item": {{
+    "scenario": "...",
+    "task_instruction": {fixed_task_instruction},
+    "reference_answer": "...",
+    "scoring_rubric": {{
+      "criteria": [
+        {{
+          "id": "...",
+          "description": "..."
+        }}
+      ]
+    }}
+  }}
+}}
+""".format(
+        checkpoint_timestamp=json.dumps(str(checkpoint_timestamp or ""), ensure_ascii=False),
+        state_key=json.dumps(str(state_key or ""), ensure_ascii=False),
+        state_value=json.dumps(state_value, ensure_ascii=False, indent=2),
+        fixed_task_instruction=json.dumps(fixed_task_instruction, ensure_ascii=False),
+    )
+def _build_task_c_v2_information_request_question_pack_prompt(
+    *,
+    checkpoint_timestamp: str,
+    state_type: str,
+    state_key: str,
+    state_value: Any,
+    service_family: str,
+) -> str:
+    if str(state_type or "").strip() != "preference":
+        raise ValueError("Task C v2 information_request_construction prompt requires state_type='preference'.")
+
+    fixed_task_instruction = (
+        "As the assistant, complete the filtering parameters that should be sent right now. "
+        "Use the user's preference statement to shape the filters, and do not write the final recommendation."
+    )
+
+    example_state = {
+        "statement": "Prefers in-depth, self-paced technical white papers and webinars over large live conferences"
+    }
+    example_output_template = {
+        "content_acquisition_filters": {
+            "preferred_modalities": ["<fill>", "<fill>"],
+            "content_characteristics": ["<fill>", "<fill>", "<fill>"],
+            "deprioritized_formats": ["<fill>"]
+        }
+    }
+    example_reference_output = {
+        "content_acquisition_filters": {
+            "preferred_modalities": [
+                "technical white papers",
+                "webinars"
+            ],
+            "content_characteristics": [
+                "in-depth",
+                "self-paced",
+                "technical"
+            ],
+            "deprioritized_formats": [
+                "large live conferences"
+            ]
+        }
+    }
+
+    example_alt_state = {
+        "statement": "Prefers long-term capital preservation and tax-efficient growth over high-risk speculative trading"
+    }
+    example_alt_output_template = {
+        "investment_filters": {
+            "primary_objectives": ["<fill>", "<fill>"],
+            "time_horizon": "<fill>",
+            "deprioritized_strategies": ["<fill>"]
+        }
+    }
+    example_alt_reference_output = {
+        "investment_filters": {
+            "primary_objectives": [
+                "capital preservation",
+                "tax-efficient growth"
+            ],
+            "time_horizon": "long-term",
+            "deprioritized_strategies": [
+                "high-risk speculative trading"
+            ]
+        }
+    }
+
+    example_third_state = {
+        "statement": "Prefers quiet neighborhood coffee shops with table seating over loud chain cafes"
+    }
+    example_third_output_template = {
+        "venue_filters": {
+            "preferred_ambience": ["<fill>"],
+            "preferred_venue_types": ["<fill>"],
+            "required_features": ["<fill>"],
+            "deprioritized_venue_types": ["<fill>"]
+        }
+    }
+    example_third_reference_output = {
+        "venue_filters": {
+            "preferred_ambience": [
+                "quiet"
+            ],
+            "preferred_venue_types": [
+                "neighborhood coffee shops"
+            ],
+            "required_features": [
+                "table seating"
+            ],
+            "deprioritized_venue_types": [
+                "loud chain cafes"
+            ]
+        }
+    }
+
+    return """[Task]
+Generate exactly one low-leakage benchmark item for a preference-conditioned Information Request Construction task.
+
+The answering assistant will see:
+- state_value
+- scenario
+- task_instruction
+- output_template
+
+Your job is to create an item where a fully correct answer requires using the preference information in state_value, not just the scenario.
+
+[What the answering assistant must do]
+The answer must fill a structured filtering-parameter object for a downstream retrieval, screening, or recommendation system.
+It must not be a final recommendation, a ranked list, or a free-form explanation.
+
+[Key design goal]
+This is a filtering task, not a copy-the-statement task.
+The generated item should require the answering assistant to translate the user's preference statement into semantically meaningful filtering parameters.
+
+Schema synthesis is allowed.
+Scoring-unit synthesis is not allowed.
+
+That means:
+- output_template should use synthesized, request-facing keys;
+- reference_output should be one coherent canonical fill of that template;
+- scoring_rubric must align one-to-one with the scalar leaves in reference_output after flattening arrays and objects.
+
+[Definitions]
+- preference statement: the value in state_value.statement.
+- low leakage: scenario does not restate, paraphrase, or strongly imply the user's actual preference content.
+- world-background scenario: a short third-person or neutral description of what is happening right now in the product or assistant context. It is not spoken by the assistant, not spoken by the user, and not written from the user's point of view.
+- scalar leaf: one scalar value in reference_output after recursively flattening nested objects and arrays.
+- canonical reference_output: one valid answer, but not necessarily the only valid answer.
+- one-to-one rubric alignment: every scalar leaf in reference_output must have exactly one corresponding scoring criterion, and every scoring criterion must correspond to exactly one scalar leaf in reference_output.
+
+[Hard Constraints]
+1. Generate exactly one item.
+2. Output JSON only with exactly one top-level key: "item".
+3. item must contain exactly these keys:
+   - "scenario"
+   - "task_instruction"
+   - "output_template"
+   - "reference_output"
+   - "scoring_rubric"
+4. task_instruction must be exactly this string:
+   {fixed_task_instruction}
+5. scenario must be short, natural, and written as world background.
+6. scenario must not use first-person or second-person wording such as "I", "we", "you", "your", or "you've".
+7. scenario must make the filtering situation feel like a plausible user or product moment, not like a backend log line.
+8. Prefer natural situations such as:
+   - the user is about to browse options,
+   - a shortlist is being prepared,
+   - candidate results are being narrowed before display.
+9. Avoid robotic phrasing such as:
+   - "a filtering step is about to run"
+   - "a screening request is about to be sent"
+   - "a downstream module will execute now"
+10. scenario may include only:
+   - the immediate user goal or option space,
+   - the fact that a shortlist or filtering pass is being prepared,
+   - at most one additional situational fact that plausibly matters right now.
+11. scenario must not restate or paraphrase the user's actual preference content.
+12. output_template and reference_output must both be top-level JSON objects.
+13. output_template and reference_output must have exactly the same nested shape.
+14. Every leaf in output_template must be the string "<fill>".
+15. Do not use a fixed universal key like only "preference_statement". Instead, synthesize request-facing keys and grouping that fit the domain implied by the preference statement.
+16. The synthesized schema should decompose the preference into meaningful filtering dimensions when appropriate, such as:
+   - preferred types or formats,
+   - desired attributes,
+   - required features,
+   - avoided or deprioritized options,
+   - priorities or goals.
+17. reference_output must be a coherent canonical fill of output_template.
+18. scoring_rubric must be a JSON object with exactly one key: "criteria".
+19. scoring_rubric.criteria must be a list of criterion objects.
+20. Each criterion object must have exactly these keys:
+   - "path"
+   - "canonical_value"
+   - "description"
+21. scoring_rubric must satisfy one-to-one rubric alignment:
+   - every scalar leaf in reference_output must appear exactly once in scoring_rubric.criteria;
+   - every criterion must correspond to exactly one scalar leaf in reference_output.
+22. path must be the exact path to the corresponding scalar leaf in reference_output, including array indices when needed.
+23. canonical_value must be exactly the scalar value found at that path in reference_output.
+24. description must explain how this canonical_value links back to the original preference statement and what semantic role it plays in filtering.
+25. description must not merely restate canonical_value mechanically. It should explain why this slot exists as a decomposition of the user's stated preference.
+26. Do not add grouped semantic criteria that cover multiple reference_output leaves at once.
+27. Do not add global style, naturalness, usefulness, or generic quality criteria.
+28. Before finalizing, silently check:
+   - if state_value were hidden, the task would become substantially underdetermined;
+   - the scenario does not leak the preference;
+   - the scenario feels like a natural product moment;
+   - the synthesized schema is domain-appropriate rather than generic;
+   - the rubric aligns exactly one-to-one with reference_output leaves;
+   - each description explains the semantic link between the leaf and the original preference statement.
+
+[Good Example A Input]
+state_key: "preferences_state:learning_modality"
+state_value: {example_state}
+
+[Good Example A Output]
+{{
+  "item": {{
+    "scenario": "The user is deciding how to spend the next professional-development block. A shortlist of learning options is being prepared before anything is shown.",
+    "task_instruction": {fixed_task_instruction},
+    "output_template": {example_output_template},
+    "reference_output": {example_reference_output},
+    "scoring_rubric": {{
+      "criteria": [
+        {{
+          "path": "content_acquisition_filters.preferred_modalities[0]",
+          "canonical_value": "technical white papers",
+          "description": "This leaf captures one of the specific formats the user actively prefers, separating preferred learning modalities from broader qualities like depth or pacing."
+        }},
+        {{
+          "path": "content_acquisition_filters.preferred_modalities[1]",
+          "canonical_value": "webinars",
+          "description": "This leaf captures another preferred modality from the statement, showing that the filter should include webinar-style options rather than collapsing everything into a single generic content preference."
+        }},
+        {{
+          "path": "content_acquisition_filters.content_characteristics[0]",
+          "canonical_value": "in-depth",
+          "description": "This leaf represents the desired level of substance in the content, translating the user's preference into a filtering characteristic rather than a format choice."
+        }},
+        {{
+          "path": "content_acquisition_filters.content_characteristics[1]",
+          "canonical_value": "self-paced",
+          "description": "This leaf represents the user's preference for content that can be consumed on their own schedule, which is a pacing constraint rather than a modality."
+        }},
+        {{
+          "path": "content_acquisition_filters.content_characteristics[2]",
+          "canonical_value": "technical",
+          "description": "This leaf captures the technical nature of the desired material, linking the preference statement to filtering for more specialized content."
+        }},
+        {{
+          "path": "content_acquisition_filters.deprioritized_formats[0]",
+          "canonical_value": "large live conferences",
+          "description": "This leaf captures the option type that should be filtered out or pushed down because the statement explicitly contrasts the user's preferred formats against large live conferences."
+        }}
+      ]
+    }}
+  }}
+}}
+
+[Good Example B Input]
+state_key: "preferences_state:capital_allocation"
+state_value: {example_alt_state}
+
+[Good Example B Output]
+{{
+  "item": {{
+    "scenario": "The user is reviewing investment options for an upcoming planning session. Candidate strategies are being narrowed before anything is surfaced.",
+    "task_instruction": {fixed_task_instruction},
+    "output_template": {example_alt_output_template},
+    "reference_output": {example_alt_reference_output},
+    "scoring_rubric": {{
+      "criteria": [
+        {{
+          "path": "investment_filters.primary_objectives[0]",
+          "canonical_value": "capital preservation",
+          "description": "This leaf captures one of the user's main portfolio objectives, separating preservation from other investment goals that might otherwise dominate the shortlist."
+        }},
+        {{
+          "path": "investment_filters.primary_objectives[1]",
+          "canonical_value": "tax-efficient growth",
+          "description": "This leaf captures the growth objective the user wants, but specifically in a tax-efficient form, so the filter does more than represent generic growth-seeking behavior."
+        }},
+        {{
+          "path": "investment_filters.time_horizon",
+          "canonical_value": "long-term",
+          "description": "This leaf captures the temporal framing implied by the statement, which should affect which candidate strategies are considered relevant."
+        }},
+        {{
+          "path": "investment_filters.deprioritized_strategies[0]",
+          "canonical_value": "high-risk speculative trading",
+          "description": "This leaf captures the kind of strategy that should be screened out or pushed down because the user's preference explicitly rejects speculative, high-risk approaches."
+        }}
+      ]
+    }}
+  }}
+}}
+
+[Good Example C Input]
+state_key: "preferences_state:coffee_shop_style"
+state_value: {example_third_state}
+
+[Good Example C Output]
+{{
+  "item": {{
+    "scenario": "The user is choosing a place for a casual conversation later today. Nearby coffee-shop options are being narrowed before results are shown.",
+    "task_instruction": {fixed_task_instruction},
+    "output_template": {example_third_output_template},
+    "reference_output": {example_third_reference_output},
+    "scoring_rubric": {{
+      "criteria": [
+        {{
+          "path": "venue_filters.preferred_ambience[0]",
+          "canonical_value": "quiet",
+          "description": "This leaf captures the atmosphere the user wants the shortlist to favor, separating ambience from venue type or seating requirements."
+        }},
+        {{
+          "path": "venue_filters.preferred_venue_types[0]",
+          "canonical_value": "neighborhood coffee shops",
+          "description": "This leaf captures the kind of venue the user prefers, turning the statement into a venue-type filter rather than a generic coffee-shop preference."
+        }},
+        {{
+          "path": "venue_filters.required_features[0]",
+          "canonical_value": "table seating",
+          "description": "This leaf captures the seating feature that should materially affect which venues survive filtering, rather than being treated as incidental detail."
+        }},
+        {{
+          "path": "venue_filters.deprioritized_venue_types[0]",
+          "canonical_value": "loud chain cafes",
+          "description": "This leaf captures the class of venues that should be screened out or pushed down because the user's preference explicitly contrasts against them."
+        }}
+      ]
+    }}
+  }}
+}}
+
+[Bad Example — Do Not Imitate]
+{{
+  "item": {{
+    "scenario": "The user prefers quiet neighborhood coffee shops over loud chain cafes, and a shortlist is being prepared.",
+    "task_instruction": {fixed_task_instruction},
+    "output_template": {{
+      "filtering_params": {{
+        "preference_statement": "<fill>"
+      }}
+    }},
+    "reference_output": {{
+      "filtering_params": {{
+        "preference_statement": "Prefers quiet neighborhood coffee shops with table seating over loud chain cafes"
+      }}
+    }},
+    "scoring_rubric": {{
+      "criteria": [
+        {{
+          "path": "filtering_params.preference_statement",
+          "canonical_value": "Prefers quiet neighborhood coffee shops with table seating over loud chain cafes",
+          "description": "This leaf repeats the whole statement."
+        }}
+      ]
+    }}
+  }}
+}}
+
+Why the bad example fails:
+- The scenario leaks the user's actual preference.
+- The schema is not synthesized.
+- The rubric description does not explain a semantic decomposition; it just notes that the full statement was repeated.
+
+[Input]
+- checkpoint_timestamp: {checkpoint_timestamp}
+- state_key: {state_key}
+- state_value: {state_value}
+
+[Output JSON ONLY]
+{{
+  "item": {{
+    "scenario": "...",
+    "task_instruction": {fixed_task_instruction},
+    "output_template": {{
+      "<synthesized_request_key>": {{
+        "<synthesized_filter_key>": "<fill or nested fills>"
+      }}
+    }},
+    "reference_output": {{
+      "<same synthesized shape as output_template>": "..."
+    }},
+    "scoring_rubric": {{
+      "criteria": [
+        {{
+          "path": "...",
+          "canonical_value": "...",
+          "description": "..."
+        }}
+      ]
+    }}
+  }}
+}}
+""".format(
+        checkpoint_timestamp=json.dumps(str(checkpoint_timestamp or ""), ensure_ascii=False),
+        state_key=json.dumps(str(state_key or ""), ensure_ascii=False),
+        state_value=json.dumps(state_value, ensure_ascii=False, indent=2),
+        fixed_task_instruction=json.dumps(fixed_task_instruction, ensure_ascii=False),
+        example_state=json.dumps(example_state, ensure_ascii=False, indent=2),
+        example_output_template=json.dumps(example_output_template, ensure_ascii=False, indent=2),
+        example_reference_output=json.dumps(example_reference_output, ensure_ascii=False, indent=2),
+        example_alt_state=json.dumps(example_alt_state, ensure_ascii=False, indent=2),
+        example_alt_output_template=json.dumps(example_alt_output_template, ensure_ascii=False, indent=2),
+        example_alt_reference_output=json.dumps(example_alt_reference_output, ensure_ascii=False, indent=2),
+        example_third_state=json.dumps(example_third_state, ensure_ascii=False, indent=2),
+        example_third_output_template=json.dumps(example_third_output_template, ensure_ascii=False, indent=2),
+        example_third_reference_output=json.dumps(example_third_reference_output, ensure_ascii=False, indent=2),
+    )
+def _build_task_c_v2_action_configuration_question_pack_prompt(
+    *,
+    checkpoint_timestamp: str,
+    state_type: str,
+    state_key: str,
+    state_value: Any,
+    service_family: str,
+) -> str:
+    if str(state_type or "").strip() != "attribute":
+        raise ValueError("Task C v2 action_configuration prompt requires state_type='attribute'.")
+
+    # Kept for call-site compatibility; intentionally unused in the prompt.
+    _ = service_family
+
+    fixed_task_instruction = (
+        "As the assistant, complete the action configuration that should be sent right now. "
+        "Use the user's known attributes to fill the required execution fields, and do not write a message or recommendation."
+    )
+
+    example_state = "Senior Coatings Consultant at PPG Industries (specializing in heavy-duty infrastructure and marine protection)"
+    example_output_template = {
+        "symposium_registration": {
+            "professional_profile": {
+                "job_title": "<fill>",
+                "organization": "<fill>",
+                "specialization_areas": ["<fill>", "<fill>"]
+            }
+        }
+    }
+    example_reference_output = {
+        "symposium_registration": {
+            "professional_profile": {
+                "job_title": "Senior Coatings Consultant",
+                "organization": "PPG Industries",
+                "specialization_areas": [
+                    "heavy-duty infrastructure",
+                    "marine protection"
+                ]
+            }
+        }
+    }
+
+    example_alt_state = [
+        "Apple Watch Series 9 (Midnight aluminum, used for daily heart rate and step tracking)",
+        "Oura Ring Gen3 (Stealth finish, primarily for sleep staging and recovery metrics)"
+    ]
+    example_alt_output_template = {
+        "wearable_sync_setup": {
+            "connected_sources": [
+                {
+                    "device_model": "<fill>",
+                    "device_variant": "<fill>",
+                    "enabled_metrics": ["<fill>", "<fill>"]
+                },
+                {
+                    "device_model": "<fill>",
+                    "device_variant": "<fill>",
+                    "enabled_metrics": ["<fill>", "<fill>"]
+                }
+            ]
+        }
+    }
+    example_alt_reference_output = {
+        "wearable_sync_setup": {
+            "connected_sources": [
+                {
+                    "device_model": "Apple Watch Series 9",
+                    "device_variant": "Midnight aluminum",
+                    "enabled_metrics": [
+                        "daily heart rate",
+                        "step tracking"
+                    ]
+                },
+                {
+                    "device_model": "Oura Ring Gen3",
+                    "device_variant": "Stealth finish",
+                    "enabled_metrics": [
+                        "sleep staging",
+                        "recovery metrics"
+                    ]
+                }
+            ]
+        }
+    }
+
+    example_third_state = [
+        "Audible Premium Plus (used for listening to non-fiction during 45-minute commutes)",
+        "Disney Bundle including Hulu and ESPN+ (family entertainment and sports coverage)",
+        "MasterClass (annual subscription used for learning technical crafting and cooking skills)"
+    ]
+    example_third_output_template = {
+        "subscription_entitlements": {
+            "linked_services": [
+                {
+                    "service_name": "<fill>",
+                    "plan_or_bundle": "<fill>",
+                    "usage_context": "<fill>"
+                },
+                {
+                    "service_name": "<fill>",
+                    "plan_or_bundle": "<fill>",
+                    "usage_context": "<fill>"
+                },
+                {
+                    "service_name": "<fill>",
+                    "plan_or_bundle": "<fill>",
+                    "usage_context": "<fill>"
+                }
+            ]
+        }
+    }
+    example_third_reference_output = {
+        "subscription_entitlements": {
+            "linked_services": [
+                {
+                    "service_name": "Audible",
+                    "plan_or_bundle": "Premium Plus",
+                    "usage_context": "listening to non-fiction during 45-minute commutes"
+                },
+                {
+                    "service_name": "Disney Bundle",
+                    "plan_or_bundle": "including Hulu and ESPN+",
+                    "usage_context": "family entertainment and sports coverage"
+                },
+                {
+                    "service_name": "MasterClass",
+                    "plan_or_bundle": "annual subscription",
+                    "usage_context": "learning technical crafting and cooking skills"
+                }
+            ]
+        }
+    }
+
+    return """[Task]
+Generate exactly one low-leakage benchmark item for an attribute-conditioned Action Configuration task.
+
+The answering assistant will see:
+- state_value
+- scenario
+- task_instruction
+- output_template
+
+Your job is to create an item where a fully correct answer requires using the attribute information in state_value, not just the scenario.
+
+[What the answering assistant must do]
+The answer must fill a structured action-configuration object for a downstream tool, workflow, form, or executable service.
+It must not be a user-facing message, a retrieval request, or a free-form explanation.
+
+[Key design goal]
+This is an execution-configuration task, not a copy-the-attribute task.
+The generated item should require the answering assistant to translate the user's known attributes into the specific fields needed to carry out an action.
+
+Schema synthesis is allowed.
+Scoring-unit synthesis is not allowed.
+
+That means:
+- output_template should use synthesized, configuration-facing keys;
+- reference_output should be one coherent canonical fill of that template;
+- scoring_rubric must align one-to-one with the scalar leaves in reference_output after flattening arrays and objects.
+
+[Definitions]
+- attribute value: the information contained in state_value.
+- low leakage: scenario does not restate, paraphrase, or strongly imply the actual attribute values in state_value.
+- world-background scenario: a short third-person or neutral description of what is happening right now in the product or assistant context. It is not spoken by the assistant, not spoken by the user, and not written from the user's point of view.
+- scalar leaf: one scalar value in reference_output after recursively flattening nested objects and arrays.
+- canonical reference_output: one valid answer, but not necessarily the only valid answer.
+- grounded decomposition: a raw attribute string may be split into multiple configuration leaves only when each resulting leaf is directly supported by the wording of state_value and serves a distinct execution role.
+- one-to-one rubric alignment: every scalar leaf in reference_output must have exactly one corresponding scoring criterion, and every scoring criterion must correspond to exactly one scalar leaf in reference_output.
+
+[Hard Constraints]
+1. Generate exactly one item.
+2. Output JSON only with exactly one top-level key: "item".
+3. item must contain exactly these keys:
+   - "scenario"
+   - "task_instruction"
+   - "output_template"
+   - "reference_output"
+   - "scoring_rubric"
+4. task_instruction must be exactly this string:
+   {fixed_task_instruction}
+5. scenario must be short, natural, and written as world background.
+6. scenario must not use first-person or second-person wording such as "I", "we", "you", "your", or "you've".
+7. scenario must make the execution moment feel like a plausible user or product moment, not like a backend log line.
+8. Prefer natural situations such as:
+   - the user is completing checkout,
+   - a setup flow is being finished,
+   - a profile or form is being prepared before submission,
+   - a device or account connection is being configured.
+9. Avoid robotic phrasing such as:
+   - "an action configuration is about to be sent"
+   - "a downstream workflow will execute now"
+   - "a payload is being prepared for a module"
+10. scenario may include only:
+   - the immediate user goal or action being completed,
+   - the fact that a form, setup, or execution payload is being prepared,
+   - at most one additional situational fact that plausibly matters right now.
+11. scenario must not restate or paraphrase the user's actual attribute values.
+12. output_template and reference_output must both be top-level JSON objects.
+13. output_template and reference_output must have exactly the same nested shape.
+14. Every leaf in output_template must be the string "<fill>".
+15. Prefer configuration-facing schemas that decompose compound attribute strings into execution-relevant fields when the decomposition is directly supported by state_value.
+16. Do not invent facts that are not directly stated in state_value.
+17. reference_output must preserve all grounded attribute facts needed by the synthesized configuration schema.
+18. For list-valued state_value, preserve source order when the configuration represents per-item entries.
+19. scoring_rubric must be a JSON object with exactly one key: "criteria".
+20. scoring_rubric.criteria must be a list of criterion objects.
+21. Each criterion object must have exactly these keys:
+   - "path"
+   - "canonical_value"
+   - "description"
+22. scoring_rubric must satisfy one-to-one rubric alignment:
+   - every scalar leaf in reference_output must appear exactly once in scoring_rubric.criteria;
+   - every criterion must correspond to exactly one scalar leaf in reference_output.
+23. path must be the exact path to the corresponding scalar leaf in reference_output, including array indices when needed.
+24. canonical_value must be exactly the scalar value found at that path in reference_output.
+25. description must explain how this canonical_value links back to the original attribute and what execution role it plays in the configuration.
+26. description must not merely restate canonical_value mechanically.
+27. Do not add grouped criteria that cover multiple reference_output leaves at once.
+28. Do not add global style, naturalness, usefulness, or generic quality criteria.
+29. Before finalizing, silently check:
+   - if state_value were hidden, the task would become substantially underdetermined;
+   - the scenario does not leak the attribute values;
+   - the scenario feels like a natural product moment;
+   - the synthesized schema is configuration-facing rather than a raw copy of state_value;
+   - the rubric aligns exactly one-to-one with reference_output leaves;
+   - each description explains the semantic link between the leaf and the original attribute.
+
+[Good Example A Input]
+state_key: "user_attributes_state:primary_job_role"
+state_value: {example_state}
+
+[Good Example A Output]
+{{
+  "item": {{
+    "scenario": "A registration form for a technical industry symposium is being finalized. The professional credential section is being completed before attendee details are submitted.",
+    "task_instruction": {fixed_task_instruction},
+    "output_template": {example_output_template},
+    "reference_output": {example_reference_output},
+    "scoring_rubric": {{
+      "criteria": [
+        {{
+          "path": "symposium_registration.professional_profile.job_title",
+          "canonical_value": "Senior Coatings Consultant",
+          "description": "This leaf carries the user's current job title into the role field used to describe the attendee professionally."
+        }},
+        {{
+          "path": "symposium_registration.professional_profile.organization",
+          "canonical_value": "PPG Industries",
+          "description": "This leaf carries the employer name into the organization field needed for the registration profile."
+        }},
+        {{
+          "path": "symposium_registration.professional_profile.specialization_areas[0]",
+          "canonical_value": "heavy-duty infrastructure",
+          "description": "This leaf captures one specialization area directly stated in the role attribute so the registration can reflect the attendee's technical focus."
+        }},
+        {{
+          "path": "symposium_registration.professional_profile.specialization_areas[1]",
+          "canonical_value": "marine protection",
+          "description": "This leaf captures another specialization area from the attribute, separating technical focus areas instead of collapsing them into a single summary."
+        }}
+      ]
+    }}
+  }}
+}}
+
+[Good Example B Input]
+state_key: "user_attributes_state:fitness_technology"
+state_value: {example_alt_state}
+
+[Good Example B Output]
+{{
+  "item": {{
+    "scenario": "A wellness app setup is being finalized. Connected-device sources are being configured before health data syncing starts.",
+    "task_instruction": {fixed_task_instruction},
+    "output_template": {example_alt_output_template},
+    "reference_output": {example_alt_reference_output},
+    "scoring_rubric": {{
+      "criteria": [
+        {{
+          "path": "wearable_sync_setup.connected_sources[0].device_model",
+          "canonical_value": "Apple Watch Series 9",
+          "description": "This leaf carries the first known device model into the source configuration for syncing."
+        }},
+        {{
+          "path": "wearable_sync_setup.connected_sources[0].device_variant",
+          "canonical_value": "Midnight aluminum",
+          "description": "This leaf carries the distinguishing variant details for the first device so the setup reflects the specific hardware entry stated in the attribute."
+        }},
+        {{
+          "path": "wearable_sync_setup.connected_sources[0].enabled_metrics[0]",
+          "canonical_value": "daily heart rate",
+          "description": "This leaf carries one tracking use directly stated for the first device into the metrics enabled for sync."
+        }},
+        {{
+          "path": "wearable_sync_setup.connected_sources[0].enabled_metrics[1]",
+          "canonical_value": "step tracking",
+          "description": "This leaf carries another tracking use stated for the first device into the configured metric list."
+        }},
+        {{
+          "path": "wearable_sync_setup.connected_sources[1].device_model",
+          "canonical_value": "Oura Ring Gen3",
+          "description": "This leaf carries the second known device model into the source configuration for syncing."
+        }},
+        {{
+          "path": "wearable_sync_setup.connected_sources[1].device_variant",
+          "canonical_value": "Stealth finish",
+          "description": "This leaf carries the distinguishing finish of the second device into the configuration, grounded in the attribute text."
+        }},
+        {{
+          "path": "wearable_sync_setup.connected_sources[1].enabled_metrics[0]",
+          "canonical_value": "sleep staging",
+          "description": "This leaf carries one directly stated sleep-related use for the second device into the sync setup."
+        }},
+        {{
+          "path": "wearable_sync_setup.connected_sources[1].enabled_metrics[1]",
+          "canonical_value": "recovery metrics",
+          "description": "This leaf carries another stated use for the second device into the configured metric list."
+        }}
+      ]
+    }}
+  }}
+}}
+
+[Good Example C Input]
+state_key: "user_attributes_state:digital_subscriptions"
+state_value: {example_third_state}
+
+[Good Example C Output]
+{{
+  "item": {{
+    "scenario": "A unified content and services hub is being connected for the user. Subscription entitlements are being prepared before linked services are shown.",
+    "task_instruction": {fixed_task_instruction},
+    "output_template": {example_third_output_template},
+    "reference_output": {example_third_reference_output},
+    "scoring_rubric": {{
+      "criteria": [
+        {{
+          "path": "subscription_entitlements.linked_services[0].service_name",
+          "canonical_value": "Audible",
+          "description": "This leaf extracts the service name from the first subscription so the entitlement config can refer to the linked service explicitly."
+        }},
+        {{
+          "path": "subscription_entitlements.linked_services[0].plan_or_bundle",
+          "canonical_value": "Premium Plus",
+          "description": "This leaf carries the plan tier from the first subscription, separating the plan detail from the base service name."
+        }},
+        {{
+          "path": "subscription_entitlements.linked_services[0].usage_context",
+          "canonical_value": "listening to non-fiction during 45-minute commutes",
+          "description": "This leaf carries the stated use context for the first subscription so the configuration reflects how the service is actually used."
+        }},
+        {{
+          "path": "subscription_entitlements.linked_services[1].service_name",
+          "canonical_value": "Disney Bundle",
+          "description": "This leaf extracts the named service bundle from the second subscription entry."
+        }},
+        {{
+          "path": "subscription_entitlements.linked_services[1].plan_or_bundle",
+          "canonical_value": "including Hulu and ESPN+",
+          "description": "This leaf carries the bundle composition detail for the second subscription so the entitlement config preserves what is included."
+        }},
+        {{
+          "path": "subscription_entitlements.linked_services[1].usage_context",
+          "canonical_value": "family entertainment and sports coverage",
+          "description": "This leaf captures the stated household use context for the second subscription."
+        }},
+        {{
+          "path": "subscription_entitlements.linked_services[2].service_name",
+          "canonical_value": "MasterClass",
+          "description": "This leaf extracts the service name from the third subscription entry."
+        }},
+        {{
+          "path": "subscription_entitlements.linked_services[2].plan_or_bundle",
+          "canonical_value": "annual subscription",
+          "description": "This leaf carries the subscription term stated for the third service so the entitlement config reflects the user's actual access type."
+        }},
+        {{
+          "path": "subscription_entitlements.linked_services[2].usage_context",
+          "canonical_value": "learning technical crafting and cooking skills",
+          "description": "This leaf captures the stated learning use context for the third subscription."
+        }}
+      ]
+    }}
+  }}
+}}
+
+[Bad Example — Do Not Imitate]
+{{
+  "item": {{
+    "scenario": "The user has an Apple Watch Series 9 and an Oura Ring Gen3, so the sync setup is being prepared.",
+    "task_instruction": "Write the best setup recommendation for the user right now.",
+    "output_template": {{
+      "devices": ["<fill>", "<fill>"]
+    }},
+    "reference_output": {{
+      "devices": [
+        "Apple Watch Series 9 (Midnight aluminum, used for daily heart rate and step tracking)",
+        "Oura Ring Gen3 (Stealth finish, primarily for sleep staging and recovery metrics)"
+      ]
+    }},
+    "scoring_rubric": {{
+      "criteria": [
+        {{
+          "path": "devices[0]",
+          "canonical_value": "Apple Watch Series 9 (Midnight aluminum, used for daily heart rate and step tracking)",
+          "description": "This leaf repeats the first device string."
+        }},
+        {{
+          "path": "devices[1]",
+          "canonical_value": "Oura Ring Gen3 (Stealth finish, primarily for sleep staging and recovery metrics)",
+          "description": "This leaf repeats the second device string."
+        }}
+      ]
+    }}
+  }}
+}}
+
+Why the bad example fails:
+- The scenario leaks the attribute values.
+- The task_instruction asks for a free-form recommendation instead of a structured action configuration.
+- The schema fails to decompose execution-relevant parts of the attribute strings into meaningful configuration fields.
+
+[Input]
+- checkpoint_timestamp: {checkpoint_timestamp}
+- state_key: {state_key}
+- state_value: {state_value}
+
+[Output JSON ONLY]
+{{
+  "item": {{
+    "scenario": "...",
+    "task_instruction": {fixed_task_instruction},
+    "output_template": {{
+      "<synthesized_configuration_key>": {{
+        "<synthesized_execution_field>": "<fill or nested fills>"
+      }}
+    }},
+    "reference_output": {{
+      "<same synthesized shape as output_template>": "..."
+    }},
+    "scoring_rubric": {{
+      "criteria": [
+        {{
+          "path": "...",
+          "canonical_value": "...",
+          "description": "..."
+        }}
+      ]
+    }}
+  }}
+}}
+""".format(
+        checkpoint_timestamp=json.dumps(str(checkpoint_timestamp or ""), ensure_ascii=False),
+        state_key=json.dumps(str(state_key or ""), ensure_ascii=False),
+        state_value=json.dumps(state_value, ensure_ascii=False, indent=2),
+        fixed_task_instruction=json.dumps(fixed_task_instruction, ensure_ascii=False),
+        example_state=json.dumps(example_state, ensure_ascii=False),
+        example_output_template=json.dumps(example_output_template, ensure_ascii=False, indent=2),
+        example_reference_output=json.dumps(example_reference_output, ensure_ascii=False, indent=2),
+        example_alt_state=json.dumps(example_alt_state, ensure_ascii=False, indent=2),
+        example_alt_output_template=json.dumps(example_alt_output_template, ensure_ascii=False, indent=2),
+        example_alt_reference_output=json.dumps(example_alt_reference_output, ensure_ascii=False, indent=2),
+        example_third_state=json.dumps(example_third_state, ensure_ascii=False, indent=2),
+        example_third_output_template=json.dumps(example_third_output_template, ensure_ascii=False, indent=2),
+        example_third_reference_output=json.dumps(example_third_reference_output, ensure_ascii=False, indent=2),
+    )
+
+def build_task_c_v2_question_pack_prompt(
+    *,
+    checkpoint_timestamp: str,
+    state_key: str,
+    state_value: Any,
+    service_family: str,
+) -> str:
+    state_type = _infer_apply_state_type(state_key)
+    normalized_family = str(service_family or "").strip()
+    if normalized_family == "user_communication":
+        return _build_task_c_v2_user_communication_question_pack_prompt(
+            checkpoint_timestamp=checkpoint_timestamp,
+            state_type=state_type,
+            state_key=state_key,
+            state_value=state_value,
+        )
+    if normalized_family == "information_request_construction":
+        return _build_task_c_v2_information_request_question_pack_prompt(
+            checkpoint_timestamp=checkpoint_timestamp,
+            state_type=state_type,
+            state_key=state_key,
+            state_value=state_value,
+            service_family=normalized_family,
+        )
+    if normalized_family == "action_configuration":
+        return _build_task_c_v2_action_configuration_question_pack_prompt(
+            checkpoint_timestamp=checkpoint_timestamp,
+            state_type=state_type,
+            state_key=state_key,
+            state_value=state_value,
+            service_family=normalized_family,
+        )
+    raise ValueError(f"Unsupported Task C v2 service_family: {normalized_family}")
+
+
+def _describe_task_c_v2_service_family(service_family: str) -> str:
+    normalized = str(service_family or "").strip()
+    if normalized == "user_communication":
+        return "Habit-Conditioned User Communication"
+    if normalized == "information_request_construction":
+        return "Preference-Conditioned Filtering Parameter Completion"
+    if normalized == "action_configuration":
+        return "Attribute-Conditioned Action Configuration"
+    return normalized
 
 def _build_service_application_prompt(
     *,
@@ -505,6 +1653,97 @@ def _build_service_application_prompt(
     )
 
 
+def _build_structured_service_completion_prompt(
+    *,
+    memory_section: str,
+    service_family: str,
+    scenario: str,
+    task_instruction: str,
+    output_template: Any,
+) -> str:
+    return """[Scenario]
+{scenario}
+
+[Task Instruction]
+{task_instruction}
+
+[Task Type]
+{service_family_description}
+
+[Required Output Object]
+{output_template}
+
+{memory_section}
+
+[Instructions]
+- Fill the structured `output` object using the memory and the provided scenario.
+- Preserve the required nested structure exactly.
+- Do not add extra fields.
+- `evidence` must be a list of objects with:
+  - `app_log_id`: use the exact app log id when it can be identified; otherwise use "".
+  - `evidence_content`: provide one short supporting snippet or close paraphrase. Keep it local and concise.
+- If evidence is unknown, use [].
+- Return JSON only.
+
+[Output format]
+{{
+  "output": {output_template},
+  "evidence": [
+    {{
+      "app_log_id": "<app_log_id>",
+      "evidence_content": "<supporting snippet from the same log>"
+    }}
+  ]
+}}
+""".format(
+        scenario=str(scenario or "").strip(),
+        task_instruction=str(task_instruction or "").strip(),
+        service_family_description=_describe_task_c_v2_service_family(service_family),
+        output_template=json.dumps(output_template, ensure_ascii=False, indent=2),
+        memory_section=memory_section,
+    )
+
+
+def _build_task_c_v2_user_communication_answer_prompt(
+    *,
+    memory_section: str,
+    scenario: str,
+    task_instruction: str,
+) -> str:
+    return """[Scenario]
+{scenario}
+
+[Task Instruction]
+{task_instruction}
+
+{memory_section}
+
+[Instructions]
+- Write one short natural-language assistant response that best fits the scenario using the memory.
+- Do not return a structured payload or bullet list.
+- `evidence` must be a list of objects with:
+  - `app_log_id`: use the exact app log id when it can be identified; otherwise use "".
+  - `evidence_content`: provide one short supporting snippet or close paraphrase. Keep it local and concise.
+- If evidence is unknown, use [].
+- Return JSON only.
+
+[Output format]
+{{
+  "answer": "<one short assistant response>",
+  "evidence": [
+    {{
+      "app_log_id": "<app_log_id>",
+      "evidence_content": "<supporting snippet from the same log>"
+    }}
+  ]
+}}
+""".format(
+        scenario=str(scenario or "").strip(),
+        task_instruction=str(task_instruction or "").strip(),
+        memory_section=memory_section,
+    )
+
+
 def build_service_application_prompt_with_inline_memory(
     *,
     question_text: str,
@@ -535,6 +1774,88 @@ def build_service_application_prompt_with_agent_memory(
     return _build_service_application_prompt(
         memory_section=_render_agent_memory_section(),
         question_text=question_text,
+    )
+
+
+def build_structured_service_completion_prompt_with_inline_memory(
+    *,
+    service_family: str,
+    scenario: str,
+    task_instruction: str,
+    output_template: Any,
+    context_logs: Optional[List[Dict[str, Any]]],
+    log_to_text,
+    inline_memory_blocks: Optional[List[str]] = None,
+) -> str:
+    return _build_structured_service_completion_prompt(
+        memory_section=_render_inline_memory_section(
+            inline_memory_blocks=_coerce_inline_memory_blocks(
+                inline_memory_blocks=inline_memory_blocks,
+                context_logs=context_logs,
+                log_to_text=log_to_text,
+            )
+        ),
+        service_family=service_family,
+        scenario=scenario,
+        task_instruction=task_instruction,
+        output_template=output_template,
+    )
+
+
+def build_structured_service_completion_prompt_with_agent_memory(
+    *,
+    service_family: str,
+    scenario: str,
+    task_instruction: str,
+    output_template: Any,
+    context_logs: Optional[List[Dict[str, Any]]],
+    log_to_text,
+    inline_memory_blocks: Optional[List[str]] = None,
+) -> str:
+    del context_logs, log_to_text, inline_memory_blocks
+    return _build_structured_service_completion_prompt(
+        memory_section=_render_agent_memory_section(),
+        service_family=service_family,
+        scenario=scenario,
+        task_instruction=task_instruction,
+        output_template=output_template,
+    )
+
+
+def build_task_c_v2_user_communication_prompt_with_inline_memory(
+    *,
+    scenario: str,
+    task_instruction: str,
+    context_logs: Optional[List[Dict[str, Any]]],
+    log_to_text,
+    inline_memory_blocks: Optional[List[str]] = None,
+) -> str:
+    return _build_task_c_v2_user_communication_answer_prompt(
+        memory_section=_render_inline_memory_section(
+            inline_memory_blocks=_coerce_inline_memory_blocks(
+                inline_memory_blocks=inline_memory_blocks,
+                context_logs=context_logs,
+                log_to_text=log_to_text,
+            )
+        ),
+        scenario=scenario,
+        task_instruction=task_instruction,
+    )
+
+
+def build_task_c_v2_user_communication_prompt_with_agent_memory(
+    *,
+    scenario: str,
+    task_instruction: str,
+    context_logs: Optional[List[Dict[str, Any]]],
+    log_to_text,
+    inline_memory_blocks: Optional[List[str]] = None,
+) -> str:
+    del context_logs, log_to_text, inline_memory_blocks
+    return _build_task_c_v2_user_communication_answer_prompt(
+        memory_section=_render_agent_memory_section(),
+        scenario=scenario,
+        task_instruction=task_instruction,
     )
 
 
@@ -659,6 +1980,254 @@ Output JSON ONLY:
         question=json.dumps(question, ensure_ascii=False),
         reference_answer=json.dumps(reference_answer, ensure_ascii=False),
         criteria_template=json.dumps(criteria_template, ensure_ascii=False, indent=2),
+    )
+
+
+def build_task_c_v2_validation_prompt(
+    *,
+    state_key: str,
+    state_value: Any,
+    service_family: str,
+    scenario: str,
+    task_instruction: str,
+    output_template: Any,
+    reference_output: Any,
+    reference_answer: str = "",
+) -> str:
+    normalized_family = str(service_family or "").strip()
+    if normalized_family == "user_communication":
+        criteria_template = [
+            {
+                "criterion": "service_completion_quality",
+                "analysis": "<whether the item defines a real assistant communication task instead of raw state recall>",
+                "pass": "<bool>",
+            },
+            {
+                "criterion": "full_field_dependency",
+                "analysis": "<whether answering well requires all non-derived fields in the provided state>",
+                "pass": "<bool>",
+            },
+            {
+                "criterion": "low_leakage",
+                "analysis": "<whether scenario and task_instruction avoid restating the key user-state facts>",
+                "pass": "<bool>",
+            },
+            {
+                "criterion": "answer_groundedness",
+                "analysis": "<whether reference_answer is short, natural, and grounded in the provided state>",
+                "pass": "<bool>",
+            },
+        ]
+        return """[Task Instruction]
+Validate whether this Task C v2 item is a strong proactive user-communication task.
+Judge the item by four fixed semantic criteria and provide one explicit analysis for each criterion.
+Do not output an overall verdict; only output the structured criterion-level judgments.
+
+[Definitions]
+- service_completion_quality: the item must ask the assistant to produce one concrete user-facing communication, not merely restate the habit or answer a recall question.
+- full_field_dependency: answering well should require all non-derived fields in `state_value`; dropping an important field should make the communication materially weaker or incorrect.
+- low_leakage: `scenario` and `task_instruction` should describe only the local situation and current communication task; they must not restate or strongly imply the key habit facts that should come from `state_value`.
+- answer_groundedness: `reference_answer` must be a short natural-language assistant response that is specific, state-grounded, and free of unsupported user-specific details.
+
+[Constraints]
+1. Evaluate exactly the four required criteria in this fixed order: service_completion_quality, full_field_dependency, low_leakage, answer_groundedness.
+2. Output exactly one object for each required criterion.
+3. Use the criterion names exactly as given; do not rename, reorder, omit, or add criteria.
+4. Set `pass` to true only when the criterion is clearly satisfied.
+5. Keep each `analysis` concise but specific.
+6. Mark `low_leakage` as failed if `scenario` or `task_instruction` restates or paraphrases the habit action, cadence, scheduled day, timing, location, or priority.
+7. Mark `answer_groundedness` as failed if `reference_answer` introduces unsupported tactics, thresholds, or user-specific facts absent from `state_value`.
+8. Output JSON ONLY with no markdown and no extra keys.
+
+[Example]
+[Example Input]
+state_key: "habits_state:morning_run"
+state_value: {{"timing": {{"start_time": "06:30"}}, "schedule": {{"days_of_week": [1, 3, 5]}}}}
+candidate_item: {{
+  "service_family": "user_communication",
+  "scenario": "It is 06:10. Nothing has been logged yet today.",
+  "task_instruction": "Write the short reminder message the assistant should send right now.",
+  "reference_answer": "Send a reminder that this is one of the user's regular morning run windows and that the run normally starts at 06:30."
+}}
+
+[Example Output]
+{{
+  "criteria": [
+    {{
+      "criterion": "service_completion_quality",
+      "analysis": "The item asks for one concrete assistant message rather than raw recall.",
+      "pass": true
+    }},
+    {{
+      "criterion": "full_field_dependency",
+      "analysis": "The timing and recurring-day pattern are both needed for a good reminder.",
+      "pass": true
+    }},
+    {{
+      "criterion": "low_leakage",
+      "analysis": "The scenario describes only the current moment and does not restate the routine details.",
+      "pass": true
+    }},
+    {{
+      "criterion": "answer_groundedness",
+      "analysis": "The answer is short, natural, and grounded in the state without adding unsupported facts.",
+      "pass": true
+    }}
+  ]
+}}
+
+[Input/Output Format]
+Input:
+- state_key: string
+- state_value: object
+- candidate item: object with `service_family`, `scenario`, `task_instruction`, `reference_answer`
+
+Input Payload:
+- state_key: {state_key}
+- state_value: {state_value}
+- candidate_item: {{
+    "service_family": {service_family},
+    "scenario": {scenario},
+    "task_instruction": {task_instruction},
+    "reference_answer": {reference_answer}
+  }}
+
+Output JSON ONLY:
+{{
+  "criteria": [
+    {{
+      "criterion": "<one required criterion name>",
+      "analysis": "<why it passes or fails>",
+      "pass": "<bool>"
+    }}
+  ]
+}}
+""".format(
+            state_key=json.dumps(str(state_key or ""), ensure_ascii=False),
+            state_value=json.dumps(state_value, ensure_ascii=False, indent=2),
+            service_family=json.dumps(normalized_family, ensure_ascii=False),
+            scenario=json.dumps(str(scenario or ""), ensure_ascii=False),
+            task_instruction=json.dumps(str(task_instruction or ""), ensure_ascii=False),
+            reference_answer=json.dumps(str(reference_answer or ""), ensure_ascii=False),
+        )
+    criteria_template = [
+        {
+            "criterion": "service_completion_quality",
+            "analysis": "<whether the scenario and task instruction define a real structured service-completion task>",
+            "pass": "<bool>",
+        },
+        {
+            "criterion": "full_field_dependency",
+            "analysis": "<whether the item requires all non-derived fields in the provided state>",
+            "pass": "<bool>",
+        },
+        {
+            "criterion": "schema_groundedness",
+            "analysis": "<whether the item uses a family-appropriate service object while preserving one source leaf per required output leaf>",
+            "pass": "<bool>",
+        },
+        {
+            "criterion": "point_pairability",
+            "analysis": "<whether the item can be scored with one paired field-correctness point per required output field>",
+            "pass": "<bool>",
+        },
+    ]
+    return """[Task Instruction]
+Validate whether this Task C v2 item is a strong structured proactive personalized-service completion item.
+Judge the item by four fixed semantic criteria and provide one explicit analysis for each criterion.
+Do not output an overall verdict; only output the structured criterion-level judgments.
+
+[Definitions]
+- service_completion_quality: the item must define a real structured service-completion task, not a free-form recall question.
+- full_field_dependency: the item must require all non-derived fields in `state_value`; dropping any required field should make the service object incomplete.
+- schema_groundedness: `output_template` and `reference_output` must form a family-appropriate top-level service object. They may rename and regroup fields, but they must preserve every source leaf value exactly once and must not merely copy the raw state schema.
+- point_pairability: the item must be scorable with deterministic paired field-correctness points, where the required output leaves appear in the same order as the source leaves and each output leaf can be paired with one source field.
+
+[Constraints]
+1. Evaluate exactly the four required criteria in this fixed order: service_completion_quality, full_field_dependency, schema_groundedness, point_pairability.
+2. Output exactly one object for each required criterion.
+3. Use the criterion names exactly as given; do not rename, reorder, omit, or add criteria.
+4. Set `pass` to true only when the criterion is clearly satisfied.
+5. Keep each `analysis` concise but specific.
+6. Mark `service_completion_quality` as failed if the item mainly behaves like a free-form QA question rather than a structured completion task.
+7. Mark `full_field_dependency` as failed if some required part of `state_value` is unused, optionalized, or collapsed away.
+8. Mark `schema_groundedness` as failed if the item simply mirrors the raw state schema, fails to produce a top-level service object, drops source values, or adds extra unpaired required leaves.
+9. Mark `point_pairability` as failed if the item would require fuzzy whole-answer judgment rather than one-to-one leaf pairing in source-leaf order.
+10. Output JSON ONLY with no markdown and no extra keys.
+
+[Example]
+[Example Input]
+state_key: "habits_state:morning_run"
+state_value: {{"timing": {{"start_time": "06:30"}}}}
+candidate_item: {{
+  "service_family": "user_communication",
+  "scenario": "The assistant is preparing the morning routine-support communication object.",
+  "task_instruction": "Fill the user-communication payload for the scheduled routine.",
+  "output_template": {{"communication_payload": {{"scheduled_start_time": "<fill>"}}}},
+  "reference_output": {{"communication_payload": {{"scheduled_start_time": "06:30"}}}}
+}}
+
+[Example Output]
+{{
+  "criteria": [
+    {{
+      "criterion": "service_completion_quality",
+      "analysis": "The item asks for one structured service object rather than a free-form answer.",
+      "pass": true
+    }},
+    {{
+      "criterion": "full_field_dependency",
+      "analysis": "The only state field is required to complete the payload.",
+      "pass": true
+    }},
+    {{
+      "criterion": "schema_groundedness",
+      "analysis": "The template is a communication payload rather than a raw state copy, and it preserves the source value once in a service-facing field.",
+      "pass": true
+    }},
+    {{
+      "criterion": "point_pairability",
+      "analysis": "The output can be scored with one direct paired field-correctness point from timing.start_time to communication_payload.scheduled_start_time.",
+      "pass": true
+    }}
+  ]
+}}
+
+[Input/Output Format]
+Input:
+- state_key: string
+- state_value: object
+- candidate item: object with `service_family`, `scenario`, `task_instruction`, `output_template`, `reference_output`
+
+Input Payload:
+- state_key: {state_key}
+- state_value: {state_value}
+- candidate_item: {{
+    "service_family": {service_family},
+    "scenario": {scenario},
+    "task_instruction": {task_instruction},
+    "output_template": {output_template},
+    "reference_output": {reference_output}
+  }}
+
+Output JSON ONLY:
+{{
+  "criteria": [
+    {{
+      "criterion": "<one required criterion name>",
+      "analysis": "<why it passes or fails>",
+      "pass": "<bool>"
+    }}
+  ]
+}}
+""".format(
+        state_key=json.dumps(str(state_key or ""), ensure_ascii=False),
+        state_value=json.dumps(state_value, ensure_ascii=False, indent=2),
+        service_family=json.dumps(str(service_family or ""), ensure_ascii=False),
+        scenario=json.dumps(str(scenario or ""), ensure_ascii=False),
+        task_instruction=json.dumps(str(task_instruction or ""), ensure_ascii=False),
+        output_template=json.dumps(output_template, ensure_ascii=False, indent=2),
+        reference_output=json.dumps(reference_output, ensure_ascii=False, indent=2),
     )
 
 
@@ -919,6 +2488,181 @@ Output JSON ONLY:
         reference_answer=json.dumps(reference_answer, ensure_ascii=False),
         failed_rules=json.dumps(list(failed_rules or []), ensure_ascii=False),
         semantic_criteria=json.dumps(list(semantic_criteria or []), ensure_ascii=False),
+    )
+
+
+def build_task_c_v2_rewrite_prompt(
+    *,
+    state_key: str,
+    state_value: Any,
+    service_family: str,
+    scenario: str,
+    task_instruction: str,
+    output_template: Any,
+    reference_output: Any,
+    failed_rules: List[str],
+    semantic_criteria: List[Dict[str, Any]],
+    reference_answer: str = "",
+) -> str:
+    normalized_family = str(service_family or "").strip()
+    if normalized_family == "user_communication":
+        return """[Task Instruction]
+Rewrite one invalid Task C v2 user-communication item so that it becomes a strong proactive personalized-service task.
+Use the failed rules and semantic-criterion feedback to directly fix the item.
+Do not change the required service family.
+
+[Definitions]
+- failed_rules: the programmatic failure codes and failed criterion names that must be fixed.
+- semantic criteria feedback: criterion-level judgments explaining which properties failed and why.
+- low leakage: `scenario` and `task_instruction` do not restate, paraphrase, or strongly imply the habit facts that should come from `state_value`.
+- grounded answer: a short natural-language assistant response whose key personalized content is supported by `state_value`.
+
+[Constraints]
+1. Keep `service_family = {service_family}` exactly.
+2. Keep the item in natural-language assistant-response form; do not rewrite it into a structured payload.
+3. Keep exactly these fields in the rewritten item: `service_family`, `scenario`, `task_instruction`, `reference_answer`.
+4. Fix every failed rule and every failed semantic criterion.
+5. If `service_completion_quality` failed, rewrite the item so it asks for one concrete assistant communication rather than a recall question.
+6. If `full_field_dependency` failed, rewrite the item so a good answer depends on all important state fields.
+7. If `low_leakage` failed, remove any restatement of action, cadence, scheduled day, timing, location, or priority from `scenario` and `task_instruction`.
+8. If `answer_groundedness` failed, make the revised `reference_answer` more state-grounded without adding unsupported user-specific facts.
+9. Output JSON ONLY with no extra keys.
+
+[Example]
+[Example Input]
+failed_rules: ["low_leakage", "answer_groundedness"]
+semantic_criteria: [
+  {{"criterion": "service_completion_quality", "analysis": "The item asks for one communication action.", "pass": true}},
+  {{"criterion": "full_field_dependency", "analysis": "The state fields are mostly used.", "pass": true}},
+  {{"criterion": "low_leakage", "analysis": "The scenario repeats that this is the user's Sunday family dinner.", "pass": false}},
+  {{"criterion": "answer_groundedness", "analysis": "The answer adds unsupported preparation advice.", "pass": false}}
+]
+
+[Example Output]
+{{
+  "service_family": "user_communication",
+  "scenario": "It is 16:45. Everyone is home, and nothing has been prepared yet.",
+  "task_instruction": "Write the short reminder message the assistant should send right now.",
+  "reference_answer": "Send a high-priority reminder about the family's recurring dinner window at the family home dining room."
+}}
+
+[Input/Output Format]
+Input:
+- state_key: string
+- state_value: object
+- invalid item: object with `service_family`, `scenario`, `task_instruction`, `reference_answer`
+- failed_rules: string[]
+- semantic_criteria: object[]
+
+Input Payload:
+- state_key: {state_key}
+- state_value: {state_value}
+- invalid_item: {{
+    "service_family": {service_family},
+    "scenario": {scenario},
+    "task_instruction": {task_instruction},
+    "reference_answer": {reference_answer}
+  }}
+- failed_rules: {failed_rules}
+- semantic_criteria: {semantic_criteria}
+
+Output JSON ONLY:
+{{
+  "service_family": {service_family},
+  "scenario": "...",
+  "task_instruction": "...",
+  "reference_answer": "..."
+}}
+""".format(
+            state_key=json.dumps(str(state_key or ""), ensure_ascii=False),
+            state_value=json.dumps(state_value, ensure_ascii=False, indent=2),
+            service_family=json.dumps(normalized_family, ensure_ascii=False),
+            scenario=json.dumps(str(scenario or ""), ensure_ascii=False),
+            task_instruction=json.dumps(str(task_instruction or ""), ensure_ascii=False),
+            reference_answer=json.dumps(str(reference_answer or ""), ensure_ascii=False),
+            failed_rules=json.dumps(list(failed_rules or []), ensure_ascii=False),
+            semantic_criteria=json.dumps(list(semantic_criteria or []), ensure_ascii=False, indent=2),
+        )
+    return """[Task Instruction]
+Rewrite one invalid Task C v2 item so that it becomes a strong structured proactive personalized-service completion item.
+Use the failed rules and semantic-criterion feedback to directly fix the item.
+Do not change the required service family.
+
+[Definitions]
+- failed_rules: the programmatic failure codes and failed criterion names that must be fixed.
+- semantic criteria feedback: criterion-level judgments explaining which properties failed and why.
+- family-appropriate service object: a top-level structured payload that matches the required service family and is not merely a raw copy of the source state.
+- order-preserving pairing: the required output leaves must appear in the same order as the source leaves so the item can be scored deterministically one-to-one.
+
+[Constraints]
+1. Keep `service_family = {service_family}` exactly.
+2. Keep `output_template` and `reference_output` as top-level structured service objects.
+3. Fix every failed rule and every failed semantic criterion.
+4. If `service_completion_quality` failed, rewrite the scenario and task instruction so the item becomes a real structured service-completion task.
+5. If `full_field_dependency` failed, rewrite the service object so every source field is required.
+6. If `schema_groundedness` failed, repair the item so it becomes a family-appropriate service object rather than a raw state copy, while preserving every source leaf exactly once.
+7. If `point_pairability` failed, rewrite the item so the required output leaves can be paired one-to-one with source leaves in source-leaf order.
+8. Do not add extra unpaired required output leaves.
+9. Output JSON ONLY with no extra keys.
+
+[Example]
+[Example Input]
+failed_rules: ["service_completion_quality", "point_pairability"]
+semantic_criteria: [
+  {{"criterion": "service_completion_quality", "analysis": "The item still behaves like a free-form answer request.", "pass": false}},
+  {{"criterion": "full_field_dependency", "analysis": "The only state field is required.", "pass": true}},
+  {{"criterion": "schema_groundedness", "analysis": "The schema mirrors the state correctly.", "pass": true}},
+  {{"criterion": "point_pairability", "analysis": "The task instruction is too vague for direct field scoring.", "pass": false}}
+]
+
+[Example Output]
+{{
+  "service_family": "user_communication",
+  "scenario": "The assistant is preparing the proactive routine-support object for this scheduled activity.",
+  "task_instruction": "Fill the user-communication payload so every required routine field is available for the assistant's next action.",
+  "output_template": {{"communication_payload": {{"scheduled_start_time": "<fill>"}}}},
+  "reference_output": {{"communication_payload": {{"scheduled_start_time": "06:30"}}}}
+}}
+
+[Input/Output Format]
+Input:
+- state_key: string
+- state_value: object
+- invalid item: object with `service_family`, `scenario`, `task_instruction`, `output_template`, `reference_output`
+- failed_rules: string[]
+- semantic_criteria: object[]
+
+Input Payload:
+- state_key: {state_key}
+- state_value: {state_value}
+- invalid_item: {{
+    "service_family": {service_family},
+    "scenario": {scenario},
+    "task_instruction": {task_instruction},
+    "output_template": {output_template},
+    "reference_output": {reference_output}
+  }}
+- failed_rules: {failed_rules}
+- semantic_criteria: {semantic_criteria}
+
+Output JSON ONLY:
+{{
+  "service_family": {service_family},
+  "scenario": "...",
+  "task_instruction": "...",
+  "output_template": {output_template},
+  "reference_output": {reference_output}
+}}
+""".format(
+        state_key=json.dumps(str(state_key or ""), ensure_ascii=False),
+        state_value=json.dumps(state_value, ensure_ascii=False, indent=2),
+        service_family=json.dumps(str(service_family or ""), ensure_ascii=False),
+        scenario=json.dumps(str(scenario or ""), ensure_ascii=False),
+        task_instruction=json.dumps(str(task_instruction or ""), ensure_ascii=False),
+        output_template=json.dumps(output_template, ensure_ascii=False, indent=2),
+        reference_output=json.dumps(reference_output, ensure_ascii=False, indent=2),
+        failed_rules=json.dumps(list(failed_rules or []), ensure_ascii=False),
+        semantic_criteria=json.dumps(list(semantic_criteria or []), ensure_ascii=False, indent=2),
     )
 
 

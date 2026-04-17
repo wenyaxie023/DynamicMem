@@ -7,11 +7,9 @@ from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 from .scoring_points import extract_value_at_path
 from .task_packs import extract_pack_keys
+from tce_contracts import infer_task_contract_version, task_contract_is_v2
 
 EXCLUDED_VALUE_FIELDS = {"priority", "schedule_date", "schedule_dates"}
-OPTION_LABEL_PATTERN = re.compile(
-    r"(?i)(?:^|\b)(?:option\s*)?([A-Z])(?:[\)\].:]\s*|\b)"
-)
 POINT_TYPE_FIELD = "field"
 POINT_TYPE_LIST_ITEM = "list_item"
 POINT_TYPE_MICRO = "micro"
@@ -214,18 +212,6 @@ def _score_evidence_content_structural(records_by_key: Dict[str, List[Dict[str, 
         "evidence_content_nonempty_rate": sum(nonempty_rates) / len(nonempty_rates) if nonempty_rates else 0.0,
         "evidence_content_with_id_rate": sum(paired_rates) / len(paired_rates) if paired_rates else 0.0,
     }
-
-
-def _extract_option_label(text: Any) -> str:
-    raw = str(text or "").strip()
-    if not raw:
-        return ""
-    match = OPTION_LABEL_PATTERN.search(raw)
-    if not match:
-        return ""
-    return str(match.group(1) or "").upper().strip()
-
-
 def _expected_evidence_by_key(checkpoint: Dict[str, Any], target_keys: Sequence[str]) -> Dict[str, List[str]]:
     obs_flat = flatten_observability(checkpoint.get("state_observability") or {})
     out: Dict[str, List[str]] = {}
@@ -306,7 +292,11 @@ def _extract_change_payload_by_key(
     return out
 
 
-def _extract_rq3_pack_by_key(checkpoint: Dict[str, Any]) -> Dict[str, List[Dict[str, Any]]]:
+def _extract_rq3_pack_by_key(
+    checkpoint: Dict[str, Any],
+    *,
+    task_contract_version: str,
+) -> Dict[str, List[Dict[str, Any]]]:
     if "rq3_know_apply" in checkpoint:
         raise ValueError("Legacy field rq3_know_apply is no longer supported. Use rq3_apply_service_qa.")
     payload = checkpoint.get("rq3_apply_service_qa")
@@ -326,22 +316,39 @@ def _extract_rq3_pack_by_key(checkpoint: Dict[str, Any]) -> Dict[str, List[Dict[
         for qa_item in items:
             if not isinstance(qa_item, dict):
                 continue
-            normalized.append(
-                {
-                    "qa_id": str(qa_item.get("qa_id") or ""),
-                    "service_category": str(qa_item.get("service_category") or ""),
-                    "question": str(qa_item.get("question") or qa_item.get("apply_question") or ""),
-                    "reference_answer": str(qa_item.get("reference_answer") or qa_item.get("apply_reference_answer") or ""),
-                    "rubric": list(qa_item.get("rubric") or []),
-                    "apply_scenario": str(qa_item.get("apply_scenario") or ""),
-                    "apply_question": str(qa_item.get("question") or qa_item.get("apply_question") or ""),
-                    "apply_reference_answer": str(qa_item.get("reference_answer") or qa_item.get("apply_reference_answer") or ""),
-                    "answer_scoring_points": list(qa_item.get("answer_scoring_points") or []),
-                    "gold_memory_evidence_app_log_ids": _extract_evidence_ids(
-                        qa_item.get("gold_memory_evidence_app_log_ids")
-                    ),
-                }
-            )
+            if task_contract_is_v2(task_contract_version):
+                normalized.append(
+                    {
+                        "qa_id": str(qa_item.get("qa_id") or ""),
+                        "service_family": str(qa_item.get("service_family") or ""),
+                        "scenario": str(qa_item.get("scenario") or ""),
+                        "task_instruction": str(qa_item.get("task_instruction") or ""),
+                        "reference_answer": str(qa_item.get("reference_answer") or ""),
+                        "output_template": qa_item.get("output_template"),
+                        "reference_output": qa_item.get("reference_output"),
+                        "answer_scoring_points": list(qa_item.get("answer_scoring_points") or []),
+                        "gold_memory_evidence_app_log_ids": _extract_evidence_ids(
+                            qa_item.get("gold_memory_evidence_app_log_ids")
+                        ),
+                    }
+                )
+            else:
+                normalized.append(
+                    {
+                        "qa_id": str(qa_item.get("qa_id") or ""),
+                        "service_category": str(qa_item.get("service_category") or ""),
+                        "question": str(qa_item.get("question") or qa_item.get("apply_question") or ""),
+                        "reference_answer": str(qa_item.get("reference_answer") or qa_item.get("apply_reference_answer") or ""),
+                        "rubric": list(qa_item.get("rubric") or []),
+                        "apply_scenario": str(qa_item.get("apply_scenario") or ""),
+                        "apply_question": str(qa_item.get("question") or qa_item.get("apply_question") or ""),
+                        "apply_reference_answer": str(qa_item.get("reference_answer") or qa_item.get("apply_reference_answer") or ""),
+                        "answer_scoring_points": list(qa_item.get("answer_scoring_points") or []),
+                        "gold_memory_evidence_app_log_ids": _extract_evidence_ids(
+                            qa_item.get("gold_memory_evidence_app_log_ids")
+                        ),
+                    }
+                )
         if normalized:
             out[str(key)] = normalized
     return out
@@ -364,13 +371,14 @@ def _extract_rq3_apply_answers_by_key(prediction: Dict[str, Any]) -> Dict[str, L
         for qa_item in items:
             if not isinstance(qa_item, dict):
                 continue
-            normalized.append(
-                {
-                    "qa_id": str(qa_item.get("qa_id") or ""),
-                    "answer": str(qa_item.get("answer") or ""),
-                    "evidence": _extract_evidence_records(qa_item.get("evidence")),
-                }
-            )
+            payload = {
+                "qa_id": str(qa_item.get("qa_id") or ""),
+                "answer": str(qa_item.get("answer") or ""),
+                "output": qa_item.get("output"),
+                "evidence": _extract_evidence_records(qa_item.get("evidence")),
+                "service_family": str(qa_item.get("service_family") or ""),
+            }
+            normalized.append(payload)
         if normalized:
             out[str(key)] = normalized
     return out
@@ -698,6 +706,7 @@ def evaluate_checkpoints(
     *,
     include_internal_payload: bool = False,
 ) -> Tuple[List[Dict[str, Any]], int]:
+    benchmark_contract_version = infer_task_contract_version(benchmark)
     rows: List[Dict[str, Any]] = []
     evaluated = 0
     prev_exp_snapshot: Optional[Dict[str, Any]] = None
@@ -869,7 +878,10 @@ def evaluate_checkpoints(
         change_evidence_content_scores = score_change_evidence_content(pred_change_evidence_records)
         snapshot_evidence_content_scores = score_evidence_content(pred_evidence_records)
 
-        expected_rq3 = _extract_rq3_pack_by_key(checkpoint)
+        expected_rq3 = _extract_rq3_pack_by_key(
+            checkpoint,
+            task_contract_version=benchmark_contract_version,
+        )
         pred_rq3 = _extract_rq3_apply_answers_by_key(prediction)
         rq3_item_count = sum(len(v) for v in expected_rq3.values())
         rq3_expected_keys = set(expected_rq3.keys())
@@ -880,9 +892,6 @@ def evaluate_checkpoints(
         rq3_predicted_evidence_by_item: Dict[str, List[str]] = {}
         rq3_evidence_records_by_item: Dict[str, List[Dict[str, str]]] = {}
         rq3_expected_item_ids: List[str] = []
-        rq3_option_extractable_total = 0
-        rq3_option_predicted_total = 0
-        rq3_option_correct_total = 0
         for key in sorted(rq3_expected_keys):
             pred_by_id = {
                 str(item.get("qa_id") or ""): item
@@ -903,32 +912,42 @@ def evaluate_checkpoints(
                 rq3_predicted_evidence_by_item[item_id] = _extract_evidence_ids(predicted_evidence_records)
                 rq3_evidence_records_by_item[item_id] = predicted_evidence_records
 
-                answer_scoring_points = list(exp_item.get("answer_scoring_points") or [])
-                if answer_scoring_points:
-                    rq3_slots_by_item[item_id] = {
-                        "state_key": key,
-                        "qa_id": qa_id,
-                        "question": str(exp_item.get("question") or exp_item.get("apply_question") or ""),
-                        "reference_answer": str(
-                            exp_item.get("reference_answer") or exp_item.get("apply_reference_answer") or ""
-                        ),
-                        "predicted_answer": str((pred_item or {}).get("answer") or ""),
-                        "slots": _materialize_slots(
-                            answer_scoring_points,
-                            str((pred_item or {}).get("answer") or ""),
-                        ),
-                    }
-                    continue
-
-                gold_label = _extract_option_label(exp_item.get("apply_reference_answer"))
-                if not gold_label:
-                    continue
-                rq3_option_extractable_total += 1
-                pred_label = _extract_option_label((pred_item or {}).get("answer"))
-                if pred_label:
-                    rq3_option_predicted_total += 1
-                if pred_label and pred_label == gold_label:
-                    rq3_option_correct_total += 1
+                answer_scoring_points = exp_item.get("answer_scoring_points")
+                if not isinstance(answer_scoring_points, list) or not answer_scoring_points:
+                    raise ValueError(
+                        "Task C pack item is missing non-empty answer_scoring_points[]. "
+                        "Current protocol does not allow option-style fallback during evaluation "
+                        f"(checkpoint_id={checkpoint_id}, state_key={key}, qa_id={qa_id})."
+                    )
+                predicted_blob = (
+                    str((pred_item or {}).get("answer") or "")
+                    if (
+                        task_contract_is_v2(benchmark_contract_version)
+                        and str(exp_item.get("service_family") or "") == "user_communication"
+                    )
+                    else (
+                        (pred_item or {}).get("output")
+                        if task_contract_is_v2(benchmark_contract_version)
+                        else str((pred_item or {}).get("answer") or "")
+                    )
+                )
+                rq3_slots_by_item[item_id] = {
+                    "state_key": key,
+                    "qa_id": qa_id,
+                    "service_family": str(exp_item.get("service_family") or ""),
+                    "scenario": str(exp_item.get("scenario") or exp_item.get("apply_scenario") or ""),
+                    "task_instruction": str(exp_item.get("task_instruction") or exp_item.get("question") or exp_item.get("apply_question") or ""),
+                    "reference_answer": str(
+                        exp_item.get("reference_answer") or exp_item.get("apply_reference_answer") or ""
+                    ),
+                    "reference_output": exp_item.get("reference_output"),
+                    "predicted_answer": str((pred_item or {}).get("answer") or ""),
+                    "predicted_output": (pred_item or {}).get("output"),
+                    "slots": _materialize_slots(
+                        answer_scoring_points,
+                        predicted_blob,
+                    ),
+                }
 
         rq3_content_scores = _score_evidence_content_structural(rq3_evidence_records_by_item)
         rq3_apply_evidence_scores = _score_id_metrics(
@@ -983,16 +1002,6 @@ def evaluate_checkpoints(
                     prefix="change_retrieval",
                     suffix="_mean_on_changed",
                 )
-            )
-        if rq3_option_extractable_total and not rq3_slots_by_item:
-            row["rq3_apply_option_extractable_item_count"] = float(rq3_option_extractable_total)
-            row["rq3_apply_option_prediction_coverage_on_extractable"] = _safe_div(
-                rq3_option_predicted_total,
-                rq3_option_extractable_total,
-            )
-            row["rq3_apply_option_accuracy_on_extractable"] = _safe_div(
-                rq3_option_correct_total,
-                rq3_option_extractable_total,
             )
         if rq3_apply_retrieval_available:
             row.update(

@@ -11,6 +11,11 @@ if str(ROOT) not in sys.path:
 
 from bench_core.tce_evaluator import build_tce_result_payload, evaluate_tce_rows
 from eval.eval_tce import evaluate
+from tce_contracts import (
+    CURRENT_TASK_CONTRACT_VERSION,
+    LEGACY_TASK_CONTRACT_VERSION,
+    RESEARCH_FRAME_VERSION_V2,
+)
 
 
 class TceEvalEntrypointAcceptance(unittest.TestCase):
@@ -25,6 +30,8 @@ class TceEvalEntrypointAcceptance(unittest.TestCase):
 
             benchmark_payload = {
                 "user_id": "001_user_001",
+                "task_contract_version": CURRENT_TASK_CONTRACT_VERSION,
+                "research_frame_version": RESEARCH_FRAME_VERSION_V2,
                 "total_checkpoints": 1,
                 "checkpoints": [
                     {
@@ -84,6 +91,22 @@ class TceEvalEntrypointAcceptance(unittest.TestCase):
                 bench_core_result["summary"]["snapshot_value_f1_mean_on_expected_mean"],
             )
             self.assertEqual(len(eval_result["checkpoints"]), len(bench_core_result["checkpoints"]))
+            self.assertEqual(eval_result["task_contract_version"], CURRENT_TASK_CONTRACT_VERSION)
+            self.assertEqual(bench_core_result["task_contract_version"], CURRENT_TASK_CONTRACT_VERSION)
+
+    def test_eval_defaults_missing_contract_metadata_to_legacy_v1(self):
+        result = build_tce_result_payload(
+            {
+                "user_id": "001_user_001",
+                "total_checkpoints": 0,
+                "checkpoints": [],
+            },
+            [],
+            0,
+            save_eyeball=False,
+            strip_internal_payload=True,
+        )
+        self.assertEqual(result["task_contract_version"], LEGACY_TASK_CONTRACT_VERSION)
 
 
 if __name__ == "__main__":

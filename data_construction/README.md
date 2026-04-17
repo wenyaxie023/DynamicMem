@@ -51,7 +51,10 @@ To evaluate memory behavior beyond QA, build checkpoint-based TCE ground truth.
 ```bash
 cd data_construction
 python3 build_tce_benchmark.py \
-  --app-logs-final generated_outputs/gemini_3_flash_preview/001_user_001/app_logs_final.json
+  --app-logs-final generated_outputs/gemini_3_flash_preview/001_user_001/app_logs_final.json \
+  --task-contract-version taskabc_v2 \
+  --research-frame-version rq_20260413 \
+  --canonical-research-doc analysis_tools/tce_research_questions/001_user_001/new_research_question.md
 ```
 
 Or use the wrapper:
@@ -63,7 +66,14 @@ bash data_construction/run_build_tce_benchmark.sh
 
 Output:
 
-- `data_construction/generated_outputs/gemini_3_flash_preview/001_user_001/tce_benchmark.json`
+- `data_construction/generated_outputs/gemini_3_flash_preview/001_user_001/tce_benchmark*.json`
+
+Current versioning rule:
+- new benchmark / task-pack artifacts should carry top-level:
+  - `task_contract_version = taskabc_v2`
+  - `research_frame_version = rq_20260413`
+  - `canonical_research_doc = analysis_tools/tce_research_questions/001_user_001/new_research_question.md`
+- older artifacts without explicit contract metadata should be interpreted as legacy `taskabc_v1`
 
 Checkpoint rule (current implementation):
 
@@ -77,12 +87,41 @@ Checkpoint rule (current implementation):
   - if a checkpoint has no new valid observable snapshot compared to the previous exported checkpoint, it is skipped.
   - this avoids evaluating chain completions that do not change evaluable state targets.
 
-### 2) Produce Baseline Predictions
+### 2) Build Task Packs
+
+```bash
+cd <repo_root>
+python3 -m data_construction.build_tce_task_packs \
+  --benchmark data_construction/generated_outputs/gemini_3_flash_preview/001_user_001/tce_benchmark_state_validated.json \
+  --output data_construction/generated_outputs/gemini_3_flash_preview/001_user_001/tce_benchmark_task_packs.json \
+  --tasks all \
+  --provider gemini \
+  --model gemini-3-flash-preview \
+  --validator-provider gemini \
+  --validator-model gemini-3-flash-preview \
+  --task-contract-version taskabc_v2 \
+  --research-frame-version rq_20260413 \
+  --canonical-research-doc analysis_tools/tce_research_questions/001_user_001/new_research_question.md
+```
+
+Pack-first note:
+- current TCE generation/eval should consume the validated task-pack benchmark, not a bare checkpoint-only benchmark
+- pack names remain stable across `taskabc_v1` and `taskabc_v2`:
+  - `state_completion_pack`
+  - `change_tracking_pack`
+  - `rq3_apply_service_qa`
+- under active `taskabc_v2`, `--tasks all` resolves to `state_completion + apply`
+- `change_tracking_pack` remains only as a legacy/v1 artifact family
+
+### 3) Produce Baseline Predictions
 
 Prediction contract (`generation/<baseline>/results/<user_id>/prediction/tce_results*.json`):
 
 ```json
 {
+  "task_contract_version": "taskabc_v2",
+  "research_frame_version": "rq_20260413",
+  "canonical_research_doc": "analysis_tools/tce_research_questions/001_user_001/new_research_question.md",
   "predictions": [
     {
       "checkpoint_id": "cp_0001",
@@ -90,7 +129,10 @@ Prediction contract (`generation/<baseline>/results/<user_id>/prediction/tce_res
         "habits_state:weekend_neighborhood_walk": {"timing": {"start_time": "06:30"}}
       },
       "evidence": {
-        "habits_state:weekend_neighborhood_walk": ["log_00001", "log_00008"]
+        "habits_state:weekend_neighborhood_walk": [
+          {"app_log_id": "log_00001", "evidence_content": "..."},
+          {"app_log_id": "log_00008", "evidence_content": "..."}
+        ]
       }
     }
   ]
@@ -105,7 +147,7 @@ Example baseline runner:
 ```bash
 cd <repo_root>
 python3 generation/rag/rag_tce.py \
-  --benchmark data_construction/generated_outputs/gemini_3_flash_preview/001_user_001/tce_benchmark.json \
+  --benchmark data_construction/generated_outputs/gemini_3_flash_preview/001_user_001/tce_benchmark_task_packs.json \
   --app-logs-path data_construction/generated_outputs/gemini_3_flash_preview/001_user_001/app_log_large.json \
   --output generation/rag/results/001_user_001/prediction/tce_results_topk5.json \
   --llm-provider openai \
@@ -113,12 +155,12 @@ python3 generation/rag/rag_tce.py \
   --resume
 ```
 
-### 3) Evaluate Predictions
+### 4) Evaluate Predictions
 
 ```bash
 cd <repo_root>
 python3 -m eval.eval_tce \
-  --benchmark data_construction/generated_outputs/gemini_3_flash_preview/001_user_001/tce_benchmark.json \
+  --benchmark data_construction/generated_outputs/gemini_3_flash_preview/001_user_001/tce_benchmark_task_packs.json \
   --prediction generation/<baseline>/results/001_user_001/prediction/tce_results.json \
   --output generation/<baseline>/results/001_user_001/eval/tce_eval.json \
   --save-eyeball
@@ -136,7 +178,7 @@ Enable LLM judge:
 
 ```bash
 python3 -m eval.eval_tce \
-  --benchmark data_construction/generated_outputs/gemini_3_flash_preview/001_user_001/tce_benchmark.json \
+  --benchmark data_construction/generated_outputs/gemini_3_flash_preview/001_user_001/tce_benchmark_task_packs.json \
   --prediction generation/<baseline>/results/001_user_001/prediction/tce_results.json \
   --output generation/<baseline>/results/001_user_001/eval/tce_eval.json \
   --save-eyeball \

@@ -7,6 +7,7 @@ from tce_core.evaluation import (
     mean_numeric_fields,
     normalize_predictions,
 )
+from tce_contracts import normalized_contract_metadata
 
 
 def _json_safe(value: Any) -> Any:
@@ -155,7 +156,7 @@ def build_tce_result_payload(
         [{k: v for k, v in row.items() if k != "checkpoint_id"} for row in rows]
     )
 
-    return {
+    result = {
         "user_id": benchmark.get("user_id"),
         "total_checkpoints": benchmark.get("total_checkpoints", len(rows)),
         "evaluated_checkpoints": evaluated,
@@ -163,3 +164,5 @@ def build_tce_result_payload(
         "summary": summary,
         "checkpoints": rows,
     }
+    result.update(normalized_contract_metadata(benchmark))
+    return result

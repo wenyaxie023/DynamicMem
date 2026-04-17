@@ -1,7 +1,5 @@
 """Build a state-centric timeline viewer payload for TCE artifacts."""
 
-from __future__ import annotations
-
 import json
 import re
 from collections.abc import Iterable, Mapping, Sequence
@@ -984,7 +982,7 @@ def _infer_eval_protocol_version(eval_payload: Mapping[str, Any]) -> str:
             return "point_based_vnext"
         if isinstance(checkpoint, Mapping) and checkpoint.get("rq3_llm_judge_judgments"):
             return "legacy_task_c_llm_judge"
-    return "task_c_deterministic_only"
+    return "legacy_task_c_deterministic_only"
 
 
 def _presence_status(exists_in_expected: bool, exists_in_validated: bool) -> str:

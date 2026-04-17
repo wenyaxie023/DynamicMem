@@ -2,7 +2,7 @@
 
 Status: active
 Owner: DynamicMem team
-Last Updated: 2026-03-17
+Last Updated: 2026-04-16
 
 Protocol spec:
 - `docs/protocols/temporal_checkpoint_evaluation_developer_manual.md`
@@ -12,25 +12,98 @@ This runbook only contains executable workflow and operational checks.
 Contributor-facing generation and adapter obligations are maintained in:
 - `docs/protocols/tce_generation_and_adapter_contract.md`
 
+Current execution note:
+- This runbook is the broad execution reference for TCE.
+- For the current TCE v2 pre-batch build validation pass across baselines, use `docs/plans/tce_v2_build_progress_master_sheet.md` as the active command sheet and status tracker.
+
+## 0. Execution Prerequisites
+
+Shell bootstrap for repo commands:
+
+```bash
+cd /users/4/xie00470/mem_bench/dynamicmem
+source ~/miniconda/etc/profile.d/conda.sh
+conda activate mem0311
+```
+
+Environment / credentials:
+- Commands in this runbook assume the repo root `.env` is present when Azure-backed configs are used.
+- `generation.run_tce_batch` adapters such as `memoryos` load the repo-root `.env` automatically.
+- Required Azure credential vars for Azure-backed runs:
+  - `AZURE_OPENAI_API_KEY`
+  - `AZURE_OPENAI_BASE_URL`
+- Optional MemoryOS-specific overrides, only when intentionally overriding the shared provider resolution:
+  - `LLM_CONTROLLER_API_KEY`
+  - `LLM_CONTROLLER_API_BASE_URL`
+  - `EMBEDDING_API_KEY`
+  - `EMBEDDING_API_BASE_URL`
+
+Recommended preflight before a new build batch:
+
+```bash
+python3 debug_utils/test_azure_key.py
+```
+
+Node selection:
+- Do not launch TCE builds, generation jobs, or evaluations from login nodes.
+- On this cluster, hosts such as `ahl02` are login nodes.
+- Use compute nodes such as `aga02` for actual build and generation jobs.
+- Viewer serving and other lightweight browser-facing helpers may still run on login nodes.
+
+## 0.1 Recommended Entry Points
+
+Use the narrowest entrypoint that matches the job:
+- Current TCE v2 cross-baseline pre-batch validation:
+  - use `docs/plans/tce_v2_build_progress_master_sheet.md`
+- Single-user generation smoke or bounded rerun:
+  - use `python3 -m generation.run_tce --config ...`
+- Multi-user batch generation:
+  - use `python3 -m generation.run_tce_batch --config ...`
+- Prediction evaluation:
+  - use `python3 -m eval.eval_tce ...`
+
+Operational rule:
+- Keep this runbook as the general TCE reference.
+- Keep baseline-specific validation commands and current batch status in the master sheet.
+
 ## 1. Part I - Pack Build Execution (with 10-state eyeball)
+
+Raw benchmark path for build-only workflows:
+- For memory-building baselines that need checkpoint boundaries before task definitions are finalized, first build a raw benchmark and use that for `build_only` runs.
+- Recommended raw benchmark filename:
+  - `data_construction/generated_outputs/gemini_3_flash_preview/<user_id>/tce_benchmark_vnext_raw.json`
 
 ### 1.0 Build benchmark (pre-sampled checkpoints)
 ```bash
 python3 -m data_construction.build_tce_benchmark \
   --app-logs-final data_construction/generated_outputs/gemini_3_flash_preview/<user_id>/app_logs_final.json \
   --all-events-chains data_construction/generated_outputs/gemini_3_flash_preview/<user_id>/all_events_chains.json \
-  --output data_construction/generated_outputs/gemini_3_flash_preview/<user_id>/tce_benchmark.json \
+  --output data_construction/generated_outputs/gemini_3_flash_preview/<user_id>/tce_benchmark_vnext_raw.json \
   --sampling-mode calendar \
   --calendar-anchor-freq quarterly \
   --app-logs-large data_construction/generated_outputs/gemini_3_flash_preview/<user_id>/app_log_large.json \
-  --sampling-tokenizer-model gpt-4o-mini
+  --sampling-tokenizer-model gpt-4o-mini \
+  --task-contract-version taskabc_v2 \
+  --research-frame-version rq_20260413 \
+  --canonical-research-doc analysis_tools/tce_research_questions/001_user_001/new_research_question.md
+```
+
+Build-only note:
+- A raw benchmark is sufficient for memory-building baselines such as `memoryos` when the immediate goal is only to materialize checkpointed memory state.
+- Task-pack benchmarks are still needed later for full generation and evaluation.
+
+Example raw-benchmark build-only run for `memoryos`:
+```bash
+python3 -m generation.run_tce_batch \
+  --config configs/experiments/tce/memoryos_build_only_raw.yaml \
+  --users <user_id>
 ```
 
 ### 1.1 Run standalone state validation
 ```bash
 python3 -m data_construction.build_tce_state_validation \
-  --benchmark data_construction/generated_outputs/gemini_3_flash_preview/<user_id>/tce_benchmark.json \
-  --output data_construction/generated_outputs/gemini_3_flash_preview/<user_id>/tce_benchmark_state_validated.json \
+  --benchmark data_construction/generated_outputs/gemini_3_flash_preview/<user_id>/<benchmark_base>.json \
+  --output data_construction/generated_outputs/gemini_3_flash_preview/<user_id>/<benchmark_state_validated>.json \
   --validator-provider gemini \
   --validator-model gemini-3-flash-preview \
   --l2-evidence-top-k 0 \
@@ -41,8 +114,8 @@ python3 -m data_construction.build_tce_state_validation \
 ### 1.2 Build precomputed task packs
 ```bash
 python3 -m data_construction.build_tce_task_packs \
-  --benchmark data_construction/generated_outputs/gemini_3_flash_preview/<user_id>/tce_benchmark_state_validated.json \
-  --output data_construction/generated_outputs/gemini_3_flash_preview/<user_id>/tce_benchmark_task_packs.json \
+  --benchmark data_construction/generated_outputs/gemini_3_flash_preview/<user_id>/<benchmark_state_validated>.json \
+  --output data_construction/generated_outputs/gemini_3_flash_preview/<user_id>/<benchmark_task_packs>.json \
   --tasks all \
   --provider gemini \
   --model gemini-3-flash-preview \
@@ -52,12 +125,23 @@ python3 -m data_construction.build_tce_task_packs \
   --reuse-scope key_value_signature \
   --max-rewrites 2 \
   --save-every-apply-keys 5 \
-  --save-raw
+  --save-raw \
+  --task-contract-version taskabc_v2 \
+  --research-frame-version rq_20260413 \
+  --canonical-research-doc analysis_tools/tce_research_questions/001_user_001/new_research_question.md
 ```
 
+Versioning note:
+- benchmark / task-pack / prediction / eval artifacts for the current research frame should all carry:
+  - `task_contract_version = taskabc_v2`
+  - `research_frame_version = rq_20260413`
+- if an older artifact lacks those fields, treat it as frozen legacy `taskabc_v1`
+- under active `taskabc_v2`, `--tasks all` means `Task A + Task C` only
+- `enable_change_reasoning` should be treated as legacy-only; do not expect a standalone Task B pack in the default v2 workflow
+
 Task C apply-only rerun:
-- 若 `all` task-pack build 已经完成 Task A / Task B，但 Task C 中途中断，不要再使用任何 review-only shortcut。
-- 直接对现有 task-pack benchmark 做 `apply-only` 正式重跑，保留已完成的 Task A / Task B，并完整重建 `rq3_apply_service_qa`：
+- If an `all` task-pack build completed Task A but stopped during Task C, do not use any review-only shortcut.
+- Re-run the existing task-pack benchmark in `apply-only` mode so completed Task A artifacts are preserved and `rq3_apply_service_qa` is rebuilt formally:
 ```bash
 python3 -m data_construction.build_tce_task_packs \
   --benchmark data_construction/generated_outputs/gemini_3_flash_preview/<user_id>/tce_benchmark_task_packs_partial.json \
@@ -72,7 +156,7 @@ python3 -m data_construction.build_tce_task_packs \
   --max-rewrites 2 \
   --save-every-apply-keys 5
 ```
-- 该 rerun 仍然是 protocol-faithful 的正式 Task C 重建，不是临时浏览产物。
+- This rerun is still a protocol-faithful Task C rebuild, not a temporary inspection artifact.
 
 Apply-only compatibility wrapper:
 ```bash
@@ -96,8 +180,8 @@ python3 - <<'PY'
 import json
 from pathlib import Path
 
-p = Path("data_construction/generated_outputs/gemini_3_flash_preview/<user_id>/tce_benchmark_task_packs.json")
-out = Path("generation/rag/results/<user_id>/analysis/rq3_manual_review/rq3_apply_question_preview10.csv")
+p = Path("data_construction/generated_outputs/gemini_3_flash_preview/<user_id>/<benchmark_task_packs>.json")
+out = Path("generation/rag/results/<user_id>/analysis/rq3_manual_review/rq3_question_preview10.csv")
 out.parent.mkdir(parents=True, exist_ok=True)
 
 payload = json.loads(p.read_text(encoding="utf-8"))
@@ -106,11 +190,20 @@ for cp in payload.get("checkpoints", []):
     qa = (cp.get("rq3_apply_service_qa") or {}).get("keys") or {}
     for sk, node in qa.items():
         for item in (node.get("items") or []):
-            rows.append((cp.get("checkpoint_id"), sk, item.get("qa_id"), item.get("apply_scenario"), item.get("apply_question"), item.get("apply_reference_answer")))
+            rows.append(
+                (
+                    cp.get("checkpoint_id"),
+                    sk,
+                    item.get("qa_id"),
+                    item.get("service_category"),
+                    item.get("question"),
+                    item.get("reference_answer"),
+                )
+            )
 
 rows = rows[:10]
 with out.open("w", encoding="utf-8") as f:
-    f.write("checkpoint_id,state_key,qa_id,apply_scenario,apply_question,apply_reference_answer\n")
+    f.write("checkpoint_id,state_key,qa_id,service_category,question,reference_answer\n")
     for r in rows:
         f.write(",".join('"{}"'.format(str(x).replace('"', '""')) for x in r) + "\n")
 print("saved", out)
@@ -118,7 +211,7 @@ PY
 ```
 
 ### 1.4 Generate stratified manual-review pack
-当需要对 Stage 1 + Stage 2 做更细的人工审核时，优先生成“分目的 review pack”，不要只看一个混合样本表。
+For deeper manual review of Stage 1 and Stage 2, prefer a purpose-specific review pack over a single mixed sample table.
 
 ```bash
 python3 debug_utils/build_tce_manual_review_samples.py \
@@ -127,12 +220,12 @@ python3 debug_utils/build_tce_manual_review_samples.py \
   --output-dir generation/rag/results/<user_id>/analysis/tce_manual_review
 ```
 
-产物约定：
-- 总览：
+Expected outputs:
+- Overview:
   - `tce_manual_review_plan_20260308.md`
   - `tce_manual_review_purpose_manifest_20260308.json`
   - `tce_manual_review_sample_summary_20260308.json`
-- 分目的 sample sets（建议直接按这些文件审）：
+- Purpose-specific sample sets:
   - `stage1_l1_fail_sample_set_20260308.json`
   - `stage1_l2_fail_sample_set_20260308.json`
   - `stage1_pass_sample_set_20260308.json`
@@ -140,32 +233,20 @@ python3 debug_utils/build_tce_manual_review_samples.py \
   - `stage2_change_tracking_sample_set_20260308.json`
   - `stage2_apply_accepted_sample_set_20260308.json`
   - `stage2_apply_discarded_sample_set_20260308.json`
-- 每个 sample set 都应配套：
+- Each sample set should also include:
   - `*_sample_set_20260308.csv`
   - `*_review_sheet_20260308.csv`
-
-建议阅读顺序：
-1. `stage1_l1_fail`
-2. `stage1_l2_fail`
-3. `stage1_pass`
-4. `stage2_state_completion`
-5. `stage2_change_tracking`
-6. `stage2_apply_accepted`
-7. `stage2_apply_discarded`
-
-目的说明：
-- `stage1_l1_fail`: 检查 deterministic gate 是否误伤
-- `stage1_l2_fail`: 检查 evidence inferability 是否过严
-- `stage1_pass`: 检查 validated state 是否过度/不足保留
-- `stage2_state_completion`: 检查 template 与 reuse
-- `stage2_change_tracking`: 检查 changed-key 选择与 before/after
-- `stage2_apply_accepted`: 检查题目质量与 validator 是否偏松
-- `stage2_apply_discarded`: 检查 discard 是否合理、是否可救回
+- Suggested starting points:
+  - `stage1_l1_fail` and `stage1_l2_fail` for gate strictness
+  - `stage2_state_completion` for template and reuse quality
+  - `stage2_apply_accepted` and `stage2_apply_discarded` for Task C item quality
 
 ### 1.5 Part I gate checks
 - Check `state_questionability` exists in checkpoint payload.
 - Check `validated_snapshot_state` exists in checkpoint payload.
-- Check `state_completion_pack` and `change_tracking_pack` exist when using new benchmark.
+- Check `state_completion_pack` exists when using new benchmark.
+- Check `rq3_apply_service_qa` exists when running active `taskabc_v2`.
+- Check `change_tracking_pack` only when auditing legacy `taskabc_v1` / standalone Task B artifacts.
 - Check state validate evidence semantics:
   - per checkpoint, L2 evidence is rebuilt from that checkpoint's `state_observability.evidence_app_log_ids`
   - if a later checkpoint has additional evidence for the same state, it must trigger re-validation rather than silent reuse
@@ -182,9 +263,14 @@ python3 debug_utils/build_tce_manual_review_samples.py \
 - For deeper review, prefer the stratified manual-review pack under `generation/rag/results/<user_id>/analysis/tce_manual_review/` over one mixed JSON.
 - Note:
   - Stage 2 requires a Stage 1 artifact on disk.
-  - 若 Stage 1 中途停止，可基于已落盘的 partial output 使用 `--resume` 继续。
+  - If Stage 1 stops mid-run, resume from the persisted partial output with `--resume`.
 
 ## 2. Part II - Generation Execution
+
+Generation mode selection:
+- Use `generation.run_tce` for single-user smoke runs, bounded reruns, and `--max-checkpoints` cases.
+- Use `generation.run_tce_batch` for multi-user execution from templated YAML configs.
+- For the current TCE v2 pre-batch baseline validation pass, prefer the master sheet over the generic examples below.
 
 ### 2.1 Retrieval query audit (manual)
 - Verify retrieval query source and final text before run.
@@ -199,6 +285,7 @@ python3 debug_utils/build_tce_manual_review_samples.py \
   - verify `state_completion_pack.keys[*].answer_template` matches `validated_snapshot_state`
   - verify repeated unchanged validated states are reused, not regenerated
 - Task B:
+  - legacy/v1 only
   - verify only validated-state intersection changes become `change_tracking_pack.keys`
 - Task C:
   - verify `rq3_apply_service_qa` only uses validated states
@@ -206,48 +293,41 @@ python3 debug_utils/build_tce_manual_review_samples.py \
 
 ### 2.3 RAG single-checkpoint smoke
 ```bash
-python3 -m generation.run_tce_batch \
+python3 -m generation.run_tce \
   --config configs/experiments/tce/rag_user1_v14_top20_c4.yaml \
   --max-checkpoints 1
 ```
-- RAG/TCE generation 现在支持：
-  - key-level incremental save（通过 `baseline_params.save_every_generation_keys` 控制，推荐 `1`）
-  - checkpoint-level concurrency（通过 `baseline_params.checkpoint_workers` 控制）
-  - within-checkpoint concurrency（通过 `baseline_params.within_checkpoint_workers` 控制）
-  - resume 只会跳过 `metadata._checkpoint_complete=true` 的完整 checkpoint；不完整 partial checkpoint 会重跑，避免吃到半成品
-- 当前协议下，Task A state completion 必须 per-key 运行：
-  - 每个 `state_key` 独立 retrieval
-  - 每个 `state_key` 独立 answering prompt
-  - prediction metadata 中应有 `per_key_retrieval[*]`
-- 不要再用 checkpoint-level combined Task A retrieval 作为正式协议路径
-- 长时间 formal rerun 的操作注意事项：
-  - 如果 `Task A` 已切到 per-key，且 `save_prompt_and_raw=true`，`save_every_generation_keys=1` 会导致频繁整文件重写 prediction artifact。
-  - 这会显著拖慢 formal run，并且在人工中断 / resume / 并发 checkpoint 执行时，使磁盘上的中间 prediction 文件变得不稳定。
-  - 正式 rerun 若主要目标是拿最终 review artifact，优先使用较大的 `save_every_generation_keys`，避免依赖中途 partial artifact。
-  - 若需要一个稳定的最终 prediction 文件，优先在 generation 函数返回后，把返回的 `result` 再单独序列化成一个 stable copy，而不是直接把中途 output 路径当作最终 review artifact。
-- baseline concurrency policy 必须遵守协议中的 allowed/forbidden 约束：
-  - `rag / oracle / icl / hipporag / amem_baseline`: 可同时开 `checkpoint_workers` 和 `within_checkpoint_workers`
-  - `letta`: 两者都会被运行时强制降为 `1`
-- 运行后应抽查 prediction metadata：
+- RAG/TCE supports:
+  - key-level incremental save via `runtime.save_every_generation_keys` (recommended smoke value: `1`)
+  - checkpoint concurrency via `runtime.checkpoint_workers`
+  - within-checkpoint concurrency via `runtime.within_checkpoint_workers`
+  - resume skips only checkpoints marked `metadata._checkpoint_complete=true`; incomplete partial checkpoints are rerun
+- Under the current protocol, Task A runs per key:
+  - one retrieval per `state_key`
+  - one answer prompt per `state_key`
+  - prediction metadata should include `per_key_retrieval[*]`
+- Do not use checkpoint-level combined Task A retrieval as a formal protocol path.
+- For long reruns, avoid depending on unstable partial artifacts. If `save_prompt_and_raw=true`, very small `save_every_generation_keys` values can cause excessive full-file rewrites and unstable intermediate outputs.
+- Baseline concurrency policy must follow the protocol:
+  - `rag / oracle / icl / hipporag / hipporag2 / memoryos / mem0`: both worker dimensions may be enabled
+  - `amem`: `checkpoint_workers` is effectively forced to `1`; `within_checkpoint_workers` may still be parallel
+  - `letta`: both worker dimensions are effectively forced to `1`
+- After the run, inspect prediction metadata:
   - `concurrency_policy`
   - `requested_checkpoint_workers`
   - `requested_within_checkpoint_workers`
   - `effective_checkpoint_workers`
   - `effective_within_checkpoint_workers`
-- 若随后运行 evaluation 且启用了 LLM judge，应确认 judge 请求粒度为：
-  - Task A: 每个 `state_key` 一次
-  - Task B: 每个 changed `state_key` 一次
-  - Task C: 每个 `(state_key, qa_id)` 一次
-- 对 Task C 还应额外检查 deterministic option metrics：
-  - `rq3_apply_option_extractable_item_count`
-  - `rq3_apply_option_prediction_coverage_on_extractable`
-  - `rq3_apply_option_accuracy_on_extractable`
-  - 这是 Task C 的主指标；Task C 已不再运行 LLM-as-a-judge
+- If evaluation later runs with LLM judge enabled, verify request granularity:
+  - Task A: one request per `state_key`
+  - Task B: one request per changed `state_key`
+  - Task C: one request per `(state_key, qa_id)`
+- The primary Task C answer metric is `rq3_apply_answer_point_score_mean`, derived from slot-level LLM judging over each item's `answer_scoring_points[]`. Missing `answer_scoring_points[]` should be treated as a task-pack or protocol error, not as a signal to fall back to option-style metrics.
 
 ### 2.4 Letta/MemGPT expansion run
 ```bash
 python3 -m generation.run_tce \
-  --config configs/experiments/tce/memgpt.yaml \
+  --config configs/experiments/tce/memgpt_v14.yaml \
   --max-checkpoints 1
 ```
 
@@ -260,9 +340,9 @@ Expected output:
 ### 3.1 Evaluate prediction
 ```bash
 python3 -m eval.eval_tce \
-  --benchmark data_construction/generated_outputs/gemini_3_flash_preview/<user_id>/tce_benchmark_task_packs.json \
-  --prediction generation/<baseline>/results/<user_id>/prediction/tce_results.json \
-  --output generation/<baseline>/results/<user_id>/eval/tce_eval.json \
+  --benchmark data_construction/generated_outputs/gemini_3_flash_preview/<user_id>/<benchmark_task_packs>.json \
+  --prediction generation/<baseline>/results/<user_id>/prediction/<run_name>/tce_results.json \
+  --output generation/<baseline>/results/<user_id>/eval/<run_name>/tce_eval.json \
   --enable-llm-judge \
   --llm-provider azure \
   --llm-model gpt-5-mini \
@@ -279,76 +359,74 @@ python3 -m eval.eval_tce \
   - apply judge should issue one request per `(state_key, qa_id)`
 
 ### 3.3 Generate eval manual-review pack
-当需要人工检查“LLM judge 是否过松/过严”或“Task A/B/C 的 rubric 是否不一致”时，优先生成 eval manual-review pack，不要直接手翻完整 eval JSON。
+When auditing LLM judge strictness or rubric consistency across Task A/B/C, prefer generating the eval manual-review pack instead of reading the full eval JSON directly.
 
 ```bash
 python3 debug_utils/build_tce_eval_manual_review_pack.py \
-  --benchmark data_construction/generated_outputs/gemini_3_flash_preview/<user_id>/tce_benchmark_task_packs.json \
-  --prediction generation/<baseline>/results/<user_id>/prediction/tce_results.json \
-  --eval generation/<baseline>/results/<user_id>/eval/tce_eval.json \
+  --benchmark data_construction/generated_outputs/gemini_3_flash_preview/<user_id>/<benchmark_task_packs>.json \
+  --prediction generation/<baseline>/results/<user_id>/prediction/<run_name>/tce_results.json \
+  --eval generation/<baseline>/results/<user_id>/eval/<run_name>/tce_eval.json \
   --output-dir generation/<baseline>/results/<user_id>/analysis/tce_eval_manual_review \
   --top-n 20
 ```
 
-产物约定：
+Expected outputs:
 - `tce_eval_manual_review_summary.json`
 - `snapshot_judge_suspicious_cases.json`
 - `change_judge_suspicious_cases.json`
 - `apply_judge_suspicious_cases.json`
-- 对应 `*.csv`
+- corresponding `*.csv`
 - `README.md`
 
-建议阅读顺序：
-1. `apply_judge_suspicious_cases.json`
-2. `change_judge_suspicious_cases.json`
-3. `snapshot_judge_suspicious_cases.json`
+Suggested starting point:
+- review `apply_judge_suspicious_cases.json` first, then `change`, then `snapshot`
 
 ### 3.4 Build state timeline viewer data
-当需要以 `state` 为中心检查用户整条时间线上的 `expected / validated / predicted / evidence / evaluation` 时，优先生成 state timeline viewer 数据，而不是手工来回对照 benchmark、prediction、eval 和 app logs。
+When auditing a user's full timeline from the perspective of a single `state`, prefer generating state timeline viewer data instead of manually cross-referencing benchmark, prediction, eval, and app logs.
 
 ```bash
 python3.11 debug_utils/build_tce_state_timeline_viewer.py \
-  --benchmark data_construction/generated_outputs/gemini_3_flash_preview/<user_id>/tce_benchmark_task_packs.json \
-  --prediction generation/<baseline>/results/<user_id>/prediction/tce_results.json \
-  --eval generation/<baseline>/results/<user_id>/eval/tce_eval.json \
+  --benchmark data_construction/generated_outputs/gemini_3_flash_preview/<user_id>/<benchmark_task_packs>.json \
+  --prediction generation/<baseline>/results/<user_id>/prediction/<run_name>/tce_results.json \
+  --eval generation/<baseline>/results/<user_id>/eval/<run_name>/tce_eval.json \
   --app-logs data_construction/generated_outputs/gemini_3_flash_preview/<user_id>/app_log_large.json \
   --output generation/<baseline>/results/<user_id>/analysis/state_timeline_viewer/state_timeline_viewer_data.json
 ```
 
-如果只做可视化 review，优先使用 compact 模式，避免生成超大 JSON：
+For visualization-focused review, prefer `--compact` to avoid very large JSON artifacts:
 
 ```bash
 python3.11 debug_utils/build_tce_state_timeline_viewer.py \
-  --benchmark data_construction/generated_outputs/gemini_3_flash_preview/<user_id>/tce_benchmark_task_packs.json \
-  --prediction generation/<baseline>/results/<user_id>/prediction/tce_results.json \
-  --eval generation/<baseline>/results/<user_id>/eval/tce_eval.json \
+  --benchmark data_construction/generated_outputs/gemini_3_flash_preview/<user_id>/<benchmark_task_packs>.json \
+  --prediction generation/<baseline>/results/<user_id>/prediction/<run_name>/tce_results.json \
+  --eval generation/<baseline>/results/<user_id>/eval/<run_name>/tce_eval.json \
   --app-logs data_construction/generated_outputs/gemini_3_flash_preview/<user_id>/app_log_large.json \
   --output generation/<baseline>/results/<user_id>/analysis/state_timeline_viewer/state_timeline_viewer_data_compact.json \
   --compact
 ```
 
-Viewer 入口：
+Viewer entry points:
 - `analysis_tools/tce_state_timeline_viewer/index.html`
 - `analysis_tools/tce_state_timeline_viewer/app.js`
 - `analysis_tools/tce_state_timeline_viewer/styles.css`
 
-本地打开方式：
+Serve locally:
 ```bash
 cd analysis_tools/tce_state_timeline_viewer
 python3.11 -m http.server 8000
 ```
 
-然后在浏览器中打开：
+Then open in the browser:
 ```text
 http://127.0.0.1:8000/index.html?data=../../generation/<baseline>/results/<user_id>/analysis/state_timeline_viewer/state_timeline_viewer_data.json
 ```
 
-Viewer 显示规则：
-- 主视图以 `validated_snapshot_state` 为准
-- 空白格表示 `not present / not evaluated`，不是 `0 score`
-- Task A / Task B 优先显示新 4-rubric judge；若 eval 仍是旧协议，则在 viewer 中兼容展示 legacy judge
-- Task C 主视图只显示 deterministic metrics；若旧 eval 文件带 `rq3_llm_*`，会放入 legacy metrics 折叠块
-- `--compact` 模式会去掉 `request/response/prompt/raw_model_output` 等大字段，适合作为默认 review 产物
+Viewer display rules:
+- The main view is keyed off `validated_snapshot_state`.
+- Blank cells mean `not present / not evaluated`, not `0 score`.
+- Task A and Task B prefer the newer 4-rubric judge view; legacy eval files are shown through a compatibility path.
+- Task C prefers `rq3_apply_slot_eval_by_item` slot-level item eval; legacy and deterministic compatibility views are only fallbacks for older eval artifacts.
+- `--compact` removes large fields such as `request`, `response`, `prompt`, and `raw_model_output`, and is the preferred default review artifact.
 
 ## 4. Failure Routing & Manual Intervention
 
@@ -393,12 +471,12 @@ Action:
 - Stratified manual review: `generation/rag/results/<user_id>/analysis/tce_manual_review/`
 
 Storage note:
-- 为避免 home 目录爆满，以下大产物目录允许长期落在 project storage，再通过 symlink 回填到 repo 原路径：
+- To avoid filling the home directory, these large artifact trees may live in project storage and be symlinked back to the repo paths:
   - `data_construction/generated_outputs/...`
   - `generation/<baseline>/results/...`
-- 当前推荐 project storage 根目录：
+- Recommended project storage root:
   - `/projects/standard/zrliu/shared/wenya/xie00470/dynamicmem/`
-- 如果原路径已经是 symlink，运行脚本与 runbook 命令无需修改；继续使用 repo 内的原路径即可。
+- If the repo path is already a symlink, keep using the repo-local path in scripts and commands.
 
 ### 5.2 Quick checks
 ```bash

@@ -9,11 +9,12 @@ This checklist tracks where TCE (especially RAG baseline) builds retrieval query
 - Runtime contract:
   - `retrieval_query_text` is loaded from the pack and carried through `QuerySpec`
   - explicit-retrieval baselines must consume `QuerySpec.retrieval_query_text` directly
+  - agent-memory baselines that use backend-native retrieval/answer APIs must still use `QuerySpec.retrieval_query_text` as the backend retrieval question, even if final answering happens later inside `answer_query(...)`
   - baselines must not regenerate or fallback to local retrieval-query builders
 
 Pack-first runtime contract:
 - `retrieval_query_text` comes from task-pack `retrieval_query`
-- `answer_query_text` comes from task-pack `question_text` / `apply_question`
+- `answer_query_text` comes from task-pack `question_text` / `question`
 - `checkpoint_timestamp` is still injected by shared `tce_core` into `QuerySpec`, not by baseline-local wrappers
 - shared Task A / B / C answer prompts now use the pack-authored direct question text without baseline-local checkpoint wrappers
 - explicit-retrieval baselines must consume `QuerySpec.retrieval_query_text` directly; they must not regenerate or fallback to baseline-local retrieval query text
@@ -142,6 +143,9 @@ Main orchestration:
   4. `answer_query(...)`
   5. normalize + persist + finalize
 - legacy `retrieve_context(...)` compatibility path is not part of the canonical protocol
+- for agent-memory baselines with backend-native retrieval/answer APIs:
+  - `retrieve_context_for_query(...)` may materialize backend retrieval state and audit metadata without returning inline memory blocks
+  - `answer_query(...)` may then call the backend-native `ask()` / answer generator using the shared agent-memory prompt plus that prepared retrieval state
 
 Snapshot / retrieval path:
 - Build task text from prebuilt pack `retrieval_query`
@@ -162,6 +166,9 @@ Change path:
   - `build_change_reasoning_prompt_with_inline_memory(...)` or
   - `build_change_reasoning_prompt_with_agent_memory(...)`
 - Send to model: `ask_json(change_prompt)`
+- legacy note:
+  - this path is only part of the frozen `taskabc_v1` contract
+  - active `taskabc_v2` uses `Task A` changed-vs-unchanged analysis for `RQ2` and does not require standalone Task B by default
 
 State questionability validate path:
 - File: `data_construction/build_tce_state_validation.py`
@@ -191,13 +198,23 @@ Pack-first generation path:
   - current protocol requires per-key retrieval / prompt / raw-output records
   - each `state_key` should appear in `metadata.per_key_retrieval[*]`
 - Task B:
-  - requires `change_tracking_pack` when `enable_change_reasoning=true`
+  - requires `change_tracking_pack` when `enable_change_reasoning=true` on legacy/v1 artifacts
   - helper: `build_change_targets_from_pack(...)`
   - no fallback to legacy/generated change task text or baseline-local retrieval-query regeneration when pack is missing or `retrieval_query` is blank
+  - on active `taskabc_v2`, `enable_change_reasoning=true` should be treated as a no-op when the benchmark omits `change_tracking_pack`
 - Task C:
   - requires pack-authored `rq3_apply_service_qa.keys[*].items[*].retrieval_query`
-  - final answer prompt must include the item `question`
-  - `service_category` may be included as lightweight context
+  - Task C v2 synthesis prompt should be selected by `service_family`, with family-specific example wording
+  - Task C v2 `user_communication` synthesis prompt should implement `Habit-Conditioned User Communication` in natural-language assistant-response form with a `reference_answer`
+  - Task C v2 preference-family prompt should implement `Preference-Conditioned Filtering Parameter Completion`
+  - Task C v2 internal family id `information_request_construction` should contract preference inputs to statement-only when the raw preference state also includes auxiliary `signals`
+  - Task C v2 `action_configuration` synthesis prompt should implement `Attribute-Conditioned Action Configuration`
+  - Task C v2 structured-family synthesis prompts should ask for a family-appropriate service object, not a raw copy of the source state
+  - Task C v2 structured-family `output_template/reference_output` should preserve one required output leaf per source leaf, in source-leaf order, so paired slot scoring stays deterministic
+  - `taskabc_v1` final answer prompt must include the item `question`
+  - `taskabc_v2` `user_communication` final answer prompt must include `scenario + task_instruction`
+  - `taskabc_v2` structured-family final answer prompt must include `scenario + task_instruction + output_template`
+  - `service_family` may be included as lightweight context
   - no fallback to generated service-application retrieval query or baseline-local retrieval-query regeneration when item `retrieval_query` is blank
 
 ## 4) Runtime Output: where to inspect
@@ -221,13 +238,19 @@ Your current example:
 1. Confirm retrieval query shape:
    - check `metadata.per_key_retrieval[*].retrieval_query`.
    - Task A retrieval query should be item-specific, one `state_key` per record.
-   - for Task C, retrieval query should contain scenario + question, not question-only.
+   - for Task C v1, retrieval query should contain scenario + question, not question-only.
+   - for Task C v2 `user_communication`, retrieval query should contain service family + scenario + task instruction.
+   - for Task C v2 structured families, retrieval query should contain service family + scenario + task instruction + required output fields.
 2. Confirm final prompt text:
    - check `metadata.prompt[*]`.
-   - Task A/B/C prompts should now start directly from the pack-authored question text, then include `[Memory] / [Output format] / [Rules]`.
+   - Task A/B prompts should start from the pack-authored question text.
+   - Task C v1 should start from the pack-authored question text.
+   - Task C v2 `user_communication` should render the pack-authored scenario/task block before `[Memory]`.
+   - Task C v2 structured families should render the pack-authored scenario/task/output object before `[Memory]`.
 3. Confirm retrieved inline memory payload:
    - check `metadata.per_key_retrieval[*].retrieval_metadata`.
-   - for log-grounded baselines, `retrieved_app_log_ids` should still be inspectable when available.
+   - inline memory should reflect the backend retrieval content itself via lossless serialization, not an adapter-local rematerialized raw-log view.
+   - inspect backend-native retrieval counts / ids only when that baseline intentionally exposes them.
 4. Confirm model raw output before normalization:
    - check `metadata.raw_model_output`.
 5. If output is empty/null-heavy:

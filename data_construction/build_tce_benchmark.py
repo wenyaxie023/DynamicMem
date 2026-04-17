@@ -15,6 +15,13 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Set, Tuple
 
+from tce_contracts import (
+    CANONICAL_RESEARCH_DOC_V2,
+    CURRENT_TASK_CONTRACT_VERSION,
+    RESEARCH_FRAME_VERSION_V2,
+    apply_contract_metadata,
+)
+
 
 def _parse_timestamp(ts: str) -> datetime:
     for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%dT%H:%M:%S", "%Y-%m-%dT%H:%M:%S%z"):
@@ -294,6 +301,10 @@ def build_checkpoints(
     app_logs_final: Dict[str, Any],
     chain_state_validity: Dict[str, Dict[str, Dict[str, Any]]],
     chain_change_reasons: Optional[Dict[str, Dict[str, str]]] = None,
+    *,
+    task_contract_version: str = CURRENT_TASK_CONTRACT_VERSION,
+    research_frame_version: str = RESEARCH_FRAME_VERSION_V2,
+    canonical_research_doc: str = CANONICAL_RESEARCH_DOC_V2,
 ) -> Dict[str, Any]:
     app_logs = _sort_logs(app_logs_final.get("app_logs", []))
 
@@ -446,7 +457,7 @@ def build_checkpoints(
         )
         last_exported_snapshot_flat = copy.deepcopy(valid_snapshot_flat)
 
-    return {
+    result = {
         "user_id": app_logs_final.get("user_id"),
         "source_total_app_logs": len(app_logs),
         "total_chains": len(chain_last_index),
@@ -456,6 +467,13 @@ def build_checkpoints(
         "total_checkpoints": len(checkpoints),
         "checkpoints": checkpoints,
     }
+    return apply_contract_metadata(
+        result,
+        task_contract_version=task_contract_version,
+        research_frame_version=research_frame_version,
+        canonical_research_doc=canonical_research_doc,
+        overwrite=True,
+    )
 
 
 def _normalize_app_logs_payload(payload: Any) -> List[Dict[str, Any]]:
@@ -585,6 +603,24 @@ def main() -> None:
         default="gpt-4o-mini",
         help="Tokenizer model used for token counting on sampled checkpoints.",
     )
+    parser.add_argument(
+        "--task-contract-version",
+        type=str,
+        default=CURRENT_TASK_CONTRACT_VERSION,
+        help="Top-level task contract version to stamp into the benchmark metadata.",
+    )
+    parser.add_argument(
+        "--research-frame-version",
+        type=str,
+        default=RESEARCH_FRAME_VERSION_V2,
+        help="Top-level research frame version to stamp into the benchmark metadata.",
+    )
+    parser.add_argument(
+        "--canonical-research-doc",
+        type=str,
+        default=CANONICAL_RESEARCH_DOC_V2,
+        help="Canonical research-theme/RQ document path to stamp into the benchmark metadata.",
+    )
     args = parser.parse_args()
 
     if not args.app_logs_final.exists():
@@ -600,7 +636,14 @@ def main() -> None:
 
     chain_state_validity = build_chain_state_validity(all_events_chains)
     chain_change_reasons = build_chain_change_reasons(all_events_chains)
-    benchmark = build_checkpoints(payload, chain_state_validity, chain_change_reasons)
+    benchmark = build_checkpoints(
+        payload,
+        chain_state_validity,
+        chain_change_reasons,
+        task_contract_version=str(args.task_contract_version or CURRENT_TASK_CONTRACT_VERSION),
+        research_frame_version=str(args.research_frame_version or RESEARCH_FRAME_VERSION_V2),
+        canonical_research_doc=str(args.canonical_research_doc or CANONICAL_RESEARCH_DOC_V2),
+    )
 
     output_path = args.output
     if output_path is None:

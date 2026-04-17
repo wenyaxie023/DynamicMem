@@ -14,17 +14,18 @@ Use explicit groups instead of mixing all methods in one pool.
 - `icl` (`generation/icl/tce.py`)
 - `rag` (`generation/rag/rag_tce.py`)
 - `amem` (`generation/Amem/tce.py`)
-- `hipporag2` (`generation/HippoRAG2/generation_tce/tce.py`)
+- `hipporag2` (`generation/HippoRAG2/generation_tce/online_tce.py`)
 - `memoryos` (`generation/MemoryOS/tce_adapter.py`)
 - `mem0` (`generation/mem0/tce.py`)
+- `zep` (`generation/zep/generation_tce/tce.py`)
 - These run through shared pipeline/prompt assembly (`tce_core/pipeline.py`, `tce_core/prompts.py`), but retrieval context differs.
 
 3. `Agent-loop / non-equivalent prompting`
 - `letta` / `memgpt` (`generation/letta/tce.py`, adapter alias in `generation/adapters/registry.py`)
-- This path intentionally ignores pipeline prompt and uses its own agent prompt; report separately from “same-prompt” baselines.
+- This path intentionally ignores pipeline prompt and uses its own agent prompt; report separately from “same-prompt” baselines and mark it as pending compliance with the required snapshot-builder protocol.
 
 4. `Not implemented in TCE adapter layer (do not include as comparable TCE results yet)`
-- `nemori`, `zep` remain stubs in `generation/adapters/registry.py`.
+- `nemori` remains a stub in `generation/adapters/registry.py`.
 - YAML presence under `configs/experiments/tce/*.yaml` is not sufficient; compare only baselines with runnable adapter support.
 
 ## 2. Core Comparability Rule
@@ -90,9 +91,10 @@ For each experiment table, lock these fields across baselines unless explicitly 
 - `ask_json` ignores pipeline prompt and uses agent-specific prompt (`generation/letta/tce.py`).
 - Keep in a separate “agent-loop” section/table.
 
-4. `hipporag2` retrieval cap currently hardcoded to top-5
-- In `generation/HippoRAG2/generation_tce/tce.py`, `selected_logs = retrieved_logs_candidates[:5]`.
-- This can silently violate declared retrieval budget if other methods use different `k`.
+4. `hipporag2` must stay on the canonical runtime path
+- Comparable runs should go through `generation/HippoRAG2/generation_tce/online_tce.py` via the shared adapter and shared config sections.
+- Comparable runs should use the persisted-snapshot build/test path, not any test-phase checkpoint-local rebuild.
+- Do not report legacy QA outputs such as `hipporag2_results_top5.json` as TCE results.
 
 5. `oracle` must be labeled upper bound
 - Uses ground-truth evidence IDs; should not be presented as a standard baseline.

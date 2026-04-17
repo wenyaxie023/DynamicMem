@@ -23,12 +23,23 @@ Change task contract:
 - `change_analysis`:
   - `<key>` -> `{"before": ..., "after": ..., "change_reason": str, "evidence": [{"app_log_id": ..., "evidence_content": ...}]}`
 
-RQ3 apply-service contract:
-- `know` capability is measured by snapshot fill-the-blank metrics (no separate know QA pack)
+Task-contract metadata:
+- benchmark / prediction / eval artifacts should carry top-level:
+  - `task_contract_version`
+  - `research_frame_version`
+  - `canonical_research_doc` when available
+- current active contract family is `taskabc_v2`
+- legacy frozen artifacts without explicit metadata should be interpreted as `taskabc_v1`
+- `taskabc_v2` default task set is `Task A + Task C`
+- `RQ2` is analyzed via `Task A` changed-vs-unchanged slices rather than via standalone Task B
+
+Task C personalized-service contract:
+- under `taskabc_v2`, Task C supports `RQ3: Personalization Utility`
+- `Task C - Task A` remains a useful diagnostic gap, but it is not the canonical task definition
 - checkpoint may include `state_questionability` and `rq3_apply_service_qa` with per-key apply QA items
 - prediction may include `rq3_apply_answers` with per-item answer/evidence
-- full protocol: `docs/protocols/tce_rq3_know_apply_contract.md`
-- current Task C write path uses `service_category`, `question`, `reference_answer`, and build-time `rubric[]` -> `answer_scoring_points[]`
+- full protocol supplement: `docs/protocols/tce_rq3_know_apply_contract.md`
+- current Task C write path first generates `service_category`, `question`, and `reference_answer`, then generates `answer_scoring_points[]` only after QA validation passes
 
 RQ3 apply prediction snippet:
 ```json
@@ -58,6 +69,7 @@ BREAKING CHANGES:
 - Removed `tce_core/checkpoint_sampler.py`.
 - Change payload uses `change_reason` (replacing `reason`).
 - Removed LLM-judge `evidence_alignment`; evidence quality is measured by app_log_id matching metrics only.
+- under `taskabc_v2`, Task A pack build excludes `priority`, `schedule_date`, and `schedule_dates` from answer templates and scoring points
 
 LLM Judge I/O (eval layer):
 

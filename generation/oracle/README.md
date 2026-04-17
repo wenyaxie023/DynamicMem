@@ -14,4 +14,4 @@ bash generation/oracle/run_oracle_tce.sh
 ```
 
 Outputs:
-- `generation/oracle/results/<user_id>/prediction/tce_results.json`
+- `generation/oracle/results/<user_id>/prediction/tce_results_v14_taskabc.json`

@@ -1,7 +1,5 @@
 """Shared TCE point-schema helpers for pack build and evaluation."""
 
-from __future__ import annotations
-
 import json
 import re
 from datetime import datetime
@@ -1235,6 +1233,94 @@ def build_validated_apply_answer_scoring_points(
         "rewrite_attempts": max_rewrites,
         "used_safe_fallback": True,
     }
+
+
+def _task_c_v2_fill_template(value: Any) -> Any:
+    if isinstance(value, dict):
+        return {str(key): _task_c_v2_fill_template(child) for key, child in value.items()}
+    if isinstance(value, list):
+        return [_task_c_v2_fill_template(child) for child in value]
+    return "<fill>"
+
+
+def _task_c_v2_leaf_paths(value: Any, path: str = "") -> List[Tuple[str, Any]]:
+    if isinstance(value, dict):
+        out: List[Tuple[str, Any]] = []
+        for raw_key, child in value.items():
+            key = str(raw_key).strip().lower()
+            child_path = key if not path else f"{path}.{key}"
+            out.extend(_task_c_v2_leaf_paths(child, child_path))
+        return out
+    if isinstance(value, list):
+        out: List[Tuple[str, Any]] = []
+        base_path = path or "current_value"
+        for index, child in enumerate(value):
+            out.extend(_task_c_v2_leaf_paths(child, f"{base_path}.{index}"))
+        return out
+    return [(path or "current_value", value)]
+
+
+def build_validated_task_c_v2_answer_scoring_points(
+    *,
+    state_key: str,
+    state_value: Any,
+    service_family: str,
+    output_template: Any,
+    reference_output: Any,
+    prefix: str = "aqp",
+) -> Tuple[List[Dict[str, Any]], Dict[str, Any]]:
+    source_leaf_paths = _task_c_v2_leaf_paths(state_value)
+    failed_rules: List[str] = []
+    if not isinstance(output_template, dict) or not isinstance(reference_output, dict):
+        failed_rules.append("not_structured_service_object")
+        output_leaf_paths: List[Tuple[str, Any]] = []
+    else:
+        if output_template != _task_c_v2_fill_template(reference_output):
+            failed_rules.append("output_template_mismatch")
+        output_leaf_paths = _task_c_v2_leaf_paths(reference_output)
+        if len(output_leaf_paths) != len(source_leaf_paths):
+            failed_rules.append("reference_output_mismatch")
+        elif [value for _, value in output_leaf_paths] != [value for _, value in source_leaf_paths]:
+            failed_rules.append("reference_output_mismatch")
+        if reference_output == state_value:
+            failed_rules.append("raw_state_mirror")
+
+    points: List[Dict[str, Any]] = []
+    for idx, ((source_path, source_value), (output_path, output_value)) in enumerate(
+        zip(source_leaf_paths, output_leaf_paths),
+        start=1,
+    ):
+        points.append(
+            {
+                "point_id": f"{prefix}_p{idx}",
+                "point_type": POINT_TYPE_FIELD,
+                "polarity": POINT_POLARITY_POSITIVE,
+                "point_text": (
+                    f"The structured service output correctly fills {output_path} "
+                    f"using the value grounded in source field {source_path}."
+                ),
+                "source_field_path": source_path,
+                "output_field_path": output_path,
+                "target_path": output_path,
+                "reference_value": output_value,
+            }
+        )
+
+    valid, point_failures = validate_scoring_points(points)
+    for failure in point_failures:
+        if failure not in failed_rules:
+            failed_rules.append(failure)
+
+    validation = {
+        "is_valid": (not failed_rules) and valid and bool(points),
+        "service_family": str(service_family or ""),
+        "failed_rules": failed_rules,
+        "rewrite_attempts": 0,
+        "used_safe_fallback": False,
+        "expected_source_field_paths": [path for path, _ in source_leaf_paths],
+        "expected_output_field_paths": [path for path, _ in output_leaf_paths],
+    }
+    return points, validation
 
 
 def extract_value_at_path(value: Any, target_path: str) -> Any:

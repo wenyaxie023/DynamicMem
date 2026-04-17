@@ -121,10 +121,12 @@ Current baselines:
 - `amem`
 - `memoryos`
 - `mem0`
+- `zep`
+- `simplemem`
 - `letta`
 - `memgpt`
 
-`letta` / `memgpt` are not protocol exceptions. They receive the same task/query contract as other baselines and differ only in backend state preparation and answering behavior.
+`letta` / `memgpt` are not protocol exceptions. If an implementation has not yet migrated to the required snapshot-builder route, it must be treated as pending compliance work rather than a protocol carve-out.
 
 ## 5. Pack-First Input Contract
 
@@ -143,14 +145,26 @@ All stateful TCE baselines must satisfy these invariants:
 - user app logs must be ingested in chronological order
 - checkpoint memory state must reflect exactly the logs visible up to that checkpoint
 - canonical app-log payload is the raw app log object itself
-- this applies to builder ingest, retrieval / indexing corpus construction, and inline-memory rendering
-- backends may apply lossless serialization or transport wrappers, but they must not add, drop, rename, summarize, or otherwise semantically rewrite app-log fields before those stages
-- agent-loop baselines may expose a single formal `run_generation(...)` entry, but they must still keep build and test logically separated through `prepare_checkpoint_state`, `retrieve_context_for_query`, and `answer_query`
-- when build is part of the formal entry, `prepare_checkpoint_state(...)` is the only place allowed to advance baseline-local memory state to the current checkpoint
-- checkpoint-snapshot baselines must keep build and test as two formal phases:
-  - build phase sequentially ingests logs and writes builder progress plus checkpoint snapshots / `manifest.json`
+- builder ingest must consume raw app log objects directly
+- if a backend only accepts dialogue turns, the adapter may apply the canonical lossless dialogue wrapper:
+  - one raw app log object -> `User: {raw_json}` followed by `Assistant: [ingested]`
+  - the user turn must contain a lossless serialization of the raw app log object
+  - the assistant turn must be the literal acknowledgement `[ingested]`
+  - no additional semantic content may be injected by this wrapper
+- inline-memory rendering must still resolve back to raw app log objects directly
+- retrieval-visible checkpoint state may use derived memory units only if:
+  - each derived unit preserves auditable lineage to the raw app logs it was built from
+  - this lineage may live either in the derived-unit schema itself or in a companion lineage artifact keyed by derived unit id
+  - every source log id points to a log that is visible at that checkpoint
+  - checkpoint query results can be audited back to both retrieved derived units and the raw app logs rendered into shared prompts
+- except for the derived-memory-unit allowance above, backends may apply only lossless serialization / transport wrappers; they must not add, drop, rename, summarize, or otherwise semantically rewrite app-log fields before builder ingest or inline rendering
+- all stateful baselines must keep build and test as two formal phases:
+  - build phase sequentially ingests logs and writes authoritative builder progress plus checkpoint snapshots / `manifest.json`
   - test phase consumes those persisted checkpoint artifacts through shared `run_pipeline(...)`
-- for checkpoint-snapshot baselines, `prepare_checkpoint_state(...)` must only resolve the current checkpoint's prepared snapshot / collection; it must not advance builder state during test
+- build phase may additionally produce a full-corpus local preprocessing cache (for example OpenIE / embedding artifacts) before checkpoint replay
+- such preprocessing caches are not retrieval-visible memory state and must not be queried directly at checkpoint time
+- if a preprocessing cache exists, checkpoint state must still be materialized by sequential replay of the confirmed prefix only
+- `prepare_checkpoint_state(...)` must only resolve the current checkpoint's prepared snapshot / collection; it must not advance builder state during test
 - build and test must consume the same shared `data.benchmark` and `data.app_logs_path` inputs rather than silently switching to a baseline-local checkpoint source
 
 2. Checkpoint isolation
@@ -165,13 +179,17 @@ All stateful TCE baselines must satisfy these invariants:
 - local builder progress is the authoritative source for confirmed ingest depth
 - `resume` must continue ingest from the confirmed local prefix recorded in builder progress files
 - message-history-derived ingest reconstruction is not part of the canonical resume contract
-- for checkpoint-snapshot baselines, checkpoint snapshots / `manifest.json` are required persisted artifacts for checkpoint retrieval / testing, but they are not the authoritative source for builder/ingest resume
+- checkpoint snapshots / `manifest.json` are required persisted artifacts for checkpoint retrieval / testing, but they are not the authoritative source for builder/ingest resume
 
 5. Shared orchestrator behavior
 - Task A must remain per-key
 - Task B and Task C must continue to use pack-first scope from the benchmark
 - contributors must not fork local prediction JSON schemas
 - contributors must not reintroduce baseline-local task-query semantics outside shared `tce_core`
+- agent-memory baselines may use backend-native retrieval+answer APIs inside `answer_query(...)` only if:
+  - shared visible task prompting still comes from the shared agent-memory prompt builders driven by `QuerySpec.answer_query_text`
+  - backend-native retrieval is driven by `QuerySpec.retrieval_query_text`
+  - `retrieve_context_for_query(...)` still surfaces auditable retrieval metadata for `per_key_retrieval`
 
 ## 7. Concurrency Contract
 
@@ -186,9 +204,15 @@ Policy classes:
 - `rag`, `oracle`, `icl`, `hipporag2`, `memoryos`, `mem0`
   - `checkpoint_parallelism = allowed`
   - `within_checkpoint_parallelism = allowed`
+- `zep`
+  - `checkpoint_parallelism = forbidden`
+  - `within_checkpoint_parallelism = forbidden`
 - `amem`
   - `checkpoint_parallelism = forbidden`
   - `within_checkpoint_parallelism = allowed`
+- `simplemem`
+  - `checkpoint_parallelism = forbidden`
+  - `within_checkpoint_parallelism = forbidden`
 - `letta`, `memgpt`
   - `checkpoint_parallelism = forbidden`
   - `within_checkpoint_parallelism = forbidden`
@@ -282,7 +306,7 @@ Shared final-QA config:
 - `final_qa.save_prompt_and_raw`
 
 Rules:
-- `enable_change_reasoning=true` is the standard switch for Task B generation
+- `enable_change_reasoning=true` is the standard switch for legacy Task B generation
 - `enable_rq3_apply_service_qa` remains the standard runtime switch for Task C generation
 - shared retrieval top-k settings apply only to baselines that implement explicit query-time retrieval
 - explicit-retrieval baselines must consume shared `QuerySpec.retrieval_query_text` directly; they must not regenerate or fallback to baseline-local retrieval query text
@@ -314,14 +338,26 @@ Contributors must document any backend-specific extras in the baseline config te
 ## 11. Prediction Contract
 
 Minimum prediction fields:
+- top-level `task_contract_version`
+- top-level `research_frame_version`
 - `predictions[].checkpoint_id`
 - `predictions[].snapshot_state`
 - `predictions[].evidence`
-- `predictions[].change_analysis` when Task B is enabled
+- `predictions[].change_analysis` when legacy Task B is enabled
 - `predictions[].rq3_apply_answers` when Task C is enabled
+
+Recommended when available:
+- top-level `canonical_research_doc`
 
 Prediction metadata must remain compatible with `eval/eval_tce.py`.
 Contributors must not introduce baseline-local top-level fields that the evaluator depends on.
+
+Current default contract family:
+- `taskabc_v2`
+- `research_frame_version = rq_20260413`
+- `taskabc_v2` default task set is `Task A + Task C`
+- `runtime.enable_change_reasoning` is legacy-only; on `taskabc_v2` benchmarks without `change_tracking_pack`, generation should skip Task B rather than failing
+- old artifacts without explicit top-level contract metadata are interpreted as legacy `taskabc_v1`
 
 Evidence note:
 - output evidence schema remains `{"app_log_id", "evidence_content"}`

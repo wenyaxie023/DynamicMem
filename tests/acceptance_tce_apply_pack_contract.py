@@ -20,6 +20,13 @@ from tce_core.prompts import (
     build_rq3_apply_validation_prompt,
 )
 from tce_core.task_packs import _validate_apply_item, build_task_packs
+from tce_contracts import LEGACY_TASK_CONTRACT_VERSION
+
+
+def _with_legacy_contract(payload):
+    payload = json.loads(json.dumps(payload))
+    payload.setdefault("task_contract_version", LEGACY_TASK_CONTRACT_VERSION)
+    return payload
 
 
 class _FakeStateValidatorClient:
@@ -232,7 +239,7 @@ class TceApplyPackContractAcceptance(unittest.TestCase):
             td_path = Path(td)
             inp = td_path / "bench.json"
             out = td_path / "bench_validated.json"
-            inp.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+            inp.write_text(json.dumps(_with_legacy_contract(payload), ensure_ascii=False, indent=2), encoding="utf-8")
 
             with patch("data_construction.build_tce_state_validation.LLMClient", _FakeStateValidatorClient):
                 result = build_apply_pack(
@@ -300,7 +307,7 @@ class TceApplyPackContractAcceptance(unittest.TestCase):
             td_path = Path(td)
             inp = td_path / "bench_validated.json"
             out = td_path / "bench_apply.json"
-            inp.write_text(json.dumps(validated_payload, ensure_ascii=False, indent=2), encoding="utf-8")
+            inp.write_text(json.dumps(_with_legacy_contract(validated_payload), ensure_ascii=False, indent=2), encoding="utf-8")
 
             with patch("data_construction.build_tce_task_packs.LLMClient", _FakeApplyPackClient):
                 result = build_apply_pack(
@@ -416,7 +423,7 @@ class TceApplyPackContractAcceptance(unittest.TestCase):
             td_path = Path(td)
             inp = td_path / "bench_validated.json"
             out = td_path / "bench_apply.json"
-            inp.write_text(json.dumps(validated_payload, ensure_ascii=False, indent=2), encoding="utf-8")
+            inp.write_text(json.dumps(_with_legacy_contract(validated_payload), ensure_ascii=False, indent=2), encoding="utf-8")
 
             with patch("data_construction.build_tce_task_packs.LLMClient", _BrokenValidatorClient):
                 result = build_apply_pack(
@@ -556,7 +563,7 @@ class TceApplyPackContractAcceptance(unittest.TestCase):
             td_path = Path(td)
             inp = td_path / "bench_validated.json"
             out = td_path / "bench_apply.json"
-            inp.write_text(json.dumps(validated_payload, ensure_ascii=False, indent=2), encoding="utf-8")
+            inp.write_text(json.dumps(_with_legacy_contract(validated_payload), ensure_ascii=False, indent=2), encoding="utf-8")
             with patch("data_construction.build_tce_task_packs.LLMClient", _AtomicFactRewriteClient):
                 result = build_apply_pack(
                     benchmark_path=inp,
@@ -714,7 +721,7 @@ class TceApplyPackContractAcceptance(unittest.TestCase):
             td_path = Path(td)
             inp = td_path / "bench_validated.json"
             out = td_path / "bench_apply.json"
-            inp.write_text(json.dumps(validated_payload, ensure_ascii=False, indent=2), encoding="utf-8")
+            inp.write_text(json.dumps(_with_legacy_contract(validated_payload), ensure_ascii=False, indent=2), encoding="utf-8")
             with patch("data_construction.build_tce_task_packs.LLMClient", _HomeMediaRewriteClient):
                 result = build_apply_pack(
                     benchmark_path=inp,
@@ -841,7 +848,7 @@ class TceApplyPackContractAcceptance(unittest.TestCase):
             td_path = Path(td)
             inp = td_path / "bench_validated.json"
             out = td_path / "bench_apply.json"
-            inp.write_text(json.dumps(validated_payload, ensure_ascii=False, indent=2), encoding="utf-8")
+            inp.write_text(json.dumps(_with_legacy_contract(validated_payload), ensure_ascii=False, indent=2), encoding="utf-8")
             client = _AtomicFactFallbackClient("azure", "gpt-5.1")
             with patch("data_construction.build_tce_task_packs.LLMClient", lambda *args, **kwargs: client):
                 result = build_apply_pack(

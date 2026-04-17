@@ -13,6 +13,13 @@ except Exception:  # pragma: no cover
 
 from generation.common.llm_client import LLMClient
 from tce_core.task_packs import build_task_packs
+from tce_contracts import (
+    CANONICAL_RESEARCH_DOC_V2,
+    CURRENT_TASK_CONTRACT_VERSION,
+    RESEARCH_FRAME_VERSION_V2,
+    infer_task_contract_version,
+    normalize_stage2_tasks,
+)
 
 
 def _parse_tasks(raw: str) -> List[str]:
@@ -37,13 +44,19 @@ def build_benchmark_task_packs(
     max_rewrites: int,
     save_every_apply_keys: int = 5,
     show_progress: bool = True,
+    task_contract_version: str = CURRENT_TASK_CONTRACT_VERSION,
+    research_frame_version: str = RESEARCH_FRAME_VERSION_V2,
+    canonical_research_doc: str = CANONICAL_RESEARCH_DOC_V2,
 ) -> Dict[str, Any]:
     benchmark = json.loads(benchmark_path.read_text(encoding="utf-8"))
-    requested = {str(task).strip().lower() for task in tasks}
-    aliases = {"a": "state_completion", "b": "change_tracking", "c": "apply", "all": "all"}
-    normalized = {aliases.get(task, task) for task in requested if task}
-    if "all" in normalized:
-        normalized = {"state_completion", "change_tracking", "apply"}
+    effective_contract_version = (
+        str(task_contract_version or "").strip()
+        or infer_task_contract_version(benchmark)
+    )
+    normalized = normalize_stage2_tasks(
+        tasks,
+        task_contract_version=effective_contract_version,
+    )
     needs_generator = bool(normalized & {"state_completion", "change_tracking", "apply"})
     needs_validator = bool(normalized & {"state_completion", "change_tracking", "apply"})
 
@@ -85,6 +98,9 @@ def build_benchmark_task_packs(
             save_every_apply_keys=save_every_apply_keys,
             save_callback=_save_snapshot,
             show_progress=show_progress,
+            task_contract_version=task_contract_version,
+            research_frame_version=research_frame_version,
+            canonical_research_doc=canonical_research_doc,
         )
     finally:
         if generator_client is not None:
@@ -140,6 +156,24 @@ def main() -> None:
         action="store_true",
         help="Disable Stage 2 progress bars and summary logs.",
     )
+    parser.add_argument(
+        "--task-contract-version",
+        type=str,
+        default=CURRENT_TASK_CONTRACT_VERSION,
+        help="Top-level task contract version to stamp into the benchmark metadata.",
+    )
+    parser.add_argument(
+        "--research-frame-version",
+        type=str,
+        default=RESEARCH_FRAME_VERSION_V2,
+        help="Top-level research frame version to stamp into the benchmark metadata.",
+    )
+    parser.add_argument(
+        "--canonical-research-doc",
+        type=str,
+        default=CANONICAL_RESEARCH_DOC_V2,
+        help="Canonical research-theme/RQ document path to stamp into the benchmark metadata.",
+    )
     args = parser.parse_args()
 
     payload = build_benchmark_task_packs(
@@ -158,6 +192,9 @@ def main() -> None:
         max_rewrites=args.max_rewrites,
         save_every_apply_keys=args.save_every_apply_keys,
         show_progress=(not args.no_progress),
+        task_contract_version=args.task_contract_version,
+        research_frame_version=args.research_frame_version,
+        canonical_research_doc=args.canonical_research_doc,
     )
     print("Saved:", args.output)
     print("Tasks:", ",".join(_parse_tasks(args.tasks)))

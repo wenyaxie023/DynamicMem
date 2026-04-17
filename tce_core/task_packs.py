@@ -1,7 +1,5 @@
 """Shared TCE task-pack builders and pack-first extraction helpers."""
 
-from __future__ import annotations
-
 import copy
 import hashlib
 import json
@@ -15,26 +13,57 @@ from .prompts import (
     build_rq3_apply_question_pack_prompt,
     build_rq3_apply_rewrite_prompt,
     build_rq3_apply_validation_prompt,
+    build_task_c_v2_question_pack_prompt,
+    build_task_c_v2_rewrite_prompt,
+    build_task_c_v2_validation_prompt,
 )
 from .scoring_points import (
     SCORING_POINTS_VERSION,
     build_validated_apply_answer_scoring_points,
     build_change_reason_scoring_points,
+    build_validated_task_c_v2_answer_scoring_points,
     build_value_scoring_points,
 )
 from .state_validation import bool_like, value_signature
 from .state_validation import collect_evidence_ids as collect_state_evidence_ids
 from .task_spec import flatten_snapshot, humanize_key
+from tce_contracts import (
+    CANONICAL_RESEARCH_DOC_V2,
+    CURRENT_TASK_CONTRACT_VERSION,
+    LEGACY_TASK_CONTRACT_VERSION,
+    RESEARCH_FRAME_VERSION_V2,
+    apply_contract_metadata,
+    has_materialized_value,
+    infer_task_contract_version,
+    normalize_task_a_current_value,
+    normalize_task_c_source_value,
+    normalize_stage2_tasks,
+    task_contract_is_v2,
+)
 
 STATE_COMPLETION_PACK_VERSION = "v5"
 CHANGE_TRACKING_PACK_VERSION = "v6"
-APPLY_PACK_VERSION = "v6"
-APPLY_PACK_PROMPT_VERSION = "apply_pack_prompt_v13"
+APPLY_PACK_VERSION_V1 = "v6"
+APPLY_PACK_VERSION_V2 = "v9"
+APPLY_PACK_PROMPT_VERSION_V1 = "apply_pack_prompt_v13"
+APPLY_PACK_PROMPT_VERSION_V2 = "apply_pack_prompt_v16_taskc_mixed_family"
 CHANGE_REASON_TEMPLATE = "<fill the blank>"
 EVIDENCE_TEMPLATE = [{"app_log_id": "<app_log_id>", "evidence_content": "<supporting snippet>"}]
-APPLY_VALIDATION_SEMANTIC_CRITERIA = [
+APPLY_VALIDATION_SEMANTIC_CRITERIA_V1 = [
     "personalization_necessity",
     "service_decision_quality",
+    "answer_groundedness",
+]
+APPLY_VALIDATION_SEMANTIC_CRITERIA_V2 = [
+    "service_completion_quality",
+    "full_field_dependency",
+    "schema_groundedness",
+    "point_pairability",
+]
+APPLY_VALIDATION_SEMANTIC_CRITERIA_V2_USER_COMMUNICATION = [
+    "service_completion_quality",
+    "full_field_dependency",
+    "low_leakage",
     "answer_groundedness",
 ]
 _TRANSITION_FIELDS = {"from", "to"}
@@ -44,13 +73,87 @@ _REASON_BEFORE_STATE_UNRESOLVED = "before_state_unresolved"
 _REASON_AFTER_STATE_UNRESOLVED = "after_state_unresolved"
 _REASON_REFERENCE_CHANGE_REASON_MISSING = "reference_change_reason_missing"
 _REASON_REFERENCE_CHANGE_REASON_INVALID = "reference_change_reason_invalid"
+_REASON_TASK_A_EXCLUDED_FIELDS_ONLY = "task_a_value_empty_after_excluded_fields_removed"
+_REASON_TASK_C_V2_MISSING_SERVICE_FAMILY = "missing_service_family"
+_REASON_TASK_C_V2_MISSING_SCENARIO = "missing_scenario"
+_REASON_TASK_C_V2_MISSING_TASK_INSTRUCTION = "missing_task_instruction"
+_REASON_TASK_C_V2_MISSING_REFERENCE_ANSWER = "missing_reference_answer"
+_REASON_TASK_C_V2_MISSING_OUTPUT_TEMPLATE = "missing_output_template"
+_REASON_TASK_C_V2_MISSING_REFERENCE_OUTPUT = "missing_reference_output"
+_REASON_TASK_C_V2_WRONG_SERVICE_FAMILY = "service_family_mismatch"
+_REASON_TASK_C_V2_OUTPUT_TEMPLATE_MISMATCH = "output_template_mismatch"
+_REASON_TASK_C_V2_REFERENCE_OUTPUT_MISMATCH = "reference_output_mismatch"
+_REASON_TASK_C_V2_NOT_STRUCTURED_SERVICE_OBJECT = "not_structured_service_object"
+_REASON_TASK_C_V2_RAW_STATE_MIRROR = "raw_state_mirror"
 
+
+def _apply_pack_version(task_contract_version: str) -> str:
+    return APPLY_PACK_VERSION_V2 if task_contract_is_v2(task_contract_version) else APPLY_PACK_VERSION_V1
+
+
+def _apply_pack_prompt_version(task_contract_version: str) -> str:
+    return APPLY_PACK_PROMPT_VERSION_V2 if task_contract_is_v2(task_contract_version) else APPLY_PACK_PROMPT_VERSION_V1
+
+
+def _apply_validation_semantic_criteria(task_contract_version: str, *, service_family: str = "") -> List[str]:
+    if task_contract_is_v2(task_contract_version):
+        if str(service_family or "").strip() == "user_communication":
+            return APPLY_VALIDATION_SEMANTIC_CRITERIA_V2_USER_COMMUNICATION
+        return APPLY_VALIDATION_SEMANTIC_CRITERIA_V2
+    return APPLY_VALIDATION_SEMANTIC_CRITERIA_V1
 def fill_blank_template(value: Any) -> Any:
     if isinstance(value, dict):
         return {k: fill_blank_template(v) for k, v in value.items()}
     if isinstance(value, list):
         return [fill_blank_template(v) for v in value]
     return "<fill the blank>"
+
+
+def _infer_apply_state_type(state_key: str) -> str:
+    prefix = str(state_key or "").split(":", 1)[0].strip().lower()
+    if prefix == "habits_state":
+        return "habit"
+    if prefix == "preferences_state":
+        return "preference"
+    return "attribute"
+
+
+def _infer_task_c_v2_service_family(state_key: str) -> str:
+    state_type = _infer_apply_state_type(state_key)
+    if state_type == "habit":
+        return "user_communication"
+    if state_type == "preference":
+        return "information_request_construction"
+    return "action_configuration"
+
+
+def _task_c_v2_uses_structured_output(service_family: str) -> bool:
+    return str(service_family or "").strip() != "user_communication"
+
+
+def _task_c_v2_fill_template(value: Any) -> Any:
+    if isinstance(value, dict):
+        return {str(key): _task_c_v2_fill_template(child) for key, child in value.items()}
+    if isinstance(value, list):
+        return [_task_c_v2_fill_template(child) for child in value]
+    return "<fill>"
+
+
+def _task_c_v2_leaf_paths(value: Any, path: str = "") -> List[Tuple[str, Any]]:
+    if isinstance(value, dict):
+        out: List[Tuple[str, Any]] = []
+        for raw_key, child in value.items():
+            key = str(raw_key).strip().lower()
+            child_path = key if not path else f"{path}.{key}"
+            out.extend(_task_c_v2_leaf_paths(child, child_path))
+        return out
+    if isinstance(value, list):
+        out: List[Tuple[str, Any]] = []
+        base_path = path or "current_value"
+        for index, child in enumerate(value):
+            out.extend(_task_c_v2_leaf_paths(child, f"{base_path}.{index}"))
+        return out
+    return [(path or "current_value", value)]
 
 
 def _stable_item_id(prefix: str, identity: Dict[str, Any]) -> str:
@@ -66,16 +169,6 @@ def _validated_snapshot_flat(checkpoint: Dict[str, Any]) -> Dict[str, Any]:
 
 def _validated_state_keys(checkpoint: Dict[str, Any]) -> List[str]:
     return sorted(_validated_snapshot_flat(checkpoint).keys())
-
-
-def _has_materialized_value(value: Any) -> bool:
-    if value is None:
-        return False
-    if isinstance(value, str):
-        return bool(value.strip())
-    if isinstance(value, (list, tuple, set, dict)):
-        return len(value) > 0
-    return True
 
 
 def _transition_field_map(value: Any) -> Dict[str, Any]:
@@ -94,21 +187,31 @@ def _resolve_task_a_ground_truth(validated_value: Any) -> Tuple[bool, Any, List[
     transition_map = _transition_field_map(validated_value)
     if transition_map:
         projected = transition_map.get("to")
-        if not _has_materialized_value(projected):
+        if not has_materialized_value(projected):
             return False, None, [_REASON_CURRENT_STATE_UNRESOLVED_MISSING_TO]
         return True, copy.deepcopy(projected), []
-    if not _has_materialized_value(validated_value):
+    if not has_materialized_value(validated_value):
         return False, None, [_REASON_CURRENT_STATE_UNRESOLVED_EMPTY]
     return True, copy.deepcopy(validated_value), []
 
 
 def _resolve_task_a_candidates_from_flat(
     validated_flat: Dict[str, Any],
+    *,
+    task_contract_version: str,
 ) -> Tuple[Dict[str, Any], Dict[str, Dict[str, Any]]]:
     resolved: Dict[str, Any] = {}
     filtered: Dict[str, Dict[str, Any]] = {}
     for state_key in sorted(validated_flat.keys()):
         is_valid, projected_value, reason_codes = _resolve_task_a_ground_truth(validated_flat.get(state_key))
+        if is_valid and task_contract_is_v2(task_contract_version):
+            projected_value = normalize_task_a_current_value(
+                projected_value,
+                task_contract_version=task_contract_version,
+            )
+            if not has_materialized_value(projected_value):
+                is_valid = False
+                reason_codes = [_REASON_TASK_A_EXCLUDED_FIELDS_ONLY]
         if is_valid:
             resolved[state_key] = projected_value
         else:
@@ -130,23 +233,23 @@ def _resolve_task_b_ground_truth(
     before_value = None
     after_value = None
     if transition_map:
-        if _has_materialized_value(transition_map.get("from")):
+        if has_materialized_value(transition_map.get("from")):
             before_value = copy.deepcopy(transition_map.get("from"))
-        elif _has_materialized_value(previous_current_value):
+        elif has_materialized_value(previous_current_value):
             before_value = copy.deepcopy(previous_current_value)
         else:
             reason_codes.append(_REASON_BEFORE_STATE_UNRESOLVED)
 
-        if _has_materialized_value(transition_map.get("to")):
+        if has_materialized_value(transition_map.get("to")):
             after_value = copy.deepcopy(transition_map.get("to"))
         else:
             reason_codes.append(_REASON_AFTER_STATE_UNRESOLVED)
     else:
-        if _has_materialized_value(previous_current_value):
+        if has_materialized_value(previous_current_value):
             before_value = copy.deepcopy(previous_current_value)
         else:
             reason_codes.append(_REASON_BEFORE_STATE_UNRESOLVED)
-        if _has_materialized_value(current_current_value):
+        if has_materialized_value(current_current_value):
             after_value = copy.deepcopy(current_current_value)
         else:
             reason_codes.append(_REASON_AFTER_STATE_UNRESOLVED)
@@ -305,6 +408,7 @@ def build_state_completion_pack_inplace(
     show_progress: bool = False,
 ) -> Dict[str, Any]:
     _require_validated_benchmark(benchmark)
+    task_contract_version = infer_task_contract_version(benchmark)
     reuse_cache: Dict[str, Dict[str, Any]] = {}
     checkpoints = benchmark.get("checkpoints", [])
     if not isinstance(checkpoints, list):
@@ -324,7 +428,10 @@ def build_state_completion_pack_inplace(
                 continue
             checkpoint_id = str(checkpoint.get("checkpoint_id") or "")
             validated_flat = _validated_snapshot_flat(checkpoint)
-            resolved_flat, filtered_keys = _resolve_task_a_candidates_from_flat(validated_flat)
+            resolved_flat, filtered_keys = _resolve_task_a_candidates_from_flat(
+                validated_flat,
+                task_contract_version=task_contract_version,
+            )
             pack_keys: Dict[str, Any] = {}
             cp_reused = 0
             cp_computed = 0
@@ -407,6 +514,7 @@ def build_change_tracking_pack_inplace(
     show_progress: bool = False,
 ) -> Dict[str, Any]:
     _require_validated_benchmark(benchmark)
+    task_contract_version = infer_task_contract_version(benchmark)
     reuse_cache: Dict[str, Dict[str, Any]] = {}
     checkpoints = benchmark.get("checkpoints", [])
     if not isinstance(checkpoints, list):
@@ -433,7 +541,10 @@ def build_change_tracking_pack_inplace(
             validated_flat = _validated_snapshot_flat(checkpoint)
             obs_flat = flatten_snapshot(checkpoint.get("state_observability") or {})
             qmap = checkpoint.get("state_questionability") if isinstance(checkpoint.get("state_questionability"), dict) else {}
-            resolved_flat, _ = _resolve_task_a_candidates_from_flat(validated_flat)
+            resolved_flat, _ = _resolve_task_a_candidates_from_flat(
+                validated_flat,
+                task_contract_version=task_contract_version,
+            )
             pack_keys: Dict[str, Any] = {}
             filtered_keys: Dict[str, Dict[str, Any]] = {}
             cp_reused = 0
@@ -569,8 +680,50 @@ def build_change_tracking_pack_inplace(
 
     return benchmark
 
-def _base_apply_qa_failures(item: Dict[str, Any]) -> List[str]:
+def _base_apply_item_failures(
+    item: Dict[str, Any],
+    *,
+    state_key: str,
+    state_value: Any,
+    task_contract_version: str,
+) -> List[str]:
     failed: List[str] = []
+    if task_contract_is_v2(task_contract_version):
+        expected_family = _infer_task_c_v2_service_family(state_key)
+        structured_v2 = _task_c_v2_uses_structured_output(expected_family)
+        if not str(item.get("service_family") or "").strip():
+            failed.append(_REASON_TASK_C_V2_MISSING_SERVICE_FAMILY)
+        elif str(item.get("service_family") or "").strip() != expected_family:
+            failed.append(_REASON_TASK_C_V2_WRONG_SERVICE_FAMILY)
+        if not str(item.get("scenario") or "").strip():
+            failed.append(_REASON_TASK_C_V2_MISSING_SCENARIO)
+        if not str(item.get("task_instruction") or "").strip():
+            failed.append(_REASON_TASK_C_V2_MISSING_TASK_INSTRUCTION)
+        if structured_v2:
+            if item.get("output_template") is None:
+                failed.append(_REASON_TASK_C_V2_MISSING_OUTPUT_TEMPLATE)
+            if item.get("reference_output") is None:
+                failed.append(_REASON_TASK_C_V2_MISSING_REFERENCE_OUTPUT)
+        else:
+            if not str(item.get("reference_answer") or "").strip():
+                failed.append(_REASON_TASK_C_V2_MISSING_REFERENCE_ANSWER)
+        if structured_v2 and item.get("output_template") is not None and item.get("reference_output") is not None:
+            output_template = item.get("output_template")
+            reference_output = item.get("reference_output")
+            if not isinstance(output_template, dict) or not isinstance(reference_output, dict):
+                failed.append(_REASON_TASK_C_V2_NOT_STRUCTURED_SERVICE_OBJECT)
+            else:
+                if output_template != _task_c_v2_fill_template(reference_output):
+                    failed.append(_REASON_TASK_C_V2_OUTPUT_TEMPLATE_MISMATCH)
+                source_leaves = _task_c_v2_leaf_paths(state_value)
+                output_leaves = _task_c_v2_leaf_paths(reference_output)
+                if len(output_leaves) != len(source_leaves):
+                    failed.append(_REASON_TASK_C_V2_REFERENCE_OUTPUT_MISMATCH)
+                elif [value for _, value in output_leaves] != [value for _, value in source_leaves]:
+                    failed.append(_REASON_TASK_C_V2_REFERENCE_OUTPUT_MISMATCH)
+                if reference_output == state_value:
+                    failed.append(_REASON_TASK_C_V2_RAW_STATE_MIRROR)
+        return failed
     if any(key in item for key in ("service_category", "question", "reference_answer")):
         if not str(item.get("service_category") or "").strip():
             failed.append("missing_service_category")
@@ -581,7 +734,14 @@ def _base_apply_qa_failures(item: Dict[str, Any]) -> List[str]:
     return failed
 
 
-def _normalize_generated_items(raw_out: Any, item_count: int) -> List[Dict[str, Any]]:
+def _normalize_generated_items(
+    raw_out: Any,
+    item_count: int,
+    *,
+    state_key: str,
+    state_value: Any,
+    task_contract_version: str,
+) -> List[Dict[str, Any]]:
     if not isinstance(raw_out, dict):
         return []
     raw_items = raw_out.get("items")
@@ -590,6 +750,22 @@ def _normalize_generated_items(raw_out: Any, item_count: int) -> List[Dict[str, 
     out: List[Dict[str, Any]] = []
     for idx, item in enumerate(raw_items):
         if not isinstance(item, dict):
+            continue
+        if task_contract_is_v2(task_contract_version):
+            expected_family = _infer_task_c_v2_service_family(state_key)
+            normalized = {
+                "qa_id": f"q{idx+1}",
+                "service_family": expected_family,
+                "scenario": str(item.get("scenario") or "").strip(),
+                "task_instruction": str(item.get("task_instruction") or "").strip(),
+                "retrieval_query": "",
+            }
+            if _task_c_v2_uses_structured_output(expected_family):
+                normalized["output_template"] = item.get("output_template")
+                normalized["reference_output"] = item.get("reference_output")
+            else:
+                normalized["reference_answer"] = str(item.get("reference_answer") or "").strip()
+            out.append(normalized)
             continue
         service_category = str(item.get("service_category") or "").strip()
         question = str(item.get("question") or item.get("apply_question") or "").strip()
@@ -623,18 +799,32 @@ def _derive_apply_rubric_alias(points: Sequence[Dict[str, Any]]) -> List[str]:
 def build_rq3_apply_retrieval_query(
     *,
     service_category: str = "",
+    service_family: str = "",
+    scenario: str = "",
+    task_instruction: str = "",
+    output_template: Any = None,
     question: str = "",
     apply_scenario: str = "",
     apply_question: str = "",
 ) -> str:
-    scenario = str(apply_scenario or "").strip()
+    service_family = str(service_family or "").strip()
+    scenario = str(scenario or "").strip()
+    task_instruction = str(task_instruction or "").strip()
     service_category = str(service_category or "").strip()
     question = str(question or apply_question or "").strip()
     parts = []
+    if service_family:
+        parts.append("Service family:\n{}".format(service_family))
+    if scenario:
+        parts.append("Scenario:\n{}".format(scenario))
+    if task_instruction:
+        parts.append("Task instruction:\n{}".format(task_instruction))
+    if output_template is not None:
+        parts.append("Required output fields:\n{}".format(json.dumps(output_template, ensure_ascii=False, indent=2)))
     if service_category:
         parts.append("Service category:\n{}".format(service_category))
-    if scenario:
-        parts.append("Service scenario:\n{}".format(scenario))
+    if str(apply_scenario or "").strip():
+        parts.append("Service scenario:\n{}".format(str(apply_scenario or "").strip()))
     if question:
         parts.append("Question:\n{}".format(question))
     return "\n\n".join(parts).strip()
@@ -647,16 +837,25 @@ def _call_json(client: Any, prompt: str) -> Any:
         return {"_error": str(exc)}
 
 
-def _normalize_apply_semantic_criteria(raw: Any) -> Tuple[List[Dict[str, Any]], List[str]]:
+def _normalize_apply_semantic_criteria(
+    raw: Any,
+    *,
+    task_contract_version: str,
+    service_family: str = "",
+) -> Tuple[List[Dict[str, Any]], List[str]]:
     normalized: List[Dict[str, Any]] = []
     failed_rules: List[str] = []
+    expected_criteria = _apply_validation_semantic_criteria(
+        task_contract_version,
+        service_family=service_family,
+    )
     criteria = raw.get("criteria") if isinstance(raw, dict) else None
     if not isinstance(criteria, list):
         return [], ["llm_invalid"]
-    if len(criteria) != len(APPLY_VALIDATION_SEMANTIC_CRITERIA):
+    if len(criteria) != len(expected_criteria):
         failed_rules.append("llm_invalid")
     seen: Set[str] = set()
-    for idx, expected in enumerate(APPLY_VALIDATION_SEMANTIC_CRITERIA):
+    for idx, expected in enumerate(expected_criteria):
         item = criteria[idx] if idx < len(criteria) else None
         if not isinstance(item, dict):
             failed_rules.append("llm_invalid")
@@ -669,7 +868,7 @@ def _normalize_apply_semantic_criteria(raw: Any) -> Tuple[List[Dict[str, Any]], 
         passed = item.get("pass")
         if criterion != expected or criterion in seen:
             failed_rules.append("llm_invalid")
-        if criterion not in APPLY_VALIDATION_SEMANTIC_CRITERIA:
+        if criterion not in expected_criteria:
             failed_rules.append("llm_invalid")
         if not isinstance(passed, bool):
             failed_rules.append("llm_invalid")
@@ -684,7 +883,7 @@ def _normalize_apply_semantic_criteria(raw: Any) -> Tuple[List[Dict[str, Any]], 
             }
         )
         seen.add(criterion)
-    if seen != set(APPLY_VALIDATION_SEMANTIC_CRITERIA):
+    if seen != set(expected_criteria):
         failed_rules.append("llm_invalid")
     deduped: List[str] = []
     for rule in failed_rules:
@@ -698,21 +897,45 @@ def _validate_apply_item(
     validator_client: Any,
     state_key: str,
     state_value: Any,
-    item: Dict[str, str],
+    item: Dict[str, Any],
+    task_contract_version: str = LEGACY_TASK_CONTRACT_VERSION,
 ) -> Tuple[bool, Dict[str, Any]]:
-    prompt = build_rq3_apply_validation_prompt(
-        state_key=state_key,
-        state_value=state_value,
-        service_category=str(item.get("service_category") or ""),
-        question=str(item.get("question") or item.get("apply_question") or ""),
-        reference_answer=str(item.get("reference_answer") or item.get("apply_reference_answer") or ""),
-        apply_scenario=item.get("apply_scenario", ""),
-        apply_question=str(item.get("question") or item.get("apply_question") or ""),
-        apply_reference_answer=str(item.get("reference_answer") or item.get("apply_reference_answer") or ""),
-    )
+    if task_contract_is_v2(task_contract_version):
+        prompt = build_task_c_v2_validation_prompt(
+            state_key=state_key,
+            state_value=state_value,
+            service_family=str(item.get("service_family") or ""),
+            scenario=str(item.get("scenario") or ""),
+            task_instruction=str(item.get("task_instruction") or ""),
+            output_template=item.get("output_template"),
+            reference_output=item.get("reference_output"),
+            reference_answer=str(item.get("reference_answer") or ""),
+        )
+    else:
+        prompt = build_rq3_apply_validation_prompt(
+            state_key=state_key,
+            state_value=state_value,
+            service_category=str(item.get("service_category") or ""),
+            question=str(item.get("question") or item.get("apply_question") or ""),
+            reference_answer=str(item.get("reference_answer") or item.get("apply_reference_answer") or ""),
+            apply_scenario=item.get("apply_scenario", ""),
+            apply_question=str(item.get("question") or item.get("apply_question") or ""),
+            apply_reference_answer=str(item.get("reference_answer") or item.get("apply_reference_answer") or ""),
+        )
     raw = _call_json(validator_client, prompt)
-    failed_rules = list(_base_apply_qa_failures(item))
-    semantic_criteria, schema_failures = _normalize_apply_semantic_criteria(raw)
+    failed_rules = list(
+        _base_apply_item_failures(
+            item,
+            state_key=state_key,
+            state_value=state_value,
+            task_contract_version=task_contract_version,
+        )
+    )
+    semantic_criteria, schema_failures = _normalize_apply_semantic_criteria(
+        raw,
+        task_contract_version=task_contract_version,
+        service_family=str(item.get("service_family") or ""),
+    )
     for rule in schema_failures:
         if rule not in failed_rules:
             failed_rules.append(rule)
@@ -723,7 +946,13 @@ def _validate_apply_item(
                 failed_rules.append(name)
     is_valid = (
         (not failed_rules)
-        and len(semantic_criteria) == len(APPLY_VALIDATION_SEMANTIC_CRITERIA)
+        and len(semantic_criteria)
+        == len(
+            _apply_validation_semantic_criteria(
+                task_contract_version,
+                service_family=str(item.get("service_family") or ""),
+            )
+        )
         and all(bool(item_criterion.get("pass")) for item_criterion in semantic_criteria)
     )
     payload = {
@@ -739,24 +968,53 @@ def _rewrite_apply_item(
     generator_client: Any,
     state_key: str,
     state_value: Any,
-    item: Dict[str, str],
+    item: Dict[str, Any],
     validation_payload: Dict[str, Any],
+    task_contract_version: str = LEGACY_TASK_CONTRACT_VERSION,
 ) -> Dict[str, Any]:
-    prompt = build_rq3_apply_rewrite_prompt(
-        state_key=state_key,
-        state_value=state_value,
-        service_category=str(item.get("service_category") or ""),
-        question=str(item.get("question") or item.get("apply_question") or ""),
-        reference_answer=str(item.get("reference_answer") or item.get("apply_reference_answer") or ""),
-        apply_scenario=item.get("apply_scenario", ""),
-        apply_question=str(item.get("question") or item.get("apply_question") or ""),
-        apply_reference_answer=str(item.get("reference_answer") or item.get("apply_reference_answer") or ""),
-        failed_rules=list(validation_payload.get("failed_rules") or []),
-        semantic_criteria=list(validation_payload.get("semantic_criteria") or []),
-    )
+    if task_contract_is_v2(task_contract_version):
+        prompt = build_task_c_v2_rewrite_prompt(
+            state_key=state_key,
+            state_value=state_value,
+            service_family=str(item.get("service_family") or _infer_task_c_v2_service_family(state_key)),
+            scenario=str(item.get("scenario") or ""),
+            task_instruction=str(item.get("task_instruction") or ""),
+            output_template=item.get("output_template"),
+            reference_output=item.get("reference_output"),
+            failed_rules=list(validation_payload.get("failed_rules") or []),
+            semantic_criteria=list(validation_payload.get("semantic_criteria") or []),
+            reference_answer=str(item.get("reference_answer") or ""),
+        )
+    else:
+        prompt = build_rq3_apply_rewrite_prompt(
+            state_key=state_key,
+            state_value=state_value,
+            service_category=str(item.get("service_category") or ""),
+            question=str(item.get("question") or item.get("apply_question") or ""),
+            reference_answer=str(item.get("reference_answer") or item.get("apply_reference_answer") or ""),
+            apply_scenario=item.get("apply_scenario", ""),
+            apply_question=str(item.get("question") or item.get("apply_question") or ""),
+            apply_reference_answer=str(item.get("reference_answer") or item.get("apply_reference_answer") or ""),
+            failed_rules=list(validation_payload.get("failed_rules") or []),
+            semantic_criteria=list(validation_payload.get("semantic_criteria") or []),
+        )
     raw = _call_json(generator_client, prompt)
     if not isinstance(raw, dict):
         return item
+    if task_contract_is_v2(task_contract_version):
+        rewritten = {
+            "qa_id": str(item.get("qa_id") or ""),
+            "service_family": str(item.get("service_family") or _infer_task_c_v2_service_family(state_key)).strip(),
+            "scenario": str(raw.get("scenario") or item.get("scenario") or "").strip(),
+            "task_instruction": str(raw.get("task_instruction") or item.get("task_instruction") or "").strip(),
+            "retrieval_query": "",
+        }
+        if _task_c_v2_uses_structured_output(rewritten["service_family"]):
+            rewritten["output_template"] = raw.get("output_template", item.get("output_template"))
+            rewritten["reference_output"] = raw.get("reference_output", item.get("reference_output"))
+        else:
+            rewritten["reference_answer"] = str(raw.get("reference_answer") or item.get("reference_answer") or "").strip()
+        return rewritten
     question = str(raw.get("question") or item.get("question") or item.get("apply_question") or "").strip()
     reference_answer = str(
         raw.get("reference_answer") or item.get("reference_answer") or item.get("apply_reference_answer") or ""
@@ -784,15 +1042,35 @@ def _build_apply_key_node(
     item_count_per_key: int,
     max_rewrites: int,
     save_raw: bool,
+    task_contract_version: str,
 ) -> Dict[str, Any]:
-    prompt = build_rq3_apply_question_pack_prompt(
-        checkpoint_timestamp=checkpoint_ts,
-        state_key=state_key,
-        state_value=state_value,
-        item_count=item_count_per_key,
+    contracted_state_value = normalize_task_c_source_value(
+        state_key,
+        state_value,
+        task_contract_version=task_contract_version,
     )
+    if task_contract_is_v2(task_contract_version):
+        prompt = build_task_c_v2_question_pack_prompt(
+            checkpoint_timestamp=checkpoint_ts,
+            state_key=state_key,
+            state_value=contracted_state_value,
+            service_family=_infer_task_c_v2_service_family(state_key),
+        )
+    else:
+        prompt = build_rq3_apply_question_pack_prompt(
+            checkpoint_timestamp=checkpoint_ts,
+            state_key=state_key,
+            state_value=state_value,
+            item_count=item_count_per_key,
+        )
     generated = _call_json(generator_client, prompt)
-    items = _normalize_generated_items(generated, item_count_per_key)
+    items = _normalize_generated_items(
+        generated,
+        item_count_per_key,
+        state_key=state_key,
+        state_value=contracted_state_value,
+        task_contract_version=task_contract_version,
+    )
     accepted: List[Dict[str, Any]] = []
     discarded: List[Dict[str, Any]] = []
     gold_memory_evidence_app_log_ids = collect_state_evidence_ids(state_observability)
@@ -813,8 +1091,9 @@ def _build_apply_key_node(
             is_semantically_valid, qa_validation_payload = _validate_apply_item(
                 validator_client=validator_client,
                 state_key=state_key,
-                state_value=state_value,
+                state_value=contracted_state_value,
                 item=candidate,
+                task_contract_version=task_contract_version,
             )
             final_qa_validation = {
                 "is_valid": bool(is_semantically_valid),
@@ -829,68 +1108,141 @@ def _build_apply_key_node(
                 candidate = _rewrite_apply_item(
                     generator_client=generator_client,
                     state_key=state_key,
-                    state_value=state_value,
+                    state_value=contracted_state_value,
                     item=candidate,
                     validation_payload=qa_validation_payload,
+                    task_contract_version=task_contract_version,
                 )
         if not qa_passed:
-            discarded.append(
+            if task_contract_is_v2(task_contract_version):
+                structured_v2 = _task_c_v2_uses_structured_output(str(candidate.get("service_family") or ""))
+                discarded.append(
+                    {
+                        "qa_id": str(candidate.get("qa_id") or ""),
+                        "service_family": str(candidate.get("service_family") or ""),
+                        "scenario": str(candidate.get("scenario") or ""),
+                        "task_instruction": str(candidate.get("task_instruction") or ""),
+                        "reference_answer": str(candidate.get("reference_answer") or ""),
+                        "output_template": candidate.get("output_template") if structured_v2 else None,
+                        "reference_output": candidate.get("reference_output") if structured_v2 else None,
+                        "retrieval_query": build_rq3_apply_retrieval_query(
+                            service_family=str(candidate.get("service_family") or ""),
+                            scenario=str(candidate.get("scenario") or ""),
+                            task_instruction=str(candidate.get("task_instruction") or ""),
+                            output_template=candidate.get("output_template") if structured_v2 else None,
+                        ),
+                        "answer_scoring_points": [],
+                        "gold_memory_evidence_app_log_ids": list(gold_memory_evidence_app_log_ids),
+                        "item_validation": {**final_qa_validation, "manual_review_required": True},
+                        "scoring_validation": None,
+                    }
+                )
+            else:
+                discarded.append(
+                    {
+                        "qa_id": str(candidate.get("qa_id") or ""),
+                        "service_category": str(candidate.get("service_category") or ""),
+                        "question": str(candidate.get("question") or candidate.get("apply_question") or ""),
+                        "reference_answer": str(candidate.get("reference_answer") or candidate.get("apply_reference_answer") or ""),
+                        "rubric": [],
+                        "apply_scenario": str(candidate.get("apply_scenario") or ""),
+                        "apply_question": str(candidate.get("question") or candidate.get("apply_question") or ""),
+                        "apply_reference_answer": str(candidate.get("reference_answer") or candidate.get("apply_reference_answer") or ""),
+                        "retrieval_query": build_rq3_apply_retrieval_query(
+                            service_category=str(candidate.get("service_category") or ""),
+                            question=str(candidate.get("question") or candidate.get("apply_question") or ""),
+                            apply_scenario=str(candidate.get("apply_scenario") or ""),
+                        ),
+                        "answer_scoring_points": [],
+                        "gold_memory_evidence_app_log_ids": list(gold_memory_evidence_app_log_ids),
+                        "qa_validation": {**final_qa_validation, "manual_review_required": True},
+                        "atomic_fact_validation": None,
+                    }
+                )
+            continue
+
+        if task_contract_is_v2(task_contract_version):
+            structured_v2 = _task_c_v2_uses_structured_output(str(candidate.get("service_family") or ""))
+            if structured_v2:
+                answer_scoring_points, scoring_validation = build_validated_task_c_v2_answer_scoring_points(
+                    state_key=state_key,
+                    state_value=contracted_state_value,
+                    service_family=str(candidate.get("service_family") or ""),
+                    output_template=candidate.get("output_template"),
+                    reference_output=candidate.get("reference_output"),
+                    prefix=f"aqp_{state_key.replace(':', '_')}_{str(candidate.get('qa_id') or f'q{idx+1}')}",
+                )
+            else:
+                answer_scoring_points, scoring_validation = build_validated_apply_answer_scoring_points(
+                    state_key=state_key,
+                    state_value=contracted_state_value,
+                    service_category="user communication",
+                    apply_scenario=str(candidate.get("scenario") or ""),
+                    apply_question=str(candidate.get("task_instruction") or ""),
+                    apply_reference_answer=str(candidate.get("reference_answer") or ""),
+                    generator_client=generator_client,
+                    validator_client=validator_client,
+                    prefix=f"aqp_{state_key.replace(':', '_')}_{str(candidate.get('qa_id') or f'q{idx+1}')}",
+                    max_rewrites=max_rewrites,
+                )
+            candidate["retrieval_query"] = build_rq3_apply_retrieval_query(
+                service_family=str(candidate.get("service_family") or ""),
+                scenario=str(candidate.get("scenario") or ""),
+                task_instruction=str(candidate.get("task_instruction") or ""),
+                output_template=candidate.get("output_template") if structured_v2 else None,
+            )
+            accepted_item = {
+                "qa_id": str(candidate.get("qa_id") or ""),
+                "service_family": str(candidate.get("service_family") or ""),
+                "scenario": str(candidate.get("scenario") or ""),
+                "task_instruction": str(candidate.get("task_instruction") or ""),
+                "retrieval_query": str(candidate.get("retrieval_query") or ""),
+                "answer_scoring_points": answer_scoring_points,
+                "gold_memory_evidence_app_log_ids": list(gold_memory_evidence_app_log_ids),
+                "item_validation": {**final_qa_validation, "manual_review_required": False},
+                "scoring_validation": {**scoring_validation, "manual_review_required": False},
+            }
+            if structured_v2:
+                accepted_item["output_template"] = candidate.get("output_template")
+                accepted_item["reference_output"] = candidate.get("reference_output")
+            else:
+                accepted_item["reference_answer"] = str(candidate.get("reference_answer") or "")
+            accepted.append(accepted_item)
+        else:
+            answer_scoring_points, atomic_fact_validation = build_validated_apply_answer_scoring_points(
+                state_key=state_key,
+                state_value=state_value,
+                service_category=str(candidate.get("service_category") or ""),
+                apply_scenario=str(candidate.get("apply_scenario") or ""),
+                apply_question=str(candidate.get("question") or candidate.get("apply_question") or ""),
+                apply_reference_answer=str(candidate.get("reference_answer") or candidate.get("apply_reference_answer") or ""),
+                generator_client=generator_client,
+                validator_client=validator_client,
+                prefix=f"aqp_{state_key.replace(':', '_')}_{str(candidate.get('qa_id') or f'q{idx+1}')}",
+                max_rewrites=max_rewrites,
+            )
+            candidate["retrieval_query"] = build_rq3_apply_retrieval_query(
+                service_category=str(candidate.get("service_category") or ""),
+                question=str(candidate.get("question") or candidate.get("apply_question") or ""),
+                apply_scenario=str(candidate.get("apply_scenario") or ""),
+            )
+            accepted.append(
                 {
                     "qa_id": str(candidate.get("qa_id") or ""),
                     "service_category": str(candidate.get("service_category") or ""),
                     "question": str(candidate.get("question") or candidate.get("apply_question") or ""),
                     "reference_answer": str(candidate.get("reference_answer") or candidate.get("apply_reference_answer") or ""),
-                    "rubric": [],
+                    "rubric": _derive_apply_rubric_alias(answer_scoring_points),
                     "apply_scenario": str(candidate.get("apply_scenario") or ""),
                     "apply_question": str(candidate.get("question") or candidate.get("apply_question") or ""),
                     "apply_reference_answer": str(candidate.get("reference_answer") or candidate.get("apply_reference_answer") or ""),
-                    "retrieval_query": build_rq3_apply_retrieval_query(
-                        service_category=str(candidate.get("service_category") or ""),
-                        question=str(candidate.get("question") or candidate.get("apply_question") or ""),
-                        apply_scenario=str(candidate.get("apply_scenario") or ""),
-                    ),
-                    "answer_scoring_points": [],
+                    "retrieval_query": str(candidate.get("retrieval_query") or ""),
+                    "answer_scoring_points": answer_scoring_points,
                     "gold_memory_evidence_app_log_ids": list(gold_memory_evidence_app_log_ids),
-                    "qa_validation": {**final_qa_validation, "manual_review_required": True},
-                    "atomic_fact_validation": None,
+                    "qa_validation": {**final_qa_validation, "manual_review_required": False},
+                    "atomic_fact_validation": {**atomic_fact_validation, "manual_review_required": False},
                 }
             )
-            continue
-
-        answer_scoring_points, atomic_fact_validation = build_validated_apply_answer_scoring_points(
-            state_key=state_key,
-            state_value=state_value,
-            service_category=str(candidate.get("service_category") or ""),
-            apply_scenario=str(candidate.get("apply_scenario") or ""),
-            apply_question=str(candidate.get("question") or candidate.get("apply_question") or ""),
-            apply_reference_answer=str(candidate.get("reference_answer") or candidate.get("apply_reference_answer") or ""),
-            generator_client=generator_client,
-            validator_client=validator_client,
-            prefix=f"aqp_{state_key.replace(':', '_')}_{str(candidate.get('qa_id') or f'q{idx+1}')}",
-            max_rewrites=max_rewrites,
-        )
-        candidate["retrieval_query"] = build_rq3_apply_retrieval_query(
-            service_category=str(candidate.get("service_category") or ""),
-            question=str(candidate.get("question") or candidate.get("apply_question") or ""),
-            apply_scenario=str(candidate.get("apply_scenario") or ""),
-        )
-        accepted.append(
-            {
-                "qa_id": str(candidate.get("qa_id") or ""),
-                "service_category": str(candidate.get("service_category") or ""),
-                "question": str(candidate.get("question") or candidate.get("apply_question") or ""),
-                "reference_answer": str(candidate.get("reference_answer") or candidate.get("apply_reference_answer") or ""),
-                "rubric": _derive_apply_rubric_alias(answer_scoring_points),
-                "apply_scenario": str(candidate.get("apply_scenario") or ""),
-                "apply_question": str(candidate.get("question") or candidate.get("apply_question") or ""),
-                "apply_reference_answer": str(candidate.get("reference_answer") or candidate.get("apply_reference_answer") or ""),
-                "retrieval_query": str(candidate.get("retrieval_query") or ""),
-                "answer_scoring_points": answer_scoring_points,
-                "gold_memory_evidence_app_log_ids": list(gold_memory_evidence_app_log_ids),
-                "qa_validation": {**final_qa_validation, "manual_review_required": False},
-                "atomic_fact_validation": {**atomic_fact_validation, "manual_review_required": False},
-            }
-        )
 
     raw_record: Optional[Dict[str, Any]] = None
     if save_raw:
@@ -928,6 +1280,10 @@ def build_apply_service_pack_inplace(
     show_progress: bool = False,
 ) -> Dict[str, Any]:
     _require_validated_benchmark(benchmark)
+    task_contract_version = infer_task_contract_version(benchmark)
+    apply_pack_version = _apply_pack_version(task_contract_version)
+    apply_pack_prompt_version = _apply_pack_prompt_version(task_contract_version)
+    effective_item_count_per_key = 1 if task_contract_is_v2(task_contract_version) else int(item_count_per_key)
     reuse_scope = str(reuse_scope or "key_value_signature").strip().lower()
     if reuse_scope not in {"key", "key_value_signature"}:
         raise ValueError("reuse_scope must be one of: key|key_value_signature")
@@ -963,7 +1319,7 @@ def build_apply_service_pack_inplace(
             cp_accepted_items = 0
             cp_discarded_items = 0
             checkpoint["rq3_apply_service_qa"] = {
-                "version": APPLY_PACK_VERSION,
+                "version": apply_pack_version,
                 "scoring_points_version": SCORING_POINTS_VERSION,
                 "generator": {
                     "provider": provider,
@@ -978,7 +1334,7 @@ def build_apply_service_pack_inplace(
                         "rule_and_llm_validation": True,
                     },
                 },
-                "pair_count_per_key": int(item_count_per_key),
+                "pair_count_per_key": int(effective_item_count_per_key),
                 "reuse_scope": reuse_scope,
                 "state_validate_only": False,
                 "keys": key_payload,
@@ -988,7 +1344,10 @@ def build_apply_service_pack_inplace(
 
             obs_flat = flatten_snapshot(checkpoint.get("state_observability") or {})
             pending_keys: Dict[str, Tuple[Any, str, str, Dict[str, Any], str]] = {}
-            resolved_flat, filtered_keys = _resolve_task_a_candidates_from_flat(validated_flat)
+            resolved_flat, filtered_keys = _resolve_task_a_candidates_from_flat(
+                validated_flat,
+                task_contract_version=task_contract_version,
+            )
             checkpoint["rq3_apply_service_qa"]["filtered_keys"] = filtered_keys
             for state_key in sorted(validated_flat.keys()):
                 if show_progress:
@@ -1011,7 +1370,7 @@ def build_apply_service_pack_inplace(
                 if reuse_scope == "key":
                     cache_key = state_key
                 elif reuse_scope == "key_value_signature":
-                    cache_key = f"{state_key}::{state_sig}::{evidence_sig}::{APPLY_PACK_PROMPT_VERSION}"
+                    cache_key = f"{state_key}::{state_sig}::{evidence_sig}::{apply_pack_prompt_version}"
 
                 cached = reuse_cache.get(cache_key or "")
                 if cache_key is not None and isinstance(cached, dict):
@@ -1044,9 +1403,10 @@ def build_apply_service_pack_inplace(
                         state_key=state_key,
                         state_value=state_value,
                         state_observability=state_obs,
-                        item_count_per_key=item_count_per_key,
+                        item_count_per_key=effective_item_count_per_key,
                         max_rewrites=max_rewrites,
                         save_raw=save_raw,
+                        task_contract_version=task_contract_version,
                     )
                     submitted[future] = (state_key, state_sig, cache_key_value, evidence_sig)
 
@@ -1059,8 +1419,8 @@ def build_apply_service_pack_inplace(
                         "state_key": state_key,
                         "validated_state_value_signature": state_sig,
                         "evidence_signature": evidence_sig,
-                        "prompt_version": APPLY_PACK_PROMPT_VERSION,
-                        "pack_version": APPLY_PACK_VERSION,
+                        "prompt_version": apply_pack_prompt_version,
+                        "pack_version": apply_pack_version,
                     }
                     key_node = {
                         "pack_source": "computed",
@@ -1125,25 +1485,31 @@ def build_task_packs(
     save_every_apply_keys: int = 0,
     save_callback: Optional[Callable[[Dict[str, Any]], None]] = None,
     show_progress: bool = False,
+    task_contract_version: str = CURRENT_TASK_CONTRACT_VERSION,
+    research_frame_version: str = RESEARCH_FRAME_VERSION_V2,
+    canonical_research_doc: str = CANONICAL_RESEARCH_DOC_V2,
 ) -> Dict[str, Any]:
     _require_validated_benchmark(benchmark)
-    requested = {str(task).strip().lower() for task in tasks}
-    aliases = {
-        "a": "state_completion",
-        "b": "change_tracking",
-        "c": "apply",
-        "rq3_apply": "apply",
-        "rq3_apply_service_qa": "apply",
-        "all": "all",
-    }
-    normalized = {aliases.get(task, task) for task in requested if task}
-    if "all" in normalized:
-        normalized = {"state_completion", "change_tracking", "apply"}
+    apply_contract_metadata(
+        benchmark,
+        task_contract_version=task_contract_version,
+        research_frame_version=research_frame_version,
+        canonical_research_doc=canonical_research_doc,
+        overwrite=False,
+    )
+    effective_contract_version = infer_task_contract_version(benchmark)
+    normalized = normalize_stage2_tasks(
+        tasks,
+        task_contract_version=effective_contract_version,
+    )
     if max_checkpoints is not None:
         checkpoints = benchmark.get("checkpoints", [])
         if isinstance(checkpoints, list):
             benchmark["checkpoints"] = checkpoints[: max(0, int(max_checkpoints))]
             benchmark["total_checkpoints"] = len(benchmark["checkpoints"])
+    if task_contract_is_v2(effective_contract_version):
+        for checkpoint in _iter_checkpoint_dicts(benchmark):
+            checkpoint.pop("change_tracking_pack", None)
 
     if show_progress:
         checkpoint_count = len(_iter_checkpoint_dicts(benchmark))

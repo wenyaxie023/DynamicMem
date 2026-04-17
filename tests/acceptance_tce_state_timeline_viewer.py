@@ -114,7 +114,7 @@ class TceStateTimelineViewerAcceptance(unittest.TestCase):
             eval_payload=eval_copy,
             app_logs_payload=self.app_logs,
         )
-        self.assertEqual(payload["meta"]["eval_protocol_version"], "task_c_deterministic_only")
+        self.assertEqual(payload["meta"]["eval_protocol_version"], "legacy_task_c_deterministic_only")
         state_key = "habits_state:industry_news_review"
         cp1 = "cal_quarterly_001"
         item = payload["timeline"][state_key][cp1]["task_c_items"][0]

@@ -13,6 +13,13 @@ if str(ROOT) not in sys.path:
 
 from tce_core.orchestrator_protocol import AnswerExecutionResult, CheckpointHandle, RetrievalResult
 from tce_core.pipeline import normalize_evidence_prediction, run_pipeline
+from tce_contracts import CURRENT_TASK_CONTRACT_VERSION, LEGACY_TASK_CONTRACT_VERSION, RESEARCH_FRAME_VERSION_V2
+
+
+def _with_default_legacy_contract(benchmark):
+    payload = json.loads(json.dumps(benchmark))
+    payload.setdefault("task_contract_version", LEGACY_TASK_CONTRACT_VERSION)
+    return payload
 
 
 def _legacy_inline_pipeline_kwargs(retrieve_context):
@@ -74,6 +81,8 @@ class TcePipelinePackFirstAcceptance(unittest.TestCase):
     def test_unified_pipeline_passes_shared_queryspec_and_inline_memory_blocks_to_hooks(self):
         benchmark = {
             "user_id": "001_user_001",
+            "task_contract_version": CURRENT_TASK_CONTRACT_VERSION,
+            "research_frame_version": RESEARCH_FRAME_VERSION_V2,
             "sampling_strategy": {"stage": "benchmark_build"},
             "checkpoints": [
                 {
@@ -147,7 +156,7 @@ class TcePipelinePackFirstAcceptance(unittest.TestCase):
             benchmark_path = td_path / "benchmark.json"
             app_logs_path = td_path / "app_logs.json"
             output_path = td_path / "prediction.json"
-            benchmark_path.write_text(json.dumps(benchmark, ensure_ascii=False, indent=2), encoding="utf-8")
+            benchmark_path.write_text(json.dumps(_with_default_legacy_contract(benchmark), ensure_ascii=False, indent=2), encoding="utf-8")
             app_logs_path.write_text(json.dumps(app_logs, ensure_ascii=False, indent=2), encoding="utf-8")
 
             result = run_pipeline(
@@ -184,6 +193,8 @@ class TcePipelinePackFirstAcceptance(unittest.TestCase):
             result["predictions"][0]["snapshot_state"]["profile_state:favorite_coffee"],
             "latte",
         )
+        self.assertEqual(result["task_contract_version"], CURRENT_TASK_CONTRACT_VERSION)
+        self.assertEqual(result["research_frame_version"], RESEARCH_FRAME_VERSION_V2)
 
     def test_normalize_evidence_prediction_keeps_empty_app_log_id_when_content_exists(self):
         normalized = normalize_evidence_prediction(
@@ -267,7 +278,7 @@ class TcePipelinePackFirstAcceptance(unittest.TestCase):
             benchmark_path = td_path / "benchmark.json"
             app_logs_path = td_path / "app_logs.json"
             output_path = td_path / "prediction.json"
-            benchmark_path.write_text(json.dumps(benchmark, ensure_ascii=False, indent=2), encoding="utf-8")
+            benchmark_path.write_text(json.dumps(_with_default_legacy_contract(benchmark), ensure_ascii=False, indent=2), encoding="utf-8")
             app_logs_path.write_text(json.dumps(app_logs, ensure_ascii=False, indent=2), encoding="utf-8")
 
             result = run_pipeline(
@@ -396,7 +407,7 @@ class TcePipelinePackFirstAcceptance(unittest.TestCase):
             benchmark_path = td_path / "benchmark.json"
             app_logs_path = td_path / "app_logs.json"
             output_path = td_path / "prediction.json"
-            benchmark_path.write_text(json.dumps(benchmark, ensure_ascii=False, indent=2), encoding="utf-8")
+            benchmark_path.write_text(json.dumps(_with_default_legacy_contract(benchmark), ensure_ascii=False, indent=2), encoding="utf-8")
             app_logs_path.write_text(json.dumps(app_logs, ensure_ascii=False, indent=2), encoding="utf-8")
 
             result = run_pipeline(
@@ -427,8 +438,9 @@ class TcePipelinePackFirstAcceptance(unittest.TestCase):
             "Service scenario:\nThe team can fund exactly one option.\n\nQuestion:\nWhich candidate action should the assistant recommend?",
         )
         rq3_records = prediction["metadata"]["rq3_apply"]["records"]
-        self.assertIn("Service scenario:", rq3_records[0]["prompt"])
-        self.assertIn("Question:", rq3_records[0]["prompt"])
+        self.assertNotIn("Service scenario:", rq3_records[0]["prompt"])
+        self.assertNotIn("Question:", rq3_records[0]["prompt"])
+        self.assertIn("Which candidate action should the assistant recommend?", rq3_records[0]["prompt"])
         self.assertEqual(
             prediction["rq3_apply_answers"]["preferences_state:learning_modality"]["items"][0]["evidence"][0]["evidence_content"],
             "prefers self-paced webinars",
@@ -452,7 +464,7 @@ class TcePipelinePackFirstAcceptance(unittest.TestCase):
             benchmark_path = td_path / "benchmark.json"
             app_logs_path = td_path / "app_logs.json"
             output_path = td_path / "prediction.json"
-            benchmark_path.write_text(json.dumps(benchmark, ensure_ascii=False, indent=2), encoding="utf-8")
+            benchmark_path.write_text(json.dumps(_with_default_legacy_contract(benchmark), ensure_ascii=False, indent=2), encoding="utf-8")
             app_logs_path.write_text(json.dumps(app_logs, ensure_ascii=False, indent=2), encoding="utf-8")
             with self.assertRaisesRegex(ValueError, "Task A requires state_completion_pack"):
                 run_pipeline(
@@ -506,7 +518,7 @@ class TcePipelinePackFirstAcceptance(unittest.TestCase):
             benchmark_path = td_path / "benchmark.json"
             app_logs_path = td_path / "app_logs.json"
             output_path = td_path / "prediction.json"
-            benchmark_path.write_text(json.dumps(benchmark, ensure_ascii=False, indent=2), encoding="utf-8")
+            benchmark_path.write_text(json.dumps(_with_default_legacy_contract(benchmark), ensure_ascii=False, indent=2), encoding="utf-8")
             app_logs_path.write_text(json.dumps(app_logs, ensure_ascii=False, indent=2), encoding="utf-8")
             with self.assertRaisesRegex(ValueError, "Task A requires a non-empty prebuilt retrieval_query"):
                 run_pipeline(
@@ -560,7 +572,7 @@ class TcePipelinePackFirstAcceptance(unittest.TestCase):
             benchmark_path = td_path / "benchmark.json"
             app_logs_path = td_path / "app_logs.json"
             output_path = td_path / "prediction.json"
-            benchmark_path.write_text(json.dumps(benchmark, ensure_ascii=False, indent=2), encoding="utf-8")
+            benchmark_path.write_text(json.dumps(_with_default_legacy_contract(benchmark), ensure_ascii=False, indent=2), encoding="utf-8")
             app_logs_path.write_text(json.dumps(app_logs, ensure_ascii=False, indent=2), encoding="utf-8")
             with self.assertRaisesRegex(ValueError, "Task B requires change_tracking_pack"):
                 run_pipeline(
@@ -584,6 +596,72 @@ class TcePipelinePackFirstAcceptance(unittest.TestCase):
                     enable_change_reasoning=True,
                     enable_rq3_apply_service_qa=False,
                 )
+
+    def test_pipeline_skips_task_b_for_v2_when_change_reasoning_is_requested(self):
+        benchmark = {
+            "user_id": "001_user_001",
+            "task_contract_version": CURRENT_TASK_CONTRACT_VERSION,
+            "research_frame_version": RESEARCH_FRAME_VERSION_V2,
+            "checkpoints": [
+                {
+                    "checkpoint_id": "cp1",
+                    "as_of": {"timestamp": "2025-01-01 08:00:00", "log_index": 0},
+                    "validated_snapshot_state": {"habits_state": {"morning_walk": {"timing": {"start_time": "06:30"}}}},
+                    "state_completion_pack": {
+                        "version": "v1",
+                        "keys": {
+                            "habits_state:morning_walk": {
+                                "item_id": "scp1",
+                                "question_text": "Infer morning walk state.",
+                                "answer_template": {"timing": {"start_time": "<fill the blank>"}},
+                                "retrieval_query": "Infer morning walk state.",
+                            }
+                        },
+                    },
+                }
+            ],
+        }
+        app_logs = [{"app_log_id": "log_0001", "timestamp": "2025-01-01 07:00:00"}]
+
+        with tempfile.TemporaryDirectory() as td:
+            td_path = Path(td)
+            benchmark_path = td_path / "benchmark.json"
+            app_logs_path = td_path / "app_logs.json"
+            output_path = td_path / "prediction.json"
+            benchmark_path.write_text(json.dumps(_with_default_legacy_contract(benchmark), ensure_ascii=False, indent=2), encoding="utf-8")
+            app_logs_path.write_text(json.dumps(app_logs, ensure_ascii=False, indent=2), encoding="utf-8")
+            result = run_pipeline(
+                benchmark_path=benchmark_path,
+                app_logs_path=app_logs_path,
+                output_path=output_path,
+                max_visible_logs=None,
+                ask_json=lambda prompt: {"snapshot_state": {}, "evidence": {}},
+                ask_structured=None,
+                use_structured_response=False,
+                close=lambda: None,
+                **_legacy_inline_pipeline_kwargs(_mock_retrieve_context),
+                baseline_name="rag",
+                memory_prompt_mode="inline_memory",
+                resume=False,
+                max_checkpoints=1,
+                debug=False,
+                debug_dir=None,
+                save_prompt_and_raw=False,
+                predict_per_key=True,
+                enable_change_reasoning=True,
+                enable_rq3_apply_service_qa=False,
+            )
+
+        prediction = result["predictions"][0]
+        self.assertNotIn("change_analysis", prediction)
+        self.assertEqual(
+            prediction["metadata"]["change_reasoning"],
+            {
+                "enabled": False,
+                "requested": True,
+                "skipped_by_task_contract": CURRENT_TASK_CONTRACT_VERSION,
+            },
+        )
 
     def test_pipeline_rejects_blank_change_tracking_retrieval_query(self):
         benchmark = {
@@ -627,7 +705,7 @@ class TcePipelinePackFirstAcceptance(unittest.TestCase):
             benchmark_path = td_path / "benchmark.json"
             app_logs_path = td_path / "app_logs.json"
             output_path = td_path / "prediction.json"
-            benchmark_path.write_text(json.dumps(benchmark, ensure_ascii=False, indent=2), encoding="utf-8")
+            benchmark_path.write_text(json.dumps(_with_default_legacy_contract(benchmark), ensure_ascii=False, indent=2), encoding="utf-8")
             app_logs_path.write_text(json.dumps(app_logs, ensure_ascii=False, indent=2), encoding="utf-8")
             with self.assertRaisesRegex(ValueError, "Task B requires a non-empty prebuilt retrieval_query"):
                 run_pipeline(
@@ -683,7 +761,7 @@ class TcePipelinePackFirstAcceptance(unittest.TestCase):
             benchmark_path = td_path / "benchmark.json"
             app_logs_path = td_path / "app_logs.json"
             output_path = td_path / "prediction.json"
-            benchmark_path.write_text(json.dumps(benchmark, ensure_ascii=False, indent=2), encoding="utf-8")
+            benchmark_path.write_text(json.dumps(_with_default_legacy_contract(benchmark), ensure_ascii=False, indent=2), encoding="utf-8")
             app_logs_path.write_text(json.dumps(app_logs, ensure_ascii=False, indent=2), encoding="utf-8")
             result = run_pipeline(
                 benchmark_path=benchmark_path,
@@ -710,6 +788,225 @@ class TcePipelinePackFirstAcceptance(unittest.TestCase):
         prediction = result["predictions"][0]
         self.assertEqual(prediction["rq3_apply_answers"], {})
         self.assertEqual(prediction["metadata"]["rq3_apply"], {"enabled": True})
+
+    def test_pipeline_runs_task_c_v2_structured_service_completion(self):
+        benchmark = {
+            "user_id": "001_user_001",
+            "task_contract_version": CURRENT_TASK_CONTRACT_VERSION,
+            "research_frame_version": RESEARCH_FRAME_VERSION_V2,
+            "checkpoints": [
+                {
+                    "checkpoint_id": "cp1",
+                    "as_of": {"timestamp": "2025-01-01 08:00:00", "log_index": 0},
+                    "validated_snapshot_state": {
+                        "preferences_state": {"learning_modality": {"statement": "prefers self-paced webinars"}}
+                    },
+                    "state_completion_pack": {
+                        "version": "v1",
+                        "keys": {
+                            "preferences_state:learning_modality": {
+                                "item_id": "scp1",
+                                "question_text": "Infer learning modality.",
+                                "answer_template": {"statement": "<fill the blank>"},
+                                "retrieval_query": "Infer learning modality.",
+                            }
+                        },
+                    },
+                    "rq3_apply_service_qa": {
+                        "version": "v9",
+                        "keys": {
+                            "preferences_state:learning_modality": {
+                                "items": [
+                                    {
+                                        "qa_id": "q1",
+                                        "service_family": "information_request_construction",
+                                        "scenario": "The assistant is preparing the structured information-request object before a training-resource search.",
+                                        "task_instruction": "Fill the structured information-request payload.",
+                                        "output_template": {"request_profile": {"preferred_profile": "<fill>"}},
+                                        "reference_output": {"request_profile": {"preferred_profile": "prefers self-paced webinars"}},
+                                        "retrieval_query": "Service family:\ninformation_request_construction\n\nScenario:\nThe assistant is preparing the structured information-request object before a training-resource search.\n\nTask instruction:\nFill the structured information-request payload.\n\nRequired output fields:\n{\n  \"request_profile\": {\n    \"preferred_profile\": \"<fill>\"\n  }\n}",
+                                    }
+                                ]
+                            }
+                        },
+                    },
+                }
+            ],
+        }
+        app_logs = [{"app_log_id": "log_0001", "timestamp": "2025-01-01 07:00:00"}]
+        seen_task_text = {"value": None}
+
+        def ask_json(prompt: str):
+            if '"snapshot_state"' in prompt:
+                return {
+                    "snapshot_state": {"preferences_state:learning_modality": {"statement": "prefers self-paced webinars"}},
+                    "evidence": {
+                        "preferences_state:learning_modality": [
+                            {"app_log_id": "log_0001", "evidence_content": "prefers self-paced webinars"}
+                        ]
+                    },
+                }
+            return {
+                "output": {"request_profile": {"preferred_profile": "prefers self-paced webinars"}},
+                "evidence": [{"app_log_id": "log_0001", "evidence_content": "prefers self-paced webinars"}],
+            }
+
+        def retrieve_context(checkpoint, memory_pool, target_keys, task_text=None, retrieval_top_k_override=None):
+            seen_task_text["value"] = task_text
+            return {
+                "context_logs": memory_pool,
+                "retrieval_query": task_text,
+                "metadata": {"target_keys_seen": list(target_keys)},
+            }
+
+        with tempfile.TemporaryDirectory() as td:
+            td_path = Path(td)
+            benchmark_path = td_path / "benchmark.json"
+            app_logs_path = td_path / "app_logs.json"
+            output_path = td_path / "prediction.json"
+            benchmark_path.write_text(json.dumps(_with_default_legacy_contract(benchmark), ensure_ascii=False, indent=2), encoding="utf-8")
+            app_logs_path.write_text(json.dumps(app_logs, ensure_ascii=False, indent=2), encoding="utf-8")
+            result = run_pipeline(
+                benchmark_path=benchmark_path,
+                app_logs_path=app_logs_path,
+                output_path=output_path,
+                max_visible_logs=None,
+                ask_json=ask_json,
+                ask_structured=None,
+                use_structured_response=False,
+                close=lambda: None,
+                **_legacy_inline_pipeline_kwargs(retrieve_context),
+                baseline_name="rag",
+                memory_prompt_mode="inline_memory",
+                resume=False,
+                max_checkpoints=1,
+                debug=False,
+                debug_dir=None,
+                save_prompt_and_raw=True,
+                predict_per_key=True,
+                enable_change_reasoning=False,
+                enable_rq3_apply_service_qa=True,
+            )
+
+        prediction = result["predictions"][0]
+        self.assertIn("Service family:", seen_task_text["value"])
+        item = prediction["rq3_apply_answers"]["preferences_state:learning_modality"]["items"][0]
+        self.assertEqual(item["service_family"], "information_request_construction")
+        self.assertEqual(item["output"], {"request_profile": {"preferred_profile": "prefers self-paced webinars"}})
+        self.assertEqual(
+            item["evidence"],
+            [{"app_log_id": "log_0001", "evidence_content": "prefers self-paced webinars"}],
+        )
+        self.assertNotIn("answer", item)
+
+    def test_pipeline_runs_task_c_v2_user_communication_with_natural_language_answer(self):
+        benchmark = {
+            "user_id": "001_user_001",
+            "task_contract_version": CURRENT_TASK_CONTRACT_VERSION,
+            "research_frame_version": RESEARCH_FRAME_VERSION_V2,
+            "checkpoints": [
+                {
+                    "checkpoint_id": "cp1",
+                    "as_of": {"timestamp": "2025-01-01 08:00:00", "log_index": 0},
+                    "validated_snapshot_state": {
+                        "habits_state": {"morning_walk": {"timing": {"start_time": "06:30"}}}
+                    },
+                    "state_completion_pack": {
+                        "version": "v1",
+                        "keys": {
+                            "habits_state:morning_walk": {
+                                "item_id": "scp1",
+                                "question_text": "Infer morning walk.",
+                                "answer_template": {"timing": {"start_time": "<fill the blank>"}},
+                                "retrieval_query": "Infer morning walk.",
+                            }
+                        },
+                    },
+                    "rq3_apply_service_qa": {
+                        "version": "v9",
+                        "keys": {
+                            "habits_state:morning_walk": {
+                                "items": [
+                                    {
+                                        "qa_id": "q1",
+                                        "service_family": "user_communication",
+                                        "scenario": "It is 06:10. Nothing has been logged yet today.",
+                                        "task_instruction": "Write the short reminder message the assistant should send right now.",
+                                        "reference_answer": "Send a reminder that the walk starts at 06:30.",
+                                        "retrieval_query": "Service family:\nuser_communication\n\nScenario:\nIt is 06:10. Nothing has been logged yet today.\n\nTask instruction:\nWrite the short reminder message the assistant should send right now.",
+                                    }
+                                ]
+                            }
+                        },
+                    },
+                }
+            ],
+        }
+        app_logs = [{"app_log_id": "log_0001", "timestamp": "2025-01-01 07:00:00"}]
+        seen_task_text = {"value": None}
+
+        def ask_json(prompt: str):
+            if '"snapshot_state"' in prompt:
+                return {
+                    "snapshot_state": {"habits_state:morning_walk": {"timing": {"start_time": "06:30"}}},
+                    "evidence": {
+                        "habits_state:morning_walk": [
+                            {"app_log_id": "log_0001", "evidence_content": "walk starts at 06:30"}
+                        ]
+                    },
+                }
+            return {
+                "answer": "Send a reminder that the walk starts at 06:30.",
+                "evidence": [{"app_log_id": "log_0001", "evidence_content": "walk starts at 06:30"}],
+            }
+
+        def retrieve_context(checkpoint, memory_pool, target_keys, task_text=None, retrieval_top_k_override=None):
+            seen_task_text["value"] = task_text
+            return {
+                "context_logs": memory_pool,
+                "retrieval_query": task_text,
+                "metadata": {"target_keys_seen": list(target_keys)},
+            }
+
+        with tempfile.TemporaryDirectory() as td:
+            td_path = Path(td)
+            benchmark_path = td_path / "benchmark.json"
+            app_logs_path = td_path / "app_logs.json"
+            output_path = td_path / "prediction.json"
+            benchmark_path.write_text(json.dumps(_with_default_legacy_contract(benchmark), ensure_ascii=False, indent=2), encoding="utf-8")
+            app_logs_path.write_text(json.dumps(app_logs, ensure_ascii=False, indent=2), encoding="utf-8")
+            result = run_pipeline(
+                benchmark_path=benchmark_path,
+                app_logs_path=app_logs_path,
+                output_path=output_path,
+                max_visible_logs=None,
+                ask_json=ask_json,
+                ask_structured=None,
+                use_structured_response=False,
+                close=lambda: None,
+                **_legacy_inline_pipeline_kwargs(retrieve_context),
+                baseline_name="rag",
+                memory_prompt_mode="inline_memory",
+                resume=False,
+                max_checkpoints=1,
+                debug=False,
+                debug_dir=None,
+                save_prompt_and_raw=True,
+                predict_per_key=True,
+                enable_change_reasoning=False,
+                enable_rq3_apply_service_qa=True,
+            )
+
+        prediction = result["predictions"][0]
+        self.assertIn("Service family:", seen_task_text["value"])
+        item = prediction["rq3_apply_answers"]["habits_state:morning_walk"]["items"][0]
+        self.assertEqual(item["service_family"], "user_communication")
+        self.assertEqual(item["answer"], "Send a reminder that the walk starts at 06:30.")
+        self.assertEqual(
+            item["evidence"],
+            [{"app_log_id": "log_0001", "evidence_content": "walk starts at 06:30"}],
+        )
+        self.assertNotIn("output", item)
 
     def test_pipeline_rejects_blank_apply_retrieval_query(self):
         benchmark = {
@@ -758,7 +1055,7 @@ class TcePipelinePackFirstAcceptance(unittest.TestCase):
             benchmark_path = td_path / "benchmark.json"
             app_logs_path = td_path / "app_logs.json"
             output_path = td_path / "prediction.json"
-            benchmark_path.write_text(json.dumps(benchmark, ensure_ascii=False, indent=2), encoding="utf-8")
+            benchmark_path.write_text(json.dumps(_with_default_legacy_contract(benchmark), ensure_ascii=False, indent=2), encoding="utf-8")
             app_logs_path.write_text(json.dumps(app_logs, ensure_ascii=False, indent=2), encoding="utf-8")
             with self.assertRaisesRegex(ValueError, "Task C requires a non-empty prebuilt retrieval_query"):
                 run_pipeline(
@@ -816,7 +1113,7 @@ class TcePipelinePackFirstAcceptance(unittest.TestCase):
             benchmark_path = td_path / "benchmark.json"
             app_logs_path = td_path / "app_logs.json"
             output_path = td_path / "prediction.json"
-            benchmark_path.write_text(json.dumps(benchmark, ensure_ascii=False, indent=2), encoding="utf-8")
+            benchmark_path.write_text(json.dumps(_with_default_legacy_contract(benchmark), ensure_ascii=False, indent=2), encoding="utf-8")
             app_logs_path.write_text(json.dumps(app_logs, ensure_ascii=False, indent=2), encoding="utf-8")
 
             with self.assertRaisesRegex(ValueError, "per-key Task A state-completion"):
@@ -887,7 +1184,7 @@ class TcePipelinePackFirstAcceptance(unittest.TestCase):
             benchmark_path = td_path / "benchmark.json"
             app_logs_path = td_path / "app_logs.json"
             output_path = td_path / "prediction.json"
-            benchmark_path.write_text(json.dumps(benchmark, ensure_ascii=False, indent=2), encoding="utf-8")
+            benchmark_path.write_text(json.dumps(_with_default_legacy_contract(benchmark), ensure_ascii=False, indent=2), encoding="utf-8")
             app_logs_path.write_text(json.dumps(app_logs, ensure_ascii=False, indent=2), encoding="utf-8")
 
             def ask_json(prompt: str):
@@ -973,7 +1270,7 @@ class TcePipelinePackFirstAcceptance(unittest.TestCase):
             benchmark_path = td_path / "benchmark.json"
             app_logs_path = td_path / "app_logs.json"
             output_path = td_path / "prediction.json"
-            benchmark_path.write_text(json.dumps(benchmark, ensure_ascii=False, indent=2), encoding="utf-8")
+            benchmark_path.write_text(json.dumps(_with_default_legacy_contract(benchmark), ensure_ascii=False, indent=2), encoding="utf-8")
             app_logs_path.write_text(json.dumps(app_logs, ensure_ascii=False, indent=2), encoding="utf-8")
             output_path.write_text(
                 json.dumps(
@@ -1091,7 +1388,7 @@ class TcePipelinePackFirstAcceptance(unittest.TestCase):
             benchmark_path = td_path / "benchmark.json"
             app_logs_path = td_path / "app_logs.json"
             output_path = td_path / "prediction.json"
-            benchmark_path.write_text(json.dumps(benchmark, ensure_ascii=False, indent=2), encoding="utf-8")
+            benchmark_path.write_text(json.dumps(_with_default_legacy_contract(benchmark), ensure_ascii=False, indent=2), encoding="utf-8")
             app_logs_path.write_text(json.dumps(app_logs, ensure_ascii=False, indent=2), encoding="utf-8")
             start = time.perf_counter()
             run_pipeline(
@@ -1176,7 +1473,7 @@ class TcePipelinePackFirstAcceptance(unittest.TestCase):
             benchmark_path = td_path / "benchmark.json"
             app_logs_path = td_path / "app_logs.json"
             output_path = td_path / "prediction.json"
-            benchmark_path.write_text(json.dumps(benchmark, ensure_ascii=False, indent=2), encoding="utf-8")
+            benchmark_path.write_text(json.dumps(_with_default_legacy_contract(benchmark), ensure_ascii=False, indent=2), encoding="utf-8")
             app_logs_path.write_text(json.dumps(app_logs, ensure_ascii=False, indent=2), encoding="utf-8")
             start = time.perf_counter()
             result = run_pipeline(
@@ -1239,7 +1536,7 @@ class TcePipelinePackFirstAcceptance(unittest.TestCase):
             benchmark_path = td_path / "benchmark.json"
             app_logs_path = td_path / "app_logs.json"
             output_path = td_path / "prediction.json"
-            benchmark_path.write_text(json.dumps(benchmark, ensure_ascii=False, indent=2), encoding="utf-8")
+            benchmark_path.write_text(json.dumps(_with_default_legacy_contract(benchmark), ensure_ascii=False, indent=2), encoding="utf-8")
             app_logs_path.write_text(json.dumps(app_logs, ensure_ascii=False, indent=2), encoding="utf-8")
             result = run_pipeline(
                 benchmark_path=benchmark_path,
@@ -1273,7 +1570,8 @@ class TcePipelinePackFirstAcceptance(unittest.TestCase):
         self.assertEqual(md["concurrency_policy"]["within_checkpoint_parallelism"], "forbidden")
         self.assertEqual(md["effective_checkpoint_workers"], 1)
         self.assertEqual(md["effective_within_checkpoint_workers"], 1)
-        self.assertIn("[Agent memory]", result["predictions"][0]["metadata"]["prompt"][0])
+        self.assertIn("[Memory]", result["predictions"][0]["metadata"]["prompt"][0])
+        self.assertIn("Use your memory about the user", result["predictions"][0]["metadata"]["prompt"][0])
         self.assertNotIn("[User memory]\n{'app_log_id':", result["predictions"][0]["metadata"]["prompt"][0])
 
 

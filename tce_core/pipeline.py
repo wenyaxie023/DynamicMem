@@ -35,10 +35,20 @@ from .prompts import (
     build_service_application_prompt_with_inline_memory,
     build_state_completion_prompt_with_agent_memory,
     build_state_completion_prompt_with_inline_memory,
+    build_structured_service_completion_prompt_with_agent_memory,
+    build_structured_service_completion_prompt_with_inline_memory,
+    build_task_c_v2_user_communication_prompt_with_agent_memory,
+    build_task_c_v2_user_communication_prompt_with_inline_memory,
 )
 from .task_packs import (
     build_change_targets_from_pack,
     build_state_completion_targets_from_pack,
+)
+from tce_contracts import (
+    infer_task_contract_version,
+    normalized_contract_metadata,
+    task_contract_is_v2,
+    task_contract_supports_change_tracking,
 )
 from .task_spec import (
     build_prediction_task_from_checkpoint,
@@ -291,7 +301,12 @@ def _select_change_reasoning_prompt_builder(memory_prompt_mode: str):
     raise ValueError("Unsupported memory_prompt_mode: {}".format(memory_prompt_mode))
 
 
-def _select_service_application_prompt_builder(memory_prompt_mode: str):
+def _select_service_application_prompt_builder(memory_prompt_mode: str, *, structured_v2: bool = False):
+    if structured_v2:
+        if memory_prompt_mode == "inline_memory":
+            return build_structured_service_completion_prompt_with_inline_memory
+        if memory_prompt_mode == "agent_memory":
+            return build_structured_service_completion_prompt_with_agent_memory
     if memory_prompt_mode == "inline_memory":
         return build_service_application_prompt_with_inline_memory
     if memory_prompt_mode == "agent_memory":
@@ -344,7 +359,35 @@ def _build_apply_prompt_from_queryspec(
     query_spec: QuerySpec,
     retrieval_result: RetrievalResult,
 ) -> str:
-    prompt_builder = _select_service_application_prompt_builder(memory_prompt_mode)
+    structured_v2 = bool((query_spec.task_payload or {}).get("structured_task_c_v2"))
+    service_family = str((query_spec.task_payload or {}).get("service_family") or "")
+    if structured_v2 and service_family == "user_communication":
+        prompt_builder = (
+            build_task_c_v2_user_communication_prompt_with_inline_memory
+            if memory_prompt_mode == "inline_memory"
+            else build_task_c_v2_user_communication_prompt_with_agent_memory
+        )
+        return prompt_builder(
+            scenario=str((query_spec.task_payload or {}).get("scenario") or ""),
+            task_instruction=str((query_spec.task_payload or {}).get("task_instruction") or ""),
+            context_logs=None,
+            log_to_text=to_log_text,
+            inline_memory_blocks=list(retrieval_result.inline_memory_blocks),
+        )
+    prompt_builder = _select_service_application_prompt_builder(
+        memory_prompt_mode,
+        structured_v2=structured_v2,
+    )
+    if structured_v2:
+        return prompt_builder(
+            service_family=str((query_spec.task_payload or {}).get("service_family") or ""),
+            scenario=str((query_spec.task_payload or {}).get("scenario") or ""),
+            task_instruction=str((query_spec.task_payload or {}).get("task_instruction") or ""),
+            output_template=(query_spec.task_payload or {}).get("output_template"),
+            context_logs=None,
+            log_to_text=to_log_text,
+            inline_memory_blocks=list(retrieval_result.inline_memory_blocks),
+        )
     return prompt_builder(
         question_text=query_spec.answer_query_text,
         context_logs=None,
@@ -395,6 +438,8 @@ def normalize_evidence_prediction(raw_evidence: Any, target_keys: List[str]) -> 
 def _extract_rq3_apply_pack_for_checkpoint(
     checkpoint: Dict[str, Any],
     target_keys: List[str],
+    *,
+    task_contract_version: str,
 ) -> Dict[str, List[Dict[str, str]]]:
     if "rq3_know_apply" in checkpoint:
         raise ValueError("Legacy field rq3_know_apply is no longer supported. Use rq3_apply_service_qa.")
@@ -418,36 +463,77 @@ def _extract_rq3_apply_pack_for_checkpoint(
             if not isinstance(item, dict):
                 continue
             qa_id = str(item.get("qa_id") or f"q{idx+1}")
-            service_category = str(item.get("service_category") or "").strip()
-            apply_scenario = str(item.get("apply_scenario") or "").strip()
-            apply_q = str(item.get("question") or item.get("apply_question") or "").strip()
-            apply_a = str(item.get("reference_answer") or item.get("apply_reference_answer") or "").strip()
-            if not apply_q:
-                continue
-            normalized.append(
-                {
-                    "qa_id": qa_id,
-                    "service_category": service_category,
-                    "apply_scenario": apply_scenario,
-                    "apply_question": apply_q,
-                    "retrieval_query": str(item.get("retrieval_query") or "").strip(),
-                    "apply_reference_answer": apply_a,
-                }
-            )
+            if task_contract_is_v2(task_contract_version):
+                service_family = str(item.get("service_family") or "").strip()
+                scenario = str(item.get("scenario") or "").strip()
+                task_instruction = str(item.get("task_instruction") or "").strip()
+                output_template = item.get("output_template")
+                reference_output = item.get("reference_output")
+                if not scenario or not task_instruction:
+                    continue
+                normalized.append(
+                    {
+                        "qa_id": qa_id,
+                        "service_family": service_family,
+                        "scenario": scenario,
+                        "task_instruction": task_instruction,
+                        "output_template": output_template,
+                        "reference_output": reference_output,
+                        "retrieval_query": str(item.get("retrieval_query") or "").strip(),
+                    }
+                )
+            else:
+                service_category = str(item.get("service_category") or "").strip()
+                apply_scenario = str(item.get("apply_scenario") or "").strip()
+                apply_q = str(item.get("question") or item.get("apply_question") or "").strip()
+                apply_a = str(item.get("reference_answer") or item.get("apply_reference_answer") or "").strip()
+                if not apply_q:
+                    continue
+                normalized.append(
+                    {
+                        "qa_id": qa_id,
+                        "service_category": service_category,
+                        "apply_scenario": apply_scenario,
+                        "apply_question": apply_q,
+                        "retrieval_query": str(item.get("retrieval_query") or "").strip(),
+                        "apply_reference_answer": apply_a,
+                    }
+                )
         if normalized:
             out[key] = normalized[:1]
     return out
 
 
-def _normalize_rq3_apply_answer_output(raw_out: Any) -> Dict[str, Any]:
+def _normalize_rq3_apply_answer_output(
+    raw_out: Any,
+    *,
+    task_contract_version: str,
+    service_family: str = "",
+) -> Dict[str, Any]:
     if not isinstance(raw_out, dict):
-        return {"answer": "", "evidence": []}
+        return {"output": None, "answer": "", "evidence": []}
+    if task_contract_is_v2(task_contract_version):
+        if str(service_family or "").strip() == "user_communication":
+            answer = raw_out.get("answer")
+            if answer is None:
+                answer = raw_out.get("final_answer", "")
+            return {
+                "output": None,
+                "answer": str(answer or "").strip(),
+                "evidence": normalize_evidence_prediction({"_": raw_out.get("evidence")}, ["_"]).get("_", []),
+            }
+        output = raw_out.get("output")
+        return {
+            "output": output,
+            "answer": "",
+            "evidence": normalize_evidence_prediction({"_": raw_out.get("evidence")}, ["_"]).get("_", []),
+        }
     answer = raw_out.get("answer")
     if answer is None:
         answer = raw_out.get("final_answer", "")
     text = str(answer or "").strip()
     evidence_records = normalize_evidence_prediction({"_": raw_out.get("evidence")}, ["_"]).get("_", [])
-    return {"answer": text, "evidence": evidence_records}
+    return {"output": None, "answer": text, "evidence": evidence_records}
 
 
 def build_generation_text_format(
@@ -710,6 +796,8 @@ def run_pipeline(
     final_qa_save_prompt_and_raw: bool = False,
 ) -> Dict[str, Any]:
     benchmark = json.loads(benchmark_path.read_text(encoding="utf-8"))
+    benchmark_contract_version = infer_task_contract_version(benchmark)
+    task_b_supported_by_contract = task_contract_supports_change_tracking(benchmark_contract_version)
     app_logs = normalize_app_logs(json.loads(app_logs_path.read_text(encoding="utf-8")))
     raw_checkpoints = benchmark.get("checkpoints", [])
     checkpoints = [cp for cp in raw_checkpoints if isinstance(cp, dict)]
@@ -873,11 +961,14 @@ def run_pipeline(
         ]
 
     def _save_predictions_snapshot() -> None:
+        payload = {
+            "user_id": benchmark.get("user_id"),
+            "benchmark_path": str(benchmark_path),
+            "predictions": _ordered_predictions(),
+        }
+        payload.update(normalized_contract_metadata(benchmark))
         output_path.parent.mkdir(parents=True, exist_ok=True)
-        output_path.write_text(
-            json.dumps({"predictions": _ordered_predictions()}, ensure_ascii=False, indent=2),
-            encoding="utf-8",
-        )
+        output_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
 
     def _persist_checkpoint_item(item: Dict[str, Any]) -> None:
         cid = str(item.get("checkpoint_id") or "")
@@ -1021,6 +1112,7 @@ def run_pipeline(
                     single_error_messages: List[str] = []
                     single_raw_out: Any = {}
                     single_prompt = ""
+                    answer_result = AnswerExecutionResult(raw_output={}, prompt="", debug_metadata={})
                     retrieval_result = RetrievalResult(mode="", inline_memory_blocks=[], debug_metadata={})
                     try:
                         retrieval_result = ensure_retrieval_result(
@@ -1052,6 +1144,7 @@ def run_pipeline(
                         single_snapshot = {key: drop_excluded_fields(single_snapshot.get(key))}
                     single_evidence = normalize_evidence_prediction(single_out.get("evidence"), single_keys)
                     retrieval_meta = dict(retrieval_result.debug_metadata or {})
+                    retrieval_meta.update(dict((answer_result.debug_metadata or {}).get("retrieval_metadata") or {}))
                     retrieval_meta.setdefault("checkpoint_state_kind", checkpoint_handle.state_kind)
                     retrieval_meta.setdefault("retrieval_query", query_spec.retrieval_query_text)
                     return {
@@ -1105,7 +1198,7 @@ def run_pipeline(
                             item["metadata"]["raw_model_output"] = {"mode": "per_key", "records": ordered_records}
                         _maybe_persist()
 
-            if enable_change_reasoning:
+            if enable_change_reasoning and task_b_supported_by_contract:
                 change_pack_used = False
                 prebuilt_change_records: Dict[str, Any] = {}
                 pack_change_info = build_change_targets_from_pack(cp)
@@ -1162,11 +1255,13 @@ def run_pipeline(
                             change_raw = answer_result.raw_output
                             parsed_single = normalize_change_reasoning_output(change_raw, single_keys)
                         except Exception as exc:
+                            answer_result = AnswerExecutionResult(raw_output={}, prompt="", debug_metadata={})
                             change_raw = {"_error": f"change_reasoning_failed: {exc}"}
                             parsed_single = {
                                 key: {"before": None, "after": None, "change_reason": "", "evidence": []}
                             }
                         retrieval_meta = dict(retrieval_result.debug_metadata or {})
+                        retrieval_meta.update(dict((answer_result.debug_metadata or {}).get("retrieval_metadata") or {}))
                         retrieval_meta.setdefault("checkpoint_state_kind", checkpoint_handle.state_kind)
                         retrieval_meta.setdefault("retrieval_query", query_spec.retrieval_query_text)
                         return {
@@ -1210,11 +1305,18 @@ def run_pipeline(
                         "changed_keys_groundtruth": changed_keys,
                         "previous_cutoff_ts": prev_cutoff_ts,
                     }
+            elif enable_change_reasoning:
+                item["metadata"]["change_reasoning"] = {
+                    "enabled": False,
+                    "requested": True,
+                    "skipped_by_task_contract": benchmark_contract_version,
+                }
 
             if enable_rq3_apply_service_qa:
                 rq3_pack = _extract_rq3_apply_pack_for_checkpoint(
                     cp,
                     target_keys=target_keys,
+                    task_contract_version=benchmark_contract_version,
                 )
                 if not rq3_pack:
                     item["rq3_apply_answers"] = {}
@@ -1231,9 +1333,12 @@ def run_pipeline(
                         raw_records: List[Dict[str, Any]] = []
                         for qa_item in rq3_pack.get(key, []):
                             qa_id = str(qa_item.get("qa_id") or "")
+                            service_family = str(qa_item.get("service_family") or "")
+                            structured_task_c_v2 = task_contract_is_v2(benchmark_contract_version)
                             service_category = str(qa_item.get("service_category") or "")
-                            apply_scenario = str(qa_item.get("apply_scenario") or "")
-                            apply_q = str(qa_item.get("apply_question") or "")
+                            apply_scenario = str(qa_item.get("apply_scenario") or qa_item.get("scenario") or "")
+                            apply_q = str(qa_item.get("apply_question") or qa_item.get("task_instruction") or "")
+                            output_template = qa_item.get("output_template")
                             apply_retrieval_query = _require_nonempty_pack_query(
                                 task_name="Task C",
                                 checkpoint_id=cid,
@@ -1251,6 +1356,11 @@ def run_pipeline(
                                 task_payload={
                                     "service_category": service_category,
                                     "apply_scenario": apply_scenario,
+                                    "service_family": service_family,
+                                    "scenario": apply_scenario,
+                                    "task_instruction": apply_q,
+                                    "output_template": output_template,
+                                    "structured_task_c_v2": structured_task_c_v2,
                                 },
                             )
                             retrieval_result = RetrievalResult(mode="", inline_memory_blocks=[], debug_metadata={})
@@ -1278,17 +1388,29 @@ def run_pipeline(
                                 apply_prompt = answer_result.prompt
                                 apply_raw = answer_result.raw_output
                             except Exception as exc:
+                                answer_result = AnswerExecutionResult(raw_output={}, prompt="", debug_metadata={})
                                 apply_raw = {"_error": f"rq3_apply_failed: {exc}"}
-                            apply_norm = _normalize_rq3_apply_answer_output(apply_raw)
-                            item_answers.append(
-                                {
-                                    "qa_id": qa_id,
-                                    "service_category": service_category,
-                                    "answer": apply_norm.get("answer", ""),
-                                    "evidence": apply_norm.get("evidence", []),
-                                }
+                            apply_norm = _normalize_rq3_apply_answer_output(
+                                apply_raw,
+                                task_contract_version=benchmark_contract_version,
+                                service_family=service_family,
                             )
+                            answer_payload = {
+                                "qa_id": qa_id,
+                                "evidence": apply_norm.get("evidence", []),
+                            }
+                            if structured_task_c_v2 and service_family != "user_communication":
+                                answer_payload["service_family"] = service_family
+                                answer_payload["output"] = apply_norm.get("output")
+                            elif structured_task_c_v2:
+                                answer_payload["service_family"] = service_family
+                                answer_payload["answer"] = apply_norm.get("answer", "")
+                            else:
+                                answer_payload["service_category"] = service_category
+                                answer_payload["answer"] = apply_norm.get("answer", "")
+                            item_answers.append(answer_payload)
                             retrieval_meta = dict(retrieval_result.debug_metadata or {})
+                            retrieval_meta.update(dict((answer_result.debug_metadata or {}).get("retrieval_metadata") or {}))
                             retrieval_meta.setdefault("checkpoint_state_kind", checkpoint_handle.state_kind)
                             retrieval_meta.setdefault("retrieval_query", query_spec.retrieval_query_text)
                             raw_records.append(
@@ -1297,6 +1419,8 @@ def run_pipeline(
                                     "qa_id": qa_id,
                                     "scenario": apply_scenario,
                                     "question": apply_q,
+                                    "service_family": service_family,
+                                    "output_template": output_template,
                                     "retrieval_query": apply_retrieval_query,
                                     "prompt": apply_prompt,
                                     "retrieval_metadata": retrieval_meta,
@@ -1467,6 +1591,7 @@ def run_pipeline(
                         retrieval_meta.setdefault("retrieval_query", query_spec.retrieval_query_text)
                         t1 = datetime.now().timestamp()
                         raw = None
+                        answer_result = AnswerExecutionResult(raw_output={}, prompt="", debug_metadata={})
                         try:
                             answer_result = ensure_answer_execution_result(
                                 answer_query(final_checkpoint_handle, query_spec, retrieval_result)
@@ -1478,6 +1603,7 @@ def run_pipeline(
                             parsed = {"answer": "", "evidence": []}
                             parse_error = "LLM request failed: {}".format(exc)
                             prompt = ""
+                        retrieval_meta.update(dict((answer_result.debug_metadata or {}).get("retrieval_metadata") or {}))
                         t2 = datetime.now().timestamp()
 
                         result_item = {
@@ -1522,11 +1648,16 @@ def run_pipeline(
             else:
                 final_qa_summary = {"enabled": True, "qa_count": 0, "reason": "no_checkpoints"}
 
-        persisted_result = {"predictions": _ordered_predictions()}
+        persisted_result = {
+            "user_id": benchmark.get("user_id"),
+            "benchmark_path": str(benchmark_path),
+            "predictions": _ordered_predictions(),
+        }
+        persisted_result.update(normalized_contract_metadata(benchmark))
         output_path.parent.mkdir(parents=True, exist_ok=True)
         output_path.write_text(json.dumps(persisted_result, ensure_ascii=False, indent=2), encoding="utf-8")
 
-        result = {"predictions": persisted_result["predictions"]}
+        result = dict(persisted_result)
         if final_qa_summary is not None:
             result["final_qa"] = final_qa_summary
         return result

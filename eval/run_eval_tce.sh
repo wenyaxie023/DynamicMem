@@ -3,6 +3,7 @@ set -euo pipefail
 
 PYTHON_BIN="${PYTHON_BIN:-python3}"
 PROJECT_ROOT="/users/4/xie00470/mem_bench/dynamicmem"
+BENCHMARK_ROOT="${BENCHMARK_ROOT:-$PROJECT_ROOT/data_construction/generated_outputs/gemini_3_flash_preview}"
 BASELINE="${BASELINE:-rag}"
 USER_DIR="${USER_DIR:-001_user_001}"
 EXPERIMENT_NAME="${EXPERIMENT_NAME:-}"
@@ -25,24 +26,80 @@ else
   PREDICTION_DIR="$RESULT_ROOT/prediction"
   EVAL_DIR="$RESULT_ROOT/eval"
 fi
+BENCHMARK_DIR="$BENCHMARK_ROOT/$USER_DIR"
+
+resolve_latest_named_file() {
+  local dir="$1"
+  local pattern="$2"
+  find "$dir" -maxdepth 1 -type f -name "$pattern" \
+    ! -name '*final_qa*' \
+    ! -name '*run_settings*' \
+    -print 2>/dev/null | LC_ALL=C sort | tail -n 1
+}
+
+resolve_existing_file() {
+  local candidate
+  for candidate in "$@"; do
+    if [[ -n "$candidate" && -f "$candidate" ]]; then
+      printf '%s\n' "$candidate"
+      return 0
+    fi
+  done
+  return 1
+}
 
 if [[ -n "${BENCHMARK_PATH:-}" ]]; then
   benchmark_path="$BENCHMARK_PATH"
 else
-  benchmark_path="$PREDICTION_DIR/tce_subset_checkpoint.json"
+  benchmark_path="$(resolve_latest_named_file "$BENCHMARK_DIR" 'tce_benchmark_vnext_*task_packs*.json' || true)"
+  if [[ -z "$benchmark_path" ]]; then
+    benchmark_path="$(resolve_latest_named_file "$BENCHMARK_DIR" 'tce_benchmark*task_packs*.json' || true)"
+  fi
+  if [[ -z "$benchmark_path" ]]; then
+    benchmark_path="$(resolve_existing_file "$BENCHMARK_DIR/tce_benchmark.json" || true)"
+  fi
 fi
 
-prediction_file="tce_results.json"
-output_file="tce_eval_llm_judge.json"
-if [[ -n "$TOPK" ]]; then
-  prediction_file="tce_results_topk${TOPK}.json"
-  output_file="tce_eval_llm_judge_topk${TOPK}.json"
+if [[ -n "${PREDICTION_PATH:-}" ]]; then
+  prediction_path="$PREDICTION_PATH"
+else
+  prediction_path=""
+  if [[ -n "$TOPK" ]]; then
+    prediction_path="$(resolve_latest_named_file "$PREDICTION_DIR" "tce_results*topk${TOPK}*.json" || true)"
+  fi
+  if [[ -z "$prediction_path" ]]; then
+    prediction_path="$(resolve_latest_named_file "$PREDICTION_DIR" 'tce_results_v14_taskabc*.json' || true)"
+  fi
+  if [[ -z "$prediction_path" ]]; then
+    prediction_path="$(resolve_latest_named_file "$PREDICTION_DIR" 'tce_results*taskabc*.json' || true)"
+  fi
+  if [[ -z "$prediction_path" ]]; then
+    prediction_path="$(resolve_latest_named_file "$PREDICTION_DIR" 'tce_results*.json' || true)"
+  fi
 fi
 
-prediction_path="$PREDICTION_DIR/$prediction_file"
-output_path="$EVAL_DIR/$output_file"
+if [[ -n "${OUTPUT_PATH:-}" ]]; then
+  output_path="$OUTPUT_PATH"
+else
+  prediction_file="$(basename "${prediction_path:-tce_results.json}")"
+  output_file="${prediction_file/tce_results/tce_eval}"
+  if [[ "$output_file" == "$prediction_file" ]]; then
+    output_file="tce_eval.json"
+  fi
+  output_path="$EVAL_DIR/$output_file"
+fi
 
-mkdir -p "$EVAL_DIR"
+if [[ ! -f "${benchmark_path:-}" ]]; then
+  echo "[TCE-EVAL] benchmark not found under $BENCHMARK_DIR" >&2
+  exit 1
+fi
+
+if [[ ! -f "${prediction_path:-}" ]]; then
+  echo "[TCE-EVAL] prediction not found under $PREDICTION_DIR" >&2
+  exit 1
+fi
+
+mkdir -p "$(dirname "$output_path")"
 cd "$PROJECT_ROOT"
 
 cmd=(

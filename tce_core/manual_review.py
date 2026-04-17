@@ -1,7 +1,5 @@
 """Manual review sampling helpers for TCE Stage1/Stage2 audits."""
 
-from __future__ import annotations
-
 import copy
 import csv
 import json

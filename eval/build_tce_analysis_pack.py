@@ -22,7 +22,13 @@ except Exception:  # pragma: no cover
     mcolors = None  # type: ignore[assignment]
 
 from bench_core.tce_evaluator import align_predictions_to_benchmark
-from tce_core.evaluation import flatten_observability, normalize_predictions
+from tce_core.evaluation import flatten_observability, flatten_snapshot, normalize_predictions
+from tce_contracts import (
+    infer_task_contract_version,
+    normalized_contract_metadata,
+    normalize_task_a_current_value,
+    task_contract_is_v2,
+)
 
 
 def _load_json(path: Path) -> Dict[str, Any]:
@@ -314,6 +320,67 @@ def _build_task_a_units(
     return rows
 
 
+def _build_task_a_transition_units(
+    previous_benchmark_cp: Mapping[str, Any],
+    benchmark_cp: Mapping[str, Any],
+    eval_cp: Mapping[str, Any],
+    cp_meta: Mapping[str, Any],
+    *,
+    task_contract_version: str,
+) -> List[Dict[str, Any]]:
+    slot_eval = eval_cp.get("snapshot_slot_eval_by_key") or {}
+    previous_flat = {
+        state_key: value
+        for state_key, raw_value in flatten_snapshot(
+            previous_benchmark_cp.get("validated_snapshot_state")
+            or previous_benchmark_cp.get("expected_snapshot_state")
+            or {}
+        ).items()
+        if (
+            value := normalize_task_a_current_value(
+                raw_value,
+                task_contract_version=task_contract_version,
+            )
+        )
+        is not None
+    }
+    current_flat = {
+        state_key: value
+        for state_key, raw_value in flatten_snapshot(
+            benchmark_cp.get("validated_snapshot_state")
+            or benchmark_cp.get("expected_snapshot_state")
+            or {}
+        ).items()
+        if (
+            value := normalize_task_a_current_value(
+                raw_value,
+                task_contract_version=task_contract_version,
+            )
+        )
+        is not None
+    }
+    rows: List[Dict[str, Any]] = []
+    for state_key in sorted(set(previous_flat.keys()) & set(current_flat.keys()) & set(slot_eval.keys())):
+        payload = slot_eval.get(state_key) or {}
+        slot_count = payload.get("slot_count")
+        rows.append(
+            {
+                "checkpoint_id": cp_meta["checkpoint_id"],
+                "checkpoint_order": cp_meta["checkpoint_order"],
+                "anchor_timestamp": cp_meta["anchor_timestamp"],
+                "actual_tokens_at_cutoff": cp_meta["actual_tokens_at_cutoff"],
+                "total_tokens": cp_meta["total_tokens"],
+                "token_exposure_ratio": cp_meta["token_exposure_ratio"],
+                "previous_checkpoint_id": str(previous_benchmark_cp.get("checkpoint_id") or ""),
+                "state_key": state_key,
+                "change_status": "changed" if previous_flat[state_key] != current_flat[state_key] else "unchanged",
+                "score": payload.get("score_0_1"),
+                "slot_count": slot_count,
+            }
+        )
+    return rows
+
+
 def _build_task_b_units(
     benchmark_cp: Mapping[str, Any],
     prediction_cp: Mapping[str, Any],
@@ -436,6 +503,44 @@ def _build_rq3_overlap_rows(task_a_units: Sequence[Dict[str, Any]], task_c_units
     return rows
 
 
+def _build_rq2_transition_summary_rows(
+    transition_units: Sequence[Dict[str, Any]],
+    *,
+    checkpoint_rows: Sequence[Dict[str, Any]],
+) -> List[Dict[str, Any]]:
+    by_checkpoint: Dict[str, Dict[str, List[float]]] = defaultdict(lambda: defaultdict(list))
+    by_count: Dict[str, Dict[str, int]] = defaultdict(lambda: defaultdict(int))
+    for row in transition_units:
+        checkpoint_id = str(row.get("checkpoint_id") or "")
+        status = str(row.get("change_status") or "")
+        score = row.get("score")
+        if checkpoint_id and status:
+            by_count[checkpoint_id][status] += 1
+        if checkpoint_id and status and score is not None and math.isfinite(float(score)):
+            by_checkpoint[checkpoint_id][status].append(float(score))
+
+    out: List[Dict[str, Any]] = []
+    for checkpoint_row in checkpoint_rows:
+        checkpoint_id = str(checkpoint_row.get("checkpoint_id") or "")
+        changed_mean = _mean(by_checkpoint.get(checkpoint_id, {}).get("changed", []))
+        unchanged_mean = _mean(by_checkpoint.get(checkpoint_id, {}).get("unchanged", []))
+        out.append(
+            {
+                "checkpoint_id": checkpoint_id,
+                "rq2_changed_state_count": by_count.get(checkpoint_id, {}).get("changed", 0),
+                "rq2_unchanged_state_count": by_count.get(checkpoint_id, {}).get("unchanged", 0),
+                "rq2_changed_task_a_score": changed_mean,
+                "rq2_unchanged_task_a_score": unchanged_mean,
+                "rq2_update_gap": (
+                    changed_mean - unchanged_mean
+                    if changed_mean is not None and unchanged_mean is not None
+                    else None
+                ),
+            }
+        )
+    return out
+
+
 def _build_state_summary_rows(
     rows: Sequence[Dict[str, Any]],
     *,
@@ -553,6 +658,7 @@ def _build_correlation_rows(
     task_b_units: Sequence[Dict[str, Any]],
     task_c_units: Sequence[Dict[str, Any]],
     *,
+    include_task_b: bool = True,
     high_evidence: float = 0.5,
     low_evidence: float = 0.1,
     high_score: float = 0.8,
@@ -588,12 +694,14 @@ def _build_correlation_rows(
             "low_evidence_high_score_count": low_ev_high_score,
         }
 
-    return [
+    rows = [
         build_rows("task_a", "score", task_a_units, "score"),
-        build_rows("task_b", "state_predict", task_b_units, "state_predict_score"),
-        build_rows("task_b", "change_reason", task_b_units, "change_reason_score"),
         build_rows("task_c", "score", task_c_units, "score"),
     ]
+    if include_task_b:
+        rows.insert(1, build_rows("task_b", "state_predict", task_b_units, "state_predict_score"))
+        rows.insert(2, build_rows("task_b", "change_reason", task_b_units, "change_reason_score"))
+    return rows
 
 
 def _build_heatmap_rows(
@@ -645,6 +753,13 @@ def _plot_task_lines(
         return
     xs = list(range(len(rows)))
     x_labels = _checkpoint_tick_labels(rows)
+    finite_values = [
+        float(value)
+        for row in rows
+        for field, _label, _color in y_fields
+        for value in [row.get(field)]
+        if value is not None and math.isfinite(float(value))
+    ]
 
     fig, ax = plt.subplots(figsize=(10, 5))
     for field, label, color in y_fields:
@@ -655,7 +770,16 @@ def _plot_task_lines(
     ax.set_xlabel("checkpoint")
     ax.set_xticks(xs)
     ax.set_xticklabels(x_labels)
-    ax.set_ylim(0.0, 1.0)
+    if finite_values:
+        ymin = min(finite_values)
+        ymax = max(finite_values)
+        if ymin >= 0.0 and ymax <= 1.0:
+            ax.set_ylim(0.0, 1.0)
+        else:
+            padding = max(0.05, (ymax - ymin) * 0.2 if ymax > ymin else 0.1)
+            ax.set_ylim(ymin - padding, ymax + padding)
+    else:
+        ax.set_ylim(0.0, 1.0)
     ax.grid(alpha=0.3)
     ax.legend()
     fig.tight_layout()
@@ -889,10 +1013,85 @@ def _write_markdown_summary(
     path: Path,
     *,
     artifact_paths: Mapping[str, str],
+    benchmark_payload: Mapping[str, Any],
     checkpoint_rows: Sequence[Dict[str, Any]],
     rq3_rows: Sequence[Dict[str, Any]],
     correlation_rows: Sequence[Dict[str, Any]],
 ) -> None:
+    contract_metadata = normalized_contract_metadata(benchmark_payload)
+    if task_contract_is_v2(contract_metadata.get("task_contract_version")):
+        a_trend = _classify_trend([row.get("task_a_point_score") for row in checkpoint_rows])
+        rq2_changed_trend = _classify_trend([row.get("rq2_changed_task_a_score") for row in checkpoint_rows])
+        rq2_gap_trend = _classify_trend([row.get("rq2_update_gap") for row in checkpoint_rows])
+        c_trend = _classify_trend([row.get("task_c_answer_score") for row in checkpoint_rows])
+        rq3_gap_trend = _classify_trend([row.get("apply_minus_know_mean") for row in rq3_rows])
+
+        corr_map = {(row["task"], row["score_variant"]): row for row in correlation_rows}
+        task_a_corr = corr_map.get(("task_a", "score"), {})
+        task_c_corr = corr_map.get(("task_c", "score"), {})
+        bullets = [
+            f"- `Task A` across checkpoints is `{a_trend}`; start={_format_number(checkpoint_rows[0].get('task_a_point_score'))}, end={_format_number(checkpoint_rows[-1].get('task_a_point_score'))}.",
+            f"- `RQ2 changed-state Task A` is `{rq2_changed_trend}` across checkpoint transitions.",
+            f"- `RQ2 changed-minus-unchanged gap` is `{rq2_gap_trend}` across checkpoint transitions.",
+            f"- `Task C` across checkpoints is `{c_trend}`; start={_format_number(checkpoint_rows[0].get('task_c_answer_score'))}, end={_format_number(checkpoint_rows[-1].get('task_c_answer_score'))}.",
+            f"- `Task C - Task A utility gap` is `{rq3_gap_trend}` over overlap states.",
+            f"- `Task A` evidence-vs-score Pearson={_format_number(task_a_corr.get('pearson_score_vs_evidence_f1'), 3)}.",
+            f"- `Task C` evidence-vs-score Pearson={_format_number(task_c_corr.get('pearson_score_vs_evidence_f1'), 3)}.",
+        ]
+        content = f"""# Milestone1 TCE Analysis Summary
+
+## Artifacts
+- benchmark: `{artifact_paths['benchmark']}`
+- prediction: `{artifact_paths['prediction']}`
+- eval: `{artifact_paths['eval']}`
+- analysis output: `{artifact_paths['output_dir']}`
+
+## Contract Metadata
+- task contract: `{contract_metadata.get('task_contract_version', '')}`
+- research frame: `{contract_metadata.get('research_frame_version', '')}`
+- canonical research doc: `{contract_metadata.get('canonical_research_doc', '')}`
+
+## Checkpoint Exposure Table
+{_markdown_table(
+    checkpoint_rows,
+    [
+        ('checkpoint_id', 'checkpoint'),
+        ('anchor_timestamp', 'anchor timestamp'),
+        ('actual_tokens_at_cutoff', 'tokens'),
+        ('task_a_point_score', 'Task A'),
+        ('rq2_changed_task_a_score', 'RQ2 changed'),
+        ('rq2_unchanged_task_a_score', 'RQ2 unchanged'),
+        ('rq2_update_gap', 'RQ2 gap'),
+        ('task_c_answer_score', 'Task C'),
+        ('rq3_mean_gap', 'RQ3 gap'),
+    ],
+)}
+
+## Top-line Bullets
+{chr(10).join(bullets)}
+
+## RQ1
+Under active `taskabc_v2`, `RQ1` is anchored on `Task A` explicit state reconstruction. Using checkpoint as the primary x-axis, the current milestone result should be read as exposure-conditioned fluctuation unless a monotonic trend is clearly visible.
+
+## RQ2
+Under active `taskabc_v2`, `RQ2` is not a standalone Task B. It is derived from `Task A` by splitting adjacent-checkpoint overlap states into `changed` and `unchanged` slices. The primary summary numbers are `RQ2 changed`, `RQ2 unchanged`, and their gap. Newly appeared and disappeared states are intentionally excluded from this slice.
+
+## RQ3
+Under `taskabc_v2`, `RQ3` is personalization utility. The `Task C - Task A` gap is computed only on overlap states that have both `Task A` and `Task C` scores in the same checkpoint. Positive values mean personalized service utility is easier than explicit state reconstruction on the same underlying states. In this milestone run, the gap should be interpreted as a diagnostic relative-difficulty gap, not as proof that Task C is already a clean causal utility measure.
+
+## Evidence vs Score
+The evidence-vs-score consistency is task-dependent. `Task A` is compared against recomputed state-level evidence F1, while `Task C` is judged at `(state_key, qa_id)` item level. The correlation table and scatter plots should be used together: moderate or weak correlation does not automatically imply a bug, but the outlier counts highlight cases where the answer score and evidence grounding diverge.
+
+## Cautions
+- This is a single-user (`001_user_001`) milestone analysis.
+- `Task C` evidence specificity is known future work; current evidence F1 is still based on the present protocol.
+- These plots and tables describe one frozen artifact family at a time.
+- Under `taskabc_v2`, omitted Task B CSV/PNG artifacts are intentional rather than missing outputs.
+"""
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(content, encoding="utf-8")
+        return
+
     a_trend = _classify_trend([row.get("task_a_point_score") for row in checkpoint_rows])
     b_reason_trend = _classify_trend([row.get("task_b_reason_score") for row in checkpoint_rows])
     c_trend = _classify_trend([row.get("task_c_answer_score") for row in checkpoint_rows])
@@ -907,7 +1106,7 @@ def _write_markdown_summary(
         f"- `Task A` across checkpoints is `{a_trend}`; start={_format_number(checkpoint_rows[0].get('task_a_point_score'))}, end={_format_number(checkpoint_rows[-1].get('task_a_point_score'))}.",
         f"- `Task C` across checkpoints is `{c_trend}`; start={_format_number(checkpoint_rows[0].get('task_c_answer_score'))}, end={_format_number(checkpoint_rows[-1].get('task_c_answer_score'))}.",
         f"- `Task B change_reason` is `{b_reason_trend}` over the changed checkpoints.",
-        f"- `RQ3 apply-know gap` is `{rq3_gap_trend}` over overlap states.",
+        f"- `Task C - Task A utility gap` is `{rq3_gap_trend}` over overlap states.",
         f"- `Task A` evidence-vs-score Pearson={_format_number(task_a_corr.get('pearson_score_vs_evidence_f1'), 3)}.",
         f"- `Task B reason` evidence-vs-score Pearson={_format_number(task_b_reason_corr.get('pearson_score_vs_evidence_f1'), 3)}.",
         f"- `Task C` evidence-vs-score Pearson={_format_number(task_c_corr.get('pearson_score_vs_evidence_f1'), 3)}.",
@@ -920,6 +1119,11 @@ def _write_markdown_summary(
 - prediction: `{artifact_paths['prediction']}`
 - eval: `{artifact_paths['eval']}`
 - analysis output: `{artifact_paths['output_dir']}`
+
+## Contract Metadata
+- task contract: `{contract_metadata.get('task_contract_version', '')}`
+- research frame: `{contract_metadata.get('research_frame_version', '')}`
+- canonical research doc: `{contract_metadata.get('canonical_research_doc', '')}`
 
 ## Checkpoint Exposure Table
 {_markdown_table(
@@ -940,13 +1144,13 @@ def _write_markdown_summary(
 {chr(10).join(bullets)}
 
 ## RQ1
-Using checkpoint as the primary x-axis, the current milestone1 result does not show a clean monotonic accuracy drop. `Task A` is non-monotonic across the five checkpoints, `Task C` also fluctuates rather than steadily degrading, and later checkpoints can recover relative to mid-sequence dips. This means the current single-user result is better described as exposure-conditioned fluctuation than as a simple “more exposure -> lower accuracy” story.
+For this artifact family, `RQ1` is anchored on `Task A` explicit state reconstruction. Using checkpoint as the primary x-axis, the current milestone1 result does not show a clean monotonic accuracy drop. `Task A` is non-monotonic across the five checkpoints, which means the current single-user result is better described as exposure-conditioned fluctuation than as a simple “more exposure -> lower accuracy” story.
 
 ## RQ2
-For attribution ability, the primary metric is `Task B change_reason`. The score changes substantially across checkpoints and is not monotonic, which suggests the harder part is not only reconstructing changed state but also explaining why the change happened. The paired state-predict and change-evidence F1 columns should be read as diagnostics for whether low attribution is accompanied by weaker state reconstruction or weaker evidence grounding.
+For legacy `taskabc_v1` artifacts, `RQ2` is approximated with standalone `Task B` state updating. The primary metric is `Task B state`; `Task B change_reason` should be read as a diagnostic sub-signal rather than the headline benchmark object. The paired state-predict and change-evidence F1 columns are most useful for separating state-updating failure from explanation quality.
 
 ## RQ3
-For know-vs-apply, the gap is computed only on overlap states that have both `Task A` and `Task C` scores in the same checkpoint. Positive values mean application is easier than state reconstruction on the same underlying states. In this milestone1 run, the gap should be interpreted as a relative difficulty gap, not as proof that apply quality is intrinsically strong, because Task C evidence specificity remains future work.
+Under the current research frame, `RQ3` is personalization utility. The `Task C - Task A` gap is computed only on overlap states that have both `Task A` and `Task C` scores in the same checkpoint. Positive values mean personalized service utility is easier than explicit state reconstruction on the same underlying states. In this milestone1 run, the gap should be interpreted as a diagnostic relative-difficulty gap, not as proof that Task C is already a clean causal utility measure.
 
 ## Evidence vs Score
 The evidence-vs-score consistency is task-dependent. `Task A` and `Task B` can be compared against their own recomputed unit-level evidence F1, while `Task C` is judged at `(state_key, qa_id)` item level. The correlation table and scatter plots should be used together: moderate or weak correlation does not automatically imply a bug, but the outlier counts highlight cases where the answer score and evidence grounding diverge.
@@ -955,6 +1159,7 @@ The evidence-vs-score consistency is task-dependent. `Task A` and `Task B` can b
 - This is a single-user (`001_user_001`) milestone1 analysis.
 - `Task C` evidence specificity is known future work; current evidence F1 is still based on the present protocol.
 - These plots and tables describe the frozen `v14/top20/slotjudge` artifact family only.
+- Several CSV/PNG filenames in this analysis pack retain legacy `rq1/rq2/rq3` prefixes for backward compatibility; interpret them using the section titles above.
 """
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(content, encoding="utf-8")
@@ -975,11 +1180,15 @@ def build_analysis_pack(
         for item in eval_payload.get("checkpoints", [])
         if isinstance(item, Mapping) and item.get("checkpoint_id")
     }
+    task_contract_version = infer_task_contract_version(benchmark_payload)
+    is_v2 = task_contract_is_v2(task_contract_version)
 
     checkpoint_rows: List[Dict[str, Any]] = []
     task_a_units: List[Dict[str, Any]] = []
     task_b_units: List[Dict[str, Any]] = []
     task_c_units: List[Dict[str, Any]] = []
+    rq2_transition_units: List[Dict[str, Any]] = []
+    previous_benchmark_cp: Optional[Mapping[str, Any]] = None
 
     for order_index, benchmark_cp in enumerate(benchmark_payload.get("checkpoints", []), start=1):
         if not isinstance(benchmark_cp, Mapping):
@@ -990,8 +1199,21 @@ def build_analysis_pack(
         cp_meta = _build_checkpoint_meta(benchmark_cp, order_index)
 
         task_a_unit_rows = _build_task_a_units(benchmark_cp, prediction_cp, eval_cp, cp_meta)
-        task_b_unit_rows = _build_task_b_units(benchmark_cp, prediction_cp, eval_cp, cp_meta)
         task_c_unit_rows = _build_task_c_units(benchmark_cp, prediction_cp, eval_cp, cp_meta)
+        task_b_unit_rows: List[Dict[str, Any]] = []
+        if is_v2:
+            if previous_benchmark_cp is not None:
+                rq2_transition_units.extend(
+                    _build_task_a_transition_units(
+                        previous_benchmark_cp,
+                        benchmark_cp,
+                        eval_cp,
+                        cp_meta,
+                        task_contract_version=task_contract_version,
+                    )
+                )
+        else:
+            task_b_unit_rows = _build_task_b_units(benchmark_cp, prediction_cp, eval_cp, cp_meta)
 
         task_a_units.extend(task_a_unit_rows)
         task_b_units.extend(task_b_unit_rows)
@@ -1002,16 +1224,26 @@ def build_analysis_pack(
                 **cp_meta,
                 "task_a_point_score": eval_cp.get("snapshot_point_score_mean_on_expected"),
                 "task_a_evidence_f1": eval_cp.get("snapshot_evidence_f1_mean_on_expected"),
-                "task_b_state_score": eval_cp.get("change_state_predict_point_score_mean_on_changed"),
-                "task_b_reason_score": eval_cp.get("change_reason_point_score_mean_on_changed"),
-                "task_b_evidence_f1": eval_cp.get("change_evidence_f1_mean_on_changed"),
+                "task_b_state_score": (
+                    None if is_v2 else eval_cp.get("change_state_predict_point_score_mean_on_changed")
+                ),
+                "task_b_reason_score": (
+                    None if is_v2 else eval_cp.get("change_reason_point_score_mean_on_changed")
+                ),
+                "task_b_evidence_f1": None if is_v2 else eval_cp.get("change_evidence_f1_mean_on_changed"),
                 "task_c_answer_score": eval_cp.get("rq3_apply_answer_point_score_mean"),
                 "task_c_evidence_f1": eval_cp.get("rq3_apply_evidence_f1"),
                 "task_a_key_count": len(eval_cp.get("snapshot_slot_eval_by_key") or {}),
-                "task_b_changed_key_count": len(eval_cp.get("change_slot_eval_by_key") or {}),
+                "task_b_changed_key_count": 0 if is_v2 else len(eval_cp.get("change_slot_eval_by_key") or {}),
                 "task_c_item_count": len(eval_cp.get("rq3_apply_slot_eval_by_item") or {}),
+                "rq2_changed_state_count": 0,
+                "rq2_unchanged_state_count": 0,
+                "rq2_changed_task_a_score": None,
+                "rq2_unchanged_task_a_score": None,
+                "rq2_update_gap": None,
             }
         )
+        previous_benchmark_cp = benchmark_cp
 
     rq3_rows = _build_rq3_overlap_rows(task_a_units, task_c_units)
     rq3_by_checkpoint = {row["checkpoint_id"]: row for row in rq3_rows}
@@ -1021,8 +1253,28 @@ def build_analysis_pack(
         row["rq3_task_a_overlap_score_mean"] = rq3.get("task_a_overlap_score_mean")
         row["rq3_task_c_overlap_score_mean"] = rq3.get("task_c_overlap_score_mean")
         row["rq3_mean_gap"] = rq3.get("apply_minus_know_mean")
+    if is_v2:
+        rq2_by_checkpoint = {
+            row["checkpoint_id"]: row
+            for row in _build_rq2_transition_summary_rows(
+                rq2_transition_units,
+                checkpoint_rows=checkpoint_rows,
+            )
+        }
+        for row in checkpoint_rows:
+            rq2 = rq2_by_checkpoint.get(row["checkpoint_id"], {})
+            row["rq2_changed_state_count"] = rq2.get("rq2_changed_state_count", 0)
+            row["rq2_unchanged_state_count"] = rq2.get("rq2_unchanged_state_count", 0)
+            row["rq2_changed_task_a_score"] = rq2.get("rq2_changed_task_a_score")
+            row["rq2_unchanged_task_a_score"] = rq2.get("rq2_unchanged_task_a_score")
+            row["rq2_update_gap"] = rq2.get("rq2_update_gap")
 
-    correlation_rows = _build_correlation_rows(task_a_units, task_b_units, task_c_units)
+    correlation_rows = _build_correlation_rows(
+        task_a_units,
+        task_b_units,
+        task_c_units,
+        include_task_b=not is_v2,
+    )
 
     output_dir.mkdir(parents=True, exist_ok=True)
     _write_csv(
@@ -1045,6 +1297,11 @@ def build_analysis_pack(
             "task_a_key_count",
             "task_b_changed_key_count",
             "task_c_item_count",
+            "rq2_changed_state_count",
+            "rq2_unchanged_state_count",
+            "rq2_changed_task_a_score",
+            "rq2_unchanged_task_a_score",
+            "rq2_update_gap",
             "rq3_overlap_state_count",
             "rq3_mean_gap",
         ],
@@ -1059,22 +1316,54 @@ def build_analysis_pack(
             "token_exposure_ratio",
             "task_a_point_score",
             "task_b_state_score",
+            "rq2_changed_task_a_score",
+            "rq2_unchanged_task_a_score",
+            "rq2_update_gap",
             "task_c_answer_score",
         ],
     )
-    _write_csv(
-        output_dir / "rq2_taskb_attribution_by_checkpoint.csv",
-        checkpoint_rows,
-        [
-            "checkpoint_id",
-            "anchor_timestamp",
-            "actual_tokens_at_cutoff",
-            "task_b_changed_key_count",
-            "task_b_state_score",
-            "task_b_reason_score",
-            "task_b_evidence_f1",
-        ],
-    )
+    if is_v2:
+        _write_csv(
+            output_dir / "rq2_taska_changed_vs_unchanged_by_checkpoint.csv",
+            checkpoint_rows,
+            [
+                "checkpoint_id",
+                "anchor_timestamp",
+                "actual_tokens_at_cutoff",
+                "rq2_changed_state_count",
+                "rq2_unchanged_state_count",
+                "rq2_changed_task_a_score",
+                "rq2_unchanged_task_a_score",
+                "rq2_update_gap",
+            ],
+        )
+        _write_csv(
+            output_dir / "rq2_transition_units.csv",
+            rq2_transition_units,
+            [
+                "checkpoint_id",
+                "previous_checkpoint_id",
+                "checkpoint_order",
+                "state_key",
+                "change_status",
+                "score",
+                "slot_count",
+            ],
+        )
+    else:
+        _write_csv(
+            output_dir / "rq2_taskb_attribution_by_checkpoint.csv",
+            checkpoint_rows,
+            [
+                "checkpoint_id",
+                "anchor_timestamp",
+                "actual_tokens_at_cutoff",
+                "task_b_changed_key_count",
+                "task_b_state_score",
+                "task_b_reason_score",
+                "task_b_evidence_f1",
+            ],
+        )
     _write_csv(
         output_dir / "rq3_know_apply_gap_by_checkpoint.csv",
         rq3_rows,
@@ -1117,28 +1406,29 @@ def build_analysis_pack(
             "evidence_f1",
         ],
     )
-    _write_csv(
-        output_dir / "task_b_units.csv",
-        task_b_units,
-        [
-            "checkpoint_id",
-            "checkpoint_order",
-            "anchor_timestamp",
-            "actual_tokens_at_cutoff",
-            "total_tokens",
-            "token_exposure_ratio",
-            "state_key",
-            "state_predict_score",
-            "change_reason_score",
-            "state_predict_slot_count",
-            "change_reason_slot_count",
-            "before_slot_count",
-            "after_slot_count",
-            "evidence_precision",
-            "evidence_recall",
-            "evidence_f1",
-        ],
-    )
+    if not is_v2:
+        _write_csv(
+            output_dir / "task_b_units.csv",
+            task_b_units,
+            [
+                "checkpoint_id",
+                "checkpoint_order",
+                "anchor_timestamp",
+                "actual_tokens_at_cutoff",
+                "total_tokens",
+                "token_exposure_ratio",
+                "state_key",
+                "state_predict_score",
+                "change_reason_score",
+                "state_predict_slot_count",
+                "change_reason_slot_count",
+                "before_slot_count",
+                "after_slot_count",
+                "evidence_precision",
+                "evidence_recall",
+                "evidence_f1",
+            ],
+        )
     _write_csv(
         output_dir / "task_c_units.csv",
         task_c_units,
@@ -1185,17 +1475,25 @@ def build_analysis_pack(
         rank_field_name="variability_score",
         top_n=20,
     )
-    task_b_state_rank_rows = _build_state_summary_rows(
-        task_b_units,
-        score_field="state_predict_score",
-        rank_field_name="variability_score",
-        top_n=20,
+    task_b_state_rank_rows = (
+        _build_state_summary_rows(
+            task_b_units,
+            score_field="state_predict_score",
+            rank_field_name="variability_score",
+            top_n=20,
+        )
+        if not is_v2
+        else []
     )
-    task_b_reason_rank_rows = _build_state_summary_rows(
-        task_b_units,
-        score_field="change_reason_score",
-        rank_field_name="variability_score",
-        top_n=20,
+    task_b_reason_rank_rows = (
+        _build_state_summary_rows(
+            task_b_units,
+            score_field="change_reason_score",
+            rank_field_name="variability_score",
+            top_n=20,
+        )
+        if not is_v2
+        else []
     )
     task_c_rank_rows = _build_state_summary_rows(
         task_c_state_rows,
@@ -1213,22 +1511,30 @@ def build_analysis_pack(
         score_field="score",
         order_mode="variance_desc",
     )
-    task_b_state_heatmap_rows = _build_heatmap_rows(
-        task_b_units,
-        checkpoint_rows=checkpoint_rows,
-        score_field="state_predict_score",
-        order_mode="variance_desc",
-    )
-    task_b_state_order = [state_key for state_key, _ in task_b_state_heatmap_rows]
-    task_b_reason_heatmap_lookup = {
-        state_key: scores
-        for state_key, scores in _build_heatmap_rows(
+    task_b_state_heatmap_rows = (
+        _build_heatmap_rows(
             task_b_units,
             checkpoint_rows=checkpoint_rows,
-            score_field="change_reason_score",
+            score_field="state_predict_score",
             order_mode="variance_desc",
         )
-    }
+        if not is_v2
+        else []
+    )
+    task_b_state_order = [state_key for state_key, _ in task_b_state_heatmap_rows]
+    task_b_reason_heatmap_lookup = (
+        {
+            state_key: scores
+            for state_key, scores in _build_heatmap_rows(
+                task_b_units,
+                checkpoint_rows=checkpoint_rows,
+                score_field="change_reason_score",
+                order_mode="variance_desc",
+            )
+        }
+        if not is_v2
+        else {}
+    )
     task_b_reason_heatmap_rows = [
         (
             state_key,
@@ -1253,28 +1559,52 @@ def build_analysis_pack(
     _plot_task_lines(
         output_dir / "rq1_task_scores_vs_checkpoint.png",
         checkpoint_rows,
-        y_fields=[
-            ("task_a_point_score", "Task A", "#1f77b4"),
-            ("task_b_state_score", "Task B state", "#d62728"),
-            ("task_c_answer_score", "Task C", "#2ca02c"),
-        ],
-        title="RQ1: Task Scores vs Checkpoint",
+        y_fields=(
+            [
+                ("task_a_point_score", "Task A", "#1f77b4"),
+                ("task_c_answer_score", "Task C", "#2ca02c"),
+            ]
+            if is_v2
+            else [
+                ("task_a_point_score", "Task A", "#1f77b4"),
+                ("task_b_state_score", "Task B state", "#d62728"),
+                ("task_c_answer_score", "Task C", "#2ca02c"),
+            ]
+        ),
+        title=(
+            "Checkpoint Trends Across Task A / Task C"
+            if is_v2
+            else "Checkpoint Trends Across Task A / Task B State / Task C"
+        ),
         y_label="score",
     )
-    _plot_task_lines(
-        output_dir / "rq2_taskb_attribution_vs_checkpoint.png",
-        checkpoint_rows,
-        y_fields=[
-            ("task_b_reason_score", "Task B reason", "#9467bd"),
-            ("task_b_state_score", "Task B state", "#ff7f0e"),
-        ],
-        title="RQ2: Task B Attribution vs Checkpoint",
-        y_label="score",
-    )
+    if is_v2:
+        _plot_task_lines(
+            output_dir / "rq2_taska_changed_vs_unchanged_vs_checkpoint.png",
+            checkpoint_rows,
+            y_fields=[
+                ("rq2_changed_task_a_score", "Changed", "#d62728"),
+                ("rq2_unchanged_task_a_score", "Unchanged", "#1f77b4"),
+                ("rq2_update_gap", "Changed - unchanged", "#9467bd"),
+            ],
+            title="RQ2: Task A changed vs unchanged slices",
+            y_label="score",
+        )
+    else:
+        _plot_task_lines(
+            output_dir / "rq2_taskb_attribution_vs_checkpoint.png",
+            checkpoint_rows,
+            y_fields=[
+                ("task_b_reason_score", "Task B reason", "#9467bd"),
+                ("task_b_state_score", "Task B state", "#ff7f0e"),
+            ],
+            title="RQ2: Task B State Updating vs Checkpoint",
+            y_label="score",
+        )
     _plot_gap_line(
         output_dir / "rq3_know_apply_gap_vs_checkpoint.png",
         rq3_rows,
-        title="RQ3: Apply - Know Gap vs Checkpoint",
+        title="RQ3 Diagnostic: Task C - Task A Gap vs Checkpoint",
     )
     _plot_heatmap(
         output_dir / "task_a_state_heatmap.png",
@@ -1283,20 +1613,21 @@ def build_analysis_pack(
         title="Task A State Heatmap",
         cmap_name="viridis",
     )
-    _plot_heatmap(
-        output_dir / "task_b_state_predict_heatmap.png",
-        matrix_rows=task_b_state_heatmap_rows,
-        checkpoint_rows=checkpoint_rows,
-        title="Task B State-Predict Heatmap",
-        cmap_name="magma",
-    )
-    _plot_heatmap(
-        output_dir / "task_b_change_reason_heatmap.png",
-        matrix_rows=task_b_reason_heatmap_rows,
-        checkpoint_rows=checkpoint_rows,
-        title="Task B Change-Reason Heatmap",
-        cmap_name="plasma",
-    )
+    if not is_v2:
+        _plot_heatmap(
+            output_dir / "task_b_state_predict_heatmap.png",
+            matrix_rows=task_b_state_heatmap_rows,
+            checkpoint_rows=checkpoint_rows,
+            title="Task B State-Predict Heatmap",
+            cmap_name="magma",
+        )
+        _plot_heatmap(
+            output_dir / "task_b_change_reason_heatmap.png",
+            matrix_rows=task_b_reason_heatmap_rows,
+            checkpoint_rows=checkpoint_rows,
+            title="Task B Change-Reason Heatmap",
+            cmap_name="plasma",
+        )
     _plot_heatmap(
         output_dir / "task_c_state_heatmap.png",
         matrix_rows=task_c_heatmap_rows,
@@ -1308,7 +1639,7 @@ def build_analysis_pack(
         output_dir / "rq3_gap_heatmap.png",
         matrix_rows=rq3_gap_heatmap_rows,
         checkpoint_rows=checkpoint_rows,
-        title="RQ3 Apply-Know Gap Heatmap",
+        title="RQ3 Diagnostic: Task C - Task A Gap Heatmap",
         cmap_name="coolwarm",
         center_zero=True,
     )
@@ -1320,22 +1651,23 @@ def build_analysis_pack(
         title="Task A State-Level Scores vs Checkpoint",
         y_label="score",
     )
-    _plot_state_lines(
-        output_dir / "task_b_state_predict_lines_vs_checkpoint.png",
-        task_b_units,
-        checkpoint_rows=checkpoint_rows,
-        score_field="state_predict_score",
-        title="Task B State-Predict Scores vs Checkpoint",
-        y_label="score",
-    )
-    _plot_state_lines(
-        output_dir / "task_b_change_reason_lines_vs_checkpoint.png",
-        task_b_units,
-        checkpoint_rows=checkpoint_rows,
-        score_field="change_reason_score",
-        title="Task B Change-Reason Scores vs Checkpoint",
-        y_label="score",
-    )
+    if not is_v2:
+        _plot_state_lines(
+            output_dir / "task_b_state_predict_lines_vs_checkpoint.png",
+            task_b_units,
+            checkpoint_rows=checkpoint_rows,
+            score_field="state_predict_score",
+            title="Task B State-Predict Scores vs Checkpoint",
+            y_label="score",
+        )
+        _plot_state_lines(
+            output_dir / "task_b_change_reason_lines_vs_checkpoint.png",
+            task_b_units,
+            checkpoint_rows=checkpoint_rows,
+            score_field="change_reason_score",
+            title="Task B Change-Reason Scores vs Checkpoint",
+            y_label="score",
+        )
     _plot_state_lines(
         output_dir / "task_c_state_lines_vs_checkpoint.png",
         task_c_state_rows,
@@ -1351,20 +1683,21 @@ def build_analysis_pack(
         title_prefix="Task A: Evidence F1 vs Score",
         checkpoint_colors=checkpoint_colors,
     )
-    _plot_scatter(
-        output_dir / "task_b_state_evidence_vs_score_scatter.png",
-        task_b_units,
-        score_field="state_predict_score",
-        title_prefix="Task B state: Evidence F1 vs Score",
-        checkpoint_colors=checkpoint_colors,
-    )
-    _plot_scatter(
-        output_dir / "task_b_reason_evidence_vs_score_scatter.png",
-        task_b_units,
-        score_field="change_reason_score",
-        title_prefix="Task B reason: Evidence F1 vs Score",
-        checkpoint_colors=checkpoint_colors,
-    )
+    if not is_v2:
+        _plot_scatter(
+            output_dir / "task_b_state_evidence_vs_score_scatter.png",
+            task_b_units,
+            score_field="state_predict_score",
+            title_prefix="Task B state: Evidence F1 vs Score",
+            checkpoint_colors=checkpoint_colors,
+        )
+        _plot_scatter(
+            output_dir / "task_b_reason_evidence_vs_score_scatter.png",
+            task_b_units,
+            score_field="change_reason_score",
+            title_prefix="Task B reason: Evidence F1 vs Score",
+            checkpoint_colors=checkpoint_colors,
+        )
     _plot_scatter(
         output_dir / "task_c_evidence_vs_score_scatter.png",
         task_c_units,
@@ -1378,16 +1711,17 @@ def build_analysis_pack(
         task_a_rank_rows,
         ["state_key", "variability_score", "mean_score", "std_score", "min_score", "max_score", "non_null_checkpoint_count"],
     )
-    _write_csv(
-        output_dir / "task_b_state_predict_top_variable_states.csv",
-        task_b_state_rank_rows,
-        ["state_key", "variability_score", "mean_score", "std_score", "min_score", "max_score", "non_null_checkpoint_count"],
-    )
-    _write_csv(
-        output_dir / "task_b_change_reason_top_variable_states.csv",
-        task_b_reason_rank_rows,
-        ["state_key", "variability_score", "mean_score", "std_score", "min_score", "max_score", "non_null_checkpoint_count"],
-    )
+    if not is_v2:
+        _write_csv(
+            output_dir / "task_b_state_predict_top_variable_states.csv",
+            task_b_state_rank_rows,
+            ["state_key", "variability_score", "mean_score", "std_score", "min_score", "max_score", "non_null_checkpoint_count"],
+        )
+        _write_csv(
+            output_dir / "task_b_change_reason_top_variable_states.csv",
+            task_b_reason_rank_rows,
+            ["state_key", "variability_score", "mean_score", "std_score", "min_score", "max_score", "non_null_checkpoint_count"],
+        )
     _write_csv(
         output_dir / "task_c_top_variable_states.csv",
         task_c_rank_rows,
@@ -1413,6 +1747,7 @@ def build_analysis_pack(
             "eval": "",
             "output_dir": str(output_dir),
         },
+        benchmark_payload=benchmark_payload,
         checkpoint_rows=checkpoint_rows,
         rq3_rows=rq3_rows,
         correlation_rows=correlation_rows,
@@ -1423,6 +1758,7 @@ def build_analysis_pack(
         "task_a_units": task_a_units,
         "task_b_units": task_b_units,
         "task_c_units": task_c_units,
+        "rq2_transition_units": rq2_transition_units,
         "task_c_state_rows": task_c_state_rows,
         "rq3_overlap_rows": rq3_rows,
         "rq3_gap_state_rows": rq3_gap_state_rows,

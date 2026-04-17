@@ -238,11 +238,72 @@ def build_apply_slot_judge_prompt(
     *,
     state_key: str,
     qa_id: str,
-    question: str,
-    reference_answer: str,
-    predicted_answer: str,
+    question: str = "",
+    reference_answer: str = "",
+    predicted_answer: str = "",
+    service_family: str = "",
+    scenario: str = "",
+    task_instruction: str = "",
+    reference_output: Any = None,
+    predicted_output: Any = None,
     slots: List[Dict[str, Any]],
 ) -> str:
+    structured_v2 = bool(
+        (service_family or scenario or task_instruction or reference_output is not None or predicted_output is not None)
+        and str(service_family or "").strip() != "user_communication"
+    )
+    if structured_v2:
+        example_input = {
+            "state_key": "habits_state:morning_run",
+            "qa_id": "q1",
+            "service_family": "user_communication",
+            "scenario": "The assistant is preparing the proactive routine-support object for the morning routine.",
+            "task_instruction": "Fill the user-communication payload for the routine.",
+            "reference_output": {"timing": {"start_time": "06:30"}},
+            "predicted_output": {"timing": {"start_time": "06:30"}},
+            "slots": [
+                {
+                    "point_id": "aqp_run_p1",
+                    "point_type": "field",
+                    "polarity": "positive",
+                    "target_path": "timing.start_time",
+                    "reference_value": "06:30",
+                    "predicted_value": "06:30",
+                }
+            ],
+        }
+        example_output = {
+            "judgments": [
+                {
+                    "point_id": "aqp_run_p1",
+                    "analysis": "The predicted structured output preserves the required start time exactly.",
+                    "correct": True,
+                }
+            ]
+        }
+        prompt = _build_slot_judge_prompt(
+            task_label="TCE Task C structured service completion",
+            unit_label=f"Task C item `{state_key}::{qa_id}`",
+            slots=slots,
+            extra_definitions="- `reference_output`\n  - full gold structured service object for context only\n- `task_instruction`\n  - explains what structured service object is being completed",
+            extra_constraints="8. For Task C v2 field slots, judge the provided `predicted_value` only against the paired `reference_value` at the same `target_path`; do not use holistic answer quality.",
+            example_input=example_input,
+            example_output=example_output,
+        )
+        return prompt + "\n\n[Item Context]\n" + json.dumps(
+            {
+                "state_key": state_key,
+                "qa_id": qa_id,
+                "service_family": service_family,
+                "scenario": scenario,
+                "task_instruction": task_instruction,
+                "reference_output": reference_output,
+                "predicted_output": predicted_output,
+            },
+            ensure_ascii=False,
+            indent=2,
+        )
+
     example_input = {
         "state_key": "preferences_state:learning_modality",
         "qa_id": "q1",
