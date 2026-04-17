@@ -1,194 +1,149 @@
-# Data Construction Pipeline
+# Data Construction
 
-This directory owns benchmark data construction and TCE benchmark building.
+`data_construction` owns the user-history build pipeline that turns a persona-like
+description into structured benchmark artifacts.
 
-## Scope
+This README is the module-level onboarding page. It explains what this directory
+produces, how to run the main entrypoint, and where to find deeper references. If
+this README conflicts with a protocol document or execution runbook, follow the
+protocol document or runbook.
 
-- User/profile generation pipeline (Stage 1 -> Stage 2 -> Stage 3)
-- App-log dataset preparation (`app_logs_final.json`, `app_log_large.json`, etc.)
-- TCE benchmark checkpoint construction
+## What This Module Owns
 
-For stage-level implementation details, see `stages/README.md`.
+This module is responsible for:
+
+- user and profile generation across multiple domains
+- event-chain generation across time windows
+- app-log generation from those events
+- preparation of the main artifacts consumed by QA and TCE workflows
+
+The recommended external entrypoint is `batch_generation_runner.py`.
+
+## Three-Stage Pipeline
+
+The pipeline is organized as three stages:
+
+1. `Stage 1`: generate dynamic profiles and resolve conflicts
+2. `Stage 2`: convert resolved profiles into event chains
+3. `Stage 3`: convert event chains into chronological app logs
+
+For stage-level implementation details, see [stages/README.md](stages/README.md).
 
 ## Quick Start
 
-From repository root:
+For a newcomer, the shortest reliable path is:
+
+1. Resolve the sampled user set and download the matching world backgrounds.
+2. Run the full Stage 1 -> Stage 2 -> Stage 3 pipeline.
+
+Example:
 
 ```bash
 cd data_construction
-python batch_generation_runner.py --debug
+python download_world_backgrounds.py --model gemini_3_flash_preview --user-count 10
+python batch_generation_runner.py --debug --user-count 10
 ```
 
-Common arguments (`batch_generation_runner.py`):
+By default, Stage 1 runs with `--world-bg-mode require_existing`, so the pipeline
+expects world background artifacts to exist before dynamic profile generation
+continues.
 
-- `--provider {google,openai,aimlapi,custom}`
-- `--model <model_name>`
-- `--api-key <key>` / `--base-url <url>`
-- `--user-count <N>`
-- `--user-index <1-based>`
-- `--skip-stage1` / `--skip-stage2` / `--skip-stage3`
-- `--cutoff-date <YYYY-MM-DD or MM.DD>`
-- `--dry-run-world-bg`
-- `--output-dir <path>`
+Precomputed world backgrounds are currently hosted at:
 
-## Typical Outputs
+- `https://huggingface.co/datasets/xiewenya/user-world-backgrounds`
 
-Under `generated_outputs/<model_name>/<user_id>/`:
+The helper script mirrors the runner's current persona-sampling selection using the
+same sample file, seed, and user-count logic. If your sampled user set changes,
+rerun the helper with matching arguments before running the main pipeline.
 
-- `user_basic_profile.json`
-- `dynamic_profiles_final.json`
+Stage 1 accepts either of these local input formats:
+
+- `generated_outputs/<model_name>/<user_id>/world_backgrounds.json`
+- `generated_outputs/<model_name>/<user_id>/<domain_slug>_world_background.json`
+
+If only the aggregated file is present, Stage 1 will load it and sync the per-domain
+cache files automatically. If neither format is present, Stage 1 fails fast with a
+missing-prerequisite error.
+
+Useful variants:
+
+- Download only the second sampled user:
+
+```bash
+cd data_construction
+python download_world_backgrounds.py \
+  --model gemini_3_flash_preview \
+  --user-count 10 \
+  --user-index 2
+```
+
+- Download explicit known users without mirroring sampling:
+
+```bash
+cd data_construction
+python download_world_backgrounds.py \
+  --model gemini_3_flash_preview \
+  --users 001_user_001 002_user_002
+```
+
+- for sampled runs, run `download_world_backgrounds.py` with the same sampling inputs
+  you will use for `batch_generation_runner.py`
+- for ad hoc runs driven by `--user-description`, use `--world-bg-mode generate_if_missing`
+  unless you have already prepared those files manually
+
+If you intentionally want to fall back to automatic generation for missing domains:
+
+```bash
+cd data_construction
+python batch_generation_runner.py --debug --world-bg-mode generate_if_missing
+```
+
+`--dry-run-world-bg` remains available for prompt-only preparation, but it is not a
+full pipeline run.
+
+## Key Outputs
+
+Under `generated_outputs/<model_name>/<user_id>/`, a newcomer should recognize at
+least these artifacts:
+
+- `user_basic_profile.json`: normalized user profile derived from the input description
+- `dynamic_profiles_final.json`: resolved multi-domain dynamic state
+- `all_events_chains.json`: aggregated event chains produced from the resolved state
+- `app_logs_final.json`: final app-log sequence used by downstream pipelines
+- `app_log_large.json`: large app-log view used by QA and TCE consumers
+- `golden_evidence_index.json`: evidence mapping artifact for downstream inspection
+
+These files form the handoff boundary for most downstream generation and evaluation
+work in the repo.
+
+## Handoff to TCE
+
+`data_construction` is also the source of the artifacts used to build TCE benchmarks.
+In practice, TCE build workflows start from outputs such as:
+
 - `all_events_chains.json`
 - `app_logs_final.json`
-- `app_log_large.json` (after `prepare_test_data.py`)
-- `golden_evidence_index.json`
+- `app_log_large.json`
 
-## TCE Benchmark
+This README intentionally does not duplicate the full TCE benchmark build procedure.
+Use the following documents instead:
 
-To evaluate memory behavior beyond QA, build checkpoint-based TCE ground truth.
+- [docs/protocols/temporal_checkpoint_evaluation_developer_manual.md](../docs/protocols/temporal_checkpoint_evaluation_developer_manual.md):
+  canonical TCE task and artifact contract
+- [docs/runbooks/tce_execution_runbook.md](../docs/runbooks/tce_execution_runbook.md):
+  executable workflow for benchmark build, generation, and evaluation
 
-### 1) Build Checkpoints
+## Where To Go Next
 
-```bash
-cd data_construction
-python3 build_tce_benchmark.py \
-  --app-logs-final generated_outputs/gemini_3_flash_preview/001_user_001/app_logs_final.json \
-  --task-contract-version taskabc_v2 \
-  --research-frame-version rq_20260413 \
-  --canonical-research-doc analysis_tools/tce_research_questions/001_user_001/new_research_question.md
-```
+- [stages/README.md](stages/README.md): internal Stage 1/2/3 responsibilities and outputs
+- [generation/README.md](../generation/README.md): baseline generation entrypoints
+- [eval/README.md](../eval/README.md): evaluator entrypoints
+- [docs/protocols/qa_generation_and_eval_contract.md](../docs/protocols/qa_generation_and_eval_contract.md):
+  QA generation/evaluation contract
 
-Or use the wrapper:
+Documentation boundary:
 
-```bash
-cd <repo_root>
-bash data_construction/run_build_tce_benchmark.sh
-```
-
-Output:
-
-- `data_construction/generated_outputs/gemini_3_flash_preview/001_user_001/tce_benchmark*.json`
-
-Current versioning rule:
-- new benchmark / task-pack artifacts should carry top-level:
-  - `task_contract_version = taskabc_v2`
-  - `research_frame_version = rq_20260413`
-  - `canonical_research_doc = analysis_tools/tce_research_questions/001_user_001/new_research_question.md`
-- older artifacts without explicit contract metadata should be interpreted as legacy `taskabc_v1`
-
-Checkpoint rule (current implementation):
-
-- A checkpoint is created at each chain completion (the last app log for a `chain_id`).
-- Valid-state filtering is applied before checkpoint export:
-  - state validity is checked from `all_events_chains.json` at chain level.
-  - required observable fields must be supported by the chain events.
-  - if a resolved state explicitly contains `schedule_dates`, it must match the union of `events[*].time_specification.schedule_dates` for that state.
-  - invalid states are removed from checkpoint targets; checkpoints with no valid states are skipped.
-- New-information filtering is applied after valid-state filtering:
-  - if a checkpoint has no new valid observable snapshot compared to the previous exported checkpoint, it is skipped.
-  - this avoids evaluating chain completions that do not change evaluable state targets.
-
-### 2) Build Task Packs
-
-```bash
-cd <repo_root>
-python3 -m data_construction.build_tce_task_packs \
-  --benchmark data_construction/generated_outputs/gemini_3_flash_preview/001_user_001/tce_benchmark_state_validated.json \
-  --output data_construction/generated_outputs/gemini_3_flash_preview/001_user_001/tce_benchmark_task_packs.json \
-  --tasks all \
-  --provider gemini \
-  --model gemini-3-flash-preview \
-  --validator-provider gemini \
-  --validator-model gemini-3-flash-preview \
-  --task-contract-version taskabc_v2 \
-  --research-frame-version rq_20260413 \
-  --canonical-research-doc analysis_tools/tce_research_questions/001_user_001/new_research_question.md
-```
-
-Pack-first note:
-- current TCE generation/eval should consume the validated task-pack benchmark, not a bare checkpoint-only benchmark
-- pack names remain stable across `taskabc_v1` and `taskabc_v2`:
-  - `state_completion_pack`
-  - `change_tracking_pack`
-  - `rq3_apply_service_qa`
-- under active `taskabc_v2`, `--tasks all` resolves to `state_completion + apply`
-- `change_tracking_pack` remains only as a legacy/v1 artifact family
-
-### 3) Produce Baseline Predictions
-
-Prediction contract (`generation/<baseline>/results/<user_id>/prediction/tce_results*.json`):
-
-```json
-{
-  "task_contract_version": "taskabc_v2",
-  "research_frame_version": "rq_20260413",
-  "canonical_research_doc": "analysis_tools/tce_research_questions/001_user_001/new_research_question.md",
-  "predictions": [
-    {
-      "checkpoint_id": "cp_0001",
-      "snapshot_state": {
-        "habits_state:weekend_neighborhood_walk": {"timing": {"start_time": "06:30"}}
-      },
-      "evidence": {
-        "habits_state:weekend_neighborhood_walk": [
-          {"app_log_id": "log_00001", "evidence_content": "..."},
-          {"app_log_id": "log_00008", "evidence_content": "..."}
-        ]
-      }
-    }
-  ]
-}
-```
-
-Implementation note:
-- generation now uses structured response (dynamic schema) for openai/azure providers, with automatic fallback to JSON prompting for other providers.
-
-Example baseline runner:
-
-```bash
-cd <repo_root>
-python3 generation/rag/rag_tce.py \
-  --benchmark data_construction/generated_outputs/gemini_3_flash_preview/001_user_001/tce_benchmark_task_packs.json \
-  --app-logs-path data_construction/generated_outputs/gemini_3_flash_preview/001_user_001/app_log_large.json \
-  --output generation/rag/results/001_user_001/prediction/tce_results_topk5.json \
-  --llm-provider openai \
-  --llm-model gpt-5-mini \
-  --resume
-```
-
-### 4) Evaluate Predictions
-
-```bash
-cd <repo_root>
-python3 -m eval.eval_tce \
-  --benchmark data_construction/generated_outputs/gemini_3_flash_preview/001_user_001/tce_benchmark_task_packs.json \
-  --prediction generation/<baseline>/results/001_user_001/prediction/tce_results.json \
-  --output generation/<baseline>/results/001_user_001/eval/tce_eval.json \
-  --save-eyeball
-```
-
-Main metrics:
-
-- snapshot/value: `snapshot_value_f1_mean_on_expected`, `snapshot_value_accuracy_on_expected`, `snapshot_exact_match`
-- snapshot/evidence: `snapshot_evidence_recall_mean_on_expected`, `snapshot_evidence_precision_mean_on_expected`, `snapshot_evidence_f1_mean_on_expected`
-- llm-as-judge (optional): per-key 0-10 scores are requested from LLM, and the program reports:
-  - `llm_judge_avg_score_0_10` (checkpoint average on 0-10 scale)
-  - `llm_judge_score` (normalized to `[0,1]`, i.e. `avg_score_0_10 / 10`)
-
-Enable LLM judge:
-
-```bash
-python3 -m eval.eval_tce \
-  --benchmark data_construction/generated_outputs/gemini_3_flash_preview/001_user_001/tce_benchmark_task_packs.json \
-  --prediction generation/<baseline>/results/001_user_001/prediction/tce_results.json \
-  --output generation/<baseline>/results/001_user_001/eval/tce_eval.json \
-  --save-eyeball \
-  --enable-llm-judge \
-  --llm-provider openai \
-  --llm-model gpt-5-mini
-```
-
-legacy parallel API entrypoint has been removed. Use the unified generation/eval flow:
-- `python3 -m generation.run_tce --config ...`
-- `python3 -m eval.eval_tce --benchmark ... --prediction ... --output ...`
-
-Historical artifact note: existing files under `results*/` and `generated_outputs/` may still use legacy names and are kept unchanged intentionally.
+- onboarding READMEs explain usage and navigation
+- protocol docs define contracts and semantics
+- runbooks define executable operational steps
+- plans are active or historical work records, not onboarding docs

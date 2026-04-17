@@ -185,6 +185,7 @@ class RunConfig:
 
     # Dry run mode - only save world background prompts, don't generate
     dry_run_world_bg: bool = False
+    world_bg_mode: str = "require_existing"
 
     # Timeline configuration
     timeline: TimelineConfig = field(default_factory=TimelineConfig)
@@ -266,6 +267,7 @@ class BatchGenerationRunner:
             timeline=self.config.timeline,
             debug_mode=self.config.debug_mode,
             dry_run_world_bg=self.config.dry_run_world_bg,
+            world_bg_mode=self.config.world_bg_mode,
             logger=self.logger,
         )
 
@@ -641,6 +643,17 @@ def main():
         action="store_true",
         help="Dry run mode: only generate basic profiles and save world background prompts (no LLM generation for world backgrounds)",
     )
+    parser.add_argument(
+        "--world-bg-mode",
+        type=str,
+        choices=["require_existing", "generate_if_missing"],
+        default="require_existing",
+        help=(
+            "How Stage 1 resolves world backgrounds: "
+            "'require_existing' loads pre-provided files and fails if missing; "
+            "'generate_if_missing' falls back to LLM generation for missing domains."
+        ),
+    )
 
     args = parser.parse_args()
 
@@ -720,6 +733,7 @@ def main():
             skip_stage2=args.skip_stage2,
             skip_stage3=args.skip_stage3,
             dry_run_world_bg=args.dry_run_world_bg,
+            world_bg_mode=args.world_bg_mode,
             cutoff_date=args.cutoff_date,
             user_id=user_id,
         )

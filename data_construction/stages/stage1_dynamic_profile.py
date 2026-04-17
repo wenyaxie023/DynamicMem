@@ -146,6 +146,7 @@ class DynamicProfileStage:
         timeline: TimelineConfig | None = None,
         debug_mode: bool = True,
         dry_run_world_bg: bool = False,
+        world_bg_mode: str = "require_existing",
         logger: Optional[logging.Logger] = None,
     ):
         self.llm_client = llm_client
@@ -153,6 +154,12 @@ class DynamicProfileStage:
         self.timeline = timeline or TimelineConfig()
         self.debug_mode = debug_mode
         self.dry_run_world_bg = dry_run_world_bg
+        normalized_world_bg_mode = (world_bg_mode or "require_existing").strip().lower()
+        if normalized_world_bg_mode not in {"require_existing", "generate_if_missing"}:
+            raise ValueError(
+                "world_bg_mode must be 'require_existing' or 'generate_if_missing'"
+            )
+        self.world_bg_mode = normalized_world_bg_mode
         self.logger = logger or logging.getLogger(__name__)
         _ensure_dir(self.output_dir)
 
@@ -327,6 +334,8 @@ class DynamicProfileStage:
         """
         world_backgrounds: Dict[str, Dict[str, Any]] = {}
         aggregate_usage: Dict[str, Any] = {}
+        aggregated_world_backgrounds = self._load_aggregated_world_backgrounds()
+        missing_required: List[str] = []
 
         # Import for rendering prompt in dry_run mode
         from dynamic_profile_generator import render_world_background_prompt
@@ -338,6 +347,25 @@ class DynamicProfileStage:
             if cache_path.exists():
                 self.logger.info(f"Loading cached world background for {domain.domain_name}...")
                 world_backgrounds[domain.domain_name] = json.loads(cache_path.read_text())
+                continue
+
+            aggregated_entry = aggregated_world_backgrounds.get(domain.domain_name)
+            if aggregated_entry is not None:
+                if not isinstance(aggregated_entry, dict):
+                    raise ValueError(
+                        f"Aggregated world background for {domain.domain_name} must be a JSON object."
+                    )
+                self.logger.info(
+                    f"Loading aggregated world background for {domain.domain_name} from world_backgrounds.json..."
+                )
+                world_backgrounds[domain.domain_name] = aggregated_entry
+                _write_json(cache_path, aggregated_entry)
+                continue
+
+            if self.world_bg_mode == "require_existing" and not self.dry_run_world_bg:
+                missing_required.append(
+                    f"{domain.domain_name} ({cache_path.name})"
+                )
                 continue
 
             # Build the request object
@@ -379,7 +407,32 @@ class DynamicProfileStage:
                     result.raw_text,
                 )
 
+        if missing_required:
+            aggregate_path = self.output_dir / "world_backgrounds.json"
+            raise FileNotFoundError(
+                "Missing required world backgrounds for Stage 1. "
+                "Provide either aggregated entries in "
+                f"{aggregate_path} or per-domain files in {self.output_dir}. "
+                "Missing domains: "
+                + ", ".join(missing_required)
+                + ". To allow automatic generation for missing domains, rerun with "
+                "--world-bg-mode generate_if_missing."
+            )
+
         return world_backgrounds, aggregate_usage
+
+    def _load_aggregated_world_backgrounds(self) -> Dict[str, Dict[str, Any]]:
+        """Load aggregated world backgrounds from world_backgrounds.json if present."""
+        aggregate_path = self.output_dir / "world_backgrounds.json"
+        if not aggregate_path.exists():
+            return {}
+
+        payload = json.loads(aggregate_path.read_text())
+        if not isinstance(payload, dict):
+            raise ValueError(
+                f"{aggregate_path} must contain a JSON object keyed by domain name."
+            )
+        return payload
 
     # =========================================================================
     # Step 1.2: Raw Dynamic Profile Generation (per domain)

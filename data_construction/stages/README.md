@@ -1,109 +1,116 @@
-# Data Construction Pipeline (Stages)
+# Data Construction Stages
 
-This directory implements a 3-stage benchmark data construction pipeline:
+This directory contains the Stage 1/2/3 implementation that powers
+`data_construction/batch_generation_runner.py`.
 
-1. `Stage 1`: Dynamic profile generation and conflict resolution
-2. `Stage 2`: Event-chain generation (by time window)
-3. `Stage 3`: App log generation (with resume support)
+Use this README when you need the internal organization of the pipeline. For the
+module-level overview and recommended entrypoint, start with
+[../README.md](../README.md). If this README conflicts with a protocol document or
+runbook, follow the protocol document or runbook.
 
-The main orchestrator is `../batch_generation_runner.py`.
+## Stage Directory Purpose
 
-For full end-to-end usage (including state-abstraction benchmark construction and evaluation workflow), see `../README.md`.
+The stages directory exists to separate the three major transformations in the user
+data pipeline:
 
-## Directory Overview
+1. resolve dynamic user state
+2. convert state into observable event chains
+3. convert events into structured app logs
 
-- `stage1_dynamic_profile.py`: Generates `user_basic_profile`, `dynamic_profiles`, and `world_backgrounds`, then applies multi-round conflict fixes.
-- `stage1_utils.py`: Utility functions for Stage 1 rule checks, key alignment, conflict detection, and conflict application.
-- `stage2_events_chain.py`: Converts dynamic states into observable event chains in window order (`w0 -> w4`).
-- `stage3_app_logs.py`: Merges all events and generates structured app logs with checkpoint management.
-- `__init__.py`: Exports `DynamicProfileStage / EventsChainStage / AppLogsStage`.
+Core files in this directory:
 
-## End-to-End Flow
+- `stage1_dynamic_profile.py`: Stage 1 orchestration for dynamic profile generation
+- `stage1_utils.py`: Stage 1 conflict checks, alignment helpers, and fix application
+- `stage2_events_chain.py`: Stage 2 event-chain generation across windows
+- `stage3_app_logs.py`: Stage 3 app-log generation and checkpoint-aware resume logic
+- `__init__.py`: exports `DynamicProfileStage`, `EventsChainStage`, and `AppLogsStage`
 
-### Stage 1: Dynamic Profile
+## Stage 1
 
-Key responsibilities:
+`Stage 1` turns the input user description into resolved multi-domain dynamic state.
 
-- Generate `user_basic_profile` from raw user description
-- Generate initial dynamic profiles per domain
-- Apply in-domain rule1~rule5 fixes
-- Perform cross-domain key alignment
-- Resolve cross-domain attribute and temporal conflicts
+Main responsibilities:
 
-Typical outputs (under each user output directory):
+- generate `user_basic_profile.json` from the raw description
+- generate domain-level dynamic profiles
+- apply in-domain rule-based fixes
+- align keys across domains
+- resolve cross-domain attribute and temporal conflicts
+
+Typical inputs:
+
+- raw user description
+- domain definitions and prompting context
+
+Typical outputs under each user directory:
 
 - `user_basic_profile.json`
-- `*_world_background.json` (per domain)
-- `world_backgrounds.json` (aggregated)
+- `*_world_background.json`
+- `world_backgrounds.json`
 - `dynamic_profiles_raw.json`
 - `dynamic_profiles_domain_level_fixes_applied.json`
 - `dynamic_profiles_key_aligned.json`
 - `dynamic_profiles_conflict_resolved.json`
 - `dynamic_profiles_final.json`
 
-Supports a world-background `dry run` mode: only saves world background prompts without generating background content.
+Implementation note:
 
-### Stage 2: Events Chain
+- by default, Stage 1 expects precomputed world backgrounds to exist and loads them
+  from `world_backgrounds.json` and/or per-domain `*_world_background.json` files
+- world-background generation also supports a dry-run path that saves prompts without
+  generating the background content itself
 
-Key responsibilities:
+## Stage 2
 
-- Read `dynamic_profiles_final.json` from Stage 1
-- Generate event chains by domain and by window
-- Maintain inter-window context continuity and state-to-event conversion markers
+`Stage 2` converts the resolved dynamic profile into observable event chains.
+
+Main responsibilities:
+
+- read `dynamic_profiles_final.json` from Stage 1
+- generate per-domain event chains
+- preserve time-window ordering and continuity
+- attach state-to-event conversion markers used downstream
+
+Typical inputs:
+
+- `dynamic_profiles_final.json`
 
 Typical outputs:
 
-- `*_events_chain.json` (per domain)
-- `all_events_chains.json` (aggregated)
+- `*_events_chain.json`
+- `all_events_chains.json`
 
-### Stage 3: App Logs
+## Stage 3
 
-Key responsibilities:
+`Stage 3` converts aggregated event chains into chronological app logs.
 
-- Merge events across all domains
-- Sort events chronologically
-- Convert events into app API call logs via LLM
-- Auto-save checkpoints for resumable execution
+Main responsibilities:
+
+- merge events across domains
+- sort events in temporal order
+- generate app-style API interaction logs
+- save intermediate progress for resumable execution
+
+Typical inputs:
+
+- `all_events_chains.json`
 
 Typical outputs:
 
 - `app_logs_final.json`
 - `golden_evidence_index.json`
 - `checkpoints/checkpoint_*.json`
-- `stage3_checkpoint.json` (legacy compatibility)
-- `app_logs_intermediate.json` (intermediate state)
+- `stage3_checkpoint.json`
+- `app_logs_intermediate.json`
 
-## Recommended Run
+Implementation note:
 
-Assuming your repo root is `mem_bench/dynamicmem`, run:
+- `stage3_checkpoint.json` remains for legacy compatibility
+- `checkpoints/checkpoint_*.json` is the main resume substrate
 
-```bash
-cd data_construction
-python batch_generation_runner.py --debug
-```
+## Output Layout
 
-Common arguments (`batch_generation_runner.py`):
-
-- `--provider {google,openai,aimlapi,custom}`
-- `--model <model_name>`
-- `--api-key <key>` / `--base-url <url>`
-- `--user-count <N>`
-- `--user-index <1-based>`
-- `--skip-stage1` / `--skip-stage2` / `--skip-stage3`
-- `--cutoff-date <YYYY-MM-DD or MM.DD>`
-- `--dry-run-world-bg`
-- `--output-dir <path>`
-
-## LLM Configuration
-
-If `--api-key` is not provided, environment variables are used (see `../llm_client.py`):
-
-- `google`: `GOOGLE_API_KEY`
-- `openai`: `OPENAI_API_KEY` (optional `OPENAI_BASE_URL`)
-- `aimlapi`: `AIMLAPI_API_KEY` (optional `AIMLAPI_BASE_URL`)
-- `custom`: `CUSTOM_API_KEY` + `CUSTOM_BASE_URL`
-
-## Output Structure (Example)
+Example per-user output layout:
 
 ```text
 <output_root>/
@@ -128,14 +135,20 @@ If `--api-key` is not provided, environment variables are used (see `../llm_clie
       stage3_app_logs/
 ```
 
-## Resume and Re-run Tips
+## Resume and Re-run Notes
 
-- By default, Stage 3 runs with `resume_from_existing=True` in the runner and prefers resuming from checkpoints.
-- If you only want to regenerate later stages:
-  1. Keep Stage 1 results: `--skip-stage1`
-  2. Regenerate only Stage 3: `--skip-stage1 --skip-stage2`
-- To force Stage 3 to restart from scratch, clean the target user output directory:
+- The main runner prefers resuming Stage 3 from existing checkpoint artifacts.
+- If Stage 1 artifacts are still valid, rerun later stages with `--skip-stage1`.
+- If only Stage 3 needs regeneration, use `--skip-stage1 --skip-stage2`.
+- To force Stage 3 to restart cleanly for one user, remove:
   - `checkpoints/`
   - `stage3_checkpoint.json`
   - `app_logs_intermediate.json`
-  - `app_logs_final.json` (optional, to avoid mixing old/new outputs)
+  - optionally `app_logs_final.json` to avoid mixing old and new outputs
+
+Documentation boundary:
+
+- this README explains internal stage responsibilities and file ownership
+- [../README.md](../README.md) explains module-level usage and navigation
+- protocol docs define benchmark contracts
+- runbooks define executable workflows
