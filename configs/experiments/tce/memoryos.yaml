@@ -20,7 +20,7 @@ data:
   app_logs_path: data_construction/generated_outputs/gemini_3_flash_preview/{user_id}/app_log_large.json
 
 output:
-  prediction_path: generation/memoryos/results/{user_id}/prediction/{run_name}/tce_results_v14_taskabc.json
+  prediction_path: generation/MemoryOS/results/{user_id}/prediction/{run_name}/tce_results_v14_taskabc.json
 
 llm:
   provider: azure

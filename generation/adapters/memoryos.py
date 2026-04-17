@@ -1,6 +1,14 @@
 from .base import TceAdapterArgs
 
 
+def _is_true(value) -> bool:
+    if isinstance(value, bool):
+        return value
+    if value is None:
+        return False
+    return str(value).strip().lower() in {"1", "true", "yes", "y", "on"}
+
+
 def run(args: TceAdapterArgs):
     import os
     from pathlib import Path
@@ -61,6 +69,7 @@ def run(args: TceAdapterArgs):
         embedding_model_name=args.retriever_model,
         llm_controller_model=args.extras.get("llm_controller_model", args.llm_model),
         assistant_id=args.extras.get("assistant_id", "assistant"),
+        build_only=_is_true(args.extras.get("build_only")),
         resume=args.resume,
         max_checkpoints=args.max_checkpoints,
         debug=args.debug,

@@ -19,11 +19,18 @@ except Exception:  # pragma: no cover - optional runtime dependency
 
 from generation.common.llm_client import LLMClient
 from generation.common.provider_config import resolve_openai_compatible_credentials
-from tce_core.orchestrator_protocol import CheckpointHandle, RetrievalOptions, RetrievalResult
-from tce_core.pipeline import normalize_app_logs, run_pipeline, to_log_text
+from generation.MemoryOS.memory_evolution_viewer import build_memory_evolution_payload, write_viewer_payload
+from tce_core.orchestrator_protocol import (
+    CheckpointHandle,
+    RetrievalOptions,
+    RetrievalResult,
+)
+from tce_core.pipeline import (
+    normalize_app_logs,
+    run_pipeline,
+    to_log_text,
+)
 
-
-ASSISTANT_ID = "assistant"
 BUILDER_SAVE_EVERY_LOGS = 5
 
 
@@ -76,6 +83,21 @@ def _memoryos_usage_summary() -> Dict[str, Any]:
 
 def _usage_cost_sidecar_path(output_path: Path) -> Path:
     return output_path.parent / "usage_cost.json"
+
+
+def _memory_viewer_data_path(output_path: Path) -> Path:
+    return output_path.parent / "memory_viewer_data.json"
+
+
+def _export_memory_viewer(snapshot_root: Path, output_path: Path) -> None:
+    manifest_path = snapshot_root / "manifest.json"
+    if not manifest_path.exists():
+        return
+    try:
+        payload = build_memory_evolution_payload(snapshot_root)
+        write_viewer_payload(payload, output_path)
+    except Exception as exc:
+        print(f"MemoryOS viewer export skipped for {snapshot_root}: {exc}", file=sys.stderr)
 
 
 def _load_usage_cost_sidecar(sidecar_path: Path) -> Dict[str, Any]:
@@ -366,14 +388,10 @@ def _write_snapshot_bundle(
 
 def _build_checkpoint_trigger_maps(
     checkpoints: List[Dict[str, Any]]
-) -> Tuple[Dict[str, List[Dict[str, Any]]], Dict[int, List[Dict[str, Any]]], List[str]]:
+) -> Tuple[Dict[str, List[Dict[str, Any]]], Dict[int, List[Dict[str, Any]]]]:
     checkpoint_by_app_log_id: Dict[str, List[Dict[str, Any]]] = {}
     checkpoint_by_log_index: Dict[int, List[Dict[str, Any]]] = {}
-    ordered_ids: List[str] = []
     for cp in checkpoints:
-        checkpoint_id = str(cp.get("checkpoint_id", "")).strip()
-        if checkpoint_id:
-            ordered_ids.append(checkpoint_id)
         as_of = cp.get("as_of")
         as_of = as_of if isinstance(as_of, dict) else {}
         app_log_id_raw = as_of.get("app_log_id")
@@ -382,7 +400,7 @@ def _build_checkpoint_trigger_maps(
         log_index_raw = as_of.get("log_index")
         if isinstance(log_index_raw, int) and log_index_raw >= 0:
             checkpoint_by_log_index.setdefault(log_index_raw, []).append(cp)
-    return checkpoint_by_app_log_id, checkpoint_by_log_index, ordered_ids
+    return checkpoint_by_app_log_id, checkpoint_by_log_index
 
 
 def _build_memoryos_instance(
@@ -392,6 +410,7 @@ def _build_memoryos_instance(
     llm_controller_model: str,
     embedding_model_name: str,
     assistant_id: str,
+    retrieval_queue_capacity: int,
     retriever_provider: str = "openai",
 ) -> Any:
     Memoryos = _load_memoryos_class()
@@ -410,9 +429,9 @@ def _build_memoryos_instance(
         data_storage_path=str(data_storage_root),
         llm_model=llm_controller_model,
         assistant_id=assistant_id,
-        short_term_capacity=7,
+        short_term_capacity=10,
         mid_term_heat_threshold=5,
-        retrieval_queue_capacity=10,
+        retrieval_queue_capacity=max(1, int(retrieval_queue_capacity)),
         long_term_knowledge_capacity=100,
         mid_term_similarity_threshold=0.6,
         embedding_model_name=embedding_model_name,
@@ -424,6 +443,25 @@ def _build_memoryos_instance(
             "truncate_from": "end",
         },
     )
+
+
+def _effective_retrieval_queue_capacity(requested_top_k: int, memory_pool_size: Optional[int] = None) -> int:
+    if int(requested_top_k) > 0:
+        return max(1, int(requested_top_k))
+    if memory_pool_size is not None and int(memory_pool_size) > 0:
+        return int(memory_pool_size)
+    return 1
+
+
+def _restore_snapshot_into_memoryos(memory_system: Any, bundle: Dict[str, Any]) -> None:
+    shutil.copyfile(bundle["short_term_path"], memory_system.short_term_memory.file_path)
+    shutil.copyfile(bundle["mid_term_path"], memory_system.mid_term_memory.file_path)
+    shutil.copyfile(bundle["long_term_path"], memory_system.user_long_term_memory.file_path)
+    shutil.copyfile(bundle["assistant_long_term_path"], memory_system.assistant_long_term_memory.file_path)
+    memory_system.short_term_memory.load()
+    memory_system.mid_term_memory.load()
+    memory_system.user_long_term_memory.load()
+    memory_system.assistant_long_term_memory.load()
 
 
 def _ensure_snapshots_for_benchmark(
@@ -438,9 +476,11 @@ def _ensure_snapshots_for_benchmark(
     embedding_model_name: str,
     assistant_id: str,
     max_checkpoints: Optional[int],
+    retrieval_top_k: int = 10,
     retriever_provider: str = "openai",
     resume: bool = False,
     progress_callback: Optional[Callable[[], None]] = None,
+    snapshot_callback: Optional[Callable[[Path], None]] = None,
 ) -> Path:
     benchmark = json.loads(benchmark_path.read_text(encoding="utf-8"))
     checkpoints = [cp for cp in benchmark.get("checkpoints", []) if isinstance(cp, dict)]
@@ -454,12 +494,14 @@ def _ensure_snapshots_for_benchmark(
         for cp in checkpoints
         if str(cp.get("checkpoint_id", "")).strip()
     }
+    if callable(snapshot_callback) and (snapshot_root / "manifest.json").exists():
+        snapshot_callback(snapshot_root)
     if required_checkpoint_ids and required_checkpoint_ids.issubset(_existing_checkpoint_ids(snapshot_root)):
         return snapshot_root
 
     runtime_root = _runtime_data_root(data_storage_path)
     builder_data_root = runtime_root / memory_user_id / "builder"
-    checkpoint_by_app_log_id, checkpoint_by_log_index, _ordered_ids = _build_checkpoint_trigger_maps(checkpoints)
+    checkpoint_by_app_log_id, checkpoint_by_log_index = _build_checkpoint_trigger_maps(checkpoints)
     app_logs = normalize_app_logs(json.loads(app_logs_path.read_text(encoding="utf-8")))
     latest_entry = _latest_snapshot_entry(snapshot_root) if resume else None
     latest_payload = _snapshot_checkpoint_payload(snapshot_root, latest_entry) if latest_entry else {}
@@ -478,6 +520,7 @@ def _ensure_snapshots_for_benchmark(
             retriever_provider=retriever_provider,
             embedding_model_name=embedding_model_name,
             assistant_id=assistant_id,
+            retrieval_queue_capacity=_effective_retrieval_queue_capacity(retrieval_top_k),
         )
         shutil.copyfile(Path(snapshot_root) / latest_entry["short_term_path"], Path(memo.short_term_memory.file_path))
         shutil.copyfile(Path(snapshot_root) / latest_entry["mid_term_path"], Path(memo.mid_term_memory.file_path))
@@ -508,6 +551,7 @@ def _ensure_snapshots_for_benchmark(
             retriever_provider=retriever_provider,
             embedding_model_name=embedding_model_name,
             assistant_id=assistant_id,
+            retrieval_queue_capacity=_effective_retrieval_queue_capacity(retrieval_top_k),
         )
 
     last_processed_idx = start_idx - 1
@@ -515,6 +559,8 @@ def _ensure_snapshots_for_benchmark(
     try:
         for idx in range(start_idx, len(app_logs)):
             log = app_logs[idx]
+            # MemoryOS ingests QA-style turns only, so we transport the raw app log
+            # losslessly as the user turn and keep the assistant reply semantically empty.
             memo.add_memory(
                 user_input=to_log_text(log),
                 agent_response="[ingested]",
@@ -535,6 +581,8 @@ def _ensure_snapshots_for_benchmark(
                     trigger="periodic",
                 )
                 last_saved_event_idx = idx
+                if callable(snapshot_callback):
+                    snapshot_callback(snapshot_root)
                 if callable(progress_callback):
                     progress_callback()
             triggered = []
@@ -555,6 +603,8 @@ def _ensure_snapshots_for_benchmark(
                 )
                 saved_checkpoint_ids.add(checkpoint_id)
                 last_saved_event_idx = max(last_saved_event_idx, idx)
+                if callable(snapshot_callback):
+                    snapshot_callback(snapshot_root)
                 if callable(progress_callback):
                     progress_callback()
     except BaseException:
@@ -567,6 +617,8 @@ def _ensure_snapshots_for_benchmark(
                 checkpoint_app_log_id=last_processed_log_id,
                 trigger="interrupt",
             )
+            if callable(snapshot_callback):
+                snapshot_callback(snapshot_root)
             if callable(progress_callback):
                 progress_callback()
         raise
@@ -580,6 +632,8 @@ def _ensure_snapshots_for_benchmark(
             checkpoint_app_log_id=last_processed_log_id,
             trigger="final",
         )
+        if callable(snapshot_callback):
+            snapshot_callback(snapshot_root)
         if callable(progress_callback):
             progress_callback()
 
@@ -673,9 +727,11 @@ def run_generation(
     final_qa_output_path: Optional[str] = None,
     final_qa_retrieval_top_k: Optional[int] = None,
     final_qa_save_prompt_and_raw: bool = False,
+    build_only: bool = False,
 ) -> Dict[str, Any]:
     memory_user_id = _memory_user_id(user_id, size)
     sidecar_path = _usage_cost_sidecar_path(output_path)
+    viewer_data_path = _memory_viewer_data_path(output_path)
     base_sidecar_payload = _load_usage_cost_sidecar(sidecar_path) if resume else {}
     if not resume and sidecar_path.exists():
         try:
@@ -715,6 +771,9 @@ def run_generation(
             base_payload=base_sidecar_payload,
         )
 
+    def _persist_memory_viewer(snapshot_root: Path) -> None:
+        _export_memory_viewer(snapshot_root, viewer_data_path)
+
     build_writer_stop = threading.Event()
 
     def _build_progress_writer() -> None:
@@ -744,12 +803,15 @@ def run_generation(
             embedding_model_name=embedding_model_name,
             assistant_id=assistant_id,
             max_checkpoints=max_checkpoints,
+            retrieval_top_k=retrieval_top_k,
             resume=resume,
             progress_callback=_persist_build_progress,
+            snapshot_callback=_persist_memory_viewer,
         )
     finally:
         build_writer_stop.set()
         build_writer.join(timeout=1.0)
+    _persist_memory_viewer(snapshot_root)
     build_duration_s = time.perf_counter() - build_start
     build_memory_usage = _memoryos_usage_summary()
     _write_usage_cost_sidecar(
@@ -765,6 +827,23 @@ def run_generation(
         resume=resume,
         base_payload=base_sidecar_payload,
     )
+    if build_only:
+        benchmark = json.loads(benchmark_path.read_text(encoding="utf-8"))
+        checkpoints = [cp for cp in benchmark.get("checkpoints", []) if isinstance(cp, dict)]
+        if max_checkpoints is not None:
+            checkpoints = checkpoints[: max(0, int(max_checkpoints))]
+        return {
+            "predictions": [],
+            "build_only": {
+                "enabled": True,
+                "snapshot_root": str(snapshot_root),
+                "requested_checkpoint_ids": [
+                    str(cp.get("checkpoint_id", "")).strip()
+                    for cp in checkpoints
+                    if str(cp.get("checkpoint_id", "")).strip()
+                ],
+            },
+        }
     base_sidecar_payload = _load_usage_cost_sidecar(sidecar_path)
     last_progress_write_s = 0.0
 
@@ -817,21 +896,12 @@ def run_generation(
             base_payload=base_sidecar_payload,
         )
 
-    def prepare_checkpoint_state(cp: Dict[str, Any], memory_pool: List[Dict[str, Any]]) -> CheckpointHandle:
+    def prepare_checkpoint_state(cp: Dict[str, Any], _memory_pool: List[Dict[str, Any]]) -> CheckpointHandle:
         bundle = _load_snapshot_bundle(snapshot_root, cp)
         return CheckpointHandle(
             checkpoint_id=str(cp.get("checkpoint_id") or ""),
             state_kind="snapshot_bundle",
             state_ref=bundle,
-            metadata={
-                "retrieval_mode": "memoryos_snapshot",
-                "snapshot_id": bundle.get("snapshot_id"),
-                "snapshot_checkpoint_id": bundle.get("checkpoint_id"),
-                "snapshot_checkpoint_app_log_id": bundle.get("checkpoint_app_log_id"),
-                "checkpoint_timestamp": str((cp.get("as_of") or {}).get("timestamp", "")),
-                "checkpoint_app_log_id": str((cp.get("as_of") or {}).get("app_log_id") or ""),
-                "memory_pool_size": len(memory_pool),
-            },
         )
 
     def retrieve_context_for_query(
@@ -851,36 +921,8 @@ def run_generation(
                 top_k_for_call = int(top_k_override)
             except Exception:
                 top_k_for_call = retrieval_top_k
-        k = len(memory_pool) if top_k_for_call <= 0 else min(top_k_for_call, len(memory_pool))
-
-        if k <= 0:
-            result = RetrievalResult(
-                mode="inline_memory",
-                inline_memory_blocks=[],
-                debug_metadata={
-                    "retrieval_mode": "memoryos_snapshot",
-                    "snapshot_id": bundle.get("snapshot_id"),
-                    "snapshot_checkpoint_id": bundle.get("checkpoint_id"),
-                    "snapshot_checkpoint_app_log_id": bundle.get("checkpoint_app_log_id"),
-                    "retrieval_top_k": top_k_for_call,
-                    "num_retrieved_logs": 0,
-                    "retrieved_app_log_ids": [],
-                    "retriever_provider": retriever_provider,
-                    "embedding_model_name": embedding_model_name,
-                    "retrieval_query": retrieval_query,
-                },
-            )
-            _persist_generation_progress()
-            return result
-
-        memory_pool_by_id: Dict[str, Dict[str, Any]] = {}
-        for i, log in enumerate(memory_pool):
-            app_log_id = log.get("app_log_id")
-            key = str(app_log_id).strip() if app_log_id is not None else f"pool_{i}"
-            if key and key not in memory_pool_by_id:
-                memory_pool_by_id[key] = log
-
-        with tempfile.TemporaryDirectory(prefix="memoryos_tce_") as td:
+        effective_capacity = _effective_retrieval_queue_capacity(top_k_for_call, len(memory_pool))
+        with tempfile.TemporaryDirectory(prefix="memoryos_tce_query_") as td:
             temp_data_root = Path(td) / "data"
             memo = _build_memoryos_instance(
                 memory_user_id=memory_user_id,
@@ -889,72 +931,40 @@ def run_generation(
                 retriever_provider=retriever_provider,
                 embedding_model_name=embedding_model_name,
                 assistant_id=assistant_id,
+                retrieval_queue_capacity=effective_capacity,
             )
-            shutil.copyfile(bundle["short_term_path"], memo.short_term_memory.file_path)
-            shutil.copyfile(bundle["mid_term_path"], memo.mid_term_memory.file_path)
-            shutil.copyfile(bundle["long_term_path"], memo.user_long_term_memory.file_path)
-            shutil.copyfile(bundle["assistant_long_term_path"], memo.assistant_long_term_memory.file_path)
-            memo.short_term_memory.load()
-            memo.mid_term_memory.load()
-            memo.user_long_term_memory.load()
-            memo.assistant_long_term_memory.load()
+            _restore_snapshot_into_memoryos(memo, bundle)
             retrieval = memo.retriever.retrieve_context(
                 user_query=retrieval_query,
                 user_id=memo.user_id,
             )
-
-        selected_logs: List[Dict[str, Any]] = []
-        selected_ids: List[str] = []
-        seen_ids: Set[str] = set()
-        for page in retrieval.get("retrieved_pages", []):
-            user_input = page.get("user_input", "")
-            for part in str(user_input).split("[APP_LOG] "):
-                chunk = part.strip()
-                if not chunk:
-                    continue
-                first_line = chunk.splitlines()[0].strip()
-                try:
-                    payload = json.loads(first_line)
-                except Exception:
-                    continue
-                if not isinstance(payload, dict):
-                    continue
-                app_log_id = payload.get("app_log_id")
-                if app_log_id is None:
-                    continue
-                app_log_id = str(app_log_id).strip()
-                if not app_log_id or app_log_id in seen_ids:
-                    continue
-                log = memory_pool_by_id.get(app_log_id)
-                if log is None:
-                    continue
-                seen_ids.add(app_log_id)
-                selected_ids.append(app_log_id)
-                selected_logs.append(log)
-
-        selected_logs = selected_logs[:k]
-        selected_ids = selected_ids[:k]
+        retrieved_pages = list((retrieval or {}).get("retrieved_pages") or [])
+        retrieval_payload = retrieval if isinstance(retrieval, dict) else {"retrieval": retrieval}
         result = RetrievalResult(
             mode="inline_memory",
-            inline_memory_blocks=[to_log_text(log) for log in selected_logs],
+            inline_memory_blocks=[json.dumps(retrieval_payload, ensure_ascii=False, indent=2)],
             debug_metadata={
                 "retrieval_mode": "memoryos_snapshot",
                 "snapshot_id": bundle.get("snapshot_id"),
                 "snapshot_checkpoint_id": bundle.get("checkpoint_id"),
                 "snapshot_checkpoint_app_log_id": bundle.get("checkpoint_app_log_id"),
                 "retrieval_top_k": top_k_for_call,
-                "num_retrieved_logs": len(selected_logs),
-                "retrieved_app_log_ids": selected_ids,
+                "retrieval_queue_capacity": effective_capacity,
+                "num_retrieved_pages": len(retrieved_pages),
+                "retrieved_user_knowledge_count": len((retrieval or {}).get("retrieved_user_knowledge") or []),
+                "retrieved_assistant_knowledge_count": len(
+                    (retrieval or {}).get("retrieved_assistant_knowledge") or []
+                ),
                 "retriever_provider": retriever_provider,
                 "embedding_model_name": embedding_model_name,
                 "retrieval_query": retrieval_query,
+                "retrieval_driver_query": retrieval_query,
+                "isolated_query_snapshot": True,
             },
         )
         _persist_generation_progress()
         return result
 
-    _reset_memoryos_usage_tracker()
-    generation_start = time.perf_counter()
     try:
         return run_pipeline(
             benchmark_path=benchmark_path,
