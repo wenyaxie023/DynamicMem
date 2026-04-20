@@ -146,10 +146,11 @@ All stateful TCE baselines must satisfy these invariants:
 - checkpoint memory state must reflect exactly the logs visible up to that checkpoint
 - canonical app-log payload is the raw app log object itself
 - builder ingest must consume raw app log objects directly
-- if a backend only accepts dialogue turns, the adapter may apply the canonical lossless dialogue wrapper:
-  - one raw app log object -> `User: {raw_json}` followed by `Assistant: [ingested]`
-  - the user turn must contain a lossless serialization of the raw app log object
-  - the assistant turn must be the literal acknowledgement `[ingested]`
+- if a backend does not accept raw app log objects directly, the adapter may apply a canonical lossless transport wrapper:
+  - if the backend accepts a single note / document / text item, one raw app log object may map to one lossless text item
+  - if the backend requires dialogue turns, one raw app log object -> `User: {raw_json}` followed by `Assistant: [ingested]`
+  - the serialized transport payload must remain a lossless rendering of the raw app log object
+  - when dialogue transport is required, the assistant turn must be the literal acknowledgement `[ingested]`
   - no additional semantic content may be injected by this wrapper
 - inline-memory rendering must still resolve back to raw app log objects directly
 - retrieval-visible checkpoint state may use derived memory units only if:
@@ -329,11 +330,16 @@ Letta / MemGPT self-hosted runtime note:
 
 Examples may include:
 - `snapshot_dir`
-- `checkpoint_dir`
+- `data_storage_path`
 - backend storage roots / collection names / dependency config
 - backend-specific size labels when needed
 
 Contributors must document any backend-specific extras in the baseline config template.
+
+Amem standalone path contract:
+- builder CLI uses `--data-storage-path` and `--snapshot-dir`
+- standalone generation CLI uses `--snapshot-dir` or `--snapshot-root`
+- legacy `--checkpoint-dir` compatibility alias is not part of the active contract
 
 ## 11. Prediction Contract
 

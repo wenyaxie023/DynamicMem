@@ -2,7 +2,7 @@
 
 Status: active
 Owner: DynamicMem team
-Last Updated: 2026-03-28
+Last Updated: 2026-04-20
 
 ## 1. Purpose & Scope
 本手册定义 `Temporal Checkpoint Evaluation`（TCE）的稳定开发规范。
@@ -182,12 +182,13 @@ Implementation requirements:
   - 必须按 benchmark checkpoint 顺序 ingest user app logs 或等价地推进 memory state
   - canonical app-log payload 必须是 raw app log object 本身
   - builder ingest 必须直接消费 raw app log object 本身
-  - 若 baseline 的原生 builder 只接受 dialogue turns 而不接受 raw event objects，则允许使用 lossless dialogue transport wrapper：
-    - 每条 raw app log object 可以投影成两条 dialogue turn
-    - turn 1 必须是 `User: {raw_json}`
-    - turn 2 必须是 `Assistant: [ingested]`
-    - `raw_json` 必须是该 raw app log object 的 lossless serialization
-    - `[ingested]` 必须是 literal acknowledgement，不得承载额外语义内容
+  - 若 baseline 的原生 builder 不接受 raw event objects，则允许使用 lossless backend transport wrapper：
+    - 若 backend 接受单条 note / document / text entry，则每条 raw app log object 可以直接投影成一条 lossless text entry
+    - 若 backend 明确要求 dialogue turns，则每条 raw app log object 可以投影成两条 dialogue turn
+      - turn 1 必须是 `User: {raw_json}`
+      - turn 2 必须是 `Assistant: [ingested]`
+      - `raw_json` 必须是该 raw app log object 的 lossless serialization
+      - `[ingested]` 必须是 literal acknowledgement，不得承载额外语义内容
     - 该 wrapper 只是一种 backend transport；source lineage 仍必须能精确回到原始 `app_log_id`
   - shared inline-memory rendering 应直接承载 backend retrieval 阶段返回的 memory content
   - 对 stateful baseline，checkpoint snapshot 的 retrieval-visible memory state 可以是从 raw app logs 推导出的 derived memory units；shared prompt 中的 inline memory 应直接使用这些 backend-derived memory units 的 lossless serialization，而不是强制 rematerialize 成 raw app log object
@@ -211,16 +212,17 @@ Implementation requirements:
   - 必须采用统一的 checkpoint-snapshot 路线；不再存在 test-phase 内推进 builder 的允许路径
   - build phase 与 test phase 必须是两个正式相位
   - build phase 负责顺序 ingest raw app logs，并产出：
-    - 本地 builder progress（authoritative builder resume source）
-    - required persisted checkpoint artifacts（checkpoint snapshot / `manifest.json`）
+    - required persisted checkpoint artifacts（checkpoint snapshot / `manifest.json` / snapshot-owned builder-resume metadata when needed）
+    - optional local builder progress / runtime bookkeeping
   - build phase 可以额外维护 full-corpus 的 local per-log preprocessing cache（例如 OpenIE / embedding 结果），并允许在该 cache 构建阶段使用并行
   - 这类 preprocessing cache 不是 retrieval-visible memory state；它只能作为后续 builder replay 的本地输入
   - 若使用 preprocessing cache，checkpoint memory state 仍必须按 confirmed prefix 顺序 replay / materialize；不得先基于全量 future logs 直接建成可检索图或可检索集合
   - test phase 才调用 shared `run_pipeline(...)`
   - `prepare_checkpoint_state(...)` 在 test phase 中只能定位并加载当前 checkpoint 的 persisted snapshot / collection；不得推进 builder
-  - 本地 builder progress 只可记录 confirmed progress；遇到 ingest 结果不确定时必须标记 uncertain，而不是回写更早 confirmed index
-  - resume 默认以本地 builder progress 记录的 confirmed prefix 为准；其作用是确定“从哪条 log 继续喂”
-  - checkpoint snapshot / `manifest.json` 是 required persisted checkpoint artifacts，用于当前 checkpoint 的只读 retrieval 与调试检查，但不应成为 builder/ingest resume 的 authoritative source
+  - standalone baseline entrypoints 必须使用 canonical path knobs；不保留 compatibility alias，也不允许从 `checkpoint_dir` 一类旧 builder-state 路径隐式推导 snapshot 读取路径
+  - 若 baseline 维护本地 builder progress，它只可记录 confirmed progress；遇到 ingest 结果不确定时必须标记 uncertain，而不是回写更早 confirmed index
+  - resume 默认以 latest confirmed snapshot bundle 为准；builder 所需的 authoritative resume metadata 应随 snapshot bundle 一起持久化，而不是只存在于本地 runtime 目录
+  - 本地 builder progress 若存在，只能作为运行时 bookkeeping / 调试辅助，不应成为 builder/ingest resume 的唯一 authoritative source
   - 当前尚未迁移到该路线的 stateful baseline 应标记为 pending compliance work，而不是协议例外
 
 ### 3.1b Shared Point Scoring Contract
