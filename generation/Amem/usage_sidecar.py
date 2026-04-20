@@ -2,7 +2,7 @@ import json
 import os
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict
+from typing import Any, Dict, Tuple
 
 
 def empty_usage_summary() -> Dict[str, Any]:
@@ -71,8 +71,10 @@ def merge_usage_summary(base: Dict[str, Any], delta: Dict[str, Any]) -> Dict[str
     return merged
 
 
-def build_usage_sidecar_paths(ckpt_dir: Path) -> tuple[Path, Path]:
-    return ckpt_dir / "usage_cost.json", ckpt_dir / "usage_cost_live.json"
+def build_usage_sidecar_paths(state_path: Path) -> Tuple[Path, Path]:
+    stem = str(Path(state_path).stem)
+    parent = Path(state_path).parent
+    return parent / f"{stem}_usage_cost.json", parent / f"{stem}_usage_cost_live.json"
 
 
 def load_usage_sidecar(path: Path) -> Dict[str, Any]:

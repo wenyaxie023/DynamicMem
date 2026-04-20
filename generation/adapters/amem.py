@@ -16,6 +16,14 @@ def _live_usage_cost_sidecar_path(output_path: Path) -> Path:
     return output_path.parent / "usage_cost_live.json"
 
 
+def _is_true(value) -> bool:
+    if isinstance(value, bool):
+        return value
+    if value is None:
+        return False
+    return str(value).strip().lower() in {"1", "true", "yes", "y", "on"}
+
+
 def _atomic_write_json(path: Path, payload: Any) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp_path = path.with_suffix(path.suffix + ".tmp")
@@ -174,6 +182,13 @@ def _write_live_usage_cost_sidecar(
 
 
 def run(args: TceAdapterArgs):
+    legacy_checkpoint_dir = args.extras.get("checkpoint_dir")
+    if legacy_checkpoint_dir:
+        raise ValueError(
+            "amem adapter no longer accepts baseline_params.checkpoint_dir; "
+            "use baseline_params.data_storage_path for builder state and baseline_params.snapshot_dir for snapshots."
+        )
+
     from generation.Amem.amem import evaluate_membench
     from generation.Amem.agentic_memory.llm_controller import (
         get_usage_summary as amem_usage_summary,
@@ -207,6 +222,10 @@ def run(args: TceAdapterArgs):
     )
     final_sidecar_path = _usage_cost_sidecar_path(args.output)
     live_sidecar_path = _live_usage_cost_sidecar_path(args.output)
+    build_only = _is_true(args.extras.get("build_only"))
+    data_storage_path = args.extras.get("data_storage_path")
+    if not data_storage_path:
+        raise ValueError("amem adapter requires baseline_params.data_storage_path")
 
     def _write_live_snapshot(
         *,
@@ -260,7 +279,7 @@ def run(args: TceAdapterArgs):
         llm_controller_api_key=llm_controller_api_key,
         llm_controller_api_base_url=llm_controller_api_base_url,
         resume=args.resume,
-        checkpoint_dir=args.extras.get("checkpoint_dir"),
+        data_storage_path=data_storage_path,
         save_every=int(args.extras.get("save_every", 50)),
         snapshot_dir=args.extras.get("snapshot_dir"),
         embedding_api_key=embedding_api_key,
@@ -276,6 +295,32 @@ def run(args: TceAdapterArgs):
         retrieval_usage={},
         answer_llm_usage={},
     )
+
+    if build_only:
+        _write_usage_cost_sidecar(
+            sidecar_path=final_sidecar_path,
+            output_path=args.output,
+            llm_provider=args.llm_provider,
+            llm_model=args.llm_model,
+            retriever_provider=args.retriever_provider,
+            embedding_model_name=args.retriever_model,
+            build_duration_s=build_duration_s,
+            generation_duration_s=0.0,
+            total_duration_s=build_duration_s,
+            build_memory_usage=build_memory_usage,
+            retrieval_usage={},
+            answer_llm_usage={},
+        )
+        return {
+            "predictions": [],
+            "build_only": {
+                "enabled": True,
+                "data_storage_path": str(data_storage_path),
+                "snapshot_dir": str(args.extras.get("snapshot_dir") or ""),
+                "user_id": user_id,
+                "size": args.extras.get("size", "small"),
+            },
+        }
 
     reset_amem_usage_tracker()
     generation_t0 = time.time()
@@ -298,7 +343,6 @@ def run(args: TceAdapterArgs):
         user_id=user_id,
         size=args.extras.get("size", "small"),
         snapshot_dir=args.extras.get("snapshot_dir"),
-        checkpoint_dir=args.extras.get("checkpoint_dir"),
         retrieval_top_k=args.retrieval_top_k,
         max_visible_logs=args.max_visible_logs,
         llm_provider=args.llm_provider,

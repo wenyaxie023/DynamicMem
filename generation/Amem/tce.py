@@ -192,7 +192,6 @@ def run_generation(
     user_id: str,
     size: str,
     snapshot_dir: Optional[str] = None,
-    checkpoint_dir: Optional[str] = None,
     retrieval_top_k: int = 5,
     max_visible_logs: Optional[int] = None,
     llm_provider: str = "openai",
@@ -235,12 +234,14 @@ def run_generation(
         top_k=answer_top_k,
     )
 
-    default_checkpoint_root = Path(checkpoint_dir) if checkpoint_dir else Path(__file__).resolve().parent / "checkpoints"
-    resolved_snapshot_root = (
-        Path(snapshot_root)
-        if snapshot_root
-        else _snapshot_root(snapshot_dir, default_checkpoint_root, user_id, size)
-    )
+    if snapshot_root:
+        resolved_snapshot_root = Path(snapshot_root)
+    else:
+        if not snapshot_dir:
+            raise ValueError(
+                "Amem standalone generation requires --snapshot-dir or --snapshot-root; no fallback is supported."
+            )
+        resolved_snapshot_root = _snapshot_root(snapshot_dir, Path("."), user_id, size)
     manifest_path = resolved_snapshot_root / "manifest.json"
     log_dir = Path(__file__).resolve().parent / "logs"
     log_dir.mkdir(parents=True, exist_ok=True)
@@ -528,13 +529,7 @@ def main() -> None:
         "--snapshot-dir",
         type=str,
         default=None,
-        help="Root directory for snapshot bundles. Defaults to <checkpoint-dir>/chroma_snapshots.",
-    )
-    parser.add_argument(
-        "--checkpoint-dir",
-        type=str,
-        default=None,
-        help="Checkpoint directory used to derive default snapshot root.",
+        help="Root directory for snapshot bundles. Resolved root is <snapshot-dir>/<user-id>/<size>.",
     )
     parser.add_argument(
         "--snapshot-root",
@@ -599,7 +594,6 @@ def main() -> None:
         user_id=args.user_id,
         size=args.size,
         snapshot_dir=args.snapshot_dir,
-        checkpoint_dir=args.checkpoint_dir,
         snapshot_root=args.snapshot_root,
         retrieval_top_k=args.retrieval_top_k,
         max_visible_logs=args.max_visible_logs,

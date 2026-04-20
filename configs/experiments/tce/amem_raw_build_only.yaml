@@ -1,0 +1,30 @@
+users:
+  - 001_user_001
+
+runtime:
+  baseline: amem
+  experiment_name: amem_build_only_raw
+  run_id: main
+  resume: true
+
+data:
+  benchmark: data_construction/generated_outputs/gemini_3_flash_preview/{user_id}/tce_benchmark_vnext_raw.json
+  app_logs_path: data_construction/generated_outputs/gemini_3_flash_preview/{user_id}/app_log_large.json
+
+output:
+  prediction_path: generation/Amem/results/{user_id}/prediction/{run_name}/build_only.json
+
+llm:
+  provider: azure
+  model: gpt-5-mini
+
+retriever:
+  provider: azure
+  model: text-embedding-3-large
+
+baseline_params:
+  size: large
+  snapshot_dir: generation/Amem/snapshots/{run_name}
+  data_storage_path: generation/Amem/runtime_data/{run_name}/{user_id}
+  save_every: 5
+  build_only: true

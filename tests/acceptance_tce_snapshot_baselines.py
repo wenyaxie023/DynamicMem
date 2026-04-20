@@ -257,7 +257,7 @@ def _run_fake_amem_builder(
     *,
     benchmark_path: Path,
     app_logs_path: Path,
-    checkpoint_dir: Path,
+    data_storage_path: Path,
     snapshot_root: Path,
     fail_after_calls=None,
     resume: bool = False,
@@ -283,7 +283,7 @@ def _run_fake_amem_builder(
             llm_controller_backend="openai",
             llm_controller_model_name="gpt-5-mini",
             resume=resume,
-            checkpoint_dir=str(checkpoint_dir),
+            data_storage_path=str(data_storage_path),
             save_every=5,
             snapshot_dir=str(snapshot_root),
         )
@@ -571,7 +571,7 @@ class SnapshotBaselineAcceptance(unittest.TestCase):
             benchmark_path = root / "benchmark.json"
             app_logs_path = root / "app_logs.json"
             output_path = root / "prediction.json"
-            checkpoint_dir = root / "ckpts"
+            data_storage_path = root / "runtime_data"
             snapshot_root = root / "snapshots"
             benchmark_path.write_text(json.dumps(benchmark, ensure_ascii=False, indent=2), encoding="utf-8")
             app_logs_path.write_text(json.dumps(app_logs, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -581,7 +581,7 @@ class SnapshotBaselineAcceptance(unittest.TestCase):
             _, resolved_snapshot_root = _run_fake_amem_builder(
                 benchmark_path=benchmark_path,
                 app_logs_path=app_logs_path,
-                checkpoint_dir=checkpoint_dir,
+                data_storage_path=data_storage_path,
                 snapshot_root=snapshot_root,
                 fail_after_calls=None,
                 resume=False,
@@ -599,7 +599,6 @@ class SnapshotBaselineAcceptance(unittest.TestCase):
                     user_id="001_user_001",
                     size="large",
                     snapshot_dir=None,
-                    checkpoint_dir=str(checkpoint_dir),
                     retrieval_top_k=5,
                     max_visible_logs=None,
                     llm_provider="openai",
@@ -762,7 +761,7 @@ class SnapshotBaselineAcceptance(unittest.TestCase):
             app_logs_path = root / "app_logs.json"
             qa_path = root / "qa.json"
             output_path = root / "prediction.json"
-            checkpoint_dir = root / "ckpts"
+            data_storage_path = root / "runtime_data"
             snapshot_root = root / "snapshots"
             benchmark_path.write_text(json.dumps(benchmark, ensure_ascii=False, indent=2), encoding="utf-8")
             app_logs_path.write_text(json.dumps(app_logs, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -773,7 +772,7 @@ class SnapshotBaselineAcceptance(unittest.TestCase):
             _, resolved_snapshot_root = _run_fake_amem_builder(
                 benchmark_path=benchmark_path,
                 app_logs_path=app_logs_path,
-                checkpoint_dir=checkpoint_dir,
+                data_storage_path=data_storage_path,
                 snapshot_root=snapshot_root,
                 fail_after_calls=None,
                 resume=False,
@@ -791,7 +790,6 @@ class SnapshotBaselineAcceptance(unittest.TestCase):
                     user_id="001_user_001",
                     size="large",
                     snapshot_dir=None,
-                    checkpoint_dir=str(checkpoint_dir),
                     retrieval_top_k=5,
                     max_visible_logs=None,
                     llm_provider="openai",
@@ -825,7 +823,7 @@ class SnapshotBaselineAcceptance(unittest.TestCase):
         self.assertEqual(final_qa_results[0]["prediction"], "Recommend espresso")
         self.assertEqual(final_qa_results[0]["metadata"]["tce_final_checkpoint_id"], "cp_0002")
 
-    def test_amem_builder_resume_uses_builder_progress_files(self):
+    def test_amem_builder_resume_uses_snapshot_manifest(self):
         benchmark = {
             "user_id": "001_user_001",
             "sampling_strategy": {"stage": "benchmark_build"},
@@ -838,7 +836,7 @@ class SnapshotBaselineAcceptance(unittest.TestCase):
             benchmark_path = root / "benchmark.json"
             app_logs_path = root / "app_logs.json"
             output_path = root / "prediction.json"
-            checkpoint_dir = root / "ckpts"
+            data_storage_path = root / "runtime_data"
             snapshot_root = root / "snapshots"
             benchmark_path.write_text(json.dumps(benchmark, ensure_ascii=False, indent=2), encoding="utf-8")
             app_logs_path.write_text(json.dumps(app_logs, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -850,21 +848,24 @@ class SnapshotBaselineAcceptance(unittest.TestCase):
                 _run_fake_amem_builder(
                     benchmark_path=benchmark_path,
                     app_logs_path=app_logs_path,
-                    checkpoint_dir=checkpoint_dir,
+                    data_storage_path=data_storage_path,
                     snapshot_root=snapshot_root,
                     fail_after_calls=7,
                     resume=False,
                 )
 
-            progress_path = checkpoint_dir / "membench_amem_001_user_001_large.json"
+            progress_path = data_storage_path / "membench_amem_001_user_001_large.json"
             progress_payload = json.loads(progress_path.read_text(encoding="utf-8"))
             self.assertEqual(progress_payload["last_event_idx"], 6)
             self.assertEqual(progress_payload["events_processed"], 7)
 
+            for path in sorted(data_storage_path.glob("membench_amem_001_user_001_large*")):
+                path.unlink()
+
             _, resolved_snapshot_root = _run_fake_amem_builder(
                 benchmark_path=benchmark_path,
                 app_logs_path=app_logs_path,
-                checkpoint_dir=checkpoint_dir,
+                data_storage_path=data_storage_path,
                 snapshot_root=snapshot_root,
                 fail_after_calls=None,
                 resume=True,
@@ -884,7 +885,6 @@ class SnapshotBaselineAcceptance(unittest.TestCase):
                     user_id="001_user_001",
                     size="large",
                     snapshot_dir=None,
-                    checkpoint_dir=str(checkpoint_dir),
                     retrieval_top_k=5,
                     max_visible_logs=None,
                     llm_provider="openai",

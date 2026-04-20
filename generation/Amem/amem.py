@@ -157,6 +157,37 @@ def _load_manifest(path: Path) -> Dict[str, Any]:
     return payload
 
 
+def _snapshot_sort_key(entry: Dict[str, Any]) -> tuple[int, str, str]:
+    return (
+        int(entry.get("last_event_idx", -1)) if isinstance(entry.get("last_event_idx", -1), int) else -1,
+        str(entry.get("created_at", "")),
+        str(entry.get("snapshot_id", "")),
+    )
+
+
+def _latest_snapshot_entry(snapshot_root: Path) -> Optional[Dict[str, Any]]:
+    manifest = _load_manifest(_snapshot_manifest_path(snapshot_root))
+    entries = [x for x in manifest.get("snapshots", []) if isinstance(x, dict)]
+    if not entries:
+        return None
+    entries.sort(key=_snapshot_sort_key, reverse=True)
+    return entries[0]
+
+
+def _load_snapshot_checkpoint_payload(snapshot_root: Path, entry: Dict[str, Any]) -> Dict[str, Any]:
+    snapshot_id = str(entry.get("snapshot_id") or "")
+    checkpoint_path = snapshot_root / entry.get("checkpoint_path", str(Path(snapshot_id) / "checkpoint.json"))
+    if not checkpoint_path.exists():
+        return {}
+    payload = json.loads(checkpoint_path.read_text(encoding="utf-8"))
+    return payload if isinstance(payload, dict) else {}
+
+
+def _load_snapshot_state_path(snapshot_root: Path, entry: Dict[str, Any]) -> Path:
+    snapshot_id = str(entry.get("snapshot_id") or "")
+    return snapshot_root / entry.get("state_path", str(Path(snapshot_id) / "state.pkl"))
+
+
 def _atomic_write_json(path: Path, payload: Dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp_path = path.with_suffix(path.suffix + ".tmp")
@@ -300,7 +331,7 @@ def evaluate_membench(
     llm_controller_api_key: Optional[str] = None,
     llm_controller_api_base_url: Optional[str] = None,
     resume: bool = False,
-    checkpoint_dir: Optional[str] = None,
+    data_storage_path: Optional[str] = None,
     save_every: int = 50,
     snapshot_dir: Optional[str] = None,
     embedding_api_key: Optional[str] = None,
@@ -339,9 +370,13 @@ def evaluate_membench(
     timestamp = datetime.now().strftime("%Y-%m-%d-%H-%M")
     logger = setup_logger(log_dir / f"membench_amem_{user_id}_{timestamp}.log")
 
-    ckpt_dir = Path(checkpoint_dir) if checkpoint_dir else (Path(__file__).resolve().parent / "checkpoints")
-    state_path, checkpoint_path = _checkpoint_paths(ckpt_dir, user_id, size)
-    final_usage_sidecar_path, live_usage_sidecar_path = build_usage_sidecar_paths(ckpt_dir)
+    if not data_storage_path:
+        raise ValueError("Amem builder requires baseline_params.data_storage_path; no fallback is supported.")
+    if not snapshot_dir:
+        raise ValueError("Amem builder requires baseline_params.snapshot_dir; no fallback is supported.")
+    builder_state_dir = Path(data_storage_path)
+    state_path, checkpoint_path = _checkpoint_paths(builder_state_dir, user_id, size)
+    final_usage_sidecar_path, live_usage_sidecar_path = build_usage_sidecar_paths(state_path)
     accumulated_duration_s = 0.0
     accumulated_usage: Dict[str, Any] = {}
     if resume:
@@ -365,16 +400,21 @@ def evaluate_membench(
             else {}
         )
 
-    snapshot_root = _snapshot_root(snapshot_dir, ckpt_dir, user_id, size)
+    snapshot_root = _snapshot_root(snapshot_dir, builder_state_dir, user_id, size)
     resume_enabled = False
     start_index = 0
     processed = 0
-    if resume and state_path.exists() and checkpoint_path.exists():
-        resume_enabled = True
-        last_event_idx, processed = _load_checkpoint(checkpoint_path, logger)
-        start_index = last_event_idx + 1
-        if start_index < 0:
-            start_index = 0
+    resume_snapshot_state_path: Optional[Path] = None
+    if resume:
+        latest_entry = _latest_snapshot_entry(snapshot_root)
+        if latest_entry is not None:
+            latest_payload = _load_snapshot_checkpoint_payload(snapshot_root, latest_entry)
+            resume_snapshot_state_path = _load_snapshot_state_path(snapshot_root, latest_entry)
+            if resume_snapshot_state_path.exists():
+                last_event_idx = int(latest_payload.get("last_event_idx", latest_entry.get("last_event_idx", -1)))
+                processed = int(latest_payload.get("events_processed", last_event_idx + 1))
+                start_index = max(0, last_event_idx + 1)
+                resume_enabled = True
 
     logger.info(
         "Embedding config: backend=%s model=%s collection=%s",
@@ -422,9 +462,9 @@ def evaluate_membench(
         )
 
     if resume_enabled:
-        memory_system.load_state(state_path)
+        memory_system.load_state(resume_snapshot_state_path)
         memory_system.rebuild_retriever()
-        logger.info("Resuming from checkpoint: start_index=%d", start_index)
+        logger.info("Resuming from snapshot: start_index=%d", start_index)
 
     if processed <= 0:
         processed = start_index
@@ -606,7 +646,13 @@ def main() -> None:
         help="LLM API base URL",
     )
     parser.add_argument("--resume", action="store_true", help="Resume from last checkpoint if available")
-    parser.add_argument("--checkpoint-dir", type=str, default=None, help="Checkpoint directory")
+    parser.add_argument(
+        "--data-storage-path",
+        dest="data_storage_path",
+        type=str,
+        default=None,
+        help="Runtime data directory for builder state and usage sidecars.",
+    )
     parser.add_argument("--save-every", type=int, default=50, help="Save checkpoint every N events")
     parser.add_argument("--snapshot-dir", type=str, default=None, help="Root directory for durable snapshot bundles")
     parser.add_argument("--embedding-api-key", type=str, default=None, help="Embedding API key")
@@ -633,7 +679,7 @@ def main() -> None:
         llm_controller_api_key=args.llm_controller_api_key,
         llm_controller_api_base_url=args.llm_controller_api_base_url,
         resume=args.resume,
-        checkpoint_dir=args.checkpoint_dir,
+        data_storage_path=args.data_storage_path,
         save_every=args.save_every,
         snapshot_dir=args.snapshot_dir,
         embedding_api_key=args.embedding_api_key,
