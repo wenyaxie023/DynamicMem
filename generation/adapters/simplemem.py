@@ -1,13 +1,30 @@
 from .base import TceAdapterArgs
 
 
+def _is_true(value) -> bool:
+    if isinstance(value, bool):
+        return value
+    if value is None:
+        return False
+    return str(value).strip().lower() in {"1", "true", "yes", "y", "on"}
+
+
 def run(args: TceAdapterArgs):
     from generation.simplemem.generation_tce.tce import run_generation
+
+    snapshot_dir = args.extras.get("snapshot_dir")
+    if not snapshot_dir:
+        raise ValueError("simplemem adapter requires baseline_params.snapshot_dir")
+    data_storage_path = args.extras.get("data_storage_path")
+    if not data_storage_path:
+        raise ValueError("simplemem adapter requires baseline_params.data_storage_path")
 
     return run_generation(
         benchmark_path=args.benchmark,
         app_logs_path=args.app_logs_path,
         output_path=args.output,
+        snapshot_dir=snapshot_dir,
+        data_storage_path=data_storage_path,
         max_visible_logs=args.max_visible_logs,
         llm_provider=args.llm_provider,
         llm_model=args.llm_model,
@@ -61,6 +78,7 @@ def run(args: TceAdapterArgs):
             if str(args.extras.get("builder_llm_temperature", "")).strip()
             else 0.1
         ),
+        build_only=_is_true(args.extras.get("build_only")),
         window_size=(
             int(args.extras.get("window_size"))
             if str(args.extras.get("window_size", "")).strip()

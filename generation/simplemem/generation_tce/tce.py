@@ -148,13 +148,6 @@ def _dialogues_from_log(log: Dict[str, Any], *, dialogue_start_id: int) -> List[
             timestamp=timestamp,
             source_log_id=app_log_id,
         ),
-        Dialogue(
-            dialogue_id=int(dialogue_start_id) + 1,
-            speaker="Assistant",
-            content="[ingested]",
-            timestamp=timestamp,
-            source_log_id=app_log_id,
-        ),
     ]
 
 
@@ -224,6 +217,25 @@ def _load_manifest_entries(snapshot_root: Path) -> List[Dict[str, Any]]:
     if not isinstance(entries, list):
         return []
     return [entry for entry in entries if isinstance(entry, dict)]
+
+
+def _snapshot_sort_key(entry: Mapping[str, Any]) -> Tuple[int, str, str]:
+    last_event_idx = entry.get("last_event_idx", -1)
+    if not isinstance(last_event_idx, int):
+        last_event_idx = -1
+    return (
+        int(last_event_idx),
+        str(entry.get("created_at") or ""),
+        str(entry.get("snapshot_id") or ""),
+    )
+
+
+def _latest_snapshot_entry(snapshot_root: Path) -> Optional[Dict[str, Any]]:
+    entries = [entry for entry in _load_manifest_entries(snapshot_root) if _checkpoint_snapshot_exists(snapshot_root, entry)]
+    if not entries:
+        return None
+    entries.sort(key=_snapshot_sort_key, reverse=True)
+    return dict(entries[0])
 
 
 def _write_manifest_entries(snapshot_root: Path, entries: Sequence[Dict[str, Any]]) -> None:
@@ -302,17 +314,10 @@ def _checkpoint_snapshot_exists(snapshot_root: Path, entry: Dict[str, Any]) -> b
     return Path(bundle.get("db_dir")).exists()
 
 
-def _builder_state_from_progress(payload: Dict[str, Any]) -> Dict[str, Any]:
-    return {
-        "processed_count": int(payload.get("processed_count") or 0),
-        "dialogue_buffer": [x for x in (payload.get("pending_dialogue_buffer") or []) if isinstance(x, dict)],
-        "previous_entries": [x for x in (payload.get("previous_entries") or []) if isinstance(x, dict)],
-    }
-
-
 @dataclass
 class SimpleMemBaselineConfig:
     output_root: Path
+    data_storage_root: Path
     live_db_root: Path
     snapshot_root: Path
     progress_path: Path
@@ -350,6 +355,8 @@ def run_generation(
     benchmark_path: Path,
     app_logs_path: Path,
     output_path: Path,
+    snapshot_dir: Optional[str],
+    data_storage_path: Optional[str],
     max_visible_logs: Optional[int],
     llm_provider: str,
     llm_model: str,
@@ -383,6 +390,7 @@ def run_generation(
     builder_llm_model: Optional[str] = None,
     builder_llm_max_workers: Optional[int] = None,
     builder_llm_temperature: Optional[float] = 0.1,
+    build_only: bool = False,
     window_size: int = 5,
     overlap_size: int = 1,
     save_every_logs: int = 5,
@@ -399,17 +407,23 @@ def run_generation(
 ) -> Dict[str, Any]:
 
     load_repo_dotenv(REPO_ROOT_DIR)
+    if not snapshot_dir:
+        raise ValueError("SimpleMem requires baseline_params.snapshot_dir; no fallback is supported.")
+    if not data_storage_path:
+        raise ValueError("SimpleMem requires baseline_params.data_storage_path; no fallback is supported.")
     output_path.parent.mkdir(parents=True, exist_ok=True)
     output_root = output_path.parent
-    live_db_root = output_root / "simplemem_live_db"
-    snapshot_root = output_root / "simplemem_snapshots"
-    progress_path = output_root / "builder_progress.json"
+    data_storage_root = Path(data_storage_path)
+    live_db_root = data_storage_root / "simplemem_live_db"
+    snapshot_root = Path(snapshot_dir)
+    progress_path = data_storage_root / "builder_progress.json"
 
     if embedding_dim is None:
         embedding_dim = 3072 if "large" in str(retriever_model or "").lower() else 1536
 
     config = SimpleMemBaselineConfig(
         output_root=output_root,
+        data_storage_root=data_storage_root,
         live_db_root=live_db_root,
         snapshot_root=snapshot_root,
         progress_path=progress_path,
@@ -509,17 +523,10 @@ def run_generation(
             structured_top_k=config.structured_top_k,
         )
 
-    answer_client = SharedLLMClient(
-        provider=config.llm_provider,
-        model_name=config.llm_model,
-        max_workers=config.llm_max_workers,
-        temperature=config.answer_temperature,
-        top_p=config.answer_top_p,
-        top_k=config.answer_top_k,
-    )
-    build_system = _create_builder_system(db_path=config.live_db_root, clear_db=not resume)
-    live_store = build_system.vector_store
-    builder = build_system.memory_builder
+    answer_client = None
+    build_system = None
+    live_store = None
+    builder = None
 
     base_live_sidecar = _load_json_dict(_usage_sidecar_path(output_path, live=True)) if resume else {}
     base_final_sidecar = _load_json_dict(_usage_sidecar_path(output_path, live=False)) if resume else {}
@@ -527,7 +534,15 @@ def run_generation(
     generation_started_at: Optional[float] = None
     build_completed_duration_s = 0.0
     builder_progress: Dict[str, Any] = {}
-    live_lineage_mapping: Dict[str, List[str]] = _load_lineage_mapping(config.live_db_root) if resume else {}
+    live_lineage_mapping: Dict[str, List[str]] = {}
+
+    def _reopen_builder_system(*, clear_db: bool) -> None:
+        nonlocal build_system, live_store, builder
+        if build_system is not None:
+            build_system.close()
+        build_system = _create_builder_system(db_path=config.live_db_root, clear_db=clear_db)
+        live_store = build_system.vector_store
+        builder = build_system.memory_builder
 
     def _current_build_usage() -> Dict[str, Any]:
         build_llm_usage = merge_usage_summary(
@@ -543,6 +558,8 @@ def run_generation(
         return usage
 
     def _current_answer_usage() -> Dict[str, Any]:
+        if answer_client is None:
+            return {}
         return answer_client.usage_summary()
 
     def _write_live_usage() -> None:
@@ -597,11 +614,12 @@ def run_generation(
             completed_snapshot_ids = builder_progress.get("completed_snapshot_ids") or []
         builder_progress.update(
             {
-                "version": "simplemem_builder_progress_v2",
+                "version": "simplemem_builder_progress_v3",
                 "app_logs_path": str(app_logs_path),
                 "benchmark_path": str(benchmark_path),
                 "live_db_path": str(config.live_db_root),
                 "snapshot_root": str(config.snapshot_root),
+                "resume_source": "snapshot_bundle",
                 "confirmed_last_log_idx": int(confirmed_last_log_idx),
                 "confirmed_app_log_id": confirmed_app_log_id,
                 "indexed_log_count": int(live_store.count_rows()) if config.live_db_root.exists() else 0,
@@ -635,43 +653,58 @@ def run_generation(
         return updated
 
     def _reset_builder_state() -> None:
-        nonlocal build_system, live_store, builder
-        build_system.close()
-        shutil.rmtree(config.live_db_root, ignore_errors=True)
+        shutil.rmtree(config.data_storage_root, ignore_errors=True)
         shutil.rmtree(config.snapshot_root, ignore_errors=True)
+        config.data_storage_root.mkdir(parents=True, exist_ok=True)
         config.snapshot_root.mkdir(parents=True, exist_ok=True)
-        build_system = _create_builder_system(db_path=config.live_db_root, clear_db=True)
-        live_store = build_system.vector_store
-        builder = build_system.memory_builder
+        _reopen_builder_system(clear_db=True)
         builder_progress.clear()
         _persist_builder_progress(confirmed_last_log_idx=-1, status="initialized")
 
-    def _restore_builder_state(progress_payload: Dict[str, Any]) -> bool:
-        if str(progress_payload.get("app_logs_path") or "") != str(app_logs_path):
+    def _restore_builder_state_from_snapshot() -> bool:
+        latest_entry = _latest_snapshot_entry(config.snapshot_root)
+        if latest_entry is None:
             return False
-        if str(progress_payload.get("benchmark_path") or "") != str(benchmark_path):
+        bundle = _load_snapshot_bundle(config.snapshot_root, latest_entry)
+        checkpoint_payload = bundle.get("checkpoint_payload") if isinstance(bundle.get("checkpoint_payload"), dict) else {}
+        if str(checkpoint_payload.get("app_logs_path") or "") not in {"", str(app_logs_path)}:
             return False
-        if not config.live_db_root.exists():
+        if str(checkpoint_payload.get("benchmark_path") or "") not in {"", str(benchmark_path)}:
             return False
-        builder.import_state(_builder_state_from_progress(progress_payload))
-        completed_snapshot_ids = [str(x) for x in (progress_payload.get("completed_snapshot_ids") or []) if str(x).strip()]
-        entries = _load_manifest_entries(config.snapshot_root)
-        by_checkpoint = {str(entry.get("checkpoint_id") or ""): entry for entry in entries if isinstance(entry, dict)}
-        for checkpoint_id in completed_snapshot_ids:
-            if checkpoint_id not in required_checkpoint_ids:
-                continue
-            entry = by_checkpoint.get(checkpoint_id)
-            if entry is None or not _checkpoint_snapshot_exists(config.snapshot_root, entry):
-                return False
-        builder_progress.update(progress_payload)
+        builder_state = checkpoint_payload.get("builder_state")
+        if not isinstance(builder_state, dict):
+            return False
+        snapshot_db_dir = Path(bundle["db_dir"])
+        if not snapshot_db_dir.exists():
+            return False
+        shutil.rmtree(config.data_storage_root, ignore_errors=True)
+        config.data_storage_root.mkdir(parents=True, exist_ok=True)
+        shutil.copytree(str(snapshot_db_dir), str(config.live_db_root))
+        _reopen_builder_system(clear_db=False)
+        build_system.import_builder_state(builder_state)
+        restored_snapshot_ids = [
+            str(entry.get("checkpoint_id") or "")
+            for entry in _load_manifest_entries(config.snapshot_root)
+            if isinstance(entry, dict)
+            and str(entry.get("checkpoint_id") or "").strip()
+            and _checkpoint_snapshot_exists(config.snapshot_root, entry)
+            and str(entry.get("checkpoint_id") or "") in required_checkpoint_ids
+        ]
+        builder_progress.clear()
+        _persist_builder_progress(
+            confirmed_last_log_idx=int(checkpoint_payload.get("confirmed_last_log_idx") or latest_entry.get("last_event_idx") or -1),
+            status="resumed_from_snapshot",
+            checkpoint_id=str(bundle.get("checkpoint_id") or ""),
+            completed_snapshot_ids=restored_snapshot_ids,
+        )
         return True
 
     if resume:
-        existing_progress = _load_json_dict(config.progress_path)
-        if not _restore_builder_state(existing_progress):
+        if not _restore_builder_state_from_snapshot():
             _reset_builder_state()
     else:
         _reset_builder_state()
+    live_lineage_mapping = _load_lineage_mapping(config.live_db_root)
 
     completed_snapshot_ids = [str(x) for x in (builder_progress.get("completed_snapshot_ids") or []) if str(x).strip()]
     manifest_entries = _load_manifest_entries(config.snapshot_root)
@@ -718,6 +751,9 @@ def run_generation(
             "checkpoint_app_log_id": str(checkpoint_target.get("checkpoint_app_log_id") or ""),
             "checkpoint_log_index": int(checkpoint_target.get("target_log_idx") or -1),
             "confirmed_last_log_idx": int(confirmed_last_log_idx),
+            "builder_state": build_system.export_builder_state(),
+            "app_logs_path": str(app_logs_path),
+            "benchmark_path": str(benchmark_path),
             "created_at": _now_iso(),
             "pending_buffer_flushed_entries": len(flushed_entries),
         }
@@ -770,7 +806,7 @@ def run_generation(
                 next_idx = confirmed_last_log_idx + 1
                 log = all_logs[next_idx]
                 builder.add_dialogues(
-                    _dialogues_from_log(log, dialogue_start_id=(next_idx * 2) + 1),
+                    _dialogues_from_log(log, dialogue_start_id=next_idx + 1),
                     auto_process=False,
                 )
                 while len(builder.dialogue_buffer) >= builder.window_size:
@@ -812,6 +848,32 @@ def run_generation(
         _write_live_usage()
         build_system.close()
         raise
+
+    if build_only:
+        _write_final_usage()
+        builder_usage = _current_build_usage()
+        build_system.close()
+        return {
+            "predictions": [],
+            "build_only": {
+                "snapshot_dir": str(config.snapshot_root),
+                "data_storage_path": str(config.data_storage_root),
+                "completed_snapshot_ids": list(completed_snapshot_ids),
+                "confirmed_last_log_idx": int(confirmed_last_log_idx),
+            },
+            "builder_usage": builder_usage,
+            "answer_llm_usage": {},
+            "retrieval_usage": {},
+        }
+
+    answer_client = SharedLLMClient(
+        provider=config.llm_provider,
+        model_name=config.llm_model,
+        max_workers=config.llm_max_workers,
+        temperature=config.answer_temperature,
+        top_p=config.answer_top_p,
+        top_k=config.answer_top_k,
+    )
 
     manifest_entries = _load_manifest_entries(config.snapshot_root)
     bundle_by_checkpoint_id: Dict[str, Dict[str, Any]] = {}
@@ -857,7 +919,8 @@ def run_generation(
             build_system.close()
             for system in snapshot_cache.values():
                 system.close()
-            answer_client.close()
+            if answer_client is not None:
+                answer_client.close()
 
     def prepare_checkpoint_state(cp: Dict[str, Any], memory_pool: List[Dict[str, Any]]) -> CheckpointHandle:
         checkpoint_id = str(cp.get("checkpoint_id") or "")
@@ -1022,6 +1085,8 @@ def main() -> None:
     parser.add_argument("--benchmark", type=Path, required=True)
     parser.add_argument("--app-logs-path", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument("--snapshot-dir", type=str, required=True)
+    parser.add_argument("--data-storage-path", type=str, required=True)
     parser.add_argument("--retrieval-top-k", type=int, default=20)
     parser.add_argument("--retriever-provider", type=str, default="openai")
     parser.add_argument("--retriever-model", type=str, default="text-embedding-3-large")
@@ -1044,6 +1109,7 @@ def main() -> None:
     parser.add_argument("--max-retrieval-workers", type=int, default=1)
     parser.add_argument("--max-checkpoints", type=int, default=None)
     parser.add_argument("--resume", action="store_true")
+    parser.add_argument("--build-only", action="store_true")
     parser.add_argument("--debug", action="store_true")
     parser.add_argument("--save-prompt-and-raw", action="store_true")
     args = parser.parse_args()
@@ -1052,6 +1118,8 @@ def main() -> None:
         benchmark_path=args.benchmark,
         app_logs_path=args.app_logs_path,
         output_path=args.output,
+        snapshot_dir=args.snapshot_dir,
+        data_storage_path=args.data_storage_path,
         max_visible_logs=None,
         llm_provider=args.llm_provider,
         llm_model=args.llm_model,
@@ -1068,6 +1136,7 @@ def main() -> None:
         debug_dir=None,
         save_prompt_and_raw=args.save_prompt_and_raw,
         retrieval_top_k=args.retrieval_top_k,
+        build_only=args.build_only,
         window_size=args.window_size,
         overlap_size=args.overlap_size,
         save_every_logs=args.save_every_logs,
