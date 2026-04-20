@@ -496,13 +496,15 @@ class HippoRAG2ProtocolTests(unittest.TestCase):
             root = Path(td)
             benchmark_path = root / "benchmark.json"
             app_logs_path = root / "app_logs.json"
-            save_root = root / "hipporag"
+            data_storage_root = root / "hipporag_runtime"
+            snapshot_root = root / "hipporag_snapshots"
             benchmark_path.write_text(json.dumps(benchmark, ensure_ascii=False, indent=2), encoding="utf-8")
             app_logs_path.write_text(json.dumps(all_logs, ensure_ascii=False, indent=2), encoding="utf-8")
 
             _FakeHippoRAG.reset()
             runner = mod.HippoRAG2Runner(
-                save_root=save_root,
+                data_storage_root=data_storage_root,
+                snapshot_root=snapshot_root,
                 all_logs=all_logs,
                 llm_model="gpt-5-mini",
                 llm_base_url="https://example.com/v1",
@@ -521,27 +523,18 @@ class HippoRAG2ProtocolTests(unittest.TestCase):
                     builder_save_every_logs=2,
                 )
 
-                preprocess_progress = json.loads((save_root / "preprocess" / "progress.json").read_text(encoding="utf-8"))
-                preprocess_manifest = json.loads((save_root / "preprocess" / "manifest.json").read_text(encoding="utf-8"))
-                progress = json.loads((save_root / "builder" / "progress.json").read_text(encoding="utf-8"))
-                manifest = json.loads((save_root / "checkpoints" / "manifest.json").read_text(encoding="utf-8"))
-                self.assertEqual(preprocess_progress["artifact_version"], 2)
-                self.assertEqual(preprocess_progress["confirmed_last_log_index"], 3)
-                self.assertEqual(preprocess_progress["status"], "complete")
-                self.assertEqual(preprocess_manifest["artifact_version"], 2)
-                self.assertEqual(len(preprocess_manifest["logs"]), 4)
-                self.assertTrue((save_root / "preprocess" / "logs" / "00000000__log_00001.json").exists())
-                self.assertTrue((save_root / "preprocess" / "chunk_embeddings" / "rows.json").exists())
-                self.assertTrue((save_root / "preprocess" / "entity_embeddings" / "rows.json").exists())
-                self.assertTrue((save_root / "preprocess" / "fact_embeddings" / "rows.json").exists())
+                progress = json.loads((data_storage_root / "builder" / "progress.json").read_text(encoding="utf-8"))
+                manifest = json.loads((snapshot_root / "manifest.json").read_text(encoding="utf-8"))
                 self.assertEqual(progress["confirmed_last_log_index"], 3)
                 self.assertEqual(progress["status"], "complete")
                 self.assertEqual(progress["artifact_version"], 2)
+                self.assertEqual(progress["preprocess_fingerprint"], "")
                 self.assertEqual(len(manifest["checkpoints"]), 2)
-                self.assertTrue((save_root / "builder" / "periodic" / "periodic_00000002").exists())
-                self.assertTrue((save_root / "builder" / "periodic" / "final_00000004").exists())
-                self.assertTrue((save_root / "checkpoints" / "cp1").exists())
-                self.assertTrue((save_root / "checkpoints" / "cp2").exists())
+                self.assertFalse((data_storage_root / "preprocess").exists())
+                self.assertTrue((snapshot_root / "periodic" / "periodic_00000002").exists())
+                self.assertTrue((snapshot_root / "periodic" / "final_00000004").exists())
+                self.assertTrue((snapshot_root / "checkpoints" / "cp1").exists())
+                self.assertTrue((snapshot_root / "checkpoints" / "cp2").exists())
 
                 _FakeHippoRAG.created = []
 
@@ -608,7 +601,8 @@ class HippoRAG2ProtocolTests(unittest.TestCase):
             root = Path(td)
             benchmark_path = root / "benchmark.json"
             app_logs_path = root / "app_logs.json"
-            save_root = root / "hipporag"
+            data_storage_root = root / "hipporag_runtime"
+            snapshot_root = root / "hipporag_snapshots"
             benchmark_path.write_text(json.dumps(benchmark, ensure_ascii=False, indent=2), encoding="utf-8")
             app_logs_path.write_text(json.dumps(app_logs, ensure_ascii=False, indent=2), encoding="utf-8")
 
@@ -616,7 +610,8 @@ class HippoRAG2ProtocolTests(unittest.TestCase):
                 _FakeHippoRAG.reset()
                 _FakeHippoRAG.raise_on_index_call_numbers = {2}
                 runner = mod.HippoRAG2Runner(
-                    save_root=save_root,
+                    data_storage_root=data_storage_root,
+                    snapshot_root=snapshot_root,
                     all_logs=app_logs,
                     llm_model="gpt-5-mini",
                     llm_base_url="https://example.com/v1",
@@ -635,14 +630,15 @@ class HippoRAG2ProtocolTests(unittest.TestCase):
                         builder_save_every_logs=1,
                     )
 
-                progress = json.loads((save_root / "builder" / "progress.json").read_text(encoding="utf-8"))
+                progress = json.loads((data_storage_root / "builder" / "progress.json").read_text(encoding="utf-8"))
                 self.assertEqual(progress["confirmed_last_log_index"], 0)
                 self.assertEqual(progress["status"], "interrupted")
-                shutil.rmtree(save_root / "builder" / "workspace")
+                shutil.rmtree(data_storage_root / "builder" / "workspace")
 
                 _FakeHippoRAG.reset()
                 runner = mod.HippoRAG2Runner(
-                    save_root=save_root,
+                    data_storage_root=data_storage_root,
+                    snapshot_root=snapshot_root,
                     all_logs=app_logs,
                     llm_model="gpt-5-mini",
                     llm_base_url="https://example.com/v1",
@@ -660,14 +656,14 @@ class HippoRAG2ProtocolTests(unittest.TestCase):
                     builder_save_every_logs=1,
                 )
 
-                progress = json.loads((save_root / "builder" / "progress.json").read_text(encoding="utf-8"))
-                manifest = json.loads((save_root / "checkpoints" / "manifest.json").read_text(encoding="utf-8"))
+                progress = json.loads((data_storage_root / "builder" / "progress.json").read_text(encoding="utf-8"))
+                manifest = json.loads((snapshot_root / "manifest.json").read_text(encoding="utf-8"))
                 self.assertEqual(progress["confirmed_last_log_index"], 2)
                 self.assertEqual(progress["status"], "complete")
                 self.assertEqual({item["checkpoint_id"] for item in manifest["checkpoints"]}, {"cp_0001", "cp_0002"})
                 self.assertEqual(len(_FakeHippoRAG.created[0].index_calls), 2)
                 self.assertIn("log_0002", _FakeHippoRAG.created[0].index_calls[0][0])
-                self.assertTrue((save_root / "checkpoints" / "cp_0002").exists())
+                self.assertTrue((snapshot_root / "checkpoints" / "cp_0002").exists())
 
     def test_materializer_config_mismatch_forces_clean_rebuild(self):
         with _install_import_stubs():
@@ -691,14 +687,16 @@ class HippoRAG2ProtocolTests(unittest.TestCase):
             root = Path(td)
             benchmark_path = root / "benchmark.json"
             app_logs_path = root / "app_logs.json"
-            save_root = root / "hipporag"
+            data_storage_root = root / "hipporag_runtime"
+            snapshot_root = root / "hipporag_snapshots"
             benchmark_path.write_text(json.dumps(benchmark, ensure_ascii=False, indent=2), encoding="utf-8")
             app_logs_path.write_text(json.dumps(app_logs, ensure_ascii=False, indent=2), encoding="utf-8")
 
             with mock.patch.object(mod, "HippoRAG", _FakeHippoRAG):
                 _FakeHippoRAG.reset()
                 runner = mod.HippoRAG2Runner(
-                    save_root=save_root,
+                    data_storage_root=data_storage_root,
+                    snapshot_root=snapshot_root,
                     all_logs=app_logs,
                     llm_model="gpt-5-mini",
                     llm_base_url="https://example.com/v1",
@@ -715,11 +713,12 @@ class HippoRAG2ProtocolTests(unittest.TestCase):
                     max_checkpoints=2,
                     builder_save_every_logs=1,
                 )
-                first_progress = json.loads((save_root / "builder" / "progress.json").read_text(encoding="utf-8"))
+                first_progress = json.loads((data_storage_root / "builder" / "progress.json").read_text(encoding="utf-8"))
 
                 _FakeHippoRAG.reset()
                 runner = mod.HippoRAG2Runner(
-                    save_root=save_root,
+                    data_storage_root=data_storage_root,
+                    snapshot_root=snapshot_root,
                     all_logs=app_logs,
                     llm_model="gpt-5-mini",
                     llm_base_url="https://example.com/v1",
@@ -736,7 +735,7 @@ class HippoRAG2ProtocolTests(unittest.TestCase):
                     max_checkpoints=2,
                     builder_save_every_logs=1,
                 )
-                second_progress = json.loads((save_root / "builder" / "progress.json").read_text(encoding="utf-8"))
+                second_progress = json.loads((data_storage_root / "builder" / "progress.json").read_text(encoding="utf-8"))
 
                 self.assertNotEqual(first_progress["config_fingerprint"], second_progress["config_fingerprint"])
                 self.assertEqual(second_progress["status"], "complete")
@@ -770,7 +769,8 @@ class HippoRAG2ProtocolTests(unittest.TestCase):
             app_logs_path = root / "app_logs.json"
             qa_path = root / "qa.json"
             output_path = root / "prediction.json"
-            save_dir = root / "runtime_state"
+            data_storage_path = root / "runtime_state"
+            snapshot_dir = root / "snapshots"
 
             benchmark_path.write_text(json.dumps(benchmark, ensure_ascii=False, indent=2), encoding="utf-8")
             app_logs_path.write_text(json.dumps(app_logs, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -794,7 +794,8 @@ class HippoRAG2ProtocolTests(unittest.TestCase):
                     benchmark_path=benchmark_path,
                     app_logs_path=app_logs_path,
                     output_path=output_path,
-                    save_dir=save_dir,
+                    snapshot_dir=snapshot_dir,
+                    data_storage_path=data_storage_path,
                     max_visible_logs=None,
                     llm_provider="azure",
                     llm_model="gpt-5-mini",
@@ -836,11 +837,10 @@ class HippoRAG2ProtocolTests(unittest.TestCase):
             self.assertEqual(cp2["metadata"]["effective_within_checkpoint_workers"], 2)
             self.assertEqual(cp2["metadata"]["per_key_retrieval"][0]["retrieval_query"], "Retrieve current favorite coffee evidence.")
             self.assertEqual(cp2["metadata"]["per_key_retrieval"][0]["context_log_ids"], ["log_0001", "log_0002"])
-            self.assertTrue((save_dir / "preprocess" / "progress.json").exists())
-            self.assertTrue((save_dir / "preprocess" / "manifest.json").exists())
-            self.assertTrue((save_dir / "builder" / "progress.json").exists())
-            self.assertTrue((save_dir / "builder" / "periodic" / "periodic_00000001").exists())
-            self.assertTrue((save_dir / "checkpoints" / "manifest.json").exists())
+            self.assertFalse((data_storage_path / "preprocess").exists())
+            self.assertTrue((data_storage_path / "builder" / "progress.json").exists())
+            self.assertTrue((snapshot_dir / "periodic" / "periodic_00000001").exists())
+            self.assertTrue((snapshot_dir / "manifest.json").exists())
 
             final_qa_results = json.loads(output_path.with_name("prediction_final_qa.json").read_text(encoding="utf-8"))
             self.assertEqual(final_qa_results[0]["prediction"], "Recommend espresso")
@@ -882,14 +882,16 @@ class HippoRAG2ProtocolTests(unittest.TestCase):
             root = Path(td)
             benchmark_path = root / "benchmark.json"
             app_logs_path = root / "app_logs.json"
-            save_root = root / "hipporag"
+            data_storage_root = root / "hipporag_runtime"
+            snapshot_root = root / "hipporag_snapshots"
             benchmark_path.write_text(json.dumps(benchmark, ensure_ascii=False, indent=2), encoding="utf-8")
             app_logs_path.write_text(json.dumps(app_logs, ensure_ascii=False, indent=2), encoding="utf-8")
 
             with mock.patch.object(mod, "HippoRAG", _FakeHippoRAG):
                 _FakeHippoRAG.reset()
                 runner = mod.HippoRAG2Runner(
-                    save_root=save_root,
+                    data_storage_root=data_storage_root,
+                    snapshot_root=snapshot_root,
                     all_logs=app_logs,
                     llm_model="gpt-5-mini",
                     llm_base_url="https://example.com/v1",
@@ -906,13 +908,12 @@ class HippoRAG2ProtocolTests(unittest.TestCase):
                     max_checkpoints=2,
                     builder_save_every_logs=1,
                 )
-                progress_path = save_root / "builder" / "progress.json"
-                preprocess_progress_path = save_root / "preprocess" / "progress.json"
-                preprocess_progress = json.loads(preprocess_progress_path.read_text(encoding="utf-8"))
+                progress_path = data_storage_root / "builder" / "progress.json"
 
                 _FakeHippoRAG.reset()
                 runner = mod.HippoRAG2Runner(
-                    save_root=save_root,
+                    data_storage_root=data_storage_root,
+                    snapshot_root=snapshot_root,
                     all_logs=app_logs,
                     llm_model="gpt-5-mini",
                     llm_base_url="https://example.com/v1",
@@ -934,12 +935,100 @@ class HippoRAG2ProtocolTests(unittest.TestCase):
                 expected_fingerprint = mod._build_builder_fingerprint(
                     benchmark_path=benchmark_path,
                     app_logs_path=app_logs_path,
-                    preprocess_fingerprint=preprocess_progress["preprocess_fingerprint"],
+                    llm_model="gpt-5-mini",
+                    llm_base_url="https://example.com/v1",
+                    embedding_model="text-embedding-3-large",
+                    embedding_base_url="https://example.com/v1",
+                    batch_size=1,
+                    openie_mode="online",
                 )
                 self.assertEqual(second_progress["config_fingerprint"], expected_fingerprint)
-                self.assertEqual(second_progress["preprocess_fingerprint"], preprocess_progress["preprocess_fingerprint"])
+                self.assertEqual(second_progress["preprocess_fingerprint"], "")
                 self.assertEqual(second_progress["confirmed_last_log_index"], 1)
                 self.assertEqual(_FakeHippoRAG.global_preprocess_invocations, 0)
+                self.assertEqual(_FakeHippoRAG.global_index_invocations, 0)
+                self.assertFalse((data_storage_root / "preprocess").exists())
+
+    def test_materializer_resume_uses_snapshot_dir_without_local_builder_progress(self):
+        with _install_import_stubs():
+            mod = _reload_online_tce()
+
+        benchmark = {
+            "user_id": "001_user_001",
+            "sampling_strategy": {"stage": "benchmark_build"},
+            "checkpoints": [
+                {
+                    "checkpoint_id": "cp_0001",
+                    "as_of": {"timestamp": "2025-01-01 08:00:00", "log_index": 0, "app_log_id": "log_0001"},
+                },
+                {
+                    "checkpoint_id": "cp_0002",
+                    "as_of": {"timestamp": "2025-01-02 08:00:00", "log_index": 1, "app_log_id": "log_0002"},
+                },
+            ],
+        }
+        app_logs = _make_app_logs()
+
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            benchmark_path = root / "benchmark.json"
+            app_logs_path = root / "app_logs.json"
+            data_storage_root = root / "hipporag_runtime"
+            snapshot_root = root / "hipporag_snapshots"
+            benchmark_path.write_text(json.dumps(benchmark, ensure_ascii=False, indent=2), encoding="utf-8")
+            app_logs_path.write_text(json.dumps(app_logs, ensure_ascii=False, indent=2), encoding="utf-8")
+
+            with mock.patch.object(mod, "HippoRAG", _FakeHippoRAG):
+                _FakeHippoRAG.reset()
+                runner = mod.HippoRAG2Runner(
+                    data_storage_root=data_storage_root,
+                    snapshot_root=snapshot_root,
+                    all_logs=app_logs,
+                    llm_model="gpt-5-mini",
+                    llm_base_url="https://example.com/v1",
+                    embedding_model="text-embedding-3-large",
+                    embedding_base_url="https://example.com/v1",
+                    batch_size=1,
+                    retrieval_top_k=5,
+                    openie_mode="online",
+                )
+                runner.materialize_checkpoint_snapshots(
+                    benchmark_path=benchmark_path,
+                    app_logs_path=app_logs_path,
+                    resume=False,
+                    max_checkpoints=2,
+                    builder_save_every_logs=1,
+                )
+                self.assertTrue((data_storage_root / "builder" / "progress.json").exists())
+                self.assertTrue((snapshot_root / "manifest.json").exists())
+
+                (data_storage_root / "builder" / "progress.json").unlink()
+                shutil.rmtree(data_storage_root / "builder" / "workspace", ignore_errors=True)
+
+                _FakeHippoRAG.reset()
+                runner = mod.HippoRAG2Runner(
+                    data_storage_root=data_storage_root,
+                    snapshot_root=snapshot_root,
+                    all_logs=app_logs,
+                    llm_model="gpt-5-mini",
+                    llm_base_url="https://example.com/v1",
+                    embedding_model="text-embedding-3-large",
+                    embedding_base_url="https://example.com/v1",
+                    batch_size=1,
+                    retrieval_top_k=5,
+                    openie_mode="online",
+                )
+                runner.materialize_checkpoint_snapshots(
+                    benchmark_path=benchmark_path,
+                    app_logs_path=app_logs_path,
+                    resume=True,
+                    max_checkpoints=2,
+                    builder_save_every_logs=64,
+                )
+
+                resumed_progress = json.loads((data_storage_root / "builder" / "progress.json").read_text(encoding="utf-8"))
+                self.assertIn(resumed_progress["status"], {"restored_from_snapshot", "complete"})
+                self.assertEqual(resumed_progress["confirmed_last_log_index"], 1)
                 self.assertEqual(_FakeHippoRAG.global_index_invocations, 0)
 
     def test_run_generation_interleaves_build_and_test_when_enabled(self):
@@ -954,7 +1043,8 @@ class HippoRAG2ProtocolTests(unittest.TestCase):
             benchmark_path = root / "benchmark.json"
             app_logs_path = root / "app_logs.json"
             output_path = root / "prediction.json"
-            save_dir = root / "runtime_state"
+            data_storage_path = root / "runtime_state"
+            snapshot_dir = root / "snapshots"
             benchmark_path.write_text(json.dumps(benchmark, ensure_ascii=False, indent=2), encoding="utf-8")
             app_logs_path.write_text(json.dumps(app_logs, ensure_ascii=False, indent=2), encoding="utf-8")
 
@@ -1004,7 +1094,8 @@ class HippoRAG2ProtocolTests(unittest.TestCase):
                     benchmark_path=benchmark_path,
                     app_logs_path=app_logs_path,
                     output_path=output_path,
-                    save_dir=save_dir,
+                    snapshot_dir=snapshot_dir,
+                    data_storage_path=data_storage_path,
                     max_visible_logs=None,
                     llm_provider="azure",
                     llm_model="gpt-5-mini",
@@ -1063,7 +1154,8 @@ class HippoRAG2ProtocolTests(unittest.TestCase):
             benchmark_path = root / "benchmark.json"
             app_logs_path = root / "app_logs.json"
             output_path = root / "prediction.json"
-            save_dir = root / "runtime_state"
+            data_storage_path = root / "runtime_state"
+            snapshot_dir = root / "snapshots"
             benchmark_path.write_text(json.dumps(benchmark, ensure_ascii=False, indent=2), encoding="utf-8")
             app_logs_path.write_text(json.dumps(app_logs, ensure_ascii=False, indent=2), encoding="utf-8")
 
@@ -1082,7 +1174,7 @@ class HippoRAG2ProtocolTests(unittest.TestCase):
             with mock.patch.object(mod.HippoRAG2Runner, "materialize_checkpoint_snapshots", _fake_materialize), mock.patch.object(
                 mod,
                 "run_pipeline",
-                side_effect=AssertionError("run_pipeline should not be called in stop_after_build mode"),
+                side_effect=AssertionError("run_pipeline should not be called in build_only mode"),
             ), mock.patch.object(
                 mod,
                 "LLMClient",
@@ -1101,7 +1193,8 @@ class HippoRAG2ProtocolTests(unittest.TestCase):
                     benchmark_path=benchmark_path,
                     app_logs_path=app_logs_path,
                     output_path=output_path,
-                    save_dir=save_dir,
+                    snapshot_dir=snapshot_dir,
+                    data_storage_path=data_storage_path,
                     max_visible_logs=None,
                     llm_provider="azure",
                     llm_model="gpt-5-mini",
@@ -1117,7 +1210,7 @@ class HippoRAG2ProtocolTests(unittest.TestCase):
                     retrieval_top_k=2,
                     builder_save_every_logs=1,
                     interleave_build_and_test=False,
-                    stop_after_build=True,
+                    build_only=True,
                     enable_change_reasoning=True,
                     enable_rq3_apply_service_qa=True,
                     rq3_apply_save_prompt_and_raw=True,
@@ -1138,6 +1231,8 @@ class HippoRAG2ProtocolTests(unittest.TestCase):
             )
             self.assertEqual(result["predictions"], [])
             self.assertTrue(result["build_only"]["enabled"])
+            self.assertEqual(result["build_only"]["snapshot_dir"], str(snapshot_dir))
+            self.assertEqual(result["build_only"]["data_storage_path"], str(data_storage_path))
             self.assertEqual(result["build_only"]["target_log_index"], 0)
             self.assertEqual(result["build_only"]["requested_checkpoint_ids"], ["cp_0001"])
             self.assertTrue((output_path.parent / "usage_cost.json").exists())
@@ -1162,11 +1257,12 @@ class HippoRAG2ProtocolTests(unittest.TestCase):
             root = Path(td)
             benchmark_path = root / "benchmark.json"
             app_logs_path = root / "app_logs.json"
-            save_root = root / "hipporag"
+            data_storage_root = root / "hipporag_runtime"
+            snapshot_root = root / "hipporag_snapshots"
             benchmark_path.write_text(json.dumps(benchmark, ensure_ascii=False, indent=2), encoding="utf-8")
             app_logs_path.write_text(json.dumps(app_logs, ensure_ascii=False, indent=2), encoding="utf-8")
 
-            legacy_preprocess_root = save_root / "preprocess"
+            legacy_preprocess_root = data_storage_root / "preprocess"
             legacy_preprocess_root.mkdir(parents=True, exist_ok=True)
             (legacy_preprocess_root / "progress.json").write_text(
                 json.dumps(
@@ -1180,12 +1276,13 @@ class HippoRAG2ProtocolTests(unittest.TestCase):
                 ),
                 encoding="utf-8",
             )
-            (save_root / "legacy_marker.txt").write_text("stale", encoding="utf-8")
+            (data_storage_root / "legacy_marker.txt").write_text("stale", encoding="utf-8")
 
             with mock.patch.object(mod, "HippoRAG", _FakeHippoRAG):
                 _FakeHippoRAG.reset()
                 runner = mod.HippoRAG2Runner(
-                    save_root=save_root,
+                    data_storage_root=data_storage_root,
+                    snapshot_root=snapshot_root,
                     all_logs=app_logs,
                     llm_model="gpt-5-mini",
                     llm_base_url="https://example.com/v1",
@@ -1203,14 +1300,12 @@ class HippoRAG2ProtocolTests(unittest.TestCase):
                     builder_save_every_logs=1,
                 )
 
-                preprocess_progress = json.loads((save_root / "preprocess" / "progress.json").read_text(encoding="utf-8"))
-                builder_progress = json.loads((save_root / "builder" / "progress.json").read_text(encoding="utf-8"))
-                self.assertEqual(preprocess_progress["artifact_version"], 2)
+                builder_progress = json.loads((data_storage_root / "builder" / "progress.json").read_text(encoding="utf-8"))
                 self.assertEqual(builder_progress["artifact_version"], 2)
-                self.assertEqual(preprocess_progress["status"], "complete")
                 self.assertEqual(builder_progress["status"], "complete")
-                self.assertFalse((save_root / "legacy_marker.txt").exists())
-                self.assertTrue((save_root / "checkpoints" / "cp_0001").exists())
+                self.assertFalse((data_storage_root / "legacy_marker.txt").exists())
+                self.assertFalse((data_storage_root / "preprocess").exists())
+                self.assertTrue((snapshot_root / "checkpoints" / "cp_0001").exists())
 
     def test_adapter_routes_to_canonical_online_runtime(self):
         args = TceAdapterArgs(
@@ -1247,10 +1342,11 @@ class HippoRAG2ProtocolTests(unittest.TestCase):
             final_qa_retrieval_top_k=5,
             final_qa_save_prompt_and_raw=True,
             extras={
-                "save_dir": "/tmp/hipporag2_runtime",
+                "snapshot_dir": "/tmp/hipporag2_snapshots",
+                "data_storage_path": "/tmp/hipporag2_runtime",
                 "builder_save_every_logs": "7",
                 "interleave_build_and_test": "true",
-                "stop_after_build": "true",
+                "build_only": "true",
             },
         )
 
@@ -1264,12 +1360,13 @@ class HippoRAG2ProtocolTests(unittest.TestCase):
         self.assertEqual(result, {"predictions": []})
         mocked_run.assert_called_once()
         kwargs = mocked_run.call_args[1]
-        self.assertEqual(kwargs["save_dir"], Path("/tmp/hipporag2_runtime"))
+        self.assertEqual(kwargs["snapshot_dir"], Path("/tmp/hipporag2_snapshots"))
+        self.assertEqual(kwargs["data_storage_path"], Path("/tmp/hipporag2_runtime"))
         self.assertEqual(kwargs["retriever_batch_size"], 64)
         self.assertEqual(kwargs["retrieval_top_k"], 20)
         self.assertEqual(kwargs["builder_save_every_logs"], 7)
         self.assertTrue(kwargs["interleave_build_and_test"])
-        self.assertTrue(kwargs["stop_after_build"])
+        self.assertTrue(kwargs["build_only"])
         self.assertTrue(kwargs["enable_change_reasoning"])
         self.assertTrue(kwargs["enable_rq3_apply_service_qa"])
         self.assertTrue(kwargs["enable_final_qa"])

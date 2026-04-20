@@ -8,7 +8,6 @@ import shutil
 import sys
 import threading
 import time
-import types
 from contextlib import contextmanager
 from datetime import datetime
 from pathlib import Path
@@ -46,7 +45,6 @@ def _best_effort_load_local_dotenv() -> None:
 _patch_transformers_torch_safety()
 
 from hipporag import HippoRAG
-from hipporag.embedding_store import EmbeddingStore
 from hipporag.utils.config_utils import BaseConfig
 
 from generation.common.provider_config import (
@@ -128,92 +126,42 @@ def _replace_dir_from(src: Path, dst: Path) -> None:
     shutil.copytree(src, dst)
 
 
-def _builder_root(save_root: Path) -> Path:
-    return Path(save_root) / "builder"
-
-
-def _preprocess_root(save_root: Path) -> Path:
-    return Path(save_root) / "preprocess"
-
-
-def _preprocess_logs_root(save_root: Path) -> Path:
-    return _preprocess_root(save_root) / "logs"
-
-
-def _preprocess_progress_path(save_root: Path) -> Path:
-    return _preprocess_root(save_root) / "progress.json"
-
-
-def _preprocess_manifest_path(save_root: Path) -> Path:
-    return _preprocess_root(save_root) / "manifest.json"
-
-
-def _preprocess_embedding_dir(save_root: Path, namespace: str) -> Path:
-    return _preprocess_root(save_root) / "{}_embeddings".format(namespace)
+def _builder_root(data_storage_root: Path) -> Path:
+    return Path(data_storage_root) / "builder"
 
 
 ARTIFACT_VERSION = 2
 
 
-def _builder_workspace_dir(save_root: Path) -> Path:
-    return _builder_root(save_root) / "workspace"
+def _builder_workspace_dir(data_storage_root: Path) -> Path:
+    return _builder_root(data_storage_root) / "workspace"
 
 
-def _builder_periodic_root(save_root: Path) -> Path:
-    return _builder_root(save_root) / "periodic"
+def _builder_progress_path(data_storage_root: Path) -> Path:
+    return _builder_root(data_storage_root) / "progress.json"
 
 
-def _builder_progress_path(save_root: Path) -> Path:
-    return _builder_root(save_root) / "progress.json"
+def _periodic_snapshots_root(snapshot_root: Path) -> Path:
+    return Path(snapshot_root) / "periodic"
 
 
-def _checkpoints_root(save_root: Path) -> Path:
-    return Path(save_root) / "checkpoints"
+def _checkpoints_root(snapshot_root: Path) -> Path:
+    return Path(snapshot_root) / "checkpoints"
 
 
-def _checkpoint_manifest_path(save_root: Path) -> Path:
-    return _checkpoints_root(save_root) / "manifest.json"
+def _checkpoint_manifest_path(snapshot_root: Path) -> Path:
+    return Path(snapshot_root) / "manifest.json"
 
 
 def _snapshot_meta_path(snapshot_dir: Path) -> Path:
     return Path(snapshot_dir) / "snapshot_meta.json"
 
 
-def _load_builder_progress(save_root: Path) -> Dict[str, Any]:
-    return _load_json_object(_builder_progress_path(save_root))
-
-
-def _load_preprocess_progress(save_root: Path) -> Dict[str, Any]:
-    return _load_json_object(_preprocess_progress_path(save_root))
-
-
-def _write_preprocess_progress(
-    save_root: Path,
-    *,
-    preprocess_fingerprint: str,
-    confirmed_last_log_index: int,
-    confirmed_last_app_log_id: Optional[str],
-    status: str,
-    total_log_count: int,
-) -> Dict[str, Any]:
-    payload = {
-        "artifact_version": ARTIFACT_VERSION,
-        "preprocess_fingerprint": str(preprocess_fingerprint or ""),
-        "confirmed_last_log_index": int(confirmed_last_log_index),
-        "confirmed_last_app_log_id": str(confirmed_last_app_log_id or "").strip(),
-        "status": str(status or ""),
-        "total_log_count": int(total_log_count),
-        "updated_at": datetime.now().isoformat(),
-    }
-    _atomic_write_json(_preprocess_progress_path(save_root), payload)
-    return payload
-
-
 def _write_builder_progress(
-    save_root: Path,
+    data_storage_root: Path,
     *,
     config_fingerprint: str,
-    preprocess_fingerprint: str,
+    preprocess_fingerprint: str = "",
     confirmed_last_log_index: int,
     confirmed_last_app_log_id: Optional[str],
     active_workspace_path: Path,
@@ -229,41 +177,19 @@ def _write_builder_progress(
         "active_workspace_path": str(Path(active_workspace_path).resolve()),
         "updated_at": datetime.now().isoformat(),
     }
-    _atomic_write_json(_builder_progress_path(save_root), payload)
+    _atomic_write_json(_builder_progress_path(data_storage_root), payload)
     return payload
 
 
-def _load_preprocess_manifest_entries(save_root: Path) -> List[Dict[str, Any]]:
-    payload = _load_json_object(_preprocess_manifest_path(save_root))
-    entries = payload.get("logs", []) if isinstance(payload, dict) else []
-    return [entry for entry in entries if isinstance(entry, dict)]
-
-
-def _write_preprocess_manifest_entries(
-    save_root: Path,
-    *,
-    preprocess_fingerprint: str,
-    entries: List[Dict[str, Any]],
-) -> None:
-    _atomic_write_json(
-        _preprocess_manifest_path(save_root),
-        {
-            "artifact_version": ARTIFACT_VERSION,
-            "preprocess_fingerprint": str(preprocess_fingerprint or ""),
-            "logs": entries,
-        },
-    )
-
-
-def _load_checkpoint_manifest_entries(save_root: Path) -> List[Dict[str, Any]]:
-    payload = _load_json_object(_checkpoint_manifest_path(save_root))
+def _load_checkpoint_manifest_entries(snapshot_root: Path) -> List[Dict[str, Any]]:
+    payload = _load_json_object(_checkpoint_manifest_path(snapshot_root))
     entries = payload.get("checkpoints", []) if isinstance(payload, dict) else []
     return [entry for entry in entries if isinstance(entry, dict)]
 
 
-def _write_checkpoint_manifest_entries(save_root: Path, entries: List[Dict[str, Any]]) -> None:
+def _write_checkpoint_manifest_entries(snapshot_root: Path, entries: List[Dict[str, Any]]) -> None:
     _atomic_write_json(
-        _checkpoint_manifest_path(save_root),
+        _checkpoint_manifest_path(snapshot_root),
         {"artifact_version": ARTIFACT_VERSION, "checkpoints": entries},
     )
 
@@ -281,6 +207,7 @@ def _write_snapshot_meta(
     last_app_log_id: Optional[str],
     checkpoint_id: Optional[str],
     checkpoint_app_log_id: Optional[str],
+    config_fingerprint: str,
 ) -> Dict[str, Any]:
     payload = {
         "artifact_version": ARTIFACT_VERSION,
@@ -290,6 +217,7 @@ def _write_snapshot_meta(
         "last_app_log_id": str(last_app_log_id or "").strip(),
         "checkpoint_id": str(checkpoint_id or "").strip(),
         "checkpoint_app_log_id": str(checkpoint_app_log_id or "").strip(),
+        "config_fingerprint": str(config_fingerprint or ""),
         "updated_at": datetime.now().isoformat(),
     }
     _atomic_write_json(_snapshot_meta_path(snapshot_dir), payload)
@@ -314,21 +242,23 @@ def _checkpoint_cut_index(cp: Dict[str, Any], app_logs: List[Dict[str, Any]]) ->
     )
 
 
-def _build_preprocess_fingerprint(
+def _build_builder_fingerprint(
     *,
     benchmark_path: Path,
     app_logs_path: Path,
-    llm_model: str,
-    llm_base_url: Optional[str],
-    embedding_model: str,
-    embedding_base_url: Optional[str],
-    batch_size: int,
-    openie_mode: str,
+    preprocess_fingerprint: str = "",
+    llm_model: str = "",
+    llm_base_url: Optional[str] = None,
+    embedding_model: str = "",
+    embedding_base_url: Optional[str] = None,
+    batch_size: int = 0,
+    openie_mode: str = "",
 ) -> str:
     payload = {
         "artifact_version": ARTIFACT_VERSION,
         "benchmark_path": str(Path(benchmark_path).resolve()),
         "app_logs_path": str(Path(app_logs_path).resolve()),
+        "preprocess_fingerprint": str(preprocess_fingerprint or ""),
         "llm_model": str(llm_model or ""),
         "llm_base_url": str(llm_base_url or ""),
         "embedding_model": str(embedding_model or ""),
@@ -339,76 +269,20 @@ def _build_preprocess_fingerprint(
     return hashlib.sha256(json.dumps(payload, sort_keys=True, ensure_ascii=False).encode("utf-8")).hexdigest()
 
 
-def _build_builder_fingerprint(
-    *,
-    benchmark_path: Path,
-    app_logs_path: Path,
-    preprocess_fingerprint: str,
-) -> str:
-    payload = {
-        "artifact_version": ARTIFACT_VERSION,
-        "benchmark_path": str(Path(benchmark_path).resolve()),
-        "app_logs_path": str(Path(app_logs_path).resolve()),
-        "preprocess_fingerprint": str(preprocess_fingerprint or ""),
-    }
-    return hashlib.sha256(json.dumps(payload, sort_keys=True, ensure_ascii=False).encode("utf-8")).hexdigest()
+def _reset_save_root(data_storage_root: Path, snapshot_root: Path) -> None:
+    for root in (data_storage_root, snapshot_root):
+        if root.exists():
+            shutil.rmtree(root)
 
 
-def _reset_save_root(save_root: Path) -> None:
-    if save_root.exists():
-        shutil.rmtree(save_root)
-
-
-def _reset_materialization_root(save_root: Path) -> None:
-    for target in (_builder_root(save_root), _checkpoints_root(save_root)):
+def _reset_materialization_root(data_storage_root: Path, snapshot_root: Path) -> None:
+    for target in (_builder_root(data_storage_root), Path(snapshot_root)):
         if target.exists():
             shutil.rmtree(target)
 
 
-def _preprocess_log_artifact_path(save_root: Path, log_index: int, app_log_id: Optional[str]) -> Path:
-    file_name = "{:08d}__{}.json".format(int(log_index), _safe_name(str(app_log_id or "")))
-    return _preprocess_logs_root(save_root) / file_name
-
-
-def _write_preprocess_log_artifact(
-    save_root: Path,
-    *,
-    log_index: int,
-    log: Dict[str, Any],
-    artifact: Dict[str, Any],
-) -> Dict[str, Any]:
-    path = _preprocess_log_artifact_path(save_root, log_index, str(log.get("app_log_id") or "").strip())
-    payload = {
-        "artifact_version": ARTIFACT_VERSION,
-        "log_index": int(log_index),
-        "app_log_id": str(log.get("app_log_id") or "").strip(),
-        "timestamp": str(log.get("timestamp") or "").strip(),
-    }
-    payload.update(dict(artifact))
-    _atomic_write_json(path, payload)
-    return {
-        "log_index": int(log_index),
-        "app_log_id": str(log.get("app_log_id") or "").strip(),
-        "timestamp": str(log.get("timestamp") or "").strip(),
-        "chunk_id": str(payload.get("chunk_id") or "").strip(),
-        "artifact_path": str(path.relative_to(save_root)),
-        "updated_at": datetime.now().isoformat(),
-    }
-
-
-def _load_preprocess_log_artifact(save_root: Path, entry: Dict[str, Any]) -> Dict[str, Any]:
-    artifact_path_raw = str(entry.get("artifact_path") or "").strip()
-    if not artifact_path_raw:
-        raise FileNotFoundError("Missing preprocess artifact_path in manifest entry: {}".format(entry))
-    path = Path(save_root) / artifact_path_raw
-    payload = _load_json_object(path)
-    if not payload:
-        raise FileNotFoundError("Preprocess artifact missing or invalid: {}".format(path))
-    return payload
-
-
-def _checkpoint_snapshot_dir(save_root: Path, checkpoint_id: str) -> Path:
-    return _checkpoints_root(save_root) / _safe_name(checkpoint_id)
+def _checkpoint_snapshot_dir(snapshot_root: Path, checkpoint_id: str) -> Path:
+    return _checkpoints_root(snapshot_root) / _safe_name(checkpoint_id)
 
 
 def _persist_workspace_snapshot(
@@ -421,6 +295,7 @@ def _persist_workspace_snapshot(
     last_app_log_id: Optional[str],
     checkpoint_id: Optional[str] = None,
     checkpoint_app_log_id: Optional[str] = None,
+    config_fingerprint: str,
 ) -> Dict[str, Any]:
     workspace_dir.mkdir(parents=True, exist_ok=True)
     snapshot_dir.parent.mkdir(parents=True, exist_ok=True)
@@ -433,13 +308,19 @@ def _persist_workspace_snapshot(
         last_app_log_id=last_app_log_id,
         checkpoint_id=checkpoint_id,
         checkpoint_app_log_id=checkpoint_app_log_id,
+        config_fingerprint=config_fingerprint,
     )
 
 
-def _nearest_resume_snapshot(save_root: Path, confirmed_last_log_index: int) -> Optional[Dict[str, Any]]:
+def _nearest_resume_snapshot(
+    snapshot_root: Path,
+    *,
+    config_fingerprint: str,
+    confirmed_last_log_index: int,
+) -> Optional[Dict[str, Any]]:
     candidates: List[Dict[str, Any]] = []
 
-    periodic_root = _builder_periodic_root(save_root)
+    periodic_root = _periodic_snapshots_root(snapshot_root)
     if periodic_root.exists():
         for path in periodic_root.iterdir():
             if not path.is_dir():
@@ -451,11 +332,11 @@ def _nearest_resume_snapshot(save_root: Path, confirmed_last_log_index: int) -> 
             meta["snapshot_dir"] = str(path)
             candidates.append(meta)
 
-    for entry in _load_checkpoint_manifest_entries(save_root):
+    for entry in _load_checkpoint_manifest_entries(snapshot_root):
         snapshot_path_raw = str(entry.get("snapshot_path") or "").strip()
         if not snapshot_path_raw:
             continue
-        snapshot_dir = Path(save_root) / snapshot_path_raw
+        snapshot_dir = Path(snapshot_root) / snapshot_path_raw
         if not snapshot_dir.exists():
             continue
         candidate = dict(entry)
@@ -464,6 +345,8 @@ def _nearest_resume_snapshot(save_root: Path, confirmed_last_log_index: int) -> 
 
     valid = []
     for candidate in candidates:
+        if str(candidate.get("config_fingerprint") or "") != str(config_fingerprint or ""):
+            continue
         last_event_idx = candidate.get("last_event_idx")
         if not isinstance(last_event_idx, int):
             continue
@@ -851,7 +734,8 @@ class HippoRAG2Runner:
     def __init__(
         self,
         *,
-        save_root: Path,
+        data_storage_root: Path,
+        snapshot_root: Path,
         all_logs: List[Dict[str, Any]],
         llm_model: str,
         llm_base_url: Optional[str],
@@ -863,7 +747,8 @@ class HippoRAG2Runner:
         hipporag_factory: Optional[Callable[[Path], Any]] = None,
         usage_tracker: Optional[HippoRAG2UsageTracker] = None,
     ):
-        self.save_root = Path(save_root)
+        self.save_root = Path(data_storage_root)
+        self.snapshot_root = Path(snapshot_root)
         self.all_logs = list(all_logs)
         self.llm_model = str(llm_model)
         self.llm_base_url = llm_base_url
@@ -878,7 +763,7 @@ class HippoRAG2Runner:
         self._prepared_states_lock = threading.Lock()
 
     def _checkpoint_dir(self, checkpoint_id: str) -> Path:
-        return _checkpoint_snapshot_dir(self.save_root, checkpoint_id)
+        return _checkpoint_snapshot_dir(self.snapshot_root, checkpoint_id)
 
     def _create_hipporag(self, save_dir: Path, *, force_index_from_scratch: bool):
         if self._hipporag_factory is not None:
@@ -895,14 +780,13 @@ class HippoRAG2Runner:
             retrieval_top_k=max(1, self.retrieval_top_k),
             qa_top_k=max(1, self.retrieval_top_k),
             force_index_from_scratch=bool(force_index_from_scratch),
+            openie_mode=self.openie_mode,
         )
         hipporag = HippoRAG(
             global_config=config,
             save_dir=str(save_dir),
-            working_dir_override=str(save_dir),
             llm_model_name=self.llm_model,
             embedding_model_name=self.embedding_model,
-            openie_mode=self.openie_mode,
             llm_base_url=self.llm_base_url,
             embedding_base_url=self.embedding_base_url,
         )
@@ -940,259 +824,22 @@ class HippoRAG2Runner:
             embeddings_api.create = _wrapped_embeddings_create
             embeddings_api._dynamicmem_usage_wrapped = True
 
-    def _load_preprocess_entries_by_index(self) -> Dict[int, Dict[str, Any]]:
-        entries_by_index: Dict[int, Dict[str, Any]] = {}
-        for entry in _load_preprocess_manifest_entries(self.save_root):
-            try:
-                log_index = int(entry.get("log_index"))
-            except Exception:
-                continue
-            artifact_path_raw = str(entry.get("artifact_path") or "").strip()
-            if not artifact_path_raw:
-                continue
-            if not (self.save_root / artifact_path_raw).exists():
-                continue
-            entries_by_index[log_index] = dict(entry)
-        return entries_by_index
-
-    def _build_replay_batch(
-        self,
-        *,
-        entries_by_index: Dict[int, Dict[str, Any]],
-        start_idx: int,
-        end_idx: int,
-        chunk_store: EmbeddingStore,
-        entity_store: EmbeddingStore,
-        fact_store: EmbeddingStore,
-    ):
-        docs: List[Any] = []
-        chunk_rows: List[Dict[str, Any]] = []
-        entity_rows: List[Dict[str, Any]] = []
-        fact_rows: List[Dict[str, Any]] = []
-        seen_entity_hash_ids: Set[str] = set()
-        seen_fact_hash_ids: Set[str] = set()
-
-        for log_index in range(int(start_idx), int(end_idx) + 1):
-            entry = entries_by_index.get(int(log_index))
-            if entry is None:
-                raise FileNotFoundError("Missing preprocess manifest entry for log_index={}".format(log_index))
-            artifact = _load_preprocess_log_artifact(self.save_root, entry)
-            if int(artifact.get("artifact_version") or 0) != ARTIFACT_VERSION:
-                raise RuntimeError("Unsupported preprocess artifact version at log_index={}".format(log_index))
-
-            chunk_id = str(artifact.get("chunk_id") or "").strip()
-            passage = str(artifact.get("passage") or "")
-            if not chunk_id or not passage:
-                raise RuntimeError("Invalid preprocess artifact for log_index={}".format(log_index))
-
-            docs.append(
-                types.SimpleNamespace(
-                    chunk_id=chunk_id,
-                    passage=passage,
-                    extracted_entities=list(artifact.get("extracted_entities", []) or []),
-                    extracted_triples=[list(triple) for triple in (artifact.get("extracted_triples", []) or [])],
-                    chunk_triples=[list(triple) for triple in (artifact.get("chunk_triples", []) or [])],
-                    entity_nodes=list(artifact.get("entity_nodes", []) or []),
-                    fact_texts=[str(fact) for fact in (artifact.get("fact_texts", []) or [])],
-                )
-            )
-            chunk_rows.append(
-                {
-                    "hash_id": chunk_id,
-                    "content": passage,
-                    "embedding": chunk_store.get_embedding(chunk_id).tolist(),
-                }
-            )
-            for entity in artifact.get("entity_nodes", []) or []:
-                entity_hash_id = entity_store.get_hash_id(entity)
-                if entity_hash_id in seen_entity_hash_ids:
-                    continue
-                seen_entity_hash_ids.add(entity_hash_id)
-                entity_rows.append(
-                    {
-                        "hash_id": entity_hash_id,
-                        "content": entity,
-                        "embedding": entity_store.get_embedding(entity_hash_id).tolist(),
-                    }
-                )
-            for fact_text in artifact.get("fact_texts", []) or []:
-                fact_hash_id = fact_store.get_hash_id(fact_text)
-                if fact_hash_id in seen_fact_hash_ids:
-                    continue
-                seen_fact_hash_ids.add(fact_hash_id)
-                fact_rows.append(
-                    {
-                        "hash_id": fact_hash_id,
-                        "content": fact_text,
-                        "embedding": fact_store.get_embedding(fact_hash_id).tolist(),
-                    }
-                )
-
-        return types.SimpleNamespace(
-            docs=docs,
-            chunk_rows=chunk_rows,
-            entity_rows=entity_rows,
-            fact_rows=fact_rows,
-        )
-
-    def ensure_preprocessed_logs(
+    def materialize_checkpoint_snapshots(
         self,
         *,
         benchmark_path: Path,
         app_logs_path: Path,
-        resume: bool,
-        build_started_at: float,
-        target_log_index: Optional[int] = None,
-    ) -> str:
-        preprocess_root = _preprocess_root(self.save_root)
-        preprocess_logs_root = _preprocess_logs_root(self.save_root)
-        preprocess_target_idx = len(self.all_logs) - 1
-        if target_log_index is not None:
-            preprocess_target_idx = min(preprocess_target_idx, max(-1, int(target_log_index)))
-        preprocess_fingerprint = _build_preprocess_fingerprint(
-            benchmark_path=benchmark_path,
-            app_logs_path=app_logs_path,
-            llm_model=self.llm_model,
-            llm_base_url=self.llm_base_url,
-            embedding_model=self.embedding_model,
-            embedding_base_url=self.embedding_base_url,
-            batch_size=self.batch_size,
-            openie_mode=self.openie_mode,
-        )
-
-        progress = _load_preprocess_progress(self.save_root) if resume else {}
-        progress_matches = (
-            bool(progress)
-            and int(progress.get("artifact_version") or 0) == ARTIFACT_VERSION
-            and str(progress.get("preprocess_fingerprint") or "") == preprocess_fingerprint
-            and preprocess_root.exists()
-        )
-        entries_by_index = self._load_preprocess_entries_by_index() if progress_matches else {}
-        if progress_matches:
-            raw_confirmed_idx = progress.get("confirmed_last_log_index")
-            try:
-                confirmed_idx = int(raw_confirmed_idx)
-            except Exception:
-                confirmed_idx = -1
-            for idx in range(0, min(confirmed_idx, len(self.all_logs) - 1) + 1):
-                if idx not in entries_by_index:
-                    progress_matches = False
-                    break
-
-        if not resume or not progress_matches:
-            _reset_save_root(self.save_root)
-            preprocess_root.mkdir(parents=True, exist_ok=True)
-            preprocess_logs_root.mkdir(parents=True, exist_ok=True)
-            entries_by_index = {}
-            progress = {}
-
-        if resume and progress_matches:
-            raw_confirmed_idx = progress.get("confirmed_last_log_index")
-            try:
-                last_confirmed_idx = int(raw_confirmed_idx)
-            except Exception:
-                last_confirmed_idx = -1
-            if last_confirmed_idx >= preprocess_target_idx and len(entries_by_index) >= max(0, preprocess_target_idx + 1):
-                return preprocess_fingerprint
-            preprocess_hipporag = self._create_hipporag(preprocess_root, force_index_from_scratch=False)
-            start_idx = max(0, last_confirmed_idx + 1)
-        else:
-            preprocess_hipporag = self._create_hipporag(preprocess_root, force_index_from_scratch=True)
-            start_idx = 0
-            _write_preprocess_progress(
-                self.save_root,
-                preprocess_fingerprint=preprocess_fingerprint,
-                confirmed_last_log_index=-1,
-                confirmed_last_app_log_id=None,
-                status="initialized",
-                total_log_count=len(self.all_logs),
-            )
-
-        last_confirmed_idx = start_idx - 1
-        while start_idx <= preprocess_target_idx:
-            batch_end = min(start_idx + self.batch_size - 1, preprocess_target_idx)
-            docs = [json.dumps(log, ensure_ascii=False) for log in self.all_logs[start_idx : batch_end + 1]]
-            if docs:
-                if self._usage_tracker is None:
-                    batch = preprocess_hipporag.preprocess_docs(docs)
-                else:
-                    with self._usage_tracker.phase("build_memory"):
-                        batch = preprocess_hipporag.preprocess_docs(docs)
-
-                for offset, doc in enumerate(list(getattr(batch, "docs", []) or [])):
-                    log_index = start_idx + offset
-                    log = self.all_logs[log_index]
-                    entry = _write_preprocess_log_artifact(
-                        self.save_root,
-                        log_index=log_index,
-                        log=log,
-                        artifact={
-                            "passage": str(getattr(doc, "passage", "") or ""),
-                            "chunk_id": str(getattr(doc, "chunk_id", "") or ""),
-                            "extracted_entities": list(getattr(doc, "extracted_entities", []) or []),
-                            "extracted_triples": [list(triple) for triple in (getattr(doc, "extracted_triples", []) or [])],
-                            "chunk_triples": [list(triple) for triple in (getattr(doc, "chunk_triples", []) or [])],
-                            "entity_nodes": list(getattr(doc, "entity_nodes", []) or []),
-                            "fact_texts": [str(fact) for fact in (getattr(doc, "fact_texts", []) or [])],
-                        },
-                    )
-                    entries_by_index[log_index] = entry
-                _write_preprocess_manifest_entries(
-                    self.save_root,
-                    preprocess_fingerprint=preprocess_fingerprint,
-                    entries=sorted(entries_by_index.values(), key=lambda item: int(item.get("log_index", -1))),
-                )
-
-            last_confirmed_idx = batch_end
-            confirmed_log = self.all_logs[last_confirmed_idx]
-            confirmed_app_log_id = str(confirmed_log.get("app_log_id") or "").strip() or None
-            _write_preprocess_progress(
-                self.save_root,
-                preprocess_fingerprint=preprocess_fingerprint,
-                confirmed_last_log_index=last_confirmed_idx,
-                confirmed_last_app_log_id=confirmed_app_log_id,
-                status="confirmed",
-                total_log_count=len(self.all_logs),
-            )
-            if self._usage_tracker is not None:
-                self._usage_tracker.set_build_duration(time.time() - build_started_at)
-            start_idx = batch_end + 1
-
-        final_app_log_id = None
-        if 0 <= last_confirmed_idx < len(self.all_logs):
-            final_app_log_id = str(self.all_logs[last_confirmed_idx].get("app_log_id") or "").strip() or None
-        final_status = "complete" if last_confirmed_idx >= len(self.all_logs) - 1 else "confirmed"
-        _write_preprocess_progress(
-            self.save_root,
-            preprocess_fingerprint=preprocess_fingerprint,
-            confirmed_last_log_index=last_confirmed_idx,
-            confirmed_last_app_log_id=final_app_log_id,
-            status=final_status,
-            total_log_count=len(self.all_logs),
-        )
-        _write_preprocess_manifest_entries(
-            self.save_root,
-            preprocess_fingerprint=preprocess_fingerprint,
-            entries=sorted(entries_by_index.values(), key=lambda item: int(item.get("log_index", -1))),
-        )
-        return preprocess_fingerprint
-
-    def materialize_checkpoint_snapshots_from_preprocessed(
-        self,
-        *,
-        benchmark_path: Path,
-        app_logs_path: Path,
-        preprocess_fingerprint: str,
         resume: bool,
         max_checkpoints: Optional[int],
         builder_save_every_logs: int,
-        build_started_at: float,
         target_log_index: Optional[int] = None,
     ) -> Path:
+        build_started_at = time.time()
         benchmark = json.loads(Path(benchmark_path).read_text(encoding="utf-8"))
         checkpoints = [cp for cp in benchmark.get("checkpoints", []) if isinstance(cp, dict)]
         if max_checkpoints is not None:
             checkpoints = checkpoints[: max(0, int(max_checkpoints))]
+
         replay_target_idx = len(self.all_logs) - 1
         if target_log_index is not None:
             replay_target_idx = min(replay_target_idx, max(-1, int(target_log_index)))
@@ -1220,66 +867,58 @@ class HippoRAG2Runner:
         builder_fingerprint = _build_builder_fingerprint(
             benchmark_path=benchmark_path,
             app_logs_path=app_logs_path,
-            preprocess_fingerprint=preprocess_fingerprint,
+            llm_model=self.llm_model,
+            llm_base_url=self.llm_base_url,
+            embedding_model=self.embedding_model,
+            embedding_base_url=self.embedding_base_url,
+            batch_size=self.batch_size,
+            openie_mode=self.openie_mode,
         )
         workspace_dir = _builder_workspace_dir(self.save_root)
-        periodic_root = _builder_periodic_root(self.save_root)
-        checkpoint_root = _checkpoints_root(self.save_root)
+        periodic_root = _periodic_snapshots_root(self.snapshot_root)
+        checkpoint_root = _checkpoints_root(self.snapshot_root)
         checkpoint_root.mkdir(parents=True, exist_ok=True)
 
         existing_entries_by_id: Dict[str, Dict[str, Any]] = {}
-        for entry in _load_checkpoint_manifest_entries(self.save_root):
+        for entry in _load_checkpoint_manifest_entries(self.snapshot_root):
             checkpoint_id = str(entry.get("checkpoint_id") or "").strip()
             snapshot_path_raw = str(entry.get("snapshot_path") or "").strip()
             if not checkpoint_id or not snapshot_path_raw:
                 continue
-            if (self.save_root / snapshot_path_raw).exists():
+            if (self.snapshot_root / snapshot_path_raw).exists() and str(entry.get("config_fingerprint") or "") == builder_fingerprint:
                 existing_entries_by_id[checkpoint_id] = dict(entry)
 
-        progress = _load_builder_progress(self.save_root) if resume else {}
-        progress_matches = (
-            bool(progress)
-            and int(progress.get("artifact_version") or 0) == ARTIFACT_VERSION
-            and str(progress.get("config_fingerprint") or "") == builder_fingerprint
-            and str(progress.get("preprocess_fingerprint") or "") == preprocess_fingerprint
+        last_confirmed_idx = max(
+            (int(entry.get("last_event_idx", -1)) for entry in existing_entries_by_id.values()),
+            default=-1,
         )
-        last_confirmed_idx = -1
-        raw_confirmed_idx = progress.get("confirmed_last_log_index")
-        try:
-            if raw_confirmed_idx is not None and str(raw_confirmed_idx).strip():
-                last_confirmed_idx = int(raw_confirmed_idx)
-        except Exception:
-            last_confirmed_idx = -1
+        local_runtime_ready = workspace_dir.exists() and _builder_progress_path(self.save_root).exists()
+
         if (
             resume
-            and progress_matches
+            and existing_entries_by_id
             and last_confirmed_idx >= replay_target_idx
-            and required_checkpoint_ids
             and required_checkpoint_ids.issubset(existing_entries_by_id.keys())
+            and local_runtime_ready
         ):
             return self.save_root
 
-        if not resume or not progress_matches:
-            _reset_materialization_root(self.save_root)
+        if not resume:
+            _reset_save_root(self.save_root, self.snapshot_root)
             checkpoint_root.mkdir(parents=True, exist_ok=True)
             existing_entries_by_id = {}
-            progress = {}
             last_confirmed_idx = -1
-
-        preprocess_entries_by_index = self._load_preprocess_entries_by_index()
-        chunk_store = EmbeddingStore(None, str(_preprocess_embedding_dir(self.save_root, "chunk")), self.batch_size, "chunk")
-        entity_store = EmbeddingStore(None, str(_preprocess_embedding_dir(self.save_root, "entity")), self.batch_size, "entity")
-        fact_store = EmbeddingStore(None, str(_preprocess_embedding_dir(self.save_root, "fact")), self.batch_size, "fact")
 
         saved_checkpoint_ids: Set[str] = set(existing_entries_by_id.keys())
 
-        if resume and progress_matches and workspace_dir.exists():
-            hipporag = self._create_hipporag(workspace_dir, force_index_from_scratch=False)
-            start_idx = max(0, last_confirmed_idx + 1)
-        elif resume and progress_matches and last_confirmed_idx >= 0:
-            snapshot = _nearest_resume_snapshot(self.save_root, last_confirmed_idx)
+        if resume:
+            snapshot = _nearest_resume_snapshot(
+                self.snapshot_root,
+                config_fingerprint=builder_fingerprint,
+                confirmed_last_log_index=max(last_confirmed_idx, replay_target_idx),
+            )
             if snapshot is None:
-                _reset_materialization_root(self.save_root)
+                _reset_save_root(self.save_root, self.snapshot_root)
                 checkpoint_root.mkdir(parents=True, exist_ok=True)
                 existing_entries_by_id = {}
                 saved_checkpoint_ids = set()
@@ -1295,7 +934,6 @@ class HippoRAG2Runner:
                 _write_builder_progress(
                     self.save_root,
                     config_fingerprint=builder_fingerprint,
-                    preprocess_fingerprint=preprocess_fingerprint,
                     confirmed_last_log_index=restored_idx,
                     confirmed_last_app_log_id=restored_app_log_id,
                     active_workspace_path=workspace_dir,
@@ -1311,7 +949,6 @@ class HippoRAG2Runner:
             _write_builder_progress(
                 self.save_root,
                 config_fingerprint=builder_fingerprint,
-                preprocess_fingerprint=preprocess_fingerprint,
                 confirmed_last_log_index=-1,
                 confirmed_last_app_log_id=None,
                 active_workspace_path=workspace_dir,
@@ -1341,15 +978,13 @@ class HippoRAG2Runner:
                 if next_checkpoint_boundary is not None:
                     batch_end = min(batch_end, next_checkpoint_boundary)
 
-                batch = self._build_replay_batch(
-                    entries_by_index=preprocess_entries_by_index,
-                    start_idx=start_idx,
-                    end_idx=batch_end,
-                    chunk_store=chunk_store,
-                    entity_store=entity_store,
-                    fact_store=fact_store,
-                )
-                hipporag.index_preprocessed(batch)
+                docs = [json.dumps(log, ensure_ascii=False) for log in self.all_logs[start_idx : batch_end + 1]]
+                if docs:
+                    if self._usage_tracker is None:
+                        hipporag.index(docs=docs)
+                    else:
+                        with self._usage_tracker.phase("build_memory"):
+                            hipporag.index(docs=docs)
 
                 last_confirmed_idx = batch_end
                 confirmed_log = self.all_logs[last_confirmed_idx] if 0 <= last_confirmed_idx < len(self.all_logs) else {}
@@ -1357,7 +992,6 @@ class HippoRAG2Runner:
                 _write_builder_progress(
                     self.save_root,
                     config_fingerprint=builder_fingerprint,
-                    preprocess_fingerprint=preprocess_fingerprint,
                     confirmed_last_log_index=last_confirmed_idx,
                     confirmed_last_app_log_id=confirmed_app_log_id,
                     active_workspace_path=workspace_dir,
@@ -1376,6 +1010,7 @@ class HippoRAG2Runner:
                         trigger="periodic",
                         last_event_idx=last_confirmed_idx,
                         last_app_log_id=confirmed_app_log_id,
+                        config_fingerprint=builder_fingerprint,
                     )
 
                 for spec in checkpoint_by_cut_index.get(last_confirmed_idx, []):
@@ -1392,18 +1027,20 @@ class HippoRAG2Runner:
                         last_app_log_id=confirmed_app_log_id,
                         checkpoint_id=checkpoint_id,
                         checkpoint_app_log_id=str(spec.get("checkpoint_app_log_id") or "").strip() or None,
+                        config_fingerprint=builder_fingerprint,
                     )
                     existing_entries_by_id[checkpoint_id] = {
                         "snapshot_id": checkpoint_id,
                         "checkpoint_id": checkpoint_id,
                         "checkpoint_app_log_id": str(spec.get("checkpoint_app_log_id") or "").strip(),
-                        "snapshot_path": str(checkpoint_dir.relative_to(self.save_root)),
+                        "snapshot_path": str(checkpoint_dir.relative_to(self.snapshot_root)),
                         "last_event_idx": int(last_confirmed_idx),
+                        "config_fingerprint": builder_fingerprint,
                         "updated_at": datetime.now().isoformat(),
                     }
                     saved_checkpoint_ids.add(checkpoint_id)
                     _write_checkpoint_manifest_entries(
-                        self.save_root,
+                        self.snapshot_root,
                         sorted(
                             existing_entries_by_id.values(),
                             key=lambda item: (int(item.get("last_event_idx", -1)), str(item.get("checkpoint_id") or "")),
@@ -1418,7 +1055,6 @@ class HippoRAG2Runner:
             _write_builder_progress(
                 self.save_root,
                 config_fingerprint=builder_fingerprint,
-                preprocess_fingerprint=preprocess_fingerprint,
                 confirmed_last_log_index=last_confirmed_idx,
                 confirmed_last_app_log_id=interrupted_app_log_id,
                 active_workspace_path=workspace_dir,
@@ -1431,16 +1067,17 @@ class HippoRAG2Runner:
         final_app_log_id = None
         if 0 <= last_confirmed_idx < len(self.all_logs):
             final_app_log_id = str(self.all_logs[last_confirmed_idx].get("app_log_id") or "").strip() or None
-            if last_confirmed_idx >= len(self.all_logs) - 1:
-                final_snapshot_dir = periodic_root / "final_{:08d}".format(last_confirmed_idx + 1)
-                _persist_workspace_snapshot(
-                    workspace_dir=workspace_dir,
-                    snapshot_dir=final_snapshot_dir,
-                    snapshot_id=final_snapshot_dir.name,
-                    trigger="final",
-                    last_event_idx=last_confirmed_idx,
-                    last_app_log_id=final_app_log_id,
-                )
+        if last_confirmed_idx >= replay_target_idx:
+            final_snapshot_dir = periodic_root / "final_{:08d}".format(last_confirmed_idx + 1)
+            _persist_workspace_snapshot(
+                workspace_dir=workspace_dir,
+                snapshot_dir=final_snapshot_dir,
+                snapshot_id=final_snapshot_dir.name,
+                trigger="final",
+                last_event_idx=last_confirmed_idx,
+                last_app_log_id=final_app_log_id,
+                config_fingerprint=builder_fingerprint,
+            )
 
         missing = sorted(required_checkpoint_ids - saved_checkpoint_ids)
         if missing:
@@ -1450,11 +1087,10 @@ class HippoRAG2Runner:
                 )
             )
 
-        final_status = "complete" if last_confirmed_idx >= len(self.all_logs) - 1 else "confirmed"
+        final_status = "complete" if last_confirmed_idx >= replay_target_idx else "confirmed"
         _write_builder_progress(
             self.save_root,
             config_fingerprint=builder_fingerprint,
-            preprocess_fingerprint=preprocess_fingerprint,
             confirmed_last_log_index=last_confirmed_idx,
             confirmed_last_app_log_id=final_app_log_id,
             active_workspace_path=workspace_dir,
@@ -1463,7 +1099,7 @@ class HippoRAG2Runner:
         if self._usage_tracker is not None:
             self._usage_tracker.set_build_duration(time.time() - build_started_at)
         _write_checkpoint_manifest_entries(
-            self.save_root,
+            self.snapshot_root,
             sorted(
                 existing_entries_by_id.values(),
                 key=lambda item: (int(item.get("last_event_idx", -1)), str(item.get("checkpoint_id") or "")),
@@ -1471,40 +1107,11 @@ class HippoRAG2Runner:
         )
         return self.save_root
 
-    def materialize_checkpoint_snapshots(
-        self,
-        *,
-        benchmark_path: Path,
-        app_logs_path: Path,
-        resume: bool,
-        max_checkpoints: Optional[int],
-        builder_save_every_logs: int,
-        target_log_index: Optional[int] = None,
-    ) -> Path:
-        build_started_at = time.time()
-        preprocess_fingerprint = self.ensure_preprocessed_logs(
-            benchmark_path=benchmark_path,
-            app_logs_path=app_logs_path,
-            resume=resume,
-            build_started_at=build_started_at,
-            target_log_index=target_log_index,
-        )
-        return self.materialize_checkpoint_snapshots_from_preprocessed(
-            benchmark_path=benchmark_path,
-            app_logs_path=app_logs_path,
-            preprocess_fingerprint=preprocess_fingerprint,
-            resume=resume,
-            max_checkpoints=max_checkpoints,
-            builder_save_every_logs=builder_save_every_logs,
-            build_started_at=build_started_at,
-            target_log_index=target_log_index,
-        )
-
     def _resolve_manifest_entry(self, cp: Dict[str, Any]) -> Dict[str, Any]:
-        entries = _load_checkpoint_manifest_entries(self.save_root)
+        entries = _load_checkpoint_manifest_entries(self.snapshot_root)
         if not entries:
             raise FileNotFoundError(
-                "HippoRAG2 checkpoint manifest not found or empty: {}".format(_checkpoint_manifest_path(self.save_root))
+                "HippoRAG2 checkpoint manifest not found or empty: {}".format(_checkpoint_manifest_path(self.snapshot_root))
             )
 
         checkpoint_id = str(cp.get("checkpoint_id") or "").strip()
@@ -1529,7 +1136,7 @@ class HippoRAG2Runner:
         snapshot_path_raw = str(entry.get("snapshot_path") or "").strip()
         if not snapshot_path_raw:
             raise FileNotFoundError("HippoRAG2 manifest entry missing snapshot_path for checkpoint {}".format(cp.get("checkpoint_id")))
-        snapshot_dir = self.save_root / snapshot_path_raw
+        snapshot_dir = self.snapshot_root / snapshot_path_raw
         if not snapshot_dir.exists():
             raise FileNotFoundError("HippoRAG2 checkpoint snapshot not found: {}".format(snapshot_dir))
         hipporag = self._create_hipporag(snapshot_dir, force_index_from_scratch=False)
@@ -1670,7 +1277,8 @@ def run_generation(
     benchmark_path: Path,
     app_logs_path: Path,
     output_path: Path,
-    save_dir: Path,
+    snapshot_dir: Path,
+    data_storage_path: Path,
     max_visible_logs: Optional[int],
     llm_provider: str,
     llm_model: str,
@@ -1686,7 +1294,7 @@ def run_generation(
     retrieval_top_k: int,
     builder_save_every_logs: int = 5,
     interleave_build_and_test: bool = False,
-    stop_after_build: bool = False,
+    build_only: bool = False,
     answer_temperature: Optional[float] = 0.0,
     answer_top_p: Optional[float] = 1.0,
     answer_top_k: Optional[int] = None,
@@ -1715,16 +1323,11 @@ def run_generation(
         embedding_model_name=retriever_model,
     )
 
-    client = LLMClient(
-        provider=llm_provider,
-        model_name=llm_model,
-        max_workers=llm_max_workers,
-        temperature=answer_temperature,
-        top_p=answer_top_p,
-        top_k=answer_top_k,
-    )
+    client = None
 
     def _ask_json(prompt: str) -> Any:
+        if client is None:
+            raise RuntimeError("HippoRAG2 answer client is not initialized.")
         started_at = time.time()
         response = client.ask(prompt, response_type="json")
         usage_tracker.add_generation_duration(time.time() - started_at)
@@ -1732,23 +1335,31 @@ def run_generation(
         return response
 
     def _ask_structured(prompt: str, fmt: Any) -> Any:
+        if client is None:
+            raise RuntimeError("HippoRAG2 answer client is not initialized.")
         started_at = time.time()
         response = client.ask_structured(prompt, text_format=fmt)
         usage_tracker.add_generation_duration(time.time() - started_at)
         usage_tracker.set_answer_usage(client.usage_summary())
         return response
 
+    def _current_answer_usage() -> Dict[str, Any]:
+        if client is None:
+            return {}
+        return client.usage_summary()
+
     all_logs = normalize_app_logs(json.loads(app_logs_path.read_text(encoding="utf-8")))
     benchmark_payload = json.loads(benchmark_path.read_text(encoding="utf-8"))
     requested_checkpoints = [cp for cp in benchmark_payload.get("checkpoints", []) if isinstance(cp, dict)]
     if max_checkpoints is not None:
         requested_checkpoints = requested_checkpoints[: max(0, int(max_checkpoints))]
-    stop_after_build_target_idx: Optional[int] = None
-    if stop_after_build and requested_checkpoints:
-        stop_after_build_target_idx = _checkpoint_cut_index(requested_checkpoints[-1], all_logs)
+    build_only_target_idx: Optional[int] = None
+    if build_only and requested_checkpoints:
+        build_only_target_idx = _checkpoint_cut_index(requested_checkpoints[-1], all_logs)
 
     runner = HippoRAG2Runner(
-        save_root=Path(save_dir),
+        data_storage_root=Path(data_storage_path),
+        snapshot_root=Path(snapshot_dir),
         all_logs=all_logs,
         llm_model=llm_model,
         llm_base_url=provider_env.get("llm_base_url"),
@@ -1793,10 +1404,11 @@ def run_generation(
                 "retriever_provider": retriever_provider,
                 "retriever_model": retriever_model,
                 "retriever_batch_size": retriever_batch_size,
-                "hipporag_save_root": str(save_dir),
+                "snapshot_dir": str(snapshot_dir),
+                "data_storage_path": str(data_storage_path),
                 "builder_save_every_logs": max(1, int(builder_save_every_logs)),
                 "interleave_build_and_test": bool(interleave_build_and_test),
-                "stop_after_build": bool(stop_after_build),
+                "build_only": bool(build_only),
             },
             checkpoint_workers=checkpoint_workers,
             within_checkpoint_workers=within_checkpoint_workers,
@@ -1810,21 +1422,22 @@ def run_generation(
 
     try:
         try:
-            if stop_after_build:
+            if build_only:
                 runner.materialize_checkpoint_snapshots(
                     benchmark_path=benchmark_path,
                     app_logs_path=app_logs_path,
                     resume=resume,
                     max_checkpoints=max_checkpoints,
                     builder_save_every_logs=max(1, int(builder_save_every_logs)),
-                    target_log_index=stop_after_build_target_idx,
+                    target_log_index=build_only_target_idx,
                 )
                 result = {
                     "predictions": [],
                     "build_only": {
                         "enabled": True,
-                        "save_root": str(save_dir),
-                        "target_log_index": stop_after_build_target_idx,
+                        "snapshot_dir": str(snapshot_dir),
+                        "data_storage_path": str(data_storage_path),
+                        "target_log_index": build_only_target_idx,
                         "requested_checkpoint_ids": [
                             str(cp.get("checkpoint_id") or "").strip()
                             for cp in requested_checkpoints
@@ -1832,7 +1445,18 @@ def run_generation(
                         ],
                     },
                 }
+                usage_tracker.set_answer_usage(_current_answer_usage())
+                usage_tracker.finalize()
+                return result
             elif interleave_build_and_test and requested_checkpoints:
+                client = LLMClient(
+                    provider=llm_provider,
+                    model_name=llm_model,
+                    max_workers=llm_max_workers,
+                    temperature=answer_temperature,
+                    top_p=answer_top_p,
+                    top_k=answer_top_k,
+                )
                 result: Dict[str, Any] = {"predictions": []}
                 for idx, checkpoint in enumerate(requested_checkpoints):
                     checkpoint_limit = idx + 1
@@ -1858,21 +1482,30 @@ def run_generation(
                     max_checkpoints=max_checkpoints,
                     builder_save_every_logs=max(1, int(builder_save_every_logs)),
                 )
+                client = LLMClient(
+                    provider=llm_provider,
+                    model_name=llm_model,
+                    max_workers=llm_max_workers,
+                    temperature=answer_temperature,
+                    top_p=answer_top_p,
+                    top_k=answer_top_k,
+                )
                 result = _run_pipeline_once(
                     pipeline_resume=resume,
                     pipeline_max_checkpoints=max_checkpoints,
                     pipeline_enable_final_qa=enable_final_qa,
                 )
         except Exception:
-            usage_tracker.set_answer_usage(client.usage_summary())
+            usage_tracker.set_answer_usage(_current_answer_usage())
             usage_tracker.finalize()
             raise
 
-        usage_tracker.set_answer_usage(client.usage_summary())
+        usage_tracker.set_answer_usage(_current_answer_usage())
         usage_tracker.finalize()
         return result
     finally:
-        client.close()
+        if client is not None:
+            client.close()
 
 
 run_online_generation = run_generation
@@ -1883,8 +1516,8 @@ def main() -> None:
     parser.add_argument("--benchmark", type=Path, required=True)
     parser.add_argument("--app-logs-path", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
-    parser.add_argument("--save-dir", type=Path, default=None)
-    parser.add_argument("--hipporag-dir", type=Path, default=None)
+    parser.add_argument("--snapshot-dir", type=Path, required=True)
+    parser.add_argument("--data-storage-path", type=Path, required=True)
     parser.add_argument("--max-visible-logs", type=int, default=None)
     parser.add_argument("--llm-provider", type=str, default="openai")
     parser.add_argument("--llm-model", type=str, default="gpt-5-mini")
@@ -1898,7 +1531,7 @@ def main() -> None:
     parser.add_argument("--retrieval-top-k", type=int, default=5)
     parser.add_argument("--builder-save-every-logs", type=int, default=5)
     parser.add_argument("--interleave-build-and-test", action="store_true")
-    parser.add_argument("--stop-after-build", action="store_true")
+    parser.add_argument("--build-only", action="store_true")
     parser.add_argument("--max-checkpoints", type=int, default=None)
     parser.add_argument("--resume", action="store_true")
     parser.add_argument("--debug", action="store_true")
@@ -1928,15 +1561,12 @@ def main() -> None:
     parser.add_argument("--final-qa-save-prompt-and-raw", action="store_true")
     args = parser.parse_args()
 
-    save_dir = args.save_dir or args.hipporag_dir
-    if save_dir is None:
-        raise ValueError("HippoRAG2 requires --save-dir or --hipporag-dir.")
-
     run_generation(
         benchmark_path=args.benchmark,
         app_logs_path=args.app_logs_path,
         output_path=args.output,
-        save_dir=save_dir,
+        snapshot_dir=args.snapshot_dir,
+        data_storage_path=args.data_storage_path,
         max_visible_logs=args.max_visible_logs,
         llm_provider=args.llm_provider,
         llm_model=args.llm_model,
@@ -1952,7 +1582,7 @@ def main() -> None:
         retrieval_top_k=args.retrieval_top_k,
         builder_save_every_logs=args.builder_save_every_logs,
         interleave_build_and_test=args.interleave_build_and_test,
-        stop_after_build=args.stop_after_build,
+        build_only=args.build_only,
         answer_temperature=args.llm_temperature,
         answer_top_p=args.llm_top_p,
         answer_top_k=args.llm_top_k,
