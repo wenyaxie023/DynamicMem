@@ -2,8 +2,22 @@ from typing import List, Dict, Optional, Any, Tuple
 import uuid
 from datetime import datetime
 from .llm_controller import LLMController
+from .llm_text_parsers import (
+    ANALYZE_CONTENT_PROMPT,
+    EVOLUTION_DECISION_PROMPT,
+    FOCUSED_KEYWORDS_PROMPT,
+    STRENGTHEN_DETAILS_PROMPT,
+    UPDATE_NEIGHBORS_PROMPT,
+    _heuristic_context,
+    _heuristic_keywords,
+    _parse_list_items,
+    parse_analyze_content,
+    parse_evolution_decision,
+    parse_strengthen_details,
+    parse_update_neighbors,
+    validate_analysis_result,
+)
 from .retrievers import SimpleEmbeddingRetriever
-import json
 import logging
 import os
 import pickle
@@ -140,39 +154,6 @@ class AgenticMemorySystem:
         self.evo_cnt = 0
         self.evo_threshold = evo_threshold
 
-        # Evolution system prompt
-        self._evolution_system_prompt = '''
-                                You are an AI memory evolution agent responsible for managing and evolving a knowledge base.
-                                Analyze the the new memory note according to keywords and context, also with their several nearest neighbors memory.
-                                Make decisions about its evolution.  
-
-                                The new memory context:
-                                {context}
-                                content: {content}
-                                keywords: {keywords}
-
-                                The nearest neighbors memories:
-                                {nearest_neighbors_memories}
-
-                                Based on this information, determine:
-                                1. Should this memory be evolved? Consider its relationships with other memories.
-                                2. What specific actions should be taken (strengthen, update_neighbor)?
-                                   2.1 If choose to strengthen the connection, which memory should it be connected to? Can you give the updated tags of this memory?
-                                   2.2 If choose to update_neighbor, you can update the context and tags of these memories based on the understanding of these memories. If the context and the tags are not updated, the new context and tags should be the same as the original ones. Generate the new context and tags in the sequential order of the input neighbors.
-                                Tags should be determined by the content of these characteristic of these memories, which can be used to retrieve them later and categorize them.
-                                Note that the length of new_tags_neighborhood must equal the number of input neighbors, and the length of new_context_neighborhood must equal the number of input neighbors.
-                                The number of neighbors is {neighbor_number}.
-                                Return your decision in JSON format with the following structure:
-                                {{
-                                    "should_evolve": True or False,
-                                    "actions": ["strengthen", "update_neighbor"],
-                                    "suggested_connections": ["neighbor_memory_ids"],
-                                    "tags_to_update": ["tag_1",..."tag_n"], 
-                                    "new_context_neighborhood": ["new context",...,"new context"],
-                                    "new_tags_neighborhood": [["tag_1",...,"tag_n"],...["tag_1",...,"tag_n"]],
-                                }}
-                                '''
-
     @staticmethod
     def _normalize_link_index(value: Any) -> Optional[int]:
         if isinstance(value, bool):
@@ -244,62 +225,24 @@ class AgenticMemorySystem:
                 - context: str
                 - tags: List[str]
         """
-        prompt = """Generate a structured analysis of the following content by:
-            1. Identifying the most salient keywords (focus on nouns, verbs, and key concepts)
-            2. Extracting core themes and contextual elements
-            3. Creating relevant categorical tags
-
-            Format the response as a JSON object:
-            {
-                "keywords": [
-                    // several specific, distinct keywords that capture key concepts and terminology
-                    // Order from most to least important
-                    // Don't include keywords that are the name of the speaker or time
-                    // At least three keywords, but don't be too redundant.
-                ],
-                "context": 
-                    // one sentence summarizing:
-                    // - Main topic/domain
-                    // - Key arguments/points
-                    // - Intended audience/purpose
-                ,
-                "tags": [
-                    // several broad categories/themes for classification
-                    // Include domain, format, and type tags
-                    // At least three tags, but don't be too redundant.
-                ]
-            }
-
-            Content for analysis:
-            """ + content
+        prompt = ANALYZE_CONTENT_PROMPT.format(content=content)
         try:
-            response = self.llm_controller.llm.get_completion(prompt, response_format={"type": "json_schema", "json_schema": {
-                        "name": "response",
-                        "schema": {
-                            "type": "object",
-                            "properties": {
-                                "keywords": {
-                                    "type": "array",
-                                    "items": {
-                                        "type": "string"
-                                    }
-                                },
-                                "context": {
-                                    "type": "string",
-                                },
-                                "tags": {
-                                    "type": "array",
-                                    "items": {
-                                        "type": "string"
-                                    }
-                                }
-                            }
-                        }
-                    }})
-            return json.loads(response)
+            response = self.llm_controller.llm.get_completion(prompt)
+            analysis = parse_analyze_content(response, content)
+
+            if not analysis["keywords"]:
+                retry_prompt = FOCUSED_KEYWORDS_PROMPT.format(content=content)
+                retry_response = self.llm_controller.llm.get_completion(retry_prompt, temperature=0.3)
+                analysis["keywords"] = _parse_list_items(retry_response)
+
+            return validate_analysis_result(analysis, content)
         except Exception as e:
-            print(f"Error analyzing content: {e}")
-            return {"keywords": [], "context": "General", "tags": []}
+            logger.error("Error analyzing content: %s", e)
+            return {
+                "keywords": _heuristic_keywords(content),
+                "context": _heuristic_context(content) or "General",
+                "tags": _heuristic_keywords(content, 3),
+            }
 
     def add_note(self, content: str, time: str = None, **kwargs) -> str:
         """Add a new memory note"""
@@ -532,155 +475,69 @@ class AgenticMemorySystem:
             return False, note
             
         
-        # Get nearest neighbors
         neighbors_text, indices = self.find_related_memories(note.content, k=5)
         if not neighbors_text or not indices:
             return False, note
-            
-        # Format neighbors for LLM - in this case, neighbors_text is already formatted
-        
-        # Query LLM for evolution decision
-        prompt = self._evolution_system_prompt.format(
-            content=note.content,
-            context=note.context,
-            keywords=note.keywords,
-            nearest_neighbors_memories=neighbors_text,
-            neighbor_number=len(indices)
-        )
-        
-        response_format = {"type": "json_schema", "json_schema": {
-            "name": "response",
-            "schema": {
-                "type": "object",
-                "properties": {
-                    "should_evolve": {
-                        "type": "boolean"
-                    },
-                    "actions": {
-                        "type": "array",
-                        "items": {
-                            "type": "string"
-                        }
-                    },
-                    "suggested_connections": {
-                        "type": "array",
-                        "items": {
-                            "type": "integer"
-                        }
-                    },
-                    "new_context_neighborhood": {
-                        "type": "array",
-                        "items": {
-                            "type": "string"
-                        }
-                    },
-                    "tags_to_update": {
-                        "type": "array",
-                        "items": {
-                            "type": "string"
-                        }
-                    },
-                    "new_tags_neighborhood": {
-                        "type": "array",
-                        "items": {
-                            "type": "array",
-                            "items": {
-                                "type": "string"
-                            }
-                        }
-                    }
-                },
-                "required": ["should_evolve", "actions", "suggested_connections",
-                            "tags_to_update", "new_context_neighborhood", "new_tags_neighborhood"],
-                "additionalProperties": False
-            },
-            "strict": True
-        }}
 
-        required_keys = {
-            "should_evolve",
-            "actions",
-            "suggested_connections",
-            "tags_to_update",
-            "new_context_neighborhood",
-            "new_tags_neighborhood",
-        }
+        try:
+            decision_prompt = EVOLUTION_DECISION_PROMPT.format(
+                context=note.context,
+                content=note.content,
+                keywords=note.keywords,
+                nearest_neighbors_memories=neighbors_text,
+            )
+            decision_response = self.llm_controller.llm.get_completion(decision_prompt)
+            decision = parse_evolution_decision(decision_response)
+            if decision["decision"] == "NO_EVOLUTION":
+                return False, note
 
-        max_retries = 2
-        for attempt in range(max_retries + 1):
-            try:
-                response = self.llm_controller.llm.get_completion(
-                    prompt,
-                    response_format=response_format,
+            should_strengthen = decision["decision"] in ("STRENGTHEN", "STRENGTHEN_AND_UPDATE")
+            should_update = decision["decision"] in ("UPDATE_NEIGHBOR", "STRENGTHEN_AND_UPDATE")
+
+            if should_strengthen:
+                strengthen_prompt = STRENGTHEN_DETAILS_PROMPT.format(
+                    content=note.content,
+                    keywords=note.keywords,
+                    nearest_neighbors_memories=neighbors_text,
                 )
-                if not isinstance(response, str):
-                    raise ValueError("LLM response is not a string")
+                strengthen_response = self.llm_controller.llm.get_completion(strengthen_prompt)
+                strengthen = parse_strengthen_details(strengthen_response)
+                suggested_connections: List[int] = []
+                for raw_link in strengthen["connections"]:
+                    link_idx = self._normalize_link_index(raw_link)
+                    if link_idx is None:
+                        continue
+                    suggested_connections.append(link_idx)
+                note.links.extend(suggested_connections)
+                if strengthen["tags"]:
+                    note.tags = strengthen["tags"]
 
-                response_json = json.loads(response)
-                missing = required_keys - set(response_json.keys())
-                if missing:
-                    raise KeyError(f"Missing keys in response: {sorted(missing)}")
+            if should_update:
+                update_prompt = UPDATE_NEIGHBORS_PROMPT.format(
+                    content=note.content,
+                    context=note.context,
+                    nearest_neighbors_memories=neighbors_text,
+                    max_neighbor_idx=len(indices) - 1,
+                    neighbor_count=len(indices),
+                )
+                update_response = self.llm_controller.llm.get_completion(update_prompt)
+                neighbor_updates = parse_update_neighbors(update_response, len(indices))
+                noteslist = [memory for _, memory in self._ordered_memory_items()]
+                notes_id = [memory_id for memory_id, _ in self._ordered_memory_items()]
 
-                should_evolve = response_json["should_evolve"]
+                for i in range(min(len(indices), len(neighbor_updates))):
+                    memorytmp_idx = indices[i]
+                    if memorytmp_idx < 0 or memorytmp_idx >= len(noteslist):
+                        continue
+                    update = neighbor_updates[i]
+                    notetmp = noteslist[memorytmp_idx]
+                    if update["tags"]:
+                        notetmp.tags = update["tags"]
+                    if update["context"]:
+                        notetmp.context = update["context"]
+                    self.memories[notes_id[memorytmp_idx]] = notetmp
 
-                if should_evolve:
-                    actions = response_json["actions"]
-                    for action in actions:
-                        if action == "strengthen":
-                            suggest_connections = []
-                            for raw_link in response_json["suggested_connections"]:
-                                link_idx = self._normalize_link_index(raw_link)
-                                if link_idx is None:
-                                    continue
-                                suggest_connections.append(link_idx)
-                            new_tags = response_json["tags_to_update"]
-                            note.links.extend(suggest_connections)
-                            note.tags = new_tags
-                        elif action == "update_neighbor":
-                            new_context_neighborhood = response_json["new_context_neighborhood"]
-                            new_tags_neighborhood = response_json["new_tags_neighborhood"]
-                            noteslist = [memory for _, memory in self._ordered_memory_items()]
-                            notes_id = [memory_id for memory_id, _ in self._ordered_memory_items()]
-
-                            for i in range(min(len(indices), len(new_tags_neighborhood))):
-                                tag = new_tags_neighborhood[i]
-                                if i < len(new_context_neighborhood):
-                                    context = new_context_neighborhood[i]
-                                else:
-                                    memorytmp_idx = indices[i]
-                                    if memorytmp_idx < 0 or memorytmp_idx >= len(noteslist):
-                                        continue
-                                    context = noteslist[memorytmp_idx].context
-
-                                memorytmp_idx = indices[i]
-                                if memorytmp_idx < 0 or memorytmp_idx >= len(noteslist):
-                                    continue
-                                notetmp = noteslist[memorytmp_idx]
-                                notetmp.tags = tag
-                                notetmp.context = context
-                                self.memories[notes_id[memorytmp_idx]] = notetmp
-
-                return should_evolve, note
-
-            except (json.JSONDecodeError, KeyError, ValueError) as e:
-                if attempt < max_retries:
-                    logger.warning(
-                        "Invalid memory evolution response (attempt %d/%d): %s",
-                        attempt + 1,
-                        max_retries + 1,
-                        str(e),
-                    )
-                    continue
-                logger.error(f"Error in memory evolution: {str(e)}")
-                return False, note
-            except Exception as e:
-                if attempt < max_retries:
-                    logger.warning(
-                        "Error in memory evolution (attempt %d/%d): %s",
-                        attempt + 1,
-                        max_retries + 1,
-                        str(e),
-                    )
-                    continue
-                logger.error(f"Error in process_memory: {str(e)}")
-                return False, note
+            return True, note
+        except Exception as e:
+            logger.error("Evolution failed for note %s: %s — storing without evolution", note.id, e)
+            return False, note

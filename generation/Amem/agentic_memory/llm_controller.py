@@ -1,6 +1,7 @@
 from typing import Dict, Optional, Literal, Any, List, Tuple
+import functools
 import os
-import json
+import logging
 import threading
 import time
 from abc import ABC, abstractmethod
@@ -8,6 +9,7 @@ from abc import ABC, abstractmethod
 
 _USAGE_LOCK = threading.Lock()
 _USAGE_RECORDS: List[Dict[str, Any]] = []
+logger = logging.getLogger("amem_robust")
 
 
 def _usage_to_dict(raw_usage: Any) -> Dict[str, Any]:
@@ -112,10 +114,58 @@ def get_usage_summary() -> Dict[str, Any]:
     return summary
 
 class BaseLLMController(ABC):
+    SYSTEM_MESSAGE = "Follow the format specified in the prompt exactly. Do not add extra commentary."
+
     @abstractmethod
-    def get_completion(self, prompt: str) -> str:
+    def get_completion(
+        self,
+        prompt: str,
+        response_format: Optional[dict] = None,
+        temperature: float = 0.7,
+    ) -> str:
         """Get completion from LLM"""
         pass
+
+    def check_connectivity(self) -> None:
+        try:
+            response = self.get_completion("Reply with exactly one word: READY", temperature=0.0)
+            if not response or not str(response).strip():
+                raise ConnectionError("Empty response from LLM backend")
+            logger.info("LLM connectivity check passed: %s", str(response).strip()[:50])
+        except Exception as exc:
+            raise ConnectionError(
+                f"Cannot reach LLM backend: {exc}. Check that the server is running and accessible."
+            ) from exc
+
+
+def retry_llm_call(max_retries: int = 2, base_delay: float = 1.0):
+    """Retry an LLM call with exponential backoff."""
+
+    def decorator(func):
+        @functools.wraps(func)
+        def wrapper(*args, **kwargs):
+            last_exc = None
+            for attempt in range(max_retries + 1):
+                try:
+                    return func(*args, **kwargs)
+                except Exception as exc:
+                    last_exc = exc
+                    if attempt < max_retries:
+                        delay = base_delay * (2 ** attempt)
+                        logger.warning(
+                            "LLM call %s failed (attempt %d/%d): %s; retrying in %.1fs",
+                            func.__name__,
+                            attempt + 1,
+                            max_retries + 1,
+                            exc,
+                            delay,
+                        )
+                        time.sleep(delay)
+            raise last_exc
+
+        return wrapper
+
+    return decorator
 
 class OpenAIController(BaseLLMController):
     def __init__(self, model: str = "gpt-4", api_key: Optional[str] = None, base_url: Optional[str] = None):
@@ -134,18 +184,36 @@ class OpenAIController(BaseLLMController):
             self.client = OpenAI(**client_kwargs)
         except ImportError:
             raise ImportError("OpenAI package not found. Install it with: pip install openai")
-    
-    def get_completion(self, prompt: str, response_format: dict, temperature: float = 1.0) -> str:
-        response = self.client.chat.completions.create(
-            model=self.model,
-            messages=[
-                {"role": "system", "content": "You must respond with a JSON object."},
-                {"role": "user", "content": prompt}
-            ],
-            response_format=response_format,
-            temperature=temperature,
-            # max_tokens=1000
-        )
+
+    def _supports_temperature(self) -> bool:
+        model_name = str(self.model or "").strip().lower()
+        return not model_name.startswith("gpt-5")
+
+    @retry_llm_call(max_retries=2)
+    def get_completion(
+        self,
+        prompt: str,
+        response_format: Optional[dict] = None,
+        temperature: float = 0.7,
+    ) -> str:
+        messages = [
+            {
+                "role": "system",
+                "content": "You must respond with a JSON object."
+                if response_format is not None
+                else self.SYSTEM_MESSAGE,
+            },
+            {"role": "user", "content": prompt},
+        ]
+        create_kwargs: Dict[str, Any] = {
+            "model": self.model,
+            "messages": messages,
+        }
+        if response_format is not None:
+            create_kwargs["response_format"] = response_format
+        if temperature is not None and self._supports_temperature():
+            create_kwargs["temperature"] = temperature
+        response = self.client.chat.completions.create(**create_kwargs)
         record_usage(
             request_kind="chat",
             provider="openai",
@@ -186,18 +254,32 @@ class OllamaController(BaseLLMController):
         
         return result
 
-    def get_completion(self, prompt: str, response_format: dict, temperature: float = 0.7) -> str:
-        # Allow exceptions (like ConnectionError) to bubble up for better debugging
+    @retry_llm_call(max_retries=2)
+    def get_completion(
+        self,
+        prompt: str,
+        response_format: Optional[dict] = None,
+        temperature: float = 0.7,
+    ) -> str:
         from litellm import completion
 
-        response = completion(
+        completion_kwargs: Dict[str, Any] = dict(
             model="ollama_chat/{}".format(self.model),
             messages=[
-                {"role": "system", "content": "You must respond with a JSON object."},
-                {"role": "user", "content": prompt}
+                {
+                    "role": "system",
+                    "content": "You must respond with a JSON object."
+                    if response_format is not None
+                    else self.SYSTEM_MESSAGE,
+                },
+                {"role": "user", "content": prompt},
             ],
-            response_format=response_format,
         )
+        if response_format is not None:
+            completion_kwargs["response_format"] = response_format
+        if temperature is not None:
+            completion_kwargs["temperature"] = temperature
+        response = completion(**completion_kwargs)
         return response.choices[0].message.content
 
 class LLMController:
@@ -206,13 +288,16 @@ class LLMController:
                  backend: Literal["openai", "ollama"] = "openai",
                  model: str = "gpt-4", 
                  api_key: Optional[str] = None,
-                 base_url: Optional[str] = None):
+                 base_url: Optional[str] = None,
+                 check_connection: bool = False):
         if backend == "openai":
             self.llm = OpenAIController(model, api_key, base_url)
         elif backend == "ollama":
             self.llm = OllamaController(model)
         else:
             raise ValueError("Backend must be one of: 'openai', 'ollama'")
+        if check_connection:
+            self.llm.check_connectivity()
             
     def get_completion(self, prompt: str, response_format: dict = None, temperature: float = 0.7) -> str:
         return self.llm.get_completion(prompt, response_format, temperature)
