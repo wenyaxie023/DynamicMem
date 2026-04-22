@@ -15,6 +15,10 @@ This checklist tracks where TCE (especially RAG baseline) builds retrieval query
 Pack-first runtime contract:
 - `retrieval_query_text` comes from task-pack `retrieval_query`
 - `answer_query_text` comes from task-pack `question_text` / `question`
+- Task C v2 uses distinct retrieval vs answer inputs:
+  - retrieval uses pack-authored `retrieval_query`
+  - answering uses pack-authored `scenario + task_instruction` for `user_communication`
+  - answering uses pack-authored `scenario + task_instruction + output_template` for structured families
 - `checkpoint_timestamp` is still injected by shared `tce_core` into `QuerySpec`, not by baseline-local wrappers
 - shared Task A / B / C answer prompts now use the pack-authored direct question text without baseline-local checkpoint wrappers
 - explicit-retrieval baselines must consume `QuerySpec.retrieval_query_text` directly; they must not regenerate or fallback to baseline-local retrieval query text
@@ -239,8 +243,8 @@ Your current example:
    - check `metadata.per_key_retrieval[*].retrieval_query`.
    - Task A retrieval query should be item-specific, one `state_key` per record.
    - for Task C v1, retrieval query should contain scenario + question, not question-only.
-   - for Task C v2 `user_communication`, retrieval query should contain service family + scenario + task instruction.
-   - for Task C v2 structured families, retrieval query should contain service family + scenario + task instruction + required output fields.
+   - for Task C v2, retrieval query should contain scenario + task instruction.
+   - Task C v2 retrieval query should not prepend wrapper labels such as `Service family:`, `Retrieval objective:`, or `Required output fields:`.
 2. Confirm final prompt text:
    - check `metadata.prompt[*]`.
    - Task A/B prompts should start from the pack-authored question text.

@@ -1608,22 +1608,26 @@ def build_task_c_v2_question_pack_prompt(
     raise ValueError(f"Unsupported Task C v2 service_family: {normalized_family}")
 
 
-def _describe_task_c_v2_service_family(service_family: str) -> str:
-    normalized = str(service_family or "").strip()
-    if normalized == "user_communication":
-        return "Habit-Conditioned User Communication"
-    if normalized == "information_request_construction":
-        return "Preference-Conditioned Filtering Parameter Completion"
-    if normalized == "action_configuration":
-        return "Attribute-Conditioned Action Configuration"
-    return normalized
-
-def _build_service_application_prompt(
+def _build_task_c_runtime_prompt(
     *,
     memory_section: str,
-    question_text: str,
+    response_mode: str,
+    service_family: str = "",
+    question_text: str = "",
+    scenario: str,
+    task_instruction: str,
+    output_template: Any = None,
 ) -> str:
-    return """{question_text}
+    normalized_mode = str(response_mode or "").strip().lower()
+    if normalized_mode not in {"text", "structured"}:
+        raise ValueError("Unsupported Task C response_mode: {}".format(response_mode))
+
+    scenario = str(scenario or "").strip()
+    task_instruction = str(task_instruction or "").strip()
+    question_text = str(question_text or "").strip()
+
+    if not scenario and not task_instruction and question_text:
+        return """{question_text}
 
 {memory_section}
 
@@ -1648,34 +1652,21 @@ def _build_service_application_prompt(
 }}
 
 """.format(
-        question_text=question_text,
-        memory_section=memory_section,
-    )
+            question_text=question_text,
+            memory_section=memory_section,
+        )
 
-
-def _build_structured_service_completion_prompt(
-    *,
-    memory_section: str,
-    service_family: str,
-    scenario: str,
-    task_instruction: str,
-    output_template: Any,
-) -> str:
-    return """[Scenario]
-{scenario}
-
-[Task Instruction]
-{task_instruction}
-
-[Task Type]
-{service_family_description}
-
-[Required Output Object]
-{output_template}
-
-{memory_section}
-
-[Instructions]
+    header_parts = [
+        "[Scenario]\n{}".format(scenario),
+        "[Task Instruction]\n{}".format(task_instruction),
+    ]
+    if normalized_mode == "structured":
+        header_parts.extend(
+            [
+                "[Required Output Object]\n{}".format(json.dumps(output_template, ensure_ascii=False, indent=2)),
+            ]
+        )
+        instructions = """[Instructions]
 - Fill the structured `output` object using the memory and the provided scenario.
 - Preserve the required nested structure exactly.
 - Do not add extra fields.
@@ -1694,31 +1685,11 @@ def _build_structured_service_completion_prompt(
       "evidence_content": "<supporting snippet from the same log>"
     }}
   ]
-}}
-""".format(
-        scenario=str(scenario or "").strip(),
-        task_instruction=str(task_instruction or "").strip(),
-        service_family_description=_describe_task_c_v2_service_family(service_family),
-        output_template=json.dumps(output_template, ensure_ascii=False, indent=2),
-        memory_section=memory_section,
-    )
-
-
-def _build_task_c_v2_user_communication_answer_prompt(
-    *,
-    memory_section: str,
-    scenario: str,
-    task_instruction: str,
-) -> str:
-    return """[Scenario]
-{scenario}
-
-[Task Instruction]
-{task_instruction}
-
-{memory_section}
-
-[Instructions]
+}}""".format(
+            output_template=json.dumps(output_template, ensure_ascii=False, indent=2),
+        )
+    else:
+        instructions = """[Instructions]
 - Write one short natural-language assistant response that best fits the scenario using the memory.
 - Do not return a structured payload or bullet list.
 - `evidence` must be a list of objects with:
@@ -1736,11 +1707,110 @@ def _build_task_c_v2_user_communication_answer_prompt(
       "evidence_content": "<supporting snippet from the same log>"
     }}
   ]
-}}
-""".format(
-        scenario=str(scenario or "").strip(),
-        task_instruction=str(task_instruction or "").strip(),
+}}"""
+    return "{header}\n\n{memory_section}\n\n{instructions}\n".format(
+        header="\n\n".join(header_parts),
         memory_section=memory_section,
+        instructions=instructions,
+    )
+
+
+def _build_service_application_prompt(
+    *,
+    memory_section: str,
+    question_text: str,
+) -> str:
+    return _build_task_c_runtime_prompt(
+        memory_section=memory_section,
+        response_mode="text",
+        question_text=question_text,
+        scenario="",
+        task_instruction="",
+    )
+
+
+def _build_structured_service_completion_prompt(
+    *,
+    memory_section: str,
+    service_family: str,
+    scenario: str,
+    task_instruction: str,
+    output_template: Any,
+) -> str:
+    return _build_task_c_runtime_prompt(
+        memory_section=memory_section,
+        response_mode="structured",
+        service_family=service_family,
+        scenario=scenario,
+        task_instruction=task_instruction,
+        output_template=output_template,
+    )
+
+
+def _build_task_c_v2_user_communication_answer_prompt(
+    *,
+    memory_section: str,
+    scenario: str,
+    task_instruction: str,
+) -> str:
+    return _build_task_c_runtime_prompt(
+        memory_section=memory_section,
+        response_mode="text",
+        scenario=scenario,
+        task_instruction=task_instruction,
+    )
+
+
+def build_task_c_prompt_with_inline_memory(
+    *,
+    response_mode: str,
+    service_family: str = "",
+    question_text: str = "",
+    scenario: str = "",
+    task_instruction: str = "",
+    output_template: Any = None,
+    context_logs: Optional[List[Dict[str, Any]]],
+    log_to_text,
+    inline_memory_blocks: Optional[List[str]] = None,
+) -> str:
+    return _build_task_c_runtime_prompt(
+        memory_section=_render_inline_memory_section(
+            inline_memory_blocks=_coerce_inline_memory_blocks(
+                inline_memory_blocks=inline_memory_blocks,
+                context_logs=context_logs,
+                log_to_text=log_to_text,
+            )
+        ),
+        response_mode=response_mode,
+        service_family=service_family,
+        question_text=question_text,
+        scenario=scenario,
+        task_instruction=task_instruction,
+        output_template=output_template,
+    )
+
+
+def build_task_c_prompt_with_agent_memory(
+    *,
+    response_mode: str,
+    service_family: str = "",
+    question_text: str = "",
+    scenario: str = "",
+    task_instruction: str = "",
+    output_template: Any = None,
+    context_logs: Optional[List[Dict[str, Any]]],
+    log_to_text,
+    inline_memory_blocks: Optional[List[str]] = None,
+) -> str:
+    del context_logs, log_to_text, inline_memory_blocks
+    return _build_task_c_runtime_prompt(
+        memory_section=_render_agent_memory_section(),
+        response_mode=response_mode,
+        service_family=service_family,
+        question_text=question_text,
+        scenario=scenario,
+        task_instruction=task_instruction,
+        output_template=output_template,
     )
 
 

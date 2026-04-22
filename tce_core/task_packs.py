@@ -745,6 +745,10 @@ def _normalize_generated_items(
     if not isinstance(raw_out, dict):
         return []
     raw_items = raw_out.get("items")
+    if task_contract_is_v2(task_contract_version) and not isinstance(raw_items, list):
+        raw_item = raw_out.get("item")
+        if isinstance(raw_item, dict):
+            raw_items = [raw_item]
     if not isinstance(raw_items, list):
         return []
     out: List[Dict[str, Any]] = []
@@ -812,15 +816,15 @@ def build_rq3_apply_retrieval_query(
     task_instruction = str(task_instruction or "").strip()
     service_category = str(service_category or "").strip()
     question = str(question or apply_question or "").strip()
-    parts = []
     if service_family:
-        parts.append("Service family:\n{}".format(service_family))
-    if scenario:
-        parts.append("Scenario:\n{}".format(scenario))
-    if task_instruction:
-        parts.append("Task instruction:\n{}".format(task_instruction))
-    if output_template is not None:
-        parts.append("Required output fields:\n{}".format(json.dumps(output_template, ensure_ascii=False, indent=2)))
+        parts = []
+        if scenario:
+            parts.append(str(scenario))
+        if task_instruction:
+            parts.append(str(task_instruction))
+        return "\n\n".join(parts).strip()
+
+    parts = []
     if service_category:
         parts.append("Service category:\n{}".format(service_category))
     if str(apply_scenario or "").strip():

@@ -13,6 +13,8 @@ from tce_core.prompts import (
     build_apply_rubric_validation_prompt,
     build_change_reasoning_prompt_with_agent_memory,
     build_change_reasoning_prompt_with_inline_memory,
+    build_task_c_prompt_with_agent_memory,
+    build_task_c_prompt_with_inline_memory,
     build_structured_service_completion_prompt_with_agent_memory,
     build_structured_service_completion_prompt_with_inline_memory,
     build_service_application_prompt_with_agent_memory,
@@ -303,7 +305,8 @@ class TcePromptContractAcceptance(unittest.TestCase):
             self.assertIn('"output": {', prompt)
             self.assertIn('"evidence": [', prompt)
             self.assertNotIn('"answer":', prompt)
-            self.assertIn("[Task Type]", prompt)
+            self.assertIn("[Required Output Object]", prompt)
+            self.assertNotIn("[Task Type]", prompt)
             self.assertNotIn("information_request_construction", prompt)
         self.assertIn("[Memory]", inline_prompt)
         self.assertIn("[Memory]", agent_prompt)
@@ -317,6 +320,34 @@ class TcePromptContractAcceptance(unittest.TestCase):
         self.assertIn('"answer":', user_comm_inline)
         self.assertNotIn('"output": {', user_comm_inline)
         self.assertIn("one short natural-language assistant response", user_comm_inline)
+
+    def test_generic_task_c_runtime_prompt_builder_supports_text_and_structured_modes(self) -> None:
+        text_prompt = build_task_c_prompt_with_inline_memory(
+            response_mode="text",
+            scenario="It is 06:10. Nothing has been logged yet today.",
+            task_instruction="Write the short reminder message the assistant should send right now.",
+            context_logs=[{"app_log_id": "log_0001"}],
+            log_to_text=lambda x: str(x),
+        )
+        structured_prompt = build_task_c_prompt_with_agent_memory(
+            response_mode="structured",
+            service_family="action_configuration",
+            scenario="A device setup flow is being completed before sync starts.",
+            task_instruction="Fill the setup payload.",
+            output_template={"setup": {"device_model": "<fill>"}},
+            context_logs=[{"app_log_id": "log_0001"}],
+            log_to_text=lambda x: str(x),
+        )
+
+        self.assertIn("[Scenario]", text_prompt)
+        self.assertIn("[Task Instruction]", text_prompt)
+        self.assertIn('"answer":', text_prompt)
+        self.assertNotIn('"output": {', text_prompt)
+
+        self.assertIn("[Required Output Object]", structured_prompt)
+        self.assertNotIn("[Task Type]", structured_prompt)
+        self.assertIn('"output": {', structured_prompt)
+        self.assertNotIn('"answer": "<one short assistant response>"', structured_prompt)
 
     def test_task_c_v2_rewrite_prompt_preserves_structured_contract(self) -> None:
         rewrite_prompt = build_task_c_v2_rewrite_prompt(

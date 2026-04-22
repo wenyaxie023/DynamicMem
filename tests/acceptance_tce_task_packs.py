@@ -215,6 +215,107 @@ class TceTaskPackAcceptance(unittest.TestCase):
         self.assertEqual(point["source_field_path"], "statement")
         self.assertEqual(point["reference_value"], "prefers self-paced webinars")
 
+    def test_v2_apply_accepts_single_item_output_shape(self):
+        benchmark = {
+            "user_id": "001_user_001",
+            "checkpoints": [
+                {
+                    "checkpoint_id": "cp1",
+                    "as_of": {"timestamp": "2025-01-01 08:00:00"},
+                    "state_questionability": {
+                        "preferences_state:favorite_coffee": {"is_questionable": True}
+                    },
+                    "validated_snapshot_state": {
+                        "preferences_state": {
+                            "favorite_coffee": {
+                                "statement": "latte"
+                            }
+                        }
+                    },
+                    "state_observability": {
+                        "preferences_state": {
+                            "favorite_coffee": {"evidence_app_log_ids": ["log_0001"]}
+                        }
+                    },
+                }
+            ],
+        }
+
+        class _FakeApplyGeneratorClient:
+            def ask(self, prompt: str, response_type: str = "json"):
+                del response_type
+                if "Generate exactly one low-leakage benchmark item for a preference-conditioned Information Request Construction task." not in prompt:
+                    return {}
+                return {
+                    "item": {
+                        "scenario": "A coffee-order shortlist is being prepared before the menu is shown.",
+                        "task_instruction": "As the assistant, complete the filtering parameters that should be sent right now. Use the user's preference statement to shape the filters, and do not write the final recommendation.",
+                        "output_template": {
+                            "drink_filters": {
+                                "preferred_drink": "<fill>"
+                            }
+                        },
+                        "reference_output": {
+                            "drink_filters": {
+                                "preferred_drink": "latte"
+                            }
+                        },
+                        "scoring_rubric": {
+                            "criteria": [
+                                {
+                                    "path": "drink_filters.preferred_drink",
+                                    "canonical_value": "latte",
+                                    "description": "This leaf captures the user's preferred coffee choice."
+                                },
+                            ]
+                        },
+                    }
+                }
+
+        class _FakeApplyValidatorClient:
+            def ask(self, prompt: str, response_type: str = "json"):
+                del prompt, response_type
+                return {
+                    "criteria": [
+                        {"criterion": "service_completion_quality", "pass": True, "analysis": "ok"},
+                        {"criterion": "full_field_dependency", "pass": True, "analysis": "ok"},
+                        {"criterion": "schema_groundedness", "pass": True, "analysis": "ok"},
+                        {"criterion": "point_pairability", "pass": True, "analysis": "ok"},
+                    ]
+                }
+
+        result = build_task_packs(
+            benchmark=copy.deepcopy(benchmark),
+            tasks=["apply"],
+            generator_client=_FakeApplyGeneratorClient(),
+            validator_client=_FakeApplyValidatorClient(),
+            provider="test",
+            model="generator",
+            validator_provider="test",
+            validator_model="validator",
+            item_count_per_key=1,
+            max_rewrites=0,
+            apply_workers=1,
+        )
+
+        item = result["checkpoints"][0]["rq3_apply_service_qa"]["keys"]["preferences_state:favorite_coffee"]["items"][0]
+        self.assertEqual(item["service_family"], "information_request_construction")
+        self.assertEqual(item["scenario"], "A coffee-order shortlist is being prepared before the menu is shown.")
+        self.assertEqual(
+            item["task_instruction"],
+            "As the assistant, complete the filtering parameters that should be sent right now. Use the user's preference statement to shape the filters, and do not write the final recommendation.",
+        )
+        self.assertEqual(
+            item["output_template"],
+            {"drink_filters": {"preferred_drink": "<fill>"}},
+        )
+        self.assertEqual(
+            item["reference_output"],
+            {"drink_filters": {"preferred_drink": "latte"}},
+        )
+        self.assertTrue(item["item_validation"]["is_valid"])
+        self.assertTrue(item["scoring_validation"]["is_valid"])
+
     def test_v2_task_a_filters_schedule_date_like_fields_from_template_and_scoring(self):
         benchmark = {
             "user_id": "001_user_001",

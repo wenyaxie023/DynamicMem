@@ -152,6 +152,7 @@ Shared generation config contract:
 - canonical shared sections are:
   - `runtime`
     - `user_id`
+    - `task_selection`
     - `checkpoint_workers`
     - `within_checkpoint_workers`
     - `save_every_generation_keys`
@@ -173,6 +174,17 @@ Shared generation config contract:
   - `generation.run_tce_batch` should inject shared `runtime.user_id` from the chosen batch user
   - direct single-user configs may set `runtime.user_id` explicitly
   - `baseline_params.user_id` is not part of the current protocol
+- `task_selection` is a shared runtime knob:
+  - supported values:
+    - `all`
+      - default behavior
+      - execute the contract-default task set for the benchmark
+      - under `taskabc_v2`, this currently means `Task A + optional Task C`
+    - `task_c_only`
+      - diagnostic execution mode for prebuilt Task C-only benchmark artifacts
+      - runtime must skip Task A generation instead of treating missing `state_completion_pack` as an error
+      - runtime still consumes pack-authored `rq3_apply_service_qa` items and shared `QuerySpec.retrieval_query_text`
+  - `task_selection` must live under `runtime`, not `baseline_params`
 
 Implementation requirements:
 - generation runtime 必须将 requested worker counts 与 effective worker counts 一并记录到 prediction metadata。
@@ -678,7 +690,8 @@ Unified answering-prompt contract:
   - Task C v1 uses pack-authored `question`
   - Task C v2 `user_communication` uses pack-authored `scenario + task_instruction`
   - Task C v2 structured families use pack-authored `scenario + task_instruction + output_template`
-  - retrieval query 不应包含通用 instruction
+  - Task C v2 retrieval query should be the same pack-authored `scenario + task_instruction` string used to drive the item
+  - Task C v2 retrieval query should not prepend extra wrapper sections such as `Service family:`, `Retrieval objective:`, or `Required output fields:`
   - Task C v2 final output format must be:
     - `user_communication`: `{"answer": <natural-language response>, "evidence": [...]}`
     - structured families: `{"output": <filled object>, "evidence": [...]}`

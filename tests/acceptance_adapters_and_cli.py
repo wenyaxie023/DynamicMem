@@ -210,6 +210,30 @@ baseline_params:
             payload = json.loads(proc.stdout)
             self.assertTrue(payload["runtime"]["resume"])
 
+    def test_run_tce_dry_run_exposes_runtime_task_selection(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            cfg = root / "rag_taskc_only.yaml"
+            (root / "benchmark.json").write_text(json.dumps({"checkpoints": []}), encoding="utf-8")
+            (root / "app_logs.json").write_text(json.dumps([]), encoding="utf-8")
+            self._write_cfg(
+                cfg,
+                "rag",
+                retrieval_extra="retrieval:\n  top_k: 5\n",
+                runtime_extra="  task_selection: task_c_only\n  enable_rq3_apply_service_qa: true\n",
+            )
+
+            proc = subprocess.run(
+                ["python3", "-m", "generation.run_tce", "--config", str(cfg), "--dry-run"],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                universal_newlines=True,
+                check=True,
+            )
+            payload = json.loads(proc.stdout)
+            self.assertEqual(payload["runtime"]["task_selection"], "task_c_only")
+            self.assertNotIn("__task_selection__", payload["baseline_params"])
+
     def test_zep_formal_config_dry_run_uses_shared_sections(self):
         proc = subprocess.run(
             ["python3", "-m", "generation.run_tce", "--config", "configs/experiments/tce/zep.yaml", "--dry-run"],

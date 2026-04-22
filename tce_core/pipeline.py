@@ -29,20 +29,17 @@ from .orchestrator_protocol import (
     ensure_retrieval_result,
 )
 from .prompts import (
+    build_task_c_prompt_with_agent_memory,
+    build_task_c_prompt_with_inline_memory,
     build_change_reasoning_prompt_with_agent_memory,
     build_change_reasoning_prompt_with_inline_memory,
-    build_service_application_prompt_with_agent_memory,
-    build_service_application_prompt_with_inline_memory,
     build_state_completion_prompt_with_agent_memory,
     build_state_completion_prompt_with_inline_memory,
-    build_structured_service_completion_prompt_with_agent_memory,
-    build_structured_service_completion_prompt_with_inline_memory,
-    build_task_c_v2_user_communication_prompt_with_agent_memory,
-    build_task_c_v2_user_communication_prompt_with_inline_memory,
 )
 from .task_packs import (
     build_change_targets_from_pack,
     build_state_completion_targets_from_pack,
+    extract_pack_keys,
 )
 from tce_contracts import (
     infer_task_contract_version,
@@ -110,6 +107,15 @@ def drop_excluded_fields(value: Any) -> Any:
 
 
 ScalarValue = Union[str, int, float, bool, None]
+
+
+def _normalize_task_selection(value: Any) -> str:
+    raw = str(value or "all").strip().lower() or "all"
+    if raw in {"all", "task_c_only"}:
+        return raw
+    raise ValueError(
+        "Unsupported task_selection: {}. Use 'all' or 'task_c_only'.".format(value)
+    )
 
 
 def fill_blank_template(value: Any) -> Any:
@@ -301,16 +307,11 @@ def _select_change_reasoning_prompt_builder(memory_prompt_mode: str):
     raise ValueError("Unsupported memory_prompt_mode: {}".format(memory_prompt_mode))
 
 
-def _select_service_application_prompt_builder(memory_prompt_mode: str, *, structured_v2: bool = False):
-    if structured_v2:
-        if memory_prompt_mode == "inline_memory":
-            return build_structured_service_completion_prompt_with_inline_memory
-        if memory_prompt_mode == "agent_memory":
-            return build_structured_service_completion_prompt_with_agent_memory
+def _select_task_c_prompt_builder(memory_prompt_mode: str):
     if memory_prompt_mode == "inline_memory":
-        return build_service_application_prompt_with_inline_memory
+        return build_task_c_prompt_with_inline_memory
     if memory_prompt_mode == "agent_memory":
-        return build_service_application_prompt_with_agent_memory
+        return build_task_c_prompt_with_agent_memory
     raise ValueError("Unsupported memory_prompt_mode: {}".format(memory_prompt_mode))
 
 
@@ -361,35 +362,17 @@ def _build_apply_prompt_from_queryspec(
 ) -> str:
     structured_v2 = bool((query_spec.task_payload or {}).get("structured_task_c_v2"))
     service_family = str((query_spec.task_payload or {}).get("service_family") or "")
-    if structured_v2 and service_family == "user_communication":
-        prompt_builder = (
-            build_task_c_v2_user_communication_prompt_with_inline_memory
-            if memory_prompt_mode == "inline_memory"
-            else build_task_c_v2_user_communication_prompt_with_agent_memory
-        )
-        return prompt_builder(
-            scenario=str((query_spec.task_payload or {}).get("scenario") or ""),
-            task_instruction=str((query_spec.task_payload or {}).get("task_instruction") or ""),
-            context_logs=None,
-            log_to_text=to_log_text,
-            inline_memory_blocks=list(retrieval_result.inline_memory_blocks),
-        )
-    prompt_builder = _select_service_application_prompt_builder(
-        memory_prompt_mode,
-        structured_v2=structured_v2,
-    )
-    if structured_v2:
-        return prompt_builder(
-            service_family=str((query_spec.task_payload or {}).get("service_family") or ""),
-            scenario=str((query_spec.task_payload or {}).get("scenario") or ""),
-            task_instruction=str((query_spec.task_payload or {}).get("task_instruction") or ""),
-            output_template=(query_spec.task_payload or {}).get("output_template"),
-            context_logs=None,
-            log_to_text=to_log_text,
-            inline_memory_blocks=list(retrieval_result.inline_memory_blocks),
-        )
+    response_mode = "text"
+    if structured_v2 and service_family != "user_communication":
+        response_mode = "structured"
+    prompt_builder = _select_task_c_prompt_builder(memory_prompt_mode)
     return prompt_builder(
+        response_mode=response_mode,
+        service_family=service_family,
         question_text=query_spec.answer_query_text,
+        scenario=str((query_spec.task_payload or {}).get("scenario") or ""),
+        task_instruction=str((query_spec.task_payload or {}).get("task_instruction") or ""),
+        output_template=(query_spec.task_payload or {}).get("output_template"),
         context_logs=None,
         log_to_text=to_log_text,
         inline_memory_blocks=list(retrieval_result.inline_memory_blocks),
@@ -794,7 +777,13 @@ def run_pipeline(
     final_qa_output_path: Optional[str] = None,
     final_qa_retrieval_top_k: Optional[int] = None,
     final_qa_save_prompt_and_raw: bool = False,
+    task_selection: str = "all",
 ) -> Dict[str, Any]:
+    task_selection = _normalize_task_selection(task_selection)
+    if task_selection == "task_c_only" and not enable_rq3_apply_service_qa:
+        raise ValueError(
+            "task_selection=task_c_only requires runtime.enable_rq3_apply_service_qa=true."
+        )
     benchmark = json.loads(benchmark_path.read_text(encoding="utf-8"))
     benchmark_contract_version = infer_task_contract_version(benchmark)
     task_b_supported_by_contract = task_contract_supports_change_tracking(benchmark_contract_version)
@@ -991,33 +980,40 @@ def run_pipeline(
 
         state_completion_pack_used = False
         prebuilt_state_completion_records: Dict[str, Any] = {}
-        pack_targets = build_state_completion_targets_from_pack(cp)
-        if pack_targets is not None:
-            (
-                target_keys,
-                target_value_templates,
-                target_key_status,
-                prebuilt_state_completion_records,
-            ) = pack_targets
-            state_completion_pack_used = True
+        target_keys: List[str] = []
+        target_value_templates: Dict[str, Any] = {}
+        target_key_status: Dict[str, Any] = {}
+        if task_selection == "task_c_only":
+            target_keys = extract_pack_keys(cp.get("rq3_apply_service_qa"))
         else:
-            raise ValueError(
-                "Task A requires state_completion_pack for checkpoint {}.".format(cid or "<unknown>")
-            )
+            pack_targets = build_state_completion_targets_from_pack(cp)
+            if pack_targets is not None:
+                (
+                    target_keys,
+                    target_value_templates,
+                    target_key_status,
+                    prebuilt_state_completion_records,
+                ) = pack_targets
+                state_completion_pack_used = True
+            else:
+                raise ValueError(
+                    "Task A requires state_completion_pack for checkpoint {}.".format(cid or "<unknown>")
+                )
 
-        for key in target_keys:
-            _require_nonempty_pack_query(
-                task_name="Task A",
-                checkpoint_id=cid,
-                item_key=key,
-                query_text=(prebuilt_state_completion_records.get(key) or {}).get("retrieval_query") or "",
-            )
+            for key in target_keys:
+                _require_nonempty_pack_query(
+                    task_name="Task A",
+                    checkpoint_id=cid,
+                    item_key=key,
+                    query_text=(prebuilt_state_completion_records.get(key) or {}).get("retrieval_query") or "",
+                )
 
         item: Dict[str, Any] = {
             "checkpoint_id": cid,
             "snapshot_state": {},
             "evidence": {},
             "metadata": {
+                "task_selection": task_selection,
                 "checkpoint_timestamp": cp_ts,
                 "checkpoint_date": cp_dt.strftime("%Y-%m-%d") if cp_dt != datetime.max else "",
                 "history_mode": "full_until_checkpoint" if not max_visible_logs or max_visible_logs <= 0 else "truncated_tail",
@@ -1043,6 +1039,11 @@ def run_pipeline(
                 "_checkpoint_complete": False,
             },
         }
+        if task_selection == "task_c_only":
+            item["metadata"]["task_a"] = {
+                "enabled": False,
+                "skipped_by_task_selection": True,
+            }
         source_cid = cp.get("_source_checkpoint_id")
         if source_cid:
             item["metadata"]["source_checkpoint_id"] = source_cid
@@ -1068,7 +1069,14 @@ def run_pipeline(
                 _persist_checkpoint_item(item)
 
         try:
-            if state_completion_pack_used and not target_keys:
+            if task_selection == "task_c_only":
+                item["snapshot_state"] = {}
+                item["evidence"] = {}
+                item["metadata"]["retrieval_mode"] = "task_c_only"
+                if save_prompt_and_raw:
+                    item["metadata"]["prompt"] = []
+                    item["metadata"]["raw_model_output"] = {"mode": "task_c_only", "records": []}
+            elif state_completion_pack_used and not target_keys:
                 item["snapshot_state"] = {}
                 item["evidence"] = {}
                 item["metadata"]["retrieval_mode"] = "pack_empty_scope"
@@ -1198,7 +1206,14 @@ def run_pipeline(
                             item["metadata"]["raw_model_output"] = {"mode": "per_key", "records": ordered_records}
                         _maybe_persist()
 
-            if enable_change_reasoning and task_b_supported_by_contract:
+            if task_selection == "task_c_only" and enable_change_reasoning:
+                item["change_analysis"] = {}
+                item["metadata"]["change_reasoning"] = {
+                    "enabled": False,
+                    "requested": True,
+                    "skipped_by_task_selection": True,
+                }
+            elif enable_change_reasoning and task_b_supported_by_contract:
                 change_pack_used = False
                 prebuilt_change_records: Dict[str, Any] = {}
                 pack_change_info = build_change_targets_from_pack(cp)
@@ -1313,9 +1328,12 @@ def run_pipeline(
                 }
 
             if enable_rq3_apply_service_qa:
+                rq3_target_keys = list(target_keys)
+                if task_selection == "task_c_only":
+                    rq3_target_keys = extract_pack_keys(cp.get("rq3_apply_service_qa"))
                 rq3_pack = _extract_rq3_apply_pack_for_checkpoint(
                     cp,
-                    target_keys=target_keys,
+                    target_keys=rq3_target_keys,
                     task_contract_version=benchmark_contract_version,
                 )
                 if not rq3_pack:
@@ -1506,7 +1524,13 @@ def run_pipeline(
                 progress.update(1)
 
         final_qa_summary: Optional[Dict[str, Any]] = None
-        if enable_final_qa:
+        if task_selection == "task_c_only" and enable_final_qa:
+            final_qa_summary = {
+                "enabled": False,
+                "requested": True,
+                "skipped_by_task_selection": True,
+            }
+        elif enable_final_qa:
             from .final_checkpoint_qa import (
                 _final_qa_output_path,
                 _item_key,
