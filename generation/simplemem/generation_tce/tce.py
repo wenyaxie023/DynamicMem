@@ -407,15 +407,18 @@ def run_generation(
 ) -> Dict[str, Any]:
 
     load_repo_dotenv(REPO_ROOT_DIR)
+    benchmark_path = benchmark_path.expanduser().resolve()
+    app_logs_path = app_logs_path.expanduser().resolve()
+    output_path = output_path.expanduser().resolve()
     if not snapshot_dir:
         raise ValueError("SimpleMem requires baseline_params.snapshot_dir; no fallback is supported.")
     if not data_storage_path:
         raise ValueError("SimpleMem requires baseline_params.data_storage_path; no fallback is supported.")
     output_path.parent.mkdir(parents=True, exist_ok=True)
     output_root = output_path.parent
-    data_storage_root = Path(data_storage_path)
+    data_storage_root = Path(data_storage_path).expanduser().resolve()
     live_db_root = data_storage_root / "simplemem_live_db"
-    snapshot_root = Path(snapshot_dir)
+    snapshot_root = Path(snapshot_dir).expanduser().resolve()
     progress_path = data_storage_root / "builder_progress.json"
 
     if embedding_dim is None:

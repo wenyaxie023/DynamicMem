@@ -9,6 +9,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional
 
+from generation.common.path_roots import artifact_root
+
 
 @dataclass
 class MemoryNoteStub:
@@ -109,7 +111,7 @@ def _serialize_notes(notes: Iterable[MemoryNoteStub]) -> List[Dict[str, Any]]:
 
 
 def _resolve_usage_sidecar_path(state_path: Path, run_name: str, user_id: str) -> Optional[Path]:
-    prediction_dir = Path("generation/Amem/results") / user_id / "prediction" / run_name
+    prediction_dir = artifact_root() / "Amem" / "results" / user_id / "prediction" / run_name
     live_path = prediction_dir / "usage_cost_live.json"
     final_path = prediction_dir / "usage_cost.json"
     if live_path.exists():

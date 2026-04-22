@@ -736,6 +736,9 @@ def run_generation(
     final_qa_save_prompt_and_raw: bool = False,
     build_only: bool = False,
 ) -> Dict[str, Any]:
+    benchmark_path = benchmark_path.expanduser().resolve()
+    app_logs_path = app_logs_path.expanduser().resolve()
+    output_path = output_path.expanduser().resolve()
     memory_user_id = _memory_user_id(user_id, size)
     sidecar_path = _usage_cost_sidecar_path(output_path)
     viewer_data_path = _memory_viewer_data_path(output_path)

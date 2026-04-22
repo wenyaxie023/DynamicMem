@@ -20,7 +20,7 @@ data:
   app_logs_path: data_construction/generated_outputs/gemini_3_flash_preview/{user_id}/app_log_large.json
 
 output:
-  prediction_path: generation/MemoryOS/results/{user_id}/prediction/{run_name}/tce_results_v14_taskabc.json
+  prediction_path: results/MemoryOS/results/{user_id}/prediction/{run_name}/tce_results_v14_taskabc.json
 
 llm:
   provider: azure
@@ -43,7 +43,7 @@ final_qa:
 
 baseline_params:
   size: large
-  snapshot_dir: generation/MemoryOS/snapshots/{run_name}
-  data_storage_path: generation/MemoryOS/runtime_data/{run_name}
+  snapshot_dir: results/MemoryOS/snapshots/{run_name}
+  data_storage_path: results/MemoryOS/runtime_data/{run_name}
   llm_controller_model: gpt-5-mini
   assistant_id: assistant

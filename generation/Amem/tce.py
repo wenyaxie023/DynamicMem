@@ -225,6 +225,9 @@ def run_generation(
     usage_callback: Optional[Callable[[Dict[str, Any]], None]] = None,
 ) -> Dict[str, Any]:
     _ensure_nltk()
+    benchmark_path = benchmark_path.expanduser().resolve()
+    app_logs_path = app_logs_path.expanduser().resolve()
+    output_path = output_path.expanduser().resolve()
     client = LLMClient(
         provider=llm_provider,
         model_name=llm_model,
@@ -235,13 +238,13 @@ def run_generation(
     )
 
     if snapshot_root:
-        resolved_snapshot_root = Path(snapshot_root)
+        resolved_snapshot_root = Path(snapshot_root).expanduser().resolve()
     else:
         if not snapshot_dir:
             raise ValueError(
                 "Amem standalone generation requires --snapshot-dir or --snapshot-root; no fallback is supported."
             )
-        resolved_snapshot_root = _snapshot_root(snapshot_dir, Path("."), user_id, size)
+        resolved_snapshot_root = _snapshot_root(snapshot_dir, Path(".").resolve(), user_id, size)
     manifest_path = resolved_snapshot_root / "manifest.json"
     log_dir = Path(__file__).resolve().parent / "logs"
     log_dir.mkdir(parents=True, exist_ok=True)

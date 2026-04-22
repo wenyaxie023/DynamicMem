@@ -12,7 +12,7 @@ data:
   app_logs_path: data_construction/generated_outputs/gemini_3_flash_preview/{user_id}/app_log_large.json
 
 output:
-  prediction_path: generation/Amem/results/{user_id}/prediction/{run_name}/build_only.json
+  prediction_path: results/Amem/results/{user_id}/prediction/{run_name}/build_only.json
 
 llm:
   provider: azure
@@ -24,7 +24,7 @@ retriever:
 
 baseline_params:
   size: large
-  snapshot_dir: generation/Amem/snapshots/{run_name}
-  data_storage_path: generation/Amem/runtime_data/{run_name}/{user_id}
+  snapshot_dir: results/Amem/snapshots/{run_name}
+  data_storage_path: results/Amem/runtime_data/{run_name}/{user_id}
   save_every: 5
   build_only: true

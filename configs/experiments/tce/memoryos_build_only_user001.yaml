@@ -3,13 +3,20 @@ users:
 
 runtime:
   baseline: memoryos
-  experiment_name: memoryos_v14_user1_azure_build_only_raw
+  experiment_name: memoryos_v14_user1_azure_build_only
   run_id: main
   resume: true
+  debug: false
+  save_prompt_and_raw: false
+  enable_change_reasoning: false
+  enable_rq3_apply_service_qa: false
+  rq3_apply_save_prompt_and_raw: false
+  checkpoint_workers: 1
+  within_checkpoint_workers: 1
   save_every_generation_keys: 50
 
 data:
-  benchmark: data_construction/generated_outputs/gemini_3_flash_preview/{user_id}/tce_benchmark_vnext_raw.json
+  benchmark: data_construction/generated_outputs/gemini_3_flash_preview/{user_id}/tce_benchmark_vnext_20260319_formal_crv_task_packs_v14.json
   app_logs_path: data_construction/generated_outputs/gemini_3_flash_preview/{user_id}/app_log_large.json
 
 output:
@@ -18,6 +25,8 @@ output:
 llm:
   provider: azure
   model: gpt-5-mini
+  max_workers: 1
+  temperature: null
 
 retriever:
   provider: azure
@@ -25,6 +34,12 @@ retriever:
 
 retrieval:
   top_k: 20
+  rq3_apply_top_k: 20
+  final_qa_top_k: 20
+
+final_qa:
+  enabled: false
+  save_prompt_and_raw: false
 
 baseline_params:
   size: large

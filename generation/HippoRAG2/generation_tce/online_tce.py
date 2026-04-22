@@ -1311,6 +1311,11 @@ def run_generation(
     final_qa_retrieval_top_k: Optional[int] = None,
     final_qa_save_prompt_and_raw: bool = False,
 ) -> Dict[str, Any]:
+    benchmark_path = benchmark_path.expanduser().resolve()
+    app_logs_path = app_logs_path.expanduser().resolve()
+    output_path = output_path.expanduser().resolve()
+    snapshot_dir = snapshot_dir.expanduser().resolve()
+    data_storage_path = data_storage_path.expanduser().resolve()
     provider_env = _configure_hipporag_openai_env(
         llm_provider=llm_provider,
         retriever_provider=retriever_provider,

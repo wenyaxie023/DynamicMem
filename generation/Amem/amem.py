@@ -132,7 +132,7 @@ def _snapshot_root(
     user_id: str,
     size_label: str,
 ) -> Path:
-    base = Path(snapshot_dir) if snapshot_dir else (ckpt_dir / "chroma_snapshots")
+    base = Path(snapshot_dir).expanduser().resolve() if snapshot_dir else (ckpt_dir / "chroma_snapshots").resolve()
     return base / user_id / size_label
 
 
@@ -363,7 +363,8 @@ def evaluate_membench(
         "LLM_CONTROLLER_BASE_URL",
     )
 
-    resolved_app_log_path = Path(app_log_path) if app_log_path else DATA_DIR
+    resolved_app_log_path = Path(app_log_path).expanduser().resolve() if app_log_path else DATA_DIR.resolve()
+    benchmark_path = str(Path(benchmark_path).expanduser().resolve())
 
     log_dir = Path(__file__).resolve().parent / "logs"
     log_dir.mkdir(parents=True, exist_ok=True)
@@ -374,7 +375,7 @@ def evaluate_membench(
         raise ValueError("Amem builder requires baseline_params.data_storage_path; no fallback is supported.")
     if not snapshot_dir:
         raise ValueError("Amem builder requires baseline_params.snapshot_dir; no fallback is supported.")
-    builder_state_dir = Path(data_storage_path)
+    builder_state_dir = Path(data_storage_path).expanduser().resolve()
     state_path, checkpoint_path = _checkpoint_paths(builder_state_dir, user_id, size)
     final_usage_sidecar_path, live_usage_sidecar_path = build_usage_sidecar_paths(state_path)
     accumulated_duration_s = 0.0

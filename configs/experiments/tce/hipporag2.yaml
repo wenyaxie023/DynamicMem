@@ -19,7 +19,7 @@ data:
   app_logs_path: data_construction/generated_outputs/gemini_3_flash_preview/{user_id}/app_log_large.json
 
 output:
-  prediction_path: generation/HippoRAG2/results/{user_id}/prediction/{experiment_name}/tce_results_v14_taskabc.json
+  prediction_path: results/HippoRAG2/results/{user_id}/prediction/{experiment_name}/tce_results_v14_taskabc.json
 
 llm:
   provider: azure
@@ -41,5 +41,5 @@ final_qa:
   save_prompt_and_raw: true
 
 baseline_params:
-  save_dir: generation/HippoRAG2/outputs/{user_id}/{run_name}
+  save_dir: results/HippoRAG2/outputs/{user_id}/{run_name}
   builder_save_every_logs: 64

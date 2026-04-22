@@ -12,7 +12,7 @@ data:
   app_logs_path: data_construction/generated_outputs/gemini_3_flash_preview/{user_id}/app_log_large.json
 
 output:
-  prediction_path: generation/HippoRAG2/results/{user_id}/prediction/{run_name}/build_only.json
+  prediction_path: results/HippoRAG2/results/{user_id}/prediction/{run_name}/build_only.json
 
 llm:
   provider: azure
@@ -24,8 +24,8 @@ retriever:
   batch_size: 64
 
 baseline_params:
-  snapshot_dir: generation/HippoRAG2/snapshots/{run_name}/{user_id}
-  data_storage_path: generation/HippoRAG2/runtime_data/{run_name}/{user_id}
+  snapshot_dir: results/HippoRAG2/snapshots/{run_name}/{user_id}
+  data_storage_path: results/HippoRAG2/runtime_data/{run_name}/{user_id}
   builder_save_every_logs: 64
   openie_max_workers: 64
   build_only: true

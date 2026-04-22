@@ -12,7 +12,7 @@ data:
   app_logs_path: data_construction/generated_outputs/gemini_3_flash_preview/{user_id}/app_log_large.json
 
 output:
-  prediction_path: generation/simplemem/results/{user_id}/prediction/{run_name}/build_only.json
+  prediction_path: results/simplemem/results/{user_id}/prediction/{run_name}/build_only.json
 
 llm:
   provider: openai
@@ -23,6 +23,6 @@ retriever:
   model: text-embedding-3-large
 
 baseline_params:
-  snapshot_dir: generation/simplemem/snapshots/{run_name}/{user_id}
-  data_storage_path: generation/simplemem/runtime_data/{run_name}/{user_id}
+  snapshot_dir: results/simplemem/snapshots/{run_name}/{user_id}
+  data_storage_path: results/simplemem/runtime_data/{run_name}/{user_id}
   build_only: true

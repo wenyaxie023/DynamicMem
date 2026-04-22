@@ -42,7 +42,26 @@ generation/MemAgent/benchmark_main.log
 
 # Project-generated artifacts (do not commit)
 data_construction/generated_outputs/
+results
+results/
+generation/*/results
 generation/*/results/
+generation/*/runtime_data
+generation/*/runtime_data/
+generation/*/snapshots
+generation/*/snapshots/
+generation/*/outputs
+generation/*/outputs/
+generation/*/outputs_smoke3
+generation/*/outputs_smoke3/
+generation/*/results_smoke3
+generation/*/results_smoke3/
+generation/*/checkpoints
+generation/*/checkpoints/
+generation/*/agents
+generation/*/agents/
+generation/*/service_state
+generation/*/service_state/
 eval/plots/
 eval/*.png
 eval/*.pdf
@@ -61,4 +80,3 @@ user_data/tce/*.md
 user_data/tce/*_test.yaml
 user_data/tce/*_report*
 user_data/tce/minimal_test*.yaml
-
