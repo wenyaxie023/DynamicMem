@@ -79,6 +79,9 @@ def run(args: TceAdapterArgs):
             else 0.1
         ),
         build_only=_is_true(args.extras.get("build_only")),
+        allow_destructive_rebuild=(
+            bool(args.allow_destructive_rebuild) or _is_true(args.extras.get("allow_destructive_rebuild"))
+        ),
         window_size=(
             int(args.extras.get("window_size"))
             if str(args.extras.get("window_size", "")).strip()

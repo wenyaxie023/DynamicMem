@@ -107,6 +107,21 @@ def _benchmark_payload():
     }
 
 
+def _benchmark_payload_with_updated_eval_pack():
+    payload = _benchmark_payload()
+    for checkpoint in payload.get("checkpoints") or []:
+        if not isinstance(checkpoint, dict):
+            continue
+        state_pack = checkpoint.get("state_completion_pack") if isinstance(checkpoint.get("state_completion_pack"), dict) else {}
+        keys = state_pack.get("keys") if isinstance(state_pack.get("keys"), dict) else {}
+        item = keys.get("profile_state:favorite_coffee") if isinstance(keys.get("profile_state:favorite_coffee"), dict) else None
+        if item is None:
+            continue
+        item["question_text"] = "UPDATED PACK question for {}".format(checkpoint.get("checkpoint_id"))
+        item["retrieval_query"] = "UPDATED PACK retrieval for {}".format(checkpoint.get("checkpoint_id"))
+    return payload
+
+
 def _app_logs_payload():
     return [
         {
@@ -893,6 +908,193 @@ class SimpleMemTceTest(unittest.TestCase):
             self.assertEqual(result["build_only"]["data_storage_path"], str(data_storage_path))
             self.assertTrue((snapshot_dir / "manifest.json").exists())
             self.assertTrue((data_storage_path / "builder_progress.json").exists())
+
+    def test_resume_reuses_build_only_memory_when_only_eval_pack_changes(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            build_benchmark_path = root / "benchmark_build.json"
+            eval_benchmark_path = root / "benchmark_eval.json"
+            app_logs_path = root / "app_logs.json"
+            output_path = root / "prediction" / "simplemem_pred.json"
+            snapshot_dir = root / "snapshots"
+            data_storage_path = root / "runtime_data"
+            _write_json(build_benchmark_path, _benchmark_payload())
+            _write_json(eval_benchmark_path, _benchmark_payload_with_updated_eval_pack())
+            _write_json(app_logs_path, _app_logs_payload())
+
+            def _pack_echo_run_pipeline(**kwargs):
+                benchmark = json.loads(Path(kwargs["benchmark_path"]).read_text(encoding="utf-8"))
+                prepare_checkpoint_state = kwargs["prepare_checkpoint_state"]
+                close = kwargs["close"]
+                rows = []
+                try:
+                    for checkpoint in benchmark.get("checkpoints") or []:
+                        handle = prepare_checkpoint_state(checkpoint, [])
+                        item = (
+                            (((checkpoint.get("state_completion_pack") or {}).get("keys") or {}).get("profile_state:favorite_coffee"))
+                            or {}
+                        )
+                        rows.append(
+                            {
+                                "checkpoint_id": str(checkpoint.get("checkpoint_id") or ""),
+                                "question_text": str(item.get("question_text") or ""),
+                                "snapshot_id": str((handle.metadata or {}).get("snapshot_id") or ""),
+                            }
+                        )
+                    Path(kwargs["output_path"]).write_text(json.dumps(rows, ensure_ascii=False, indent=2), encoding="utf-8")
+                    return {"predictions": rows}
+                finally:
+                    close()
+
+            with mock.patch.object(simplemem_tce, "SimpleMemSystem", _FakeSimpleMemSystem), mock.patch.object(
+                simplemem_tce, "SharedLLMClient", _FakeLLMClient
+            ), mock.patch.object(simplemem_tce, "run_pipeline", side_effect=_pack_echo_run_pipeline):
+                simplemem_tce.run_generation(
+                    benchmark_path=build_benchmark_path,
+                    app_logs_path=app_logs_path,
+                    output_path=output_path,
+                    snapshot_dir=str(snapshot_dir),
+                    data_storage_path=str(data_storage_path),
+                    max_visible_logs=None,
+                    llm_provider="openai",
+                    llm_model="gpt-5-mini",
+                    llm_max_workers=1,
+                    retriever_provider="openai",
+                    retriever_model="text-embedding-3-large",
+                    retriever_batch_size=8,
+                    resume=False,
+                    max_checkpoints=None,
+                    debug=False,
+                    debug_dir=None,
+                    save_prompt_and_raw=False,
+                    retrieval_top_k=10,
+                    build_only=True,
+                    window_size=2,
+                    overlap_size=0,
+                    save_every_logs=1,
+                )
+                initial_build_calls = _FakeSimpleMemSystem.build_calls
+                progress_path = data_storage_path / "builder_progress.json"
+                if progress_path.exists():
+                    progress_path.unlink()
+                if (data_storage_path / "simplemem_live_db").exists():
+                    import shutil
+
+                    shutil.rmtree(data_storage_path / "simplemem_live_db", ignore_errors=True)
+                result = simplemem_tce.run_generation(
+                    benchmark_path=eval_benchmark_path,
+                    app_logs_path=app_logs_path,
+                    output_path=output_path,
+                    snapshot_dir=str(snapshot_dir),
+                    data_storage_path=str(data_storage_path),
+                    max_visible_logs=None,
+                    llm_provider="openai",
+                    llm_model="gpt-5-mini",
+                    llm_max_workers=1,
+                    retriever_provider="openai",
+                    retriever_model="text-embedding-3-large",
+                    retriever_batch_size=8,
+                    resume=True,
+                    max_checkpoints=None,
+                    debug=False,
+                    debug_dir=None,
+                    save_prompt_and_raw=False,
+                    retrieval_top_k=10,
+                    window_size=2,
+                    overlap_size=0,
+                    save_every_logs=1,
+                )
+
+            self.assertEqual(_FakeSimpleMemSystem.build_calls, initial_build_calls)
+            self.assertEqual(
+                [row["question_text"] for row in result["predictions"]],
+                [
+                    "UPDATED PACK question for cp1",
+                    "UPDATED PACK question for cp2",
+                ],
+            )
+            progress = json.loads((data_storage_path / "builder_progress.json").read_text(encoding="utf-8"))
+            self.assertEqual(progress["status"], "build_completed")
+            self.assertEqual(progress["benchmark_path"], str(eval_benchmark_path.resolve()))
+            self.assertTrue(progress.get("source_data_fingerprint"))
+            self.assertTrue(progress.get("evaluation_pack_fingerprint"))
+
+    def test_resume_refuses_destructive_rebuild_without_explicit_opt_in(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            benchmark_path = root / "benchmark.json"
+            app_logs_path = root / "app_logs.json"
+            changed_app_logs_path = root / "app_logs_changed.json"
+            output_path = root / "prediction" / "simplemem_pred.json"
+            snapshot_dir = root / "snapshots"
+            data_storage_path = root / "runtime_data"
+            _write_json(benchmark_path, _benchmark_payload())
+            _write_json(app_logs_path, _app_logs_payload())
+            changed_logs = _app_logs_payload()
+            changed_logs[0]["request"]["favorite_coffee"] = "mocha"
+            _write_json(changed_app_logs_path, changed_logs)
+
+            with mock.patch.object(simplemem_tce, "SimpleMemSystem", _FakeSimpleMemSystem), mock.patch.object(
+                simplemem_tce, "SharedLLMClient", _FakeLLMClient
+            ), mock.patch.object(
+                simplemem_tce, "run_pipeline", side_effect=_fake_run_pipeline
+            ):
+                simplemem_tce.run_generation(
+                    benchmark_path=benchmark_path,
+                    app_logs_path=app_logs_path,
+                    output_path=output_path,
+                    snapshot_dir=str(snapshot_dir),
+                    data_storage_path=str(data_storage_path),
+                    max_visible_logs=None,
+                    llm_provider="openai",
+                    llm_model="gpt-5-mini",
+                    llm_max_workers=1,
+                    retriever_provider="openai",
+                    retriever_model="text-embedding-3-large",
+                    retriever_batch_size=8,
+                    resume=False,
+                    max_checkpoints=None,
+                    debug=False,
+                    debug_dir=None,
+                    save_prompt_and_raw=False,
+                    retrieval_top_k=10,
+                    build_only=True,
+                    allow_destructive_rebuild=True,
+                    window_size=2,
+                    overlap_size=0,
+                    save_every_logs=1,
+                )
+
+                with self.assertRaisesRegex(RuntimeError, "refused to delete existing memory artifacts"):
+                    simplemem_tce.run_generation(
+                        benchmark_path=benchmark_path,
+                        app_logs_path=changed_app_logs_path,
+                        output_path=output_path,
+                        snapshot_dir=str(snapshot_dir),
+                        data_storage_path=str(data_storage_path),
+                        max_visible_logs=None,
+                        llm_provider="openai",
+                        llm_model="gpt-5-mini",
+                        llm_max_workers=1,
+                        retriever_provider="openai",
+                        retriever_model="text-embedding-3-large",
+                        retriever_batch_size=8,
+                        resume=True,
+                        max_checkpoints=None,
+                        debug=False,
+                        debug_dir=None,
+                        save_prompt_and_raw=False,
+                        retrieval_top_k=10,
+                        build_only=False,
+                        allow_destructive_rebuild=False,
+                        window_size=2,
+                        overlap_size=0,
+                        save_every_logs=1,
+                    )
+
+            self.assertTrue((snapshot_dir / "manifest.json").exists())
+            progress = json.loads((data_storage_path / "builder_progress.json").read_text(encoding="utf-8"))
+            self.assertEqual(progress["status"], "build_completed")
 
 
 if __name__ == "__main__":

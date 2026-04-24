@@ -368,10 +368,7 @@ def _build_apply_prompt_from_queryspec(
     prompt_builder = _select_task_c_prompt_builder(memory_prompt_mode)
     return prompt_builder(
         response_mode=response_mode,
-        service_family=service_family,
-        question_text=query_spec.answer_query_text,
-        scenario=str((query_spec.task_payload or {}).get("scenario") or ""),
-        task_instruction=str((query_spec.task_payload or {}).get("task_instruction") or ""),
+        task_body=query_spec.retrieval_query_text,
         output_template=(query_spec.task_payload or {}).get("output_template"),
         context_logs=None,
         log_to_text=to_log_text,
@@ -626,6 +623,149 @@ def _is_checkpoint_prediction_complete(item: Any) -> bool:
     return bool(metadata.get("_checkpoint_complete"))
 
 
+def _is_effectively_empty_prediction_value(value: Any) -> bool:
+    if value is None:
+        return True
+    if isinstance(value, str):
+        return not value.strip()
+    if isinstance(value, (list, dict, tuple, set)):
+        return len(value) == 0
+    return False
+
+
+def _rq3_apply_item_id(state_key: str, qa_id: str) -> str:
+    return "{}::{}".format(str(state_key or "").strip(), str(qa_id or "").strip())
+
+
+def _is_rq3_apply_answer_valid(
+    answer_item: Any,
+    *,
+    task_contract_version: str,
+    service_family: str,
+) -> bool:
+    if not isinstance(answer_item, dict):
+        return False
+    status = str(answer_item.get("status") or "").strip().lower()
+    if status == "invalid":
+        return False
+    if task_contract_is_v2(task_contract_version) and str(service_family or "").strip() != "user_communication":
+        return not _is_effectively_empty_prediction_value(answer_item.get("output"))
+    return not _is_effectively_empty_prediction_value(answer_item.get("answer"))
+
+
+def _extract_rq3_apply_resume_state(
+    prediction_item: Any,
+    rq3_pack: Dict[str, List[Dict[str, Any]]],
+    *,
+    task_contract_version: str,
+) -> Dict[str, Any]:
+    valid_answers_by_key: Dict[str, List[Dict[str, Any]]] = {}
+    valid_raw_records_by_key: Dict[str, List[Dict[str, Any]]] = {}
+    pending_items_by_key: Dict[str, List[Dict[str, Any]]] = {}
+
+    if not isinstance(prediction_item, dict):
+        for key, items in rq3_pack.items():
+            pending_items_by_key[key] = [copy.deepcopy(item) for item in items]
+        return {
+            "valid_answers_by_key": valid_answers_by_key,
+            "valid_raw_records_by_key": valid_raw_records_by_key,
+            "pending_items_by_key": pending_items_by_key,
+        }
+
+    predicted_answers = prediction_item.get("rq3_apply_answers")
+    if not isinstance(predicted_answers, dict):
+        predicted_answers = {}
+
+    raw_record_by_item_id: Dict[str, Dict[str, Any]] = {}
+    metadata = prediction_item.get("metadata")
+    rq3_meta = metadata.get("rq3_apply") if isinstance(metadata, dict) else None
+    records = rq3_meta.get("records") if isinstance(rq3_meta, dict) else None
+    if isinstance(records, list):
+        for record in records:
+            if not isinstance(record, dict):
+                continue
+            item_id = _rq3_apply_item_id(record.get("key") or "", record.get("qa_id") or "")
+            if item_id != "::":
+                raw_record_by_item_id[item_id] = copy.deepcopy(record)
+
+    for key, expected_items in rq3_pack.items():
+        key_payload = predicted_answers.get(key)
+        predicted_items = key_payload.get("items") if isinstance(key_payload, dict) else None
+        predicted_by_qa_id: Dict[str, Dict[str, Any]] = {}
+        if isinstance(predicted_items, list):
+            for pred_item in predicted_items:
+                if not isinstance(pred_item, dict):
+                    continue
+                qa_id = str(pred_item.get("qa_id") or "").strip()
+                if qa_id:
+                    predicted_by_qa_id[qa_id] = pred_item
+
+        for expected_item in expected_items:
+            qa_id = str(expected_item.get("qa_id") or "").strip()
+            item_id = _rq3_apply_item_id(key, qa_id)
+            pred_item = predicted_by_qa_id.get(qa_id)
+            service_family = str(expected_item.get("service_family") or "").strip()
+            if _is_rq3_apply_answer_valid(
+                pred_item,
+                task_contract_version=task_contract_version,
+                service_family=service_family,
+            ):
+                valid_answers_by_key.setdefault(key, []).append(copy.deepcopy(pred_item))
+                raw_record = raw_record_by_item_id.get(item_id)
+                if isinstance(raw_record, dict):
+                    valid_raw_records_by_key.setdefault(key, []).append(copy.deepcopy(raw_record))
+            else:
+                pending_items_by_key.setdefault(key, []).append(copy.deepcopy(expected_item))
+
+    return {
+        "valid_answers_by_key": valid_answers_by_key,
+        "valid_raw_records_by_key": valid_raw_records_by_key,
+        "pending_items_by_key": pending_items_by_key,
+    }
+
+
+def _has_complete_rq3_apply_answers(
+    checkpoint: Dict[str, Any],
+    prediction_item: Dict[str, Any],
+    *,
+    task_contract_version: str,
+) -> bool:
+    target_keys = extract_pack_keys(checkpoint.get("rq3_apply_service_qa"))
+    expected_pack = _extract_rq3_apply_pack_for_checkpoint(
+        checkpoint,
+        target_keys=target_keys,
+        task_contract_version=task_contract_version,
+    )
+    if not expected_pack:
+        return True
+    resume_state = _extract_rq3_apply_resume_state(
+        prediction_item,
+        expected_pack,
+        task_contract_version=task_contract_version,
+    )
+    return not any(resume_state.get("pending_items_by_key", {}).values())
+
+
+def _is_checkpoint_prediction_reusable_for_resume(
+    checkpoint: Dict[str, Any],
+    prediction_item: Any,
+    *,
+    task_contract_version: str,
+    enable_rq3_apply_service_qa: bool,
+) -> bool:
+    if not _is_checkpoint_prediction_complete(prediction_item):
+        return False
+    if not isinstance(prediction_item, dict):
+        return False
+    if enable_rq3_apply_service_qa and not _has_complete_rq3_apply_answers(
+        checkpoint,
+        prediction_item,
+        task_contract_version=task_contract_version,
+    ):
+        return False
+    return True
+
+
 def normalize_app_logs(payload: Any) -> List[Dict[str, Any]]:
     if isinstance(payload, list):
         logs = payload
@@ -827,7 +967,7 @@ def run_pipeline(
             raw = json.loads(output_path.read_text(encoding="utf-8"))
             for item in raw.get("predictions", []):
                 cid = item.get("checkpoint_id")
-                if cid and _is_checkpoint_prediction_complete(item):
+                if cid and isinstance(item, dict):
                     existing[str(cid)] = item
         except Exception:
             pass
@@ -969,6 +1109,7 @@ def run_pipeline(
 
     def _process_checkpoint(cp: Dict[str, Any]) -> Dict[str, Any]:
         cid = str(cp.get("checkpoint_id"))
+        existing_item = existing.get(cid) if resume else None
         observed, cp_dt, cp_ts = observed_logs_for_checkpoint(cp, app_logs)
 
         memory_pool = observed if not max_visible_logs or max_visible_logs <= 0 else observed[-max_visible_logs:]
@@ -1327,6 +1468,7 @@ def run_pipeline(
                     "skipped_by_task_contract": benchmark_contract_version,
                 }
 
+            task_c_invalid_item_count = 0
             if enable_rq3_apply_service_qa:
                 rq3_target_keys = list(target_keys)
                 if task_selection == "task_c_only":
@@ -1342,14 +1484,50 @@ def run_pipeline(
                         "enabled": True,
                     }
                 else:
-                    rq3_answers: Dict[str, Any] = {}
+                    resume_state = _extract_rq3_apply_resume_state(
+                        existing_item,
+                        rq3_pack,
+                        task_contract_version=benchmark_contract_version,
+                    )
+                    rq3_answers: Dict[str, Any] = {
+                        key: {"items": [copy.deepcopy(x) for x in value]}
+                        for key, value in (resume_state.get("valid_answers_by_key") or {}).items()
+                    }
                     rq3_raw_records: List[Dict[str, Any]] = []
+                    for key in sorted(rq3_pack.keys()):
+                        rq3_raw_records.extend(
+                            [copy.deepcopy(x) for x in (resume_state.get("valid_raw_records_by_key") or {}).get(key, [])]
+                        )
                     discard_counts: Dict[str, int] = {}
+                    invalid_counts: Dict[str, int] = {}
+                    pending_items_by_key = dict(resume_state.get("pending_items_by_key") or {})
+
+                    reused_valid_items = sum(
+                        len(items)
+                        for items in (resume_state.get("valid_answers_by_key") or {}).values()
+                    )
+                    pending_items = sum(len(items) for items in pending_items_by_key.values())
+                    if resume and existing_item is not None and reused_valid_items > 0:
+                        print(
+                            "[TCE][resume] checkpoint {} reusing {} valid Task C items and rerunning {} pending items.".format(
+                                cid,
+                                reused_valid_items,
+                                pending_items,
+                            )
+                        )
 
                     def _run_apply_key(key: str) -> Dict[str, Any]:
-                        item_answers: List[Dict[str, Any]] = []
-                        raw_records: List[Dict[str, Any]] = []
-                        for qa_item in rq3_pack.get(key, []):
+                        item_answers: List[Dict[str, Any]] = [
+                            copy.deepcopy(x)
+                            for x in (resume_state.get("valid_answers_by_key") or {}).get(key, [])
+                        ]
+                        raw_records: List[Dict[str, Any]] = [
+                            copy.deepcopy(x)
+                            for x in (resume_state.get("valid_raw_records_by_key") or {}).get(key, [])
+                        ]
+                        key_invalid_count = 0
+                        pending_items = pending_items_by_key.get(key, [])
+                        for qa_item in pending_items:
                             qa_id = str(qa_item.get("qa_id") or "")
                             service_family = str(qa_item.get("service_family") or "")
                             structured_task_c_v2 = task_contract_is_v2(benchmark_contract_version)
@@ -1368,9 +1546,9 @@ def run_pipeline(
                                 checkpoint=cp,
                                 item_key="{}::{}".format(key, qa_id or "<unknown>"),
                                 target_keys=[key],
-                                task_query_text=apply_q,
+                                task_query_text=apply_retrieval_query,
                                 retrieval_query_text=apply_retrieval_query,
-                                answer_query_text=apply_q,
+                                answer_query_text="",
                                 task_payload={
                                     "service_category": service_category,
                                     "apply_scenario": apply_scenario,
@@ -1384,6 +1562,7 @@ def run_pipeline(
                             retrieval_result = RetrievalResult(mode="", inline_memory_blocks=[], debug_metadata={})
                             apply_prompt = ""
                             apply_raw: Any = {}
+                            invalid_reason = ""
                             try:
                                 retrieval_result = ensure_retrieval_result(
                                     retrieve_context_for_query(
@@ -1407,7 +1586,8 @@ def run_pipeline(
                                 apply_raw = answer_result.raw_output
                             except Exception as exc:
                                 answer_result = AnswerExecutionResult(raw_output={}, prompt="", debug_metadata={})
-                                apply_raw = {"_error": f"rq3_apply_failed: {exc}"}
+                                invalid_reason = f"rq3_apply_failed: {exc}"
+                                apply_raw = {"_error": invalid_reason}
                             apply_norm = _normalize_rq3_apply_answer_output(
                                 apply_raw,
                                 task_contract_version=benchmark_contract_version,
@@ -1417,15 +1597,33 @@ def run_pipeline(
                                 "qa_id": qa_id,
                                 "evidence": apply_norm.get("evidence", []),
                             }
+                            is_valid = False
                             if structured_task_c_v2 and service_family != "user_communication":
                                 answer_payload["service_family"] = service_family
-                                answer_payload["output"] = apply_norm.get("output")
+                                normalized_output = apply_norm.get("output")
+                                is_valid = not _is_effectively_empty_prediction_value(normalized_output)
+                                if is_valid:
+                                    answer_payload["output"] = normalized_output
                             elif structured_task_c_v2:
                                 answer_payload["service_family"] = service_family
-                                answer_payload["answer"] = apply_norm.get("answer", "")
+                                normalized_answer = apply_norm.get("answer", "")
+                                is_valid = not _is_effectively_empty_prediction_value(normalized_answer)
+                                if is_valid:
+                                    answer_payload["answer"] = normalized_answer
                             else:
                                 answer_payload["service_category"] = service_category
-                                answer_payload["answer"] = apply_norm.get("answer", "")
+                                normalized_answer = apply_norm.get("answer", "")
+                                is_valid = not _is_effectively_empty_prediction_value(normalized_answer)
+                                if is_valid:
+                                    answer_payload["answer"] = normalized_answer
+                            if is_valid:
+                                answer_payload["status"] = "valid"
+                            else:
+                                if not invalid_reason:
+                                    invalid_reason = "empty_model_output"
+                                answer_payload["status"] = "invalid"
+                                answer_payload["invalid_reason"] = invalid_reason
+                                key_invalid_count += 1
                             item_answers.append(answer_payload)
                             retrieval_meta = dict(retrieval_result.debug_metadata or {})
                             retrieval_meta.update(dict((answer_result.debug_metadata or {}).get("retrieval_metadata") or {}))
@@ -1443,6 +1641,8 @@ def run_pipeline(
                                     "prompt": apply_prompt,
                                     "retrieval_metadata": retrieval_meta,
                                     "raw_model_output": apply_raw,
+                                    "status": "valid" if is_valid else "invalid",
+                                    "invalid_reason": invalid_reason if not is_valid else "",
                                 }
                             )
                         expected_items = (((cp.get("rq3_apply_service_qa") or {}).get("keys", {}).get(key, {}) or {}).get("items", []))
@@ -1450,6 +1650,7 @@ def run_pipeline(
                             "key": key,
                             "answers": {"items": item_answers},
                             "discard_count": max(0, int(len(expected_items)) - int(len(item_answers))),
+                            "invalid_count": int(key_invalid_count),
                             "raw_records": raw_records,
                         }
 
@@ -1460,6 +1661,8 @@ def run_pipeline(
                             key = result["key"]
                             rq3_answers[key] = result["answers"]
                             discard_counts[key] = result["discard_count"]
+                            invalid_counts[key] = result["invalid_count"]
+                            task_c_invalid_item_count += int(result["invalid_count"])
                             rq3_raw_records.extend(result["raw_records"])
                             item["rq3_apply_answers"] = rq3_answers
                             item["metadata"]["rq3_apply"] = {
@@ -1467,6 +1670,7 @@ def run_pipeline(
                                 "rq3_apply_retrieval_top_k": rq3_apply_retrieval_top_k,
                                 "validator_model": str(((cp.get("rq3_apply_service_qa") or {}).get("validator") or {}).get("model", "")),
                                 "discard_counts": discard_counts,
+                                "invalid_counts": invalid_counts,
                             }
                             if rq3_apply_save_prompt_and_raw:
                                 item["metadata"]["rq3_apply"]["records"] = rq3_raw_records
@@ -1493,7 +1697,7 @@ def run_pipeline(
                     },
                 )
 
-            item["metadata"]["_checkpoint_complete"] = True
+            item["metadata"]["_checkpoint_complete"] = (task_c_invalid_item_count == 0)
             _persist_checkpoint_item(item)
             return item
         finally:
@@ -1505,11 +1709,22 @@ def run_pipeline(
         for cp in checkpoints:
             cid = str(cp.get("checkpoint_id"))
             progress.set_postfix({"checkpoint_id": cid})
-            if cid in existing:
+            existing_item = existing.get(cid)
+            if existing_item is not None and _is_checkpoint_prediction_reusable_for_resume(
+                cp,
+                existing_item,
+                task_contract_version=benchmark_contract_version,
+                enable_rq3_apply_service_qa=enable_rq3_apply_service_qa,
+            ):
                 predictions_by_cid[cid] = copy.deepcopy(existing[cid])
                 progress.update(1)
                 _save_predictions_snapshot()
                 continue
+            if existing_item is not None and _is_checkpoint_prediction_complete(existing_item):
+                print(
+                    "[TCE][resume] checkpoint {} is marked complete in the saved prediction, "
+                    "but Task C outputs are missing or empty; regenerating this checkpoint.".format(cid)
+                )
             pending.append(cp)
 
         with ThreadPoolExecutor(max_workers=checkpoint_workers) as executor:

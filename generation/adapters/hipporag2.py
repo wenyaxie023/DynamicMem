@@ -76,6 +76,9 @@ def run(args: TceAdapterArgs):
             final_qa_output_path=args.final_qa_output_path,
             final_qa_retrieval_top_k=args.final_qa_retrieval_top_k,
             final_qa_save_prompt_and_raw=args.final_qa_save_prompt_and_raw,
+            allow_destructive_rebuild=(
+                bool(args.allow_destructive_rebuild) or _as_bool(args.extras.get("allow_destructive_rebuild"))
+            ),
         )
     finally:
         if openie_max_workers_raw:

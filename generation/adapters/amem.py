@@ -279,6 +279,10 @@ def run(args: TceAdapterArgs):
         llm_controller_api_key=llm_controller_api_key,
         llm_controller_api_base_url=llm_controller_api_base_url,
         resume=args.resume,
+        allow_destructive_rebuild=(
+            bool(args.allow_destructive_rebuild)
+            or str(args.extras.get("allow_destructive_rebuild", "false")).strip().lower() in {"1", "true", "yes", "y", "on"}
+        ),
         data_storage_path=data_storage_path,
         save_every=int(args.extras.get("save_every", 50)),
         snapshot_dir=args.extras.get("snapshot_dir"),

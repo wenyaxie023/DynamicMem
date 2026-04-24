@@ -438,8 +438,8 @@ class TcePipelinePackFirstAcceptance(unittest.TestCase):
             "Service scenario:\nThe team can fund exactly one option.\n\nQuestion:\nWhich candidate action should the assistant recommend?",
         )
         rq3_records = prediction["metadata"]["rq3_apply"]["records"]
-        self.assertNotIn("Service scenario:", rq3_records[0]["prompt"])
-        self.assertNotIn("Question:", rq3_records[0]["prompt"])
+        self.assertIn("Service scenario:", rq3_records[0]["prompt"])
+        self.assertIn("Question:", rq3_records[0]["prompt"])
         self.assertIn("Which candidate action should the assistant recommend?", rq3_records[0]["prompt"])
         self.assertEqual(
             prediction["rq3_apply_answers"]["preferences_state:learning_modality"]["items"][0]["evidence"][0]["evidence_content"],
@@ -824,7 +824,7 @@ class TcePipelinePackFirstAcceptance(unittest.TestCase):
                                         "task_instruction": "Fill the structured information-request payload.",
                                         "output_template": {"request_profile": {"preferred_profile": "<fill>"}},
                                         "reference_output": {"request_profile": {"preferred_profile": "prefers self-paced webinars"}},
-                                        "retrieval_query": "The assistant is preparing the structured information-request object before a training-resource search.\n\nFill the structured information-request payload.",
+                                        "retrieval_query": "[Scenario]\nThe assistant is preparing the structured information-request object before a training-resource search.\n\n[Task Instruction]\nFill the structured information-request payload.\n\n[Required Output Object]\n{\n  \"request_profile\": {\n    \"preferred_profile\": \"<fill>\"\n  }\n}",
                                     }
                                 ]
                             }
@@ -891,6 +891,8 @@ class TcePipelinePackFirstAcceptance(unittest.TestCase):
         prediction = result["predictions"][0]
         self.assertIn("The assistant is preparing the structured information-request object before a training-resource search.", seen_task_text["value"])
         self.assertIn("Fill the structured information-request payload.", seen_task_text["value"])
+        self.assertIn("[Required Output Object]", seen_task_text["value"])
+        self.assertIn('"preferred_profile": "<fill>"', seen_task_text["value"])
         self.assertNotIn("Service family:", seen_task_text["value"])
         self.assertNotIn("Retrieval objective:", seen_task_text["value"])
         self.assertNotIn("Required output fields:", seen_task_text["value"])
@@ -937,7 +939,7 @@ class TcePipelinePackFirstAcceptance(unittest.TestCase):
                                         "scenario": "It is 06:10. Nothing has been logged yet today.",
                                         "task_instruction": "Write the short reminder message the assistant should send right now.",
                                         "reference_answer": "Send a reminder that the walk starts at 06:30.",
-                                        "retrieval_query": "It is 06:10. Nothing has been logged yet today.\n\nWrite the short reminder message the assistant should send right now.",
+                                        "retrieval_query": "[Scenario]\nIt is 06:10. Nothing has been logged yet today.\n\n[Task Instruction]\nWrite the short reminder message the assistant should send right now.",
                                     }
                                 ]
                             }
@@ -1110,7 +1112,7 @@ class TcePipelinePackFirstAcceptance(unittest.TestCase):
                                         "scenario": "It is 06:10. Nothing has been logged yet today.",
                                         "task_instruction": "Write the short reminder message the assistant should send right now.",
                                         "reference_answer": "Send a reminder that the walk starts at 06:30.",
-                                        "retrieval_query": "It is 06:10. Nothing has been logged yet today.\n\nWrite the short reminder message the assistant should send right now.",
+                                        "retrieval_query": "[Scenario]\nIt is 06:10. Nothing has been logged yet today.\n\n[Task Instruction]\nWrite the short reminder message the assistant should send right now.",
                                     }
                                 ]
                             }
@@ -1417,6 +1419,118 @@ class TcePipelinePackFirstAcceptance(unittest.TestCase):
 
         self.assertEqual(calls["n"], 1)
         self.assertTrue(result["predictions"][0]["metadata"]["_checkpoint_complete"])
+
+    def test_pipeline_resume_reruns_task_c_checkpoint_when_saved_answer_is_empty(self):
+        benchmark = {
+            "user_id": "001_user_001",
+            "task_contract_version": CURRENT_TASK_CONTRACT_VERSION,
+            "research_frame_version": RESEARCH_FRAME_VERSION_V2,
+            "sampling_strategy": {"stage": "benchmark_build"},
+            "checkpoints": [
+                {
+                    "checkpoint_id": "cp1",
+                    "as_of": {"timestamp": "2025-01-01 08:00:00", "log_index": 0},
+                    "validated_snapshot_state": {
+                        "habits_state": {"morning_walk": {"timing": {"start_time": "06:30"}}}
+                    },
+                    "rq3_apply_service_qa": {
+                        "version": "v9",
+                        "keys": {
+                            "habits_state:morning_walk": {
+                                "items": [
+                                    {
+                                        "qa_id": "q1",
+                                        "service_family": "user_communication",
+                                        "scenario": "It is 06:10. Nothing has been logged yet today.",
+                                        "task_instruction": "Write the short reminder message the assistant should send right now.",
+                                        "reference_answer": "Send a reminder that the walk starts at 06:30.",
+                                        "retrieval_query": "[Scenario]\nIt is 06:10. Nothing has been logged yet today.\n\n[Task Instruction]\nWrite the short reminder message the assistant should send right now.",
+                                    }
+                                ]
+                            }
+                        },
+                    },
+                }
+            ],
+        }
+        app_logs = [{"app_log_id": "log_0001", "timestamp": "2025-01-01 07:00:00"}]
+        calls = {"n": 0}
+
+        with tempfile.TemporaryDirectory() as td:
+            td_path = Path(td)
+            benchmark_path = td_path / "benchmark.json"
+            app_logs_path = td_path / "app_logs.json"
+            output_path = td_path / "prediction.json"
+            benchmark_path.write_text(json.dumps(benchmark, ensure_ascii=False, indent=2), encoding="utf-8")
+            app_logs_path.write_text(json.dumps(app_logs, ensure_ascii=False, indent=2), encoding="utf-8")
+            output_path.write_text(
+                json.dumps(
+                    {
+                        "predictions": [
+                            {
+                                "checkpoint_id": "cp1",
+                                "snapshot_state": {},
+                                "evidence": {},
+                                "rq3_apply_answers": {
+                                    "habits_state:morning_walk": {
+                                        "items": [
+                                            {
+                                                "qa_id": "q1",
+                                                "service_family": "user_communication",
+                                                "answer": "",
+                                                "evidence": [],
+                                            }
+                                        ]
+                                    }
+                                },
+                                "metadata": {"_checkpoint_complete": True},
+                            }
+                        ]
+                    },
+                    ensure_ascii=False,
+                    indent=2,
+                ),
+                encoding="utf-8",
+            )
+
+            def ask_json(prompt: str):
+                del prompt
+                calls["n"] += 1
+                return {
+                    "answer": "Send a reminder that the walk starts at 06:30.",
+                    "evidence": [{"app_log_id": "log_0001", "evidence_content": "walk starts at 06:30"}],
+                }
+
+            result = run_pipeline(
+                benchmark_path=benchmark_path,
+                app_logs_path=app_logs_path,
+                output_path=output_path,
+                max_visible_logs=None,
+                ask_json=ask_json,
+                ask_structured=None,
+                use_structured_response=False,
+                close=lambda: None,
+                **_legacy_inline_pipeline_kwargs(_mock_retrieve_context),
+                baseline_name="rag",
+                memory_prompt_mode="inline_memory",
+                resume=True,
+                max_checkpoints=1,
+                debug=False,
+                debug_dir=None,
+                save_prompt_and_raw=False,
+                predict_per_key=True,
+                enable_change_reasoning=False,
+                enable_rq3_apply_service_qa=True,
+                task_selection="task_c_only",
+            )
+
+        self.assertEqual(calls["n"], 1)
+        prediction = result["predictions"][0]
+        self.assertTrue(prediction["metadata"]["_checkpoint_complete"])
+        self.assertEqual(
+            prediction["rq3_apply_answers"]["habits_state:morning_walk"]["items"][0]["answer"],
+            "Send a reminder that the walk starts at 06:30.",
+        )
 
     def test_pipeline_processes_checkpoints_concurrently(self):
         benchmark = {

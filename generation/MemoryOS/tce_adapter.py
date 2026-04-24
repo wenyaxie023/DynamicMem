@@ -20,6 +20,7 @@ except Exception:  # pragma: no cover - optional runtime dependency
 from generation.common.llm_client import LLMClient
 from generation.common.provider_config import resolve_openai_compatible_credentials
 from generation.MemoryOS.memory_evolution_viewer import build_memory_evolution_payload, write_viewer_payload
+from generation.tce_safety import ensure_destructive_rebuild_allowed
 from tce_core.orchestrator_protocol import (
     CheckpointHandle,
     RetrievalOptions,
@@ -486,6 +487,7 @@ def _ensure_snapshots_for_benchmark(
     retrieval_top_k: int = 10,
     retriever_provider: str = "openai",
     resume: bool = False,
+    allow_destructive_rebuild: bool = False,
     progress_callback: Optional[Callable[[], None]] = None,
     snapshot_callback: Optional[Callable[[Path], None]] = None,
 ) -> Path:
@@ -518,8 +520,6 @@ def _ensure_snapshots_for_benchmark(
     saved_checkpoint_ids: Set[str] = set()
 
     if latest_entry is not None:
-        if builder_data_root.exists():
-            shutil.rmtree(builder_data_root)
         memo = _build_memoryos_instance(
             memory_user_id=memory_user_id,
             data_storage_root=builder_data_root,
@@ -547,6 +547,11 @@ def _ensure_snapshots_for_benchmark(
         start_idx = max(0, last_saved_event_idx + 1)
         saved_checkpoint_ids = _existing_checkpoint_ids(snapshot_root)
     else:
+        ensure_destructive_rebuild_allowed(
+            allow_destructive_rebuild=allow_destructive_rebuild,
+            operation="clear existing MemoryOS builder artifacts",
+            paths=[builder_data_root, snapshot_root],
+        )
         if builder_data_root.exists():
             shutil.rmtree(builder_data_root)
         if snapshot_root.exists():
@@ -735,6 +740,7 @@ def run_generation(
     final_qa_retrieval_top_k: Optional[int] = None,
     final_qa_save_prompt_and_raw: bool = False,
     build_only: bool = False,
+    allow_destructive_rebuild: bool = False,
 ) -> Dict[str, Any]:
     benchmark_path = benchmark_path.expanduser().resolve()
     app_logs_path = app_logs_path.expanduser().resolve()
@@ -815,6 +821,7 @@ def run_generation(
             max_checkpoints=max_checkpoints,
             retrieval_top_k=retrieval_top_k,
             resume=resume,
+            allow_destructive_rebuild=allow_destructive_rebuild,
             progress_callback=_persist_build_progress,
             snapshot_callback=_persist_memory_viewer,
         )

@@ -26,6 +26,7 @@ from generation.Amem.usage_sidecar import (
     merge_usage_summary,
     write_build_usage_sidecar,
 )
+from generation.tce_safety import ensure_destructive_rebuild_allowed
 
 try:
     from generation.Amem.agentic_memory.llm_controller import (
@@ -331,6 +332,7 @@ def evaluate_membench(
     llm_controller_api_key: Optional[str] = None,
     llm_controller_api_base_url: Optional[str] = None,
     resume: bool = False,
+    allow_destructive_rebuild: bool = False,
     data_storage_path: Optional[str] = None,
     save_every: int = 50,
     snapshot_dir: Optional[str] = None,
@@ -423,6 +425,13 @@ def evaluate_membench(
         embedding_model_name,
         collection_name,
     )
+    if not resume_enabled:
+        ensure_destructive_rebuild_allowed(
+            allow_destructive_rebuild=allow_destructive_rebuild,
+            operation="clear existing Amem builder artifacts",
+            paths=[builder_state_dir, state_path, checkpoint_path, snapshot_root],
+            details=["Amem collection: {}".format(collection_name)],
+        )
 
     memory_system = AgenticMemorySystem(
         collection_name=collection_name,

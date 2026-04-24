@@ -52,6 +52,7 @@ from generation.common.provider_config import (
     load_repo_dotenv,
     resolve_openai_compatible_credentials,
 )
+from generation.tce_safety import ensure_destructive_rebuild_allowed
 from generation.rag.client import LLMClient
 from tce_core.orchestrator_protocol import CheckpointHandle, RetrievalOptions, RetrievalResult
 from tce_core.pipeline import normalize_app_logs, run_pipeline, to_log_text
@@ -269,13 +270,23 @@ def _build_builder_fingerprint(
     return hashlib.sha256(json.dumps(payload, sort_keys=True, ensure_ascii=False).encode("utf-8")).hexdigest()
 
 
-def _reset_save_root(data_storage_root: Path, snapshot_root: Path) -> None:
+def _reset_save_root(data_storage_root: Path, snapshot_root: Path, *, allow_destructive_rebuild: bool) -> None:
+    ensure_destructive_rebuild_allowed(
+        allow_destructive_rebuild=allow_destructive_rebuild,
+        operation="clear existing HippoRAG2 builder artifacts",
+        paths=[data_storage_root, snapshot_root],
+    )
     for root in (data_storage_root, snapshot_root):
         if root.exists():
             shutil.rmtree(root)
 
 
-def _reset_materialization_root(data_storage_root: Path, snapshot_root: Path) -> None:
+def _reset_materialization_root(data_storage_root: Path, snapshot_root: Path, *, allow_destructive_rebuild: bool) -> None:
+    ensure_destructive_rebuild_allowed(
+        allow_destructive_rebuild=allow_destructive_rebuild,
+        operation="clear existing HippoRAG2 materialized artifacts",
+        paths=[_builder_root(data_storage_root), Path(snapshot_root)],
+    )
     for target in (_builder_root(data_storage_root), Path(snapshot_root)):
         if target.exists():
             shutil.rmtree(target)
@@ -744,6 +755,7 @@ class HippoRAG2Runner:
         batch_size: int,
         retrieval_top_k: int,
         openie_mode: str,
+        allow_destructive_rebuild: bool = False,
         hipporag_factory: Optional[Callable[[Path], Any]] = None,
         usage_tracker: Optional[HippoRAG2UsageTracker] = None,
     ):
@@ -757,6 +769,7 @@ class HippoRAG2Runner:
         self.batch_size = max(1, int(batch_size))
         self.retrieval_top_k = int(retrieval_top_k)
         self.openie_mode = str(openie_mode)
+        self.allow_destructive_rebuild = bool(allow_destructive_rebuild)
         self._hipporag_factory = hipporag_factory
         self._usage_tracker = usage_tracker
         self._prepared_states: Dict[str, Dict[str, Any]] = {}
@@ -904,7 +917,11 @@ class HippoRAG2Runner:
             return self.save_root
 
         if not resume:
-            _reset_save_root(self.save_root, self.snapshot_root)
+            _reset_save_root(
+                self.save_root,
+                self.snapshot_root,
+                allow_destructive_rebuild=self.allow_destructive_rebuild,
+            )
             checkpoint_root.mkdir(parents=True, exist_ok=True)
             existing_entries_by_id = {}
             last_confirmed_idx = -1
@@ -918,7 +935,11 @@ class HippoRAG2Runner:
                 confirmed_last_log_index=max(last_confirmed_idx, replay_target_idx),
             )
             if snapshot is None:
-                _reset_save_root(self.save_root, self.snapshot_root)
+                _reset_save_root(
+                    self.save_root,
+                    self.snapshot_root,
+                    allow_destructive_rebuild=self.allow_destructive_rebuild,
+                )
                 checkpoint_root.mkdir(parents=True, exist_ok=True)
                 existing_entries_by_id = {}
                 saved_checkpoint_ids = set()
@@ -1310,6 +1331,7 @@ def run_generation(
     final_qa_output_path: Optional[str] = None,
     final_qa_retrieval_top_k: Optional[int] = None,
     final_qa_save_prompt_and_raw: bool = False,
+    allow_destructive_rebuild: bool = False,
 ) -> Dict[str, Any]:
     benchmark_path = benchmark_path.expanduser().resolve()
     app_logs_path = app_logs_path.expanduser().resolve()
@@ -1373,6 +1395,7 @@ def run_generation(
         batch_size=retriever_batch_size,
         retrieval_top_k=retrieval_top_k,
         openie_mode=_detect_openie_mode(llm_model),
+        allow_destructive_rebuild=allow_destructive_rebuild,
         usage_tracker=usage_tracker,
     )
 

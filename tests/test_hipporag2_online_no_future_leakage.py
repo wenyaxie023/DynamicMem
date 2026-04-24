@@ -620,6 +620,7 @@ class HippoRAG2ProtocolTests(unittest.TestCase):
                     batch_size=1,
                     retrieval_top_k=5,
                     openie_mode="online",
+                    allow_destructive_rebuild=True,
                 )
                 with self.assertRaises(RuntimeError):
                     runner.materialize_checkpoint_snapshots(
@@ -647,6 +648,7 @@ class HippoRAG2ProtocolTests(unittest.TestCase):
                     batch_size=1,
                     retrieval_top_k=5,
                     openie_mode="online",
+                    allow_destructive_rebuild=True,
                 )
                 runner.materialize_checkpoint_snapshots(
                     benchmark_path=benchmark_path,
@@ -705,6 +707,7 @@ class HippoRAG2ProtocolTests(unittest.TestCase):
                     batch_size=1,
                     retrieval_top_k=5,
                     openie_mode="online",
+                    allow_destructive_rebuild=True,
                 )
                 runner.materialize_checkpoint_snapshots(
                     benchmark_path=benchmark_path,
@@ -727,6 +730,7 @@ class HippoRAG2ProtocolTests(unittest.TestCase):
                     batch_size=1,
                     retrieval_top_k=5,
                     openie_mode="online",
+                    allow_destructive_rebuild=True,
                 )
                 runner.materialize_checkpoint_snapshots(
                     benchmark_path=benchmark_path,
@@ -900,6 +904,7 @@ class HippoRAG2ProtocolTests(unittest.TestCase):
                     batch_size=1,
                     retrieval_top_k=5,
                     openie_mode="online",
+                    allow_destructive_rebuild=True,
                 )
                 runner.materialize_checkpoint_snapshots(
                     benchmark_path=benchmark_path,
@@ -922,6 +927,7 @@ class HippoRAG2ProtocolTests(unittest.TestCase):
                     batch_size=1,
                     retrieval_top_k=5,
                     openie_mode="online",
+                    allow_destructive_rebuild=True,
                 )
                 runner.materialize_checkpoint_snapshots(
                     benchmark_path=benchmark_path,
@@ -991,6 +997,7 @@ class HippoRAG2ProtocolTests(unittest.TestCase):
                     batch_size=1,
                     retrieval_top_k=5,
                     openie_mode="online",
+                    allow_destructive_rebuild=True,
                 )
                 runner.materialize_checkpoint_snapshots(
                     benchmark_path=benchmark_path,
@@ -1291,6 +1298,7 @@ class HippoRAG2ProtocolTests(unittest.TestCase):
                     batch_size=1,
                     retrieval_top_k=5,
                     openie_mode="online",
+                    allow_destructive_rebuild=True,
                 )
                 runner.materialize_checkpoint_snapshots(
                     benchmark_path=benchmark_path,
@@ -1306,6 +1314,28 @@ class HippoRAG2ProtocolTests(unittest.TestCase):
                 self.assertFalse((data_storage_root / "legacy_marker.txt").exists())
                 self.assertFalse((data_storage_root / "preprocess").exists())
                 self.assertTrue((snapshot_root / "checkpoints" / "cp_0001").exists())
+
+    def test_reset_save_root_refuses_existing_artifacts_without_opt_in(self):
+        with _install_import_stubs():
+            mod = _reload_online_tce()
+            with tempfile.TemporaryDirectory() as td:
+                root = Path(td)
+                data_storage_root = root / "runtime"
+                snapshot_root = root / "snapshots"
+                (data_storage_root / "builder").mkdir(parents=True, exist_ok=True)
+                (data_storage_root / "builder" / "stale.txt").write_text("stale", encoding="utf-8")
+                (snapshot_root / "checkpoints").mkdir(parents=True, exist_ok=True)
+                (snapshot_root / "checkpoints" / "stale.txt").write_text("stale", encoding="utf-8")
+
+                with self.assertRaisesRegex(RuntimeError, "allow_destructive_rebuild"):
+                    mod._reset_save_root(
+                        data_storage_root,
+                        snapshot_root,
+                        allow_destructive_rebuild=False,
+                    )
+
+                self.assertTrue((data_storage_root / "builder" / "stale.txt").exists())
+                self.assertTrue((snapshot_root / "checkpoints" / "stale.txt").exists())
 
     def test_adapter_routes_to_canonical_online_runtime(self):
         args = TceAdapterArgs(

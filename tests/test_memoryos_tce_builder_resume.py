@@ -240,6 +240,57 @@ class MemoryosBuilderResumeTest(unittest.TestCase):
         self.assertEqual(len(short_term_payload), 1)
         self.assertEqual(short_term_payload[0]["user_input"], json.dumps(app_logs[0], ensure_ascii=False))
 
+    def test_fresh_build_refuses_clearing_existing_artifacts_without_opt_in(self) -> None:
+        app_logs = _make_app_logs(1)
+        benchmark = {
+            "user_id": "001_user_001",
+            "checkpoints": [
+                {
+                    "checkpoint_id": "cp_0001",
+                    "as_of": {
+                        "timestamp": app_logs[0]["timestamp"],
+                        "log_index": 0,
+                        "app_log_id": app_logs[0]["app_log_id"],
+                    },
+                }
+            ],
+        }
+
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            benchmark_path = root / "benchmark.json"
+            app_logs_path = root / "app_logs.json"
+            snapshot_dir = root / "snapshots"
+            data_storage_path = root / "runtime_data"
+            _write_json(benchmark_path, benchmark)
+            _write_json(app_logs_path, app_logs)
+            stale_runtime = data_storage_path / "001_user_001_large" / "builder" / "stale.txt"
+            stale_snapshot = snapshot_dir / "001_user_001_large" / "manifest.json"
+            stale_runtime.parent.mkdir(parents=True, exist_ok=True)
+            stale_snapshot.parent.mkdir(parents=True, exist_ok=True)
+            stale_runtime.write_text("stale", encoding="utf-8")
+            stale_snapshot.write_text("{}", encoding="utf-8")
+
+            with self.assertRaisesRegex(RuntimeError, "allow_destructive_rebuild"):
+                memoryos_tce._ensure_snapshots_for_benchmark(
+                    benchmark_path=benchmark_path,
+                    app_logs_path=app_logs_path,
+                    user_id="001_user_001",
+                    size="large",
+                    snapshot_dir=str(snapshot_dir),
+                    data_storage_path=str(data_storage_path),
+                    llm_controller_model="gpt-5-mini",
+                    embedding_model_name="text-embedding-3-large",
+                    assistant_id="assistant",
+                    max_checkpoints=1,
+                    retriever_provider="openai",
+                    resume=False,
+                    allow_destructive_rebuild=False,
+                )
+
+            self.assertEqual(stale_runtime.read_text(encoding="utf-8"), "stale")
+            self.assertEqual(stale_snapshot.read_text(encoding="utf-8"), "{}")
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
