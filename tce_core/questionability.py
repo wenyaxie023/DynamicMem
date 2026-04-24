@@ -2,10 +2,13 @@
 
 from typing import Any, Dict, List, Optional, Set
 
+from tce_contracts import state_validation_excludes_field_path_v2
+
 REASON_EMPTY = "empty_value"
 REASON_NOISE = "noisy_value"
 REASON_MISSING_SCHEDULE_DATES = "missing_schedule_dates"
 REASON_SCHEDULE_DATES_EVIDENCE_UNDERCOVERAGE = "schedule_dates_evidence_undercoverage"
+REASON_EXCLUDED_FIELDS_ONLY = "excluded_prevalidation_fields_only"
 
 
 def _collect_field_paths(value: Any, out: List[str], prefix: str = "") -> None:
@@ -118,6 +121,8 @@ def _schedule_date_coverage_reason(
     state_observability: Optional[Dict[str, Any]],
     app_logs_by_id: Optional[Dict[str, Dict[str, Any]]],
 ) -> Optional[str]:
+    if state_validation_excludes_field_path_v2("schedule_dates"):
+        return None
     if not str(state_key or "").startswith("habits_state:"):
         return None
     if not isinstance(state_value, dict):
@@ -179,10 +184,15 @@ def evaluate_state_questionability(
     _collect_field_paths(state_value, fields)
     seen = set()
     for f in fields:
+        if state_validation_excludes_field_path_v2(f):
+            continue
         if f in seen:
             continue
         seen.add(f)
         askable_fields.append(f)
+
+    if not askable_fields and REASON_EMPTY not in reason_codes:
+        reason_codes.append(REASON_EXCLUDED_FIELDS_ONLY)
 
     is_questionable = len(reason_codes) == 0
     return {

@@ -11,7 +11,7 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from tce_core.task_packs import build_task_packs
+from tce_core.task_packs import _rewrite_apply_item, _validate_apply_item, build_task_packs
 from tce_contracts import (
     CANONICAL_RESEARCH_DOC_V2,
     CURRENT_TASK_CONTRACT_VERSION,
@@ -21,6 +21,165 @@ from tce_contracts import (
 
 
 class TceTaskPackAcceptance(unittest.TestCase):
+    def assertNoTaskCV2ScoringAuthoringLanguage(self, prompt: str) -> None:
+        forbidden_terms = [
+            "scoring_rubric",
+            "answer_scoring_points",
+            "answer scoring points",
+            "scoring point",
+            "scoring points",
+            "scoring criteria",
+            "scoring ids",
+            "rubric",
+        ]
+        lowered_prompt = prompt.lower()
+        for term in forbidden_terms:
+            self.assertNotIn(term, lowered_prompt)
+
+    def test_v2_validation_and_rewrite_prompts_do_not_receive_scoring_fields(self):
+        item = {
+            "qa_id": "q1",
+            "service_family": "user_communication",
+            "scenario": "It is 06:10. Nothing has been logged yet today.",
+            "task_instruction": "Write the short reminder message the assistant should send right now.",
+            "reference_answer": "Send a reminder that the walk starts at 06:30.",
+            "scoring_rubric": {"criteria": [{"id": "timing.start_time", "description": "old"}]},
+            "answer_scoring_points": [{"point_id": "old", "point_text": "old"}],
+        }
+        state_value = {"timing": {"start_time": "06:30"}}
+
+        class _CaptureValidatorClient:
+            prompts: list[str] = []
+
+            def ask(self, prompt: str, response_type: str = "json"):
+                del response_type
+                self.prompts.append(prompt)
+                return {
+                    "criteria": [
+                        {"criterion": "answerability", "pass": True, "analysis": "ok"},
+                        {"criterion": "service_completion_quality", "pass": True, "analysis": "ok"},
+                        {"criterion": "full_field_dependency", "pass": True, "analysis": "ok"},
+                        {"criterion": "low_leakage", "pass": True, "analysis": "ok"},
+                        {"criterion": "output_groundedness", "pass": True, "analysis": "ok"},
+                    ]
+                }
+
+        class _CaptureRewriteClient:
+            prompts: list[str] = []
+
+            def ask(self, prompt: str, response_type: str = "json"):
+                del response_type
+                self.prompts.append(prompt)
+                return {"scenario": "It is 06:10. Nothing has been logged yet, and the user is idle."}
+
+        validator = _CaptureValidatorClient()
+        _validate_apply_item(
+            validator_client=validator,
+            state_key="habits_state:morning_walk",
+            state_value=state_value,
+            item=item,
+            task_contract_version=CURRENT_TASK_CONTRACT_VERSION,
+        )
+        rewriter = _CaptureRewriteClient()
+        _rewrite_apply_item(
+            generator_client=rewriter,
+            state_key="habits_state:morning_walk",
+            state_value=state_value,
+            item=item,
+            validation_payload={
+                "failed_rules": ["low_leakage"],
+                "semantic_criteria": [
+                    {"criterion": "low_leakage", "pass": False, "analysis": "scenario leaks"},
+                ],
+            },
+            task_contract_version=CURRENT_TASK_CONTRACT_VERSION,
+        )
+
+        self.assertEqual(len(validator.prompts), 1)
+        self.assertEqual(len(rewriter.prompts), 1)
+        self.assertNoTaskCV2ScoringAuthoringLanguage(validator.prompts[0])
+        self.assertNoTaskCV2ScoringAuthoringLanguage(rewriter.prompts[0])
+
+    def test_v2_rewrite_apply_item_merges_delta_without_dropping_unchanged_fields(self):
+        item = {
+            "qa_id": "q1",
+            "service_family": "user_communication",
+            "scenario": "It is 06:10. Nothing has been logged yet today.",
+            "task_instruction": "Write the short reminder message the assistant should send right now.",
+            "reference_answer": "Send a reminder that the walk starts at 06:30.",
+        }
+
+        class _FakeGeneratorClient:
+            def ask(self, prompt: str, response_type: str = "json"):
+                del prompt, response_type
+                return {
+                    "scenario": "It is 06:10. Nothing has been logged yet, and the user is idle.",
+                }
+
+        rewritten = _rewrite_apply_item(
+            generator_client=_FakeGeneratorClient(),
+            state_key="habits_state:morning_walk",
+            state_value={"timing": {"start_time": "06:30"}},
+            item=item,
+            validation_payload={
+                "failed_rules": ["low_leakage"],
+                "semantic_criteria": [
+                    {"criterion": "answerability", "pass": True, "analysis": "ok"},
+                    {"criterion": "service_completion_quality", "pass": True, "analysis": "ok"},
+                    {"criterion": "full_field_dependency", "pass": True, "analysis": "ok"},
+                    {"criterion": "low_leakage", "pass": False, "analysis": "scenario leaks"},
+                    {"criterion": "output_groundedness", "pass": True, "analysis": "ok"},
+                ],
+            },
+            task_contract_version=CURRENT_TASK_CONTRACT_VERSION,
+        )
+
+        self.assertEqual(rewritten["scenario"], "It is 06:10. Nothing has been logged yet, and the user is idle.")
+        self.assertEqual(rewritten["task_instruction"], item["task_instruction"])
+        self.assertEqual(rewritten["reference_answer"], item["reference_answer"])
+        self.assertNotIn("scoring_rubric", rewritten)
+
+    def test_v2_rewrite_apply_item_does_not_carry_structured_scoring_rubric(self):
+        item = {
+            "qa_id": "q1",
+            "service_family": "information_request_construction",
+            "scenario": "A training-resource search request is about to run.",
+            "task_instruction": "Fill the structured request payload before the search is sent.",
+            "output_template": {"request_profile": {"preferred_profile": "<fill>"}},
+            "reference_output": {"request_profile": {"preferred_profile": "prefers self-paced webinars"}},
+        }
+
+        class _FakeGeneratorClient:
+            def ask(self, prompt: str, response_type: str = "json"):
+                del prompt, response_type
+                return {
+                    "reference_output": {"request_profile": {"preferred_profile": "self-paced webinars"}},
+                }
+
+        rewritten = _rewrite_apply_item(
+            generator_client=_FakeGeneratorClient(),
+            state_key="preferences_state:learning_modality",
+            state_value={"statement": "prefers self-paced webinars"},
+            item=item,
+            validation_payload={
+                "failed_rules": ["output_groundedness"],
+                "semantic_criteria": [
+                    {"criterion": "answerability", "pass": True, "analysis": "ok"},
+                    {"criterion": "service_completion_quality", "pass": True, "analysis": "ok"},
+                    {"criterion": "full_field_dependency", "pass": True, "analysis": "ok"},
+                    {"criterion": "low_leakage", "pass": True, "analysis": "ok"},
+                    {"criterion": "output_groundedness", "pass": False, "analysis": "output needs a more task-appropriate fill."},
+                ],
+            },
+            task_contract_version=CURRENT_TASK_CONTRACT_VERSION,
+        )
+
+        self.assertEqual(
+            rewritten["reference_output"],
+            {"request_profile": {"preferred_profile": "self-paced webinars"}},
+        )
+        self.assertNotIn("scoring_rubric", rewritten)
+
     def test_build_task_packs_stamps_current_contract_metadata_when_missing(self):
         benchmark = {
             "user_id": "001_user_001",
@@ -71,7 +230,7 @@ class TceTaskPackAcceptance(unittest.TestCase):
 
         class _FakeApplyGeneratorClient:
             def ask(self, prompt: str, response_type: str = "json"):
-                if "Generate exactly one low-leakage benchmark item for a preference-conditioned Information Request Construction task." in prompt:
+                if "Generate exactly one item for a preference-conditioned structured filtering task." in prompt:
                     return {
                         "items": [
                             {
@@ -86,13 +245,14 @@ class TceTaskPackAcceptance(unittest.TestCase):
 
         class _FakeApplyValidatorClient:
             def ask(self, prompt: str, response_type: str = "json"):
-                if "Validate whether this Task C v2 item is a strong structured proactive personalized-service completion item." in prompt:
+                if "Validate whether this item is a strong structured completion task." in prompt:
                     return {
                         "criteria": [
+                            {"criterion": "answerability", "pass": True, "analysis": "ok"},
                             {"criterion": "service_completion_quality", "pass": True, "analysis": "ok"},
                             {"criterion": "full_field_dependency", "pass": True, "analysis": "ok"},
-                            {"criterion": "schema_groundedness", "pass": True, "analysis": "ok"},
-                            {"criterion": "point_pairability", "pass": True, "analysis": "ok"},
+                            {"criterion": "low_leakage", "pass": True, "analysis": "ok"},
+                            {"criterion": "output_groundedness", "pass": True, "analysis": "ok"},
                         ]
                     }
                 return {}
@@ -121,17 +281,135 @@ class TceTaskPackAcceptance(unittest.TestCase):
         self.assertEqual(item["service_family"], "information_request_construction")
         self.assertEqual(item["output_template"], {"request_profile": {"preferred_profile": "<fill>"}})
         self.assertEqual(item["reference_output"], {"request_profile": {"preferred_profile": "latte"}})
+        self.assertNotIn("scoring_rubric", item)
         self.assertEqual(len(item["answer_scoring_points"]), 1)
         point = item["answer_scoring_points"][0]
         self.assertEqual(point["point_id"], "aqp_preferences_state_favorite_coffee_q1_p1")
         self.assertEqual(point["point_type"], "field")
-        self.assertEqual(point["polarity"], "positive")
+        self.assertNotIn("polarity", point)
         self.assertEqual(point["source_field_path"], "statement")
         self.assertEqual(point["output_field_path"], "request_profile.preferred_profile")
         self.assertEqual(point["target_path"], "request_profile.preferred_profile")
         self.assertEqual(point["reference_value"], "latte")
         self.assertTrue(item["item_validation"]["is_valid"])
         self.assertTrue(item["scoring_validation"]["is_valid"])
+
+    def test_v2_user_communication_materializes_points_without_scoring_rubric(self):
+        benchmark = {
+            "user_id": "001_user_001",
+            "checkpoints": [
+                {
+                    "checkpoint_id": "cp1",
+                    "as_of": {"timestamp": "2025-01-01 08:00:00"},
+                    "state_questionability": {
+                        "habits_state:morning_walk": {"is_questionable": True}
+                    },
+                    "validated_snapshot_state": {
+                        "habits_state": {
+                            "morning_walk": {
+                                "schedule": {
+                                    "frequency_type": "weekly",
+                                    "days_of_week": [2],
+                                },
+                                "timing": {"start_time": "06:30"},
+                                "location": "lakefront trail",
+                            }
+                        }
+                    },
+                    "state_observability": {
+                        "habits_state": {
+                            "morning_walk": {"evidence_app_log_ids": ["log_0001"]}
+                        }
+                    },
+                }
+            ],
+        }
+
+        class _FakeApplyGeneratorClient:
+            def ask(self, prompt: str, response_type: str = "json"):
+                if "Generate exactly one item for a habit-conditioned assistant-message task." in prompt:
+                    return {
+                        "items": [
+                            {
+                                "scenario": "It is Wednesday at 06:10. Nothing has been logged yet this morning.",
+                                "task_instruction": "As the assistant, what single message should be sent to the user right now? Make it complete for this moment by using the user's routine details, not a generic reminder.",
+                                "reference_answer": "Your weekly morning walk is scheduled for Wednesday at 06:30 on the lakefront trail. It is almost time to head out.",
+                            }
+                        ]
+                    }
+                return {}
+
+        class _FakeApplyValidatorClient:
+            def ask(self, prompt: str, response_type: str = "json"):
+                if "Validate whether this item is a strong current-moment assistant message task." in prompt:
+                    return {
+                        "criteria": [
+                            {"criterion": "answerability", "pass": True, "analysis": "ok"},
+                            {"criterion": "service_completion_quality", "pass": True, "analysis": "ok"},
+                            {"criterion": "full_field_dependency", "pass": True, "analysis": "ok"},
+                            {"criterion": "low_leakage", "pass": True, "analysis": "ok"},
+                            {"criterion": "output_groundedness", "pass": True, "analysis": "ok"},
+                        ]
+                    }
+                return {}
+
+        result = build_task_packs(
+            benchmark=copy.deepcopy(benchmark),
+            tasks=["apply"],
+            generator_client=_FakeApplyGeneratorClient(),
+            validator_client=_FakeApplyValidatorClient(),
+            provider="test",
+            model="generator",
+            validator_provider="test",
+            validator_model="validator",
+            item_count_per_key=1,
+            max_rewrites=0,
+            apply_workers=1,
+        )
+
+        item = result["checkpoints"][0]["rq3_apply_service_qa"]["keys"]["habits_state:morning_walk"]["items"][0]
+        self.assertEqual(item["service_family"], "user_communication")
+        self.assertNotIn("scoring_rubric", item)
+        self.assertEqual(
+            item["reference_answer"],
+            "Your weekly morning walk is scheduled for Wednesday at 06:30 on the lakefront trail. It is almost time to head out.",
+        )
+        self.assertEqual(len(item["answer_scoring_points"]), 5)
+        self.assertEqual(
+            [point["point_type"] for point in item["answer_scoring_points"]],
+            ["micro", "micro", "micro", "micro", "micro"],
+        )
+        self.assertEqual(
+            item["answer_scoring_points"][0],
+            {
+                "point_id": "aqp_habits_state_morning_walk_q1_identity",
+                "point_type": "micro",
+                "point_role": "identity_gate",
+                "point_text": "The message is clearly about the morning walk routine itself, not a different routine or unrelated task.",
+            },
+        )
+        self.assertEqual(
+            [point["point_text"] for point in item["answer_scoring_points"][1:]],
+            [
+                'The message correctly uses the state field schedule.frequency_type with value "weekly".',
+                "The message correctly uses the state field schedule.days_of_week with value [2 (Wednesday)].",
+                'The message correctly uses the state field timing.start_time with value "06:30".',
+                'The message correctly uses the state field location with value "lakefront trail".',
+            ],
+        )
+        self.assertEqual(
+            [point["source_field_path"] for point in item["answer_scoring_points"][1:]],
+            [
+                "schedule.frequency_type",
+                "schedule.days_of_week",
+                "timing.start_time",
+                "location",
+            ],
+        )
+        self.assertTrue(all("polarity" not in point for point in item["answer_scoring_points"]))
+        self.assertTrue(item["item_validation"]["is_valid"])
+        self.assertTrue(item["scoring_validation"]["is_valid"])
+        self.assertTrue(item["scoring_validation"]["uses_identity_gate"])
 
     def test_v2_preference_task_c_contracts_state_to_statement_only(self):
         benchmark = {
@@ -183,10 +461,11 @@ class TceTaskPackAcceptance(unittest.TestCase):
             def ask(self, prompt: str, response_type: str = "json"):
                 return {
                     "criteria": [
+                        {"criterion": "answerability", "pass": True, "analysis": "ok"},
                         {"criterion": "service_completion_quality", "pass": True, "analysis": "ok"},
                         {"criterion": "full_field_dependency", "pass": True, "analysis": "ok"},
-                        {"criterion": "schema_groundedness", "pass": True, "analysis": "ok"},
-                        {"criterion": "point_pairability", "pass": True, "analysis": "ok"},
+                        {"criterion": "low_leakage", "pass": True, "analysis": "ok"},
+                        {"criterion": "output_groundedness", "pass": True, "analysis": "ok"},
                     ]
                 }
 
@@ -206,14 +485,301 @@ class TceTaskPackAcceptance(unittest.TestCase):
         )
 
         prompt_text = generator.prompts[0]
-        self.assertIn('"statement": "prefers self-paced webinars"', prompt_text)
-        self.assertNotIn('"signals": [', prompt_text)
+        self.assertIn("'statement': 'prefers self-paced webinars'", prompt_text)
+        self.assertNotIn("'signals': [", prompt_text)
 
         item = result["checkpoints"][0]["rq3_apply_service_qa"]["keys"]["preferences_state:learning_modality"]["items"][0]
         self.assertEqual(len(item["answer_scoring_points"]), 1)
         point = item["answer_scoring_points"][0]
         self.assertEqual(point["source_field_path"], "statement")
         self.assertEqual(point["reference_value"], "prefers self-paced webinars")
+
+    def test_v2_structured_pack_allows_multi_slot_reference_output_without_source_leaf_pairing(self):
+        benchmark = {
+            "user_id": "001_user_001",
+            "checkpoints": [
+                {
+                    "checkpoint_id": "cp1",
+                    "as_of": {"timestamp": "2025-01-01 08:00:00"},
+                    "state_questionability": {
+                        "preferences_state:community_involvement_type": {"is_questionable": True}
+                    },
+                    "validated_snapshot_state": {
+                        "preferences_state": {
+                            "community_involvement_type": {
+                                "statement": "Strongly prefers youth-focused civic projects over general social mixers"
+                            }
+                        }
+                    },
+                    "state_observability": {
+                        "preferences_state": {
+                            "community_involvement_type": {"evidence_app_log_ids": ["log_0001"]}
+                        }
+                    },
+                }
+            ],
+        }
+
+        class _FakeApplyGeneratorClient:
+            def ask(self, prompt: str, response_type: str = "json"):
+                del prompt, response_type
+                return {
+                    "items": [
+                        {
+                            "scenario": "The user is reviewing volunteering options for the next free weekend. Candidate opportunities are being narrowed before any shortlist is shown.",
+                            "task_instruction": "As the assistant, complete the structured information request below so it can be sent to the downstream information system.",
+                            "output_template": {
+                                "engagement_filters": {
+                                    "preferred_domains": ["<fill>", "<fill>"],
+                                    "deprioritized_formats": ["<fill>"],
+                                }
+                            },
+                            "reference_output": {
+                                "engagement_filters": {
+                                    "preferred_domains": ["youth-focused projects", "civic impact work"],
+                                    "deprioritized_formats": ["general social mixers"],
+                                }
+                            },
+                        }
+                    ]
+                }
+
+        class _FakeApplyValidatorClient:
+            def ask(self, prompt: str, response_type: str = "json"):
+                del prompt, response_type
+                return {
+                    "criteria": [
+                        {"criterion": "answerability", "pass": True, "analysis": "ok"},
+                        {"criterion": "service_completion_quality", "pass": True, "analysis": "ok"},
+                        {"criterion": "full_field_dependency", "pass": True, "analysis": "ok"},
+                        {"criterion": "low_leakage", "pass": True, "analysis": "ok"},
+                        {"criterion": "output_groundedness", "pass": True, "analysis": "ok"},
+                    ]
+                }
+
+        result = build_task_packs(
+            benchmark=copy.deepcopy(benchmark),
+            tasks=["apply"],
+            generator_client=_FakeApplyGeneratorClient(),
+            validator_client=_FakeApplyValidatorClient(),
+            provider="test",
+            model="generator",
+            validator_provider="test",
+            validator_model="validator",
+            item_count_per_key=1,
+            max_rewrites=0,
+            apply_workers=1,
+        )
+
+        item = result["checkpoints"][0]["rq3_apply_service_qa"]["keys"]["preferences_state:community_involvement_type"]["items"][0]
+        self.assertTrue(item["item_validation"]["is_valid"])
+        self.assertTrue(item["scoring_validation"]["is_valid"])
+        self.assertEqual(
+            [point["target_path"] for point in item["answer_scoring_points"]],
+            [
+                "engagement_filters.preferred_domains.0",
+                "engagement_filters.preferred_domains.1",
+                "engagement_filters.deprioritized_formats.0",
+            ],
+        )
+        self.assertEqual(
+            [point["reference_value"] for point in item["answer_scoring_points"]],
+            [
+                "youth-focused projects",
+                "civic impact work",
+                "general social mixers",
+            ],
+        )
+
+    def test_v2_apply_reuses_authored_items_when_state_is_unchanged_across_checkpoints(self):
+        benchmark = {
+            "user_id": "001_user_001",
+            "checkpoints": [
+                {
+                    "checkpoint_id": "cp1",
+                    "as_of": {"timestamp": "2025-01-01 08:00:00"},
+                    "state_questionability": {
+                        "habits_state:morning_walk": {"is_questionable": True}
+                    },
+                    "validated_snapshot_state": {
+                        "habits_state": {
+                            "morning_walk": {
+                                "timing": {"start_time": "06:30"},
+                                "location": "lakefront trail",
+                            }
+                        }
+                    },
+                    "state_observability": {
+                        "habits_state": {
+                            "morning_walk": {"evidence_app_log_ids": ["log_0001"]}
+                        }
+                    },
+                },
+                {
+                    "checkpoint_id": "cp2",
+                    "as_of": {"timestamp": "2025-02-01 08:00:00"},
+                    "state_questionability": {
+                        "habits_state:morning_walk": {"is_questionable": True}
+                    },
+                    "validated_snapshot_state": {
+                        "habits_state": {
+                            "morning_walk": {
+                                "timing": {"start_time": "06:30"},
+                                "location": "lakefront trail",
+                            }
+                        }
+                    },
+                    "state_observability": {
+                        "habits_state": {
+                            "morning_walk": {"evidence_app_log_ids": ["log_0001", "log_0002"]}
+                        }
+                    },
+                },
+            ],
+        }
+
+        class _FakeApplyGeneratorClient:
+            generation_calls = 0
+
+            def ask(self, prompt: str, response_type: str = "json"):
+                del response_type
+                if "Generate exactly one item for a habit-conditioned assistant-message task." in prompt:
+                    type(self).generation_calls += 1
+                    return {
+                        "items": [
+                            {
+                                "scenario": "It is Wednesday at 06:10. Nothing has been logged yet this morning.",
+                                "task_instruction": "As the assistant, what single message should be sent to the user right now?",
+                                "reference_answer": "Send a reminder that the morning walk starts at 06:30 on the lakefront trail.",
+                            }
+                        ]
+                    }
+                return {}
+
+        class _FakeApplyValidatorClient:
+            def ask(self, prompt: str, response_type: str = "json"):
+                del response_type
+                if "Validate whether this item is a strong current-moment assistant message task." in prompt:
+                    return {
+                        "criteria": [
+                            {"criterion": "answerability", "pass": True, "analysis": "ok"},
+                            {"criterion": "service_completion_quality", "pass": True, "analysis": "ok"},
+                            {"criterion": "full_field_dependency", "pass": True, "analysis": "ok"},
+                            {"criterion": "low_leakage", "pass": True, "analysis": "ok"},
+                            {"criterion": "output_groundedness", "pass": True, "analysis": "ok"},
+                        ]
+                    }
+                if "Validate one generated atomic-fact set for an apply-service QA item." in prompt:
+                    return {
+                        "points": [
+                            {
+                                "point_id": "aqp_habits_state_morning_walk_q1_p1",
+                                "pass": True,
+                                "analysis": "ok",
+                                "fail_reasons": [],
+                            }
+                        ],
+                        "set_pass": True,
+                        "set_failures": [],
+                    }
+                return {}
+
+        generator = _FakeApplyGeneratorClient()
+        result = build_task_packs(
+            benchmark=copy.deepcopy(benchmark),
+            tasks=["apply"],
+            generator_client=generator,
+            validator_client=_FakeApplyValidatorClient(),
+            provider="test",
+            model="generator",
+            validator_provider="test",
+            validator_model="validator",
+            item_count_per_key=1,
+            max_rewrites=0,
+            apply_workers=1,
+        )
+
+        cp1_item = result["checkpoints"][0]["rq3_apply_service_qa"]["keys"]["habits_state:morning_walk"]["items"][0]
+        cp2_key_node = result["checkpoints"][1]["rq3_apply_service_qa"]["keys"]["habits_state:morning_walk"]
+        cp2_item = cp2_key_node["items"][0]
+
+        self.assertEqual(generator.generation_calls, 1)
+        self.assertEqual(cp2_key_node["pack_source"], "reused")
+        self.assertEqual(cp1_item["scenario"], cp2_item["scenario"])
+        self.assertEqual(cp1_item["task_instruction"], cp2_item["task_instruction"])
+        self.assertEqual(cp2_item["gold_memory_evidence_app_log_ids"], ["log_0001", "log_0002"])
+
+    def test_v2_user_communication_ignores_generated_rubric_descriptions(self):
+        benchmark = {
+            "user_id": "001_user_001",
+            "checkpoints": [
+                {
+                    "checkpoint_id": "cp1",
+                    "as_of": {"timestamp": "2025-01-01 08:00:00"},
+                    "state_questionability": {
+                        "habits_state:morning_walk": {"is_questionable": True}
+                    },
+                    "validated_snapshot_state": {
+                        "habits_state": {
+                            "morning_walk": {
+                                "timing": {"start_time": "06:30"},
+                                "location": "lakefront trail",
+                            }
+                        }
+                    },
+                    "state_observability": {
+                        "habits_state": {
+                            "morning_walk": {"evidence_app_log_ids": ["log_0001"]}
+                        }
+                    },
+                }
+            ],
+        }
+
+        class _FakeApplyGeneratorClient:
+            def ask(self, prompt: str, response_type: str = "json"):
+                del prompt, response_type
+                return {
+                    "items": [
+                        {
+                            "scenario": "It is Wednesday at 06:10. Nothing has been logged yet this morning.",
+                            "task_instruction": "As the assistant, what single message should be sent to the user right now?",
+                            "reference_answer": "Send a reminder that the morning walk starts soon.",
+                        }
+                    ]
+                }
+
+        class _FakeApplyValidatorClient:
+            def ask(self, prompt: str, response_type: str = "json"):
+                del prompt, response_type
+                return {
+                    "criteria": [
+                        {"criterion": "answerability", "pass": True, "analysis": "ok"},
+                        {"criterion": "service_completion_quality", "pass": True, "analysis": "ok"},
+                        {"criterion": "full_field_dependency", "pass": True, "analysis": "ok"},
+                        {"criterion": "low_leakage", "pass": True, "analysis": "ok"},
+                        {"criterion": "output_groundedness", "pass": True, "analysis": "ok"},
+                    ]
+                }
+
+        result = build_task_packs(
+            benchmark=copy.deepcopy(benchmark),
+            tasks=["apply"],
+            generator_client=_FakeApplyGeneratorClient(),
+            validator_client=_FakeApplyValidatorClient(),
+            provider="test",
+            model="generator",
+            validator_provider="test",
+            validator_model="validator",
+            item_count_per_key=1,
+            max_rewrites=0,
+            apply_workers=1,
+        )
+
+        item = result["checkpoints"][0]["rq3_apply_service_qa"]["keys"]["habits_state:morning_walk"]["items"][0]
+        self.assertTrue(item["scoring_validation"]["is_valid"])
+        self.assertFalse(item["scoring_validation"]["manual_review_required"])
+        self.assertFalse(item["item_validation"]["manual_review_required"])
 
     def test_v2_apply_accepts_single_item_output_shape(self):
         benchmark = {
@@ -244,7 +810,7 @@ class TceTaskPackAcceptance(unittest.TestCase):
         class _FakeApplyGeneratorClient:
             def ask(self, prompt: str, response_type: str = "json"):
                 del response_type
-                if "Generate exactly one low-leakage benchmark item for a preference-conditioned Information Request Construction task." not in prompt:
+                if "Generate exactly one item for a preference-conditioned structured filtering task." not in prompt:
                     return {}
                 return {
                     "item": {
@@ -260,15 +826,6 @@ class TceTaskPackAcceptance(unittest.TestCase):
                                 "preferred_drink": "latte"
                             }
                         },
-                        "scoring_rubric": {
-                            "criteria": [
-                                {
-                                    "path": "drink_filters.preferred_drink",
-                                    "canonical_value": "latte",
-                                    "description": "This leaf captures the user's preferred coffee choice."
-                                },
-                            ]
-                        },
                     }
                 }
 
@@ -277,10 +834,11 @@ class TceTaskPackAcceptance(unittest.TestCase):
                 del prompt, response_type
                 return {
                     "criteria": [
+                        {"criterion": "answerability", "pass": True, "analysis": "ok"},
                         {"criterion": "service_completion_quality", "pass": True, "analysis": "ok"},
                         {"criterion": "full_field_dependency", "pass": True, "analysis": "ok"},
-                        {"criterion": "schema_groundedness", "pass": True, "analysis": "ok"},
-                        {"criterion": "point_pairability", "pass": True, "analysis": "ok"},
+                        {"criterion": "low_leakage", "pass": True, "analysis": "ok"},
+                        {"criterion": "output_groundedness", "pass": True, "analysis": "ok"},
                     ]
                 }
 
@@ -472,7 +1030,7 @@ class TceTaskPackAcceptance(unittest.TestCase):
                             "The answer should recommend one-on-one private tutoring."
                         ]
                     }
-                if "Rewrite an invalid atomic-fact set for one complex state field." in prompt:
+                if "Rewrite an invalid scoring-point set for one complex state field." in prompt:
                     return {
                         "rubric": [
                             "The answer states that self-paced white papers or webinars are the preferred format.",
@@ -483,7 +1041,7 @@ class TceTaskPackAcceptance(unittest.TestCase):
 
         class _FakeValidatorClient:
             def ask(self, prompt: str, response_type: str = "json"):
-                if "Validate one generated atomic-fact set for a complex state field." not in prompt:
+                if "Validate one generated scoring-point set for a complex state field." not in prompt:
                     return {}
                 if "one-on-one private tutoring" in prompt:
                     return {
@@ -845,7 +1403,7 @@ class TceTaskPackAcceptance(unittest.TestCase):
                             }
                         ]
                     }
-                if "Generate scoreable atomic facts for one apply-service QA item." in prompt:
+                if "Generate scoreable atomic facts for one service-decision item." in prompt:
                     return {
                         "points": [
                             {
@@ -867,7 +1425,7 @@ class TceTaskPackAcceptance(unittest.TestCase):
 
         class _FakeApplyValidatorClient:
             def ask(self, prompt: str, response_type: str = "json"):
-                if "Validate whether this apply-service QA item is a strong personalized service decision item." in prompt:
+                if "Validate whether this service-decision item is strong." in prompt:
                     return {
                         "criteria": [
                             {
@@ -887,7 +1445,7 @@ class TceTaskPackAcceptance(unittest.TestCase):
                             },
                         ]
                     }
-                if "Validate one generated atomic-fact set for an apply-service QA item." in prompt:
+                if "Validate one generated atomic-fact set for a service-decision item." in prompt:
                     return {
                         "points": [
                             {

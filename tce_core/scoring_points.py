@@ -16,10 +16,12 @@ from .prompts import (
     build_value_rubric_rewrite_prompt,
     build_value_rubric_validation_prompt,
 )
+from .task_spec import humanize_key
 
 POINT_TYPE_FIELD = "field"
 POINT_TYPE_LIST_ITEM = "list_item"
 POINT_TYPE_MICRO = "micro"
+POINT_ROLE_IDENTITY_GATE = "identity_gate"
 POINT_POLARITY_POSITIVE = "positive"
 POINT_POLARITY_NEGATIVE = "negative"
 SCORING_POINTS_VERSION = "spv4"
@@ -766,7 +768,7 @@ def validate_scoring_points(points: Sequence[Dict[str, Any]]) -> Tuple[bool, Lis
             seen_ids.add(point_id)
         if point_type not in {POINT_TYPE_FIELD, POINT_TYPE_LIST_ITEM, POINT_TYPE_MICRO}:
             failures.append("invalid_point_type")
-        if polarity not in {POINT_POLARITY_POSITIVE, POINT_POLARITY_NEGATIVE}:
+        if polarity and polarity not in {POINT_POLARITY_POSITIVE, POINT_POLARITY_NEGATIVE}:
             failures.append("invalid_polarity")
         if not point_text:
             failures.append("missing_point_text")
@@ -1136,6 +1138,7 @@ def build_validated_apply_answer_scoring_points(
     apply_reference_answer: str,
     generator_client: Optional[Any],
     validator_client: Optional[Any],
+    rubric: Optional[Sequence[Any]] = None,
     prefix: str = "aqp",
     max_rewrites: int = MAX_VALUE_RUBRIC_REWRITES,
 ) -> Tuple[List[Dict[str, Any]], Dict[str, Any]]:
@@ -1146,7 +1149,7 @@ def build_validated_apply_answer_scoring_points(
         apply_question=apply_question,
         apply_reference_answer=apply_reference_answer,
         generator_client=generator_client,
-        rubric=None,
+        rubric=rubric,
         prefix=prefix,
     )
     validation: Dict[str, Any]
@@ -1260,7 +1263,186 @@ def _task_c_v2_leaf_paths(value: Any, path: str = "") -> List[Tuple[str, Any]]:
     return [(path or "current_value", value)]
 
 
-def build_validated_task_c_v2_answer_scoring_points(
+def _task_c_v2_state_field_paths(value: Any, path: str = "") -> List[Tuple[str, Any]]:
+    if isinstance(value, dict):
+        out: List[Tuple[str, Any]] = []
+        for raw_key, child in value.items():
+            key = str(raw_key).strip().lower()
+            if not key:
+                continue
+            child_path = key if not path else f"{path}.{key}"
+            out.extend(_task_c_v2_state_field_paths(child, child_path))
+        return out
+    return [(path or "current_value", value)]
+
+
+def _task_c_v2_normalize_rubric_path(path: Any) -> str:
+    normalized = str(path or "").strip().lower()
+    if not normalized:
+        return ""
+    normalized = re.sub(r"\[(\d+)\]", r".\1", normalized)
+    normalized = re.sub(r"\.+", ".", normalized).strip(".")
+    return normalized
+
+
+def _task_c_v2_render_rubric_path(path: str) -> str:
+    parts = [part.strip() for part in str(path or "").split(".") if part.strip()]
+    rendered = ""
+    for part in parts:
+        if part.isdigit():
+            rendered += f"[{part}]"
+        else:
+            rendered = part if not rendered else f"{rendered}.{part}"
+    return rendered
+
+
+def _task_c_v2_match_source_field_path(
+    source_leaf_paths: Sequence[Tuple[str, Any]],
+    reference_value: Any,
+) -> Optional[str]:
+    matches = [path for path, value in source_leaf_paths if value == reference_value]
+    if len(matches) == 1:
+        return matches[0]
+    return None
+
+
+def _task_c_v2_field_point(
+    *,
+    prefix: str,
+    idx: int,
+    target_path: str,
+    reference_value: Any,
+    description: str,
+    source_field_path: Optional[str] = None,
+) -> Dict[str, Any]:
+    point = {
+        "point_id": f"{prefix}_p{idx}",
+        "point_type": POINT_TYPE_FIELD,
+        "point_text": description or f"The structured service output correctly fills {target_path}.",
+        "output_field_path": target_path,
+        "target_path": target_path,
+        "reference_value": reference_value,
+    }
+    if source_field_path:
+        point["source_field_path"] = source_field_path
+    return point
+
+
+def _task_c_v2_user_communication_point(
+    *,
+    prefix: str,
+    idx: int,
+    source_field_path: str,
+    reference_value: Any,
+) -> Dict[str, Any]:
+    return {
+        "point_id": f"{prefix}_p{idx}",
+        "point_type": POINT_TYPE_MICRO,
+        "point_text": _task_c_v2_user_communication_point_text(source_field_path, reference_value),
+        "source_field_path": source_field_path,
+        "reference_value": reference_value,
+    }
+
+
+def _task_c_v2_identity_gate_point(
+    *,
+    prefix: str,
+    state_key: str,
+) -> Dict[str, Any]:
+    key_text = str(state_key or "").strip()
+    if ":" in key_text:
+        _category, state_name = key_text.split(":", 1)
+    else:
+        state_name = key_text
+    state_label = state_name.replace("_", " ").strip() or humanize_key(key_text)
+    return {
+        "point_id": f"{prefix}_identity",
+        "point_type": POINT_TYPE_MICRO,
+        "point_role": POINT_ROLE_IDENTITY_GATE,
+        "point_text": (
+            f"The message is clearly about the {state_label} routine itself, "
+            "not a different routine or unrelated task."
+        ),
+    }
+
+
+def _task_c_v2_format_user_communication_value(path: str, value: Any) -> str:
+    normalized_path = str(path or "").strip().lower()
+
+    def _weekday_label(raw: Any) -> Optional[str]:
+        if isinstance(raw, int) and raw in _WEEKDAY_NAME_BY_INDEX:
+            return f"{raw} ({_WEEKDAY_NAME_BY_INDEX[raw].title()})"
+        return None
+
+    if normalized_path.endswith("days_of_week") and isinstance(value, list):
+        rendered_days = [_weekday_label(item) or json.dumps(item, ensure_ascii=False) for item in value]
+        return "[" + ", ".join(rendered_days) + "]"
+    if normalized_path.endswith("day_of_week"):
+        rendered_day = _weekday_label(value)
+        if rendered_day:
+            return rendered_day
+    return json.dumps(value, ensure_ascii=False)
+
+
+def _task_c_v2_user_communication_point_text(source_field_path: str, reference_value: Any) -> str:
+    return (
+        "The message correctly uses the state field "
+        f"{source_field_path} with value "
+        f"{_task_c_v2_format_user_communication_value(source_field_path, reference_value)}."
+    )
+
+
+def build_task_c_v2_user_communication_answer_scoring_points(
+    *,
+    state_key: str,
+    state_value: Any,
+    reference_answer: str,
+    prefix: str = "aqp",
+) -> Tuple[List[Dict[str, Any]], Dict[str, Any]]:
+    del reference_answer
+    original_state_key = state_key
+    source_field_paths = _task_c_v2_state_field_paths(state_value)
+    expected_ids = [path for path, _value in source_field_paths]
+    source_value_by_path = {path: value for path, value in source_field_paths}
+    failed_rules: List[str] = []
+    points: List[Dict[str, Any]] = []
+    uses_identity_gate = str(original_state_key or "").strip().startswith("habits_state:")
+
+    if uses_identity_gate:
+        points.append(
+            _task_c_v2_identity_gate_point(
+                prefix=prefix,
+                state_key=original_state_key,
+            )
+        )
+
+    for idx, source_field_path in enumerate(expected_ids, start=1):
+        points.append(
+            _task_c_v2_user_communication_point(
+                prefix=prefix,
+                idx=idx,
+                source_field_path=source_field_path,
+                reference_value=source_value_by_path.get(source_field_path),
+            )
+        )
+
+    valid, point_failures = validate_scoring_points(points)
+    for failure in point_failures:
+        if failure not in failed_rules:
+            failed_rules.append(failure)
+
+    validation = {
+        "is_valid": (not failed_rules) and valid and bool(points),
+        "service_family": "user_communication",
+        "failed_rules": failed_rules,
+        "rewrite_attempts": 0,
+        "uses_identity_gate": uses_identity_gate,
+        "expected_source_field_paths": expected_ids,
+    }
+    return points, validation
+
+
+def build_task_c_v2_structured_answer_scoring_points(
     *,
     state_key: str,
     state_value: Any,
@@ -1269,6 +1451,7 @@ def build_validated_task_c_v2_answer_scoring_points(
     reference_output: Any,
     prefix: str = "aqp",
 ) -> Tuple[List[Dict[str, Any]], Dict[str, Any]]:
+    del state_key
     source_leaf_paths = _task_c_v2_leaf_paths(state_value)
     failed_rules: List[str] = []
     if not isinstance(output_template, dict) or not isinstance(reference_output, dict):
@@ -1278,32 +1461,20 @@ def build_validated_task_c_v2_answer_scoring_points(
         if output_template != _task_c_v2_fill_template(reference_output):
             failed_rules.append("output_template_mismatch")
         output_leaf_paths = _task_c_v2_leaf_paths(reference_output)
-        if len(output_leaf_paths) != len(source_leaf_paths):
-            failed_rules.append("reference_output_mismatch")
-        elif [value for _, value in output_leaf_paths] != [value for _, value in source_leaf_paths]:
-            failed_rules.append("reference_output_mismatch")
         if reference_output == state_value:
             failed_rules.append("raw_state_mirror")
 
     points: List[Dict[str, Any]] = []
-    for idx, ((source_path, source_value), (output_path, output_value)) in enumerate(
-        zip(source_leaf_paths, output_leaf_paths),
-        start=1,
-    ):
+    for idx, (output_path, output_value) in enumerate(output_leaf_paths, start=1):
         points.append(
-            {
-                "point_id": f"{prefix}_p{idx}",
-                "point_type": POINT_TYPE_FIELD,
-                "polarity": POINT_POLARITY_POSITIVE,
-                "point_text": (
-                    f"The structured service output correctly fills {output_path} "
-                    f"using the value grounded in source field {source_path}."
-                ),
-                "source_field_path": source_path,
-                "output_field_path": output_path,
-                "target_path": output_path,
-                "reference_value": output_value,
-            }
+            _task_c_v2_field_point(
+                prefix=prefix,
+                idx=idx,
+                target_path=output_path,
+                reference_value=output_value,
+                description=f"The structured service output correctly fills {output_path}.",
+                source_field_path=_task_c_v2_match_source_field_path(source_leaf_paths, output_value),
+            )
         )
 
     valid, point_failures = validate_scoring_points(points)
@@ -1316,7 +1487,6 @@ def build_validated_task_c_v2_answer_scoring_points(
         "service_family": str(service_family or ""),
         "failed_rules": failed_rules,
         "rewrite_attempts": 0,
-        "used_safe_fallback": False,
         "expected_source_field_paths": [path for path, _ in source_leaf_paths],
         "expected_output_field_paths": [path for path, _ in output_leaf_paths],
     }

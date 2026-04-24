@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Set, Tuple
 
 from tqdm import tqdm
+from tce_contracts import state_validation_excludes_field_path_v2
 
 from .prompts import (
     build_change_reason_validation_prompt,
@@ -15,7 +16,7 @@ from .prompts import (
 from .questionability import evaluate_state_questionability
 from .task_spec import flatten_snapshot
 
-STATE_VALIDATOR_VERSION = "qv2_l1_l2"
+STATE_VALIDATOR_VERSION = "qv3_l1_l2_preexclude_derived"
 STATE_VALIDATE_PROMPT_VERSION = "state_validate_prompt_v2"
 CHANGE_REASON_VALIDATE_PROMPT_VERSION = "change_reason_validate_prompt_v1"
 
@@ -332,7 +333,7 @@ def _build_l1_state_payload(
     seen_field_paths = set()
     for path in list(qmeta_l1.get("askable_fields") or []) + collect_leaf_paths(state_value):
         spath = str(path).strip().lower()
-        if not spath or spath in seen_field_paths:
+        if not spath or state_validation_excludes_field_path_v2(spath) or spath in seen_field_paths:
             continue
         seen_field_paths.add(spath)
         candidate_field_paths.append(spath)
@@ -471,16 +472,30 @@ def _normalize_saved_questionability_entry(
     qmeta: Dict[str, Any],
 ) -> Dict[str, Any]:
     out = copy.deepcopy(qmeta)
-    askable_fields = [str(path).strip().lower() for path in list(out.get("askable_fields") or []) if str(path).strip()]
+    askable_fields = [
+        str(path).strip().lower()
+        for path in list(out.get("askable_fields") or [])
+        if str(path).strip() and not state_validation_excludes_field_path_v2(path)
+    ]
     if not askable_fields:
-        askable_fields = collect_leaf_paths(state_value)
+        askable_fields = [
+            path for path in collect_leaf_paths(state_value) if not state_validation_excludes_field_path_v2(path)
+        ]
     validated_field_paths = [
-        str(path).strip().lower() for path in list(out.get("validated_field_paths") or []) if str(path).strip()
+        str(path).strip().lower()
+        for path in list(out.get("validated_field_paths") or [])
+        if str(path).strip() and not state_validation_excludes_field_path_v2(path)
     ]
     if not validated_field_paths:
-        validated_field_paths = collect_leaf_paths(out.get("validated_state_value"))
+        validated_field_paths = [
+            path
+            for path in collect_leaf_paths(out.get("validated_state_value"))
+            if not state_validation_excludes_field_path_v2(path)
+        ]
     dropped_field_paths = [
-        str(path).strip().lower() for path in list(out.get("dropped_field_paths") or []) if str(path).strip()
+        str(path).strip().lower()
+        for path in list(out.get("dropped_field_paths") or [])
+        if str(path).strip() and not state_validation_excludes_field_path_v2(path)
     ]
     if not dropped_field_paths:
         dropped_field_paths = [path for path in askable_fields if path not in set(validated_field_paths)]
@@ -488,7 +503,10 @@ def _normalize_saved_questionability_entry(
     out["askable_fields"] = askable_fields
     out["validated_field_paths"] = validated_field_paths
     out["dropped_field_paths"] = dropped_field_paths
-    out["validated_state_value"] = out.get("validated_state_value") or {}
+    normalized_validated_state_value = prune_value_by_paths(state_value, set(validated_field_paths))
+    if normalized_validated_state_value is None:
+        normalized_validated_state_value = {}
+    out["validated_state_value"] = normalized_validated_state_value
     out["reason_codes"] = [str(code).strip() for code in list(out.get("reason_codes") or []) if str(code).strip()]
     out["field_verdicts"] = list(out.get("field_verdicts") or [])
     change_reason = extract_last_change_reason(obs)

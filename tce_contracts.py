@@ -17,6 +17,17 @@ CANONICAL_RESEARCH_DOC_V2 = (
     "analysis_tools/tce_research_questions/001_user_001/new_research_question.md"
 )
 TASK_A_EXCLUDED_VALUE_FIELDS_V2 = frozenset({"priority", "schedule_date", "schedule_dates"})
+STATE_VALIDATION_EXCLUDED_FIELD_TAILS_V2 = frozenset(
+    {
+        "priority",
+        "signal",
+        "signals",
+        "schedule_date",
+        "schedule_dates",
+        "scheduled_date",
+        "scheduled_dates",
+    }
+)
 _TRANSITION_FIELDS = frozenset({"from", "to"})
 
 
@@ -75,6 +86,15 @@ def drop_task_a_excluded_fields_v2(value: Any) -> Any:
     return value
 
 
+def field_path_tail(path: Any) -> str:
+    parts = [part.strip().lower() for part in str(path or "").split(".") if part.strip()]
+    return parts[-1] if parts else ""
+
+
+def state_validation_excludes_field_path_v2(path: Any) -> bool:
+    return field_path_tail(path) in STATE_VALIDATION_EXCLUDED_FIELD_TAILS_V2
+
+
 def normalize_task_a_current_value(
     value: Any,
     *,
@@ -91,25 +111,6 @@ def normalize_task_a_current_value(
         candidate = drop_task_a_excluded_fields_v2(candidate)
         if not has_materialized_value(candidate):
             return None
-    return candidate
-
-
-def normalize_task_c_source_value(
-    state_key: str,
-    value: Any,
-    *,
-    task_contract_version: Any,
-) -> Any:
-    candidate = copy.deepcopy(value)
-    if not task_contract_is_v2(task_contract_version):
-        return candidate
-    prefix = str(state_key or "").split(":", 1)[0].strip().lower()
-    if prefix != "preferences_state":
-        return candidate
-    if isinstance(candidate, dict):
-        statement = candidate.get("statement")
-        if has_materialized_value(statement):
-            return {"statement": statement}
     return candidate
 
 

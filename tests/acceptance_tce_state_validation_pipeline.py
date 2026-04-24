@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 import copy
+import json
 import unittest
 
 import sys
@@ -333,7 +334,7 @@ class TceStateValidationPipelineAcceptance(unittest.TestCase):
             "Leo (15), high school sophomore",
         )
 
-    def test_l1_blocks_sparse_schedule_date_coverage_before_l2(self):
+    def test_stage1_pre_excludes_schedule_dates_before_questionability(self):
         _CountingValidatorClient.calls = 0
         benchmark = {
             "user_id": "001_user_001",
@@ -344,6 +345,7 @@ class TceStateValidationPipelineAcceptance(unittest.TestCase):
                     "expected_snapshot_state": {
                         "habits_state": {
                             "daily_walk": {
+                                "timing": {"start_time": "06:30"},
                                 "schedule": {"frequency_type": "daily"},
                                 "schedule_dates": [
                                     "2025-01-01",
@@ -381,10 +383,147 @@ class TceStateValidationPipelineAcceptance(unittest.TestCase):
         )
 
         qmeta = result["checkpoints"][0]["state_questionability"]["habits_state:daily_walk"]
-        self.assertFalse(qmeta["l1_is_questionable"])
-        self.assertFalse(qmeta["is_questionable"])
-        self.assertIn("schedule_dates_evidence_undercoverage", qmeta["reason_codes"])
-        self.assertEqual(_CountingValidatorClient.calls, 0)
+        self.assertTrue(qmeta["l1_is_questionable"])
+        self.assertTrue(qmeta["is_questionable"])
+        self.assertNotIn("schedule_dates_evidence_undercoverage", qmeta["reason_codes"])
+        self.assertFalse(any("schedule_dates" in path for path in qmeta["askable_fields"]))
+        self.assertFalse(any("schedule_dates" in path for path in qmeta["validated_field_paths"]))
+        self.assertEqual(_CountingValidatorClient.calls, 1)
+        self.assertNotIn(
+            "schedule_dates",
+            json.dumps(result["checkpoints"][0]["validated_snapshot_state"]["habits_state"]["daily_walk"]),
+        )
+
+    def test_stage1_pre_excludes_preference_signals_from_validated_snapshot(self):
+        class _PreferenceValidatorClient:
+            calls = 0
+
+            def ask(self, prompt: str, response_type: str = "json"):
+                del response_type
+                if "Validate whether this state is inferable from evidence" in prompt:
+                    _PreferenceValidatorClient.calls += 1
+                    return {
+                        "is_questionable": True,
+                        "reason_codes": ["mock_pass"],
+                        "field_verdicts": [
+                            {
+                                "field_name": "statement",
+                                "reason_analysis": "mock evidence",
+                                "is_valid": True,
+                            }
+                        ],
+                    }
+                return {}
+
+        benchmark = {
+            "user_id": "001_user_001",
+            "checkpoints": [
+                {
+                    "checkpoint_id": "cp1",
+                    "as_of": {"timestamp": "2025-01-06 08:00:00"},
+                    "expected_snapshot_state": {
+                        "preferences_state": {
+                            "learning_modality": {
+                                "statement": "prefers self-paced webinars",
+                                "signals": ["downloaded a report", "joined a webinar"],
+                            }
+                        }
+                    },
+                    "state_observability": {
+                        "preferences_state": {
+                            "learning_modality": {
+                                "is_valid": True,
+                                "evidence_app_log_ids": ["log_0001"],
+                            }
+                        }
+                    },
+                }
+            ],
+        }
+
+        result = build_state_validation(
+            benchmark=copy.deepcopy(benchmark),
+            validator_client=_PreferenceValidatorClient(),
+            app_logs_by_id={},
+            max_checkpoints=None,
+            l2_evidence_top_k=0,
+        )
+
+        qmeta = result["checkpoints"][0]["state_questionability"]["preferences_state:learning_modality"]
+        self.assertTrue(qmeta["is_questionable"])
+        self.assertEqual(qmeta["askable_fields"], ["statement"])
+        self.assertEqual(qmeta["validated_field_paths"], ["statement"])
+        self.assertEqual(qmeta["validated_state_value"], {"statement": "prefers self-paced webinars"})
+        self.assertEqual(
+            result["checkpoints"][0]["validated_snapshot_state"]["preferences_state"]["learning_modality"],
+            {"statement": "prefers self-paced webinars"},
+        )
+        self.assertEqual(_PreferenceValidatorClient.calls, 1)
+
+    def test_stage1_pre_excludes_priority_from_validated_snapshot(self):
+        class _PriorityValidatorClient:
+            calls = 0
+
+            def ask(self, prompt: str, response_type: str = "json"):
+                del response_type
+                if "Validate whether this state is inferable from evidence" in prompt:
+                    _PriorityValidatorClient.calls += 1
+                    return {
+                        "is_questionable": True,
+                        "reason_codes": ["mock_pass"],
+                        "field_verdicts": [
+                            {
+                                "field_name": "timing.start_time",
+                                "reason_analysis": "mock evidence",
+                                "is_valid": True,
+                            }
+                        ],
+                    }
+                return {}
+
+        benchmark = {
+            "user_id": "001_user_001",
+            "checkpoints": [
+                {
+                    "checkpoint_id": "cp1",
+                    "as_of": {"timestamp": "2025-01-06 08:00:00"},
+                    "expected_snapshot_state": {
+                        "habits_state": {
+                            "daily_walk": {
+                                "timing": {"start_time": "06:30"},
+                                "priority": "high",
+                            }
+                        }
+                    },
+                    "state_observability": {
+                        "habits_state": {
+                            "daily_walk": {
+                                "is_valid": True,
+                                "evidence_app_log_ids": ["log_0001"],
+                            }
+                        }
+                    },
+                }
+            ],
+        }
+
+        result = build_state_validation(
+            benchmark=copy.deepcopy(benchmark),
+            validator_client=_PriorityValidatorClient(),
+            app_logs_by_id={},
+            max_checkpoints=None,
+            l2_evidence_top_k=0,
+        )
+
+        qmeta = result["checkpoints"][0]["state_questionability"]["habits_state:daily_walk"]
+        self.assertTrue(qmeta["is_questionable"])
+        self.assertFalse(any("priority" in path for path in qmeta["askable_fields"]))
+        self.assertFalse(any("priority" in path for path in qmeta["validated_field_paths"]))
+        self.assertEqual(
+            result["checkpoints"][0]["validated_snapshot_state"]["habits_state"]["daily_walk"],
+            {"timing": {"start_time": "06:30"}},
+        )
+        self.assertEqual(_PriorityValidatorClient.calls, 1)
 
     def test_stage1_adds_change_reason_validation_when_last_change_reason_exists(self):
         class _ChangeReasonValidatorClient:
@@ -523,13 +662,13 @@ class TceStateValidationPipelineAcceptance(unittest.TestCase):
                                     "is_valid": True,
                                 }
                             ],
-                            "validator_version": "qv2_l1_l2",
+                            "validator_version": "qv3_l1_l2_preexclude_derived",
                             "validation_source": "computed",
                             "validation_identity": {
                                 "state_key": "habits_state:morning_walk",
                                 "validated_state_value_signature": "\"07:00\"",
                                 "evidence_signature": "[seeded]",
-                                "validator_version": "qv2_l1_l2",
+                                "validator_version": "qv3_l1_l2_preexclude_derived",
                                 "prompt_version": "state_validate_prompt_v2",
                             },
                         }

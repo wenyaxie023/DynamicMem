@@ -48,7 +48,7 @@ class TceStateQuestionabilityAcceptance(unittest.TestCase):
         self.assertTrue(out["is_questionable"])
         self.assertNotIn("value_too_large", out["reason_codes"])
 
-    def test_filters_sparse_schedule_date_evidence_for_habit(self):
+    def test_ignores_schedule_dates_as_prevalidation_excluded_derived_field(self):
         out = evaluate_state_questionability(
             state_key="habits_state:daily_walk",
             state_value={
@@ -68,32 +68,22 @@ class TceStateQuestionabilityAcceptance(unittest.TestCase):
                 "log_2": {"timestamp": "2025-01-04 08:00:00"},
             },
         )
-        self.assertFalse(out["is_questionable"])
-        self.assertIn("schedule_dates_evidence_undercoverage", out["reason_codes"])
+        self.assertTrue(out["is_questionable"])
+        self.assertEqual(out["askable_fields"], ["schedule.frequency_type"])
+        self.assertNotIn("schedule_dates_evidence_undercoverage", out["reason_codes"])
+        self.assertFalse(any("schedule_dates" in path for path in out["askable_fields"]))
 
-    def test_accepts_sufficient_schedule_date_evidence_for_habit(self):
+    def test_filters_preference_signals_from_askable_fields(self):
         out = evaluate_state_questionability(
-            state_key="habits_state:daily_walk",
+            state_key="preferences_state:learning_modality",
             state_value={
-                "schedule": {"frequency_type": "daily"},
-                "schedule_dates": [
-                    "2025-01-01",
-                    "2025-01-02",
-                    "2025-01-03",
-                    "2025-01-04",
-                    "2025-01-05",
-                ],
-            },
-            state_observability={"evidence_app_log_ids": ["log_1", "log_2", "log_3", "log_4", "log_5"]},
-            app_logs_by_id={
-                "log_1": {"timestamp": "2025-01-01 08:00:00"},
-                "log_2": {"timestamp": "2025-01-02 08:00:00"},
-                "log_3": {"timestamp": "2025-01-03 08:00:00"},
-                "log_4": {"timestamp": "2025-01-04 08:00:00"},
-                "log_5": {"timestamp": "2025-01-05 08:00:00"},
+                "statement": "prefers self-paced webinars",
+                "signals": ["downloaded a report", "joined a webinar"],
             },
         )
         self.assertTrue(out["is_questionable"])
+        self.assertEqual(out["askable_fields"], ["statement"])
+        self.assertNotIn("signals", out["askable_fields"])
 
 
 if __name__ == "__main__":
