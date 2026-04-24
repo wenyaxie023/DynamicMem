@@ -39,6 +39,8 @@ from .prompts_tce import (
 
 load_dotenv()
 
+POINT_ROLE_IDENTITY_GATE = "identity_gate"
+
 
 def _validate_llm_judge_env(provider: str) -> None:
     p = str(provider or "").strip().lower()
@@ -236,6 +238,28 @@ def _slot_score(judgments: List[Dict[str, Any]]) -> float:
     return sum(1.0 if item.get("correct") else 0.0 for item in judgments) / len(judgments)
 
 
+def _apply_item_score(
+    slots: Sequence[Dict[str, Any]],
+    judgments: Sequence[Dict[str, Any]],
+) -> Tuple[float, bool, Optional[bool], List[str], int]:
+    identity_gate_judgments: List[Dict[str, Any]] = []
+    regular_judgments: List[Dict[str, Any]] = []
+    identity_gate_point_ids: List[str] = []
+    for slot, judgment in zip(slots, judgments):
+        if str((slot or {}).get("point_role") or "").strip().lower() == POINT_ROLE_IDENTITY_GATE:
+            identity_gate_judgments.append(judgment)
+            identity_gate_point_ids.append(str((slot or {}).get("point_id") or ""))
+        else:
+            regular_judgments.append(judgment)
+    if identity_gate_judgments:
+        gate_pass = all(bool(item.get("correct")) for item in identity_gate_judgments)
+        if not gate_pass:
+            return 0.0, True, False, identity_gate_point_ids, len(regular_judgments)
+        score = _slot_score(regular_judgments) if regular_judgments else 1.0
+        return score, True, True, identity_gate_point_ids, len(regular_judgments)
+    return _slot_score(list(judgments)), False, None, [], len(judgments)
+
+
 _SNAPSHOT_RESUME_FIELDS = (
     "snapshot_slot_eval_by_key",
     "snapshot_slot_judge_reason",
@@ -265,6 +289,21 @@ def _judgment_count(payload: Any) -> int:
     return len(judgments)
 
 
+def _judgments_resume_usable(payload: Any) -> bool:
+    if not isinstance(payload, dict):
+        return False
+    judgments = payload.get("judgments")
+    if not isinstance(judgments, list):
+        return False
+    for judgment in judgments:
+        if not isinstance(judgment, dict):
+            return False
+        analysis = str(judgment.get("analysis") or "").strip().lower()
+        if analysis.startswith("judge_error:"):
+            return False
+    return True
+
+
 def _snapshot_eval_matches(slots: Sequence[Dict[str, Any]], payload: Any) -> bool:
     if not isinstance(payload, dict):
         return False
@@ -272,6 +311,7 @@ def _snapshot_eval_matches(slots: Sequence[Dict[str, Any]], payload: Any) -> boo
     return (
         int(payload.get("slot_count") or 0) == slot_count
         and _judgment_count(payload) == slot_count
+        and _judgments_resume_usable(payload)
     )
 
 
@@ -299,6 +339,8 @@ def _change_eval_matches(groups: Dict[str, List[Dict[str, Any]]], payload: Any) 
         if int(group_payload.get("slot_count") or 0) != len(slots):
             return False
         if _judgment_count(group_payload) != len(slots):
+            return False
+        if not _judgments_resume_usable(group_payload):
             return False
     return has_any
 
@@ -510,11 +552,18 @@ def _apply_eval_record(
     judgments_by_point_id: Dict[str, Dict[str, Any]],
 ) -> Dict[str, Any]:
     judgments = _ordered_judgments(slots, judgments_by_point_id)
+    score_0_1, identity_gate_present, identity_gate_pass, identity_gate_point_ids, scored_slot_count = (
+        _apply_item_score(slots, judgments)
+    )
     return {
         "state_key": str(item.get("state_key") or ""),
         "qa_id": str(item.get("qa_id") or ""),
-        "score_0_1": _slot_score(judgments),
+        "score_0_1": score_0_1,
         "slot_count": len(slots),
+        "scored_slot_count": int(scored_slot_count),
+        "identity_gate_present": identity_gate_present,
+        "identity_gate_pass": identity_gate_pass,
+        "identity_gate_point_ids": identity_gate_point_ids,
         "slot_context": list(slots),
         "judgments": judgments,
     }
@@ -1107,7 +1156,10 @@ def main() -> None:
     parser.add_argument(
         "--resume",
         action="store_true",
-        help="Resume from an existing partial eval JSON at --output by skipping completed slot-judge units.",
+        help=(
+            "Resume from an existing partial eval JSON at --output by skipping completed "
+            "slot-judge units and retrying cached units that only contain judge_error placeholders."
+        ),
     )
     parser.add_argument(
         "--llm-judge-input-output",

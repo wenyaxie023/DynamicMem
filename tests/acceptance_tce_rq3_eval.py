@@ -8,12 +8,102 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from eval.eval_tce import evaluate
+from eval.eval_tce import _apply_eval_record, evaluate
 from bench_core.tce_evaluator import evaluate_tce_rows
 from tce_contracts import CURRENT_TASK_CONTRACT_VERSION, RESEARCH_FRAME_VERSION_V2
 
 
 class TceRq3EvalAcceptance(unittest.TestCase):
+    def test_rq3_identity_gate_failure_zeroes_item_score(self):
+        record = _apply_eval_record(
+            {
+                "state_key": "habits_state:morning_walk",
+                "qa_id": "q1",
+            },
+            [
+                {
+                    "point_id": "aqp_q1_identity",
+                    "point_type": "micro",
+                    "point_role": "identity_gate",
+                    "point_text": "The message is clearly about the morning walk routine itself, not a different routine or unrelated task.",
+                    "predicted_value": "Your budget review starts at 06:30.",
+                },
+                {
+                    "point_id": "aqp_q1_p1",
+                    "point_type": "micro",
+                    "point_text": "The message mentions that the walk starts at 06:30.",
+                    "predicted_value": "Your budget review starts at 06:30.",
+                },
+            ],
+            {
+                "aqp_q1_identity": {
+                    "analysis": "The message is about budget review, not the morning walk routine.",
+                    "correct": False,
+                },
+                "aqp_q1_p1": {
+                    "analysis": "The message does mention 06:30.",
+                    "correct": True,
+                },
+            },
+        )
+
+        self.assertEqual(record["score_0_1"], 0.0)
+        self.assertTrue(record["identity_gate_present"])
+        self.assertFalse(record["identity_gate_pass"])
+        self.assertEqual(record["identity_gate_point_ids"], ["aqp_q1_identity"])
+        self.assertEqual(record["slot_count"], 2)
+        self.assertEqual(record["scored_slot_count"], 1)
+
+    def test_rq3_identity_gate_pass_scores_regular_points_only(self):
+        record = _apply_eval_record(
+            {
+                "state_key": "habits_state:morning_walk",
+                "qa_id": "q1",
+            },
+            [
+                {
+                    "point_id": "aqp_q1_identity",
+                    "point_type": "micro",
+                    "point_role": "identity_gate",
+                    "point_text": "The message is clearly about the morning walk routine itself, not a different routine or unrelated task.",
+                    "predicted_value": "Your morning walk starts at 06:30, and it's almost time to head to the lakefront trail.",
+                },
+                {
+                    "point_id": "aqp_q1_p1",
+                    "point_type": "micro",
+                    "point_text": "The message mentions that the walk starts at 06:30.",
+                    "predicted_value": "Your morning walk starts at 06:30, and it's almost time to head to the lakefront trail.",
+                },
+                {
+                    "point_id": "aqp_q1_p2",
+                    "point_type": "micro",
+                    "point_text": "The message mentions the lakefront trail location.",
+                    "predicted_value": "Your morning walk starts at 06:30, and it's almost time to head to the lakefront trail.",
+                },
+            ],
+            {
+                "aqp_q1_identity": {
+                    "analysis": "The message is clearly about the morning walk routine.",
+                    "correct": True,
+                },
+                "aqp_q1_p1": {
+                    "analysis": "The message explicitly mentions 06:30.",
+                    "correct": True,
+                },
+                "aqp_q1_p2": {
+                    "analysis": "The message misses the location.",
+                    "correct": False,
+                },
+            },
+        )
+
+        self.assertEqual(record["score_0_1"], 0.5)
+        self.assertTrue(record["identity_gate_present"])
+        self.assertTrue(record["identity_gate_pass"])
+        self.assertEqual(record["identity_gate_point_ids"], ["aqp_q1_identity"])
+        self.assertEqual(record["slot_count"], 3)
+        self.assertEqual(record["scored_slot_count"], 2)
+
     def test_rq3_structured_fields_present(self):
         benchmark = {
             "user_id": "001_user_001",
@@ -248,7 +338,6 @@ class TceRq3EvalAcceptance(unittest.TestCase):
                                             {
                                                 "point_id": "aqp_q1_p1",
                                                 "point_type": "field",
-                                                "polarity": "positive",
                                                 "source_field_path": "statement",
                                                 "output_field_path": "request_profile.preferred_profile",
                                                 "target_path": "request_profile.preferred_profile",
@@ -312,7 +401,7 @@ class TceRq3EvalAcceptance(unittest.TestCase):
         slot = item["slots"][0]
         self.assertEqual(slot["point_id"], "aqp_q1_p1")
         self.assertEqual(slot["point_type"], "field")
-        self.assertEqual(slot["polarity"], "positive")
+        self.assertNotIn("polarity", slot)
         self.assertEqual(slot["target_path"], "request_profile.preferred_profile")
         self.assertEqual(slot["reference_value"], "prefers self-paced webinars")
         self.assertEqual(slot["predicted_value"], "prefers self-paced webinars")
@@ -361,7 +450,6 @@ class TceRq3EvalAcceptance(unittest.TestCase):
                                             {
                                                 "point_id": "aqp_q1_p1",
                                                 "point_type": "micro",
-                                                "polarity": "positive",
                                                 "point_text": "The answer mentions that the reminder is for the walk.",
                                                 "reference_value": "Send a reminder that the walk starts at 06:30.",
                                             }
@@ -424,7 +512,7 @@ class TceRq3EvalAcceptance(unittest.TestCase):
         slot = item["slots"][0]
         self.assertEqual(slot["point_id"], "aqp_q1_p1")
         self.assertEqual(slot["point_type"], "micro")
-        self.assertEqual(slot["polarity"], "positive")
+        self.assertNotIn("polarity", slot)
         self.assertEqual(slot["predicted_value"], "Send a reminder that the walk starts at 06:30.")
 
     def test_eval_prefers_prebuilt_task_pack_scope(self):

@@ -312,46 +312,61 @@ def _extract_rq3_pack_by_key(
         items = item.get("items")
         if not isinstance(items, list):
             continue
-        normalized: List[Dict[str, Any]] = []
-        for qa_item in items:
-            if not isinstance(qa_item, dict):
-                continue
-            if task_contract_is_v2(task_contract_version):
-                normalized.append(
-                    {
-                        "qa_id": str(qa_item.get("qa_id") or ""),
-                        "service_family": str(qa_item.get("service_family") or ""),
-                        "scenario": str(qa_item.get("scenario") or ""),
-                        "task_instruction": str(qa_item.get("task_instruction") or ""),
-                        "reference_answer": str(qa_item.get("reference_answer") or ""),
-                        "output_template": qa_item.get("output_template"),
-                        "reference_output": qa_item.get("reference_output"),
-                        "answer_scoring_points": list(qa_item.get("answer_scoring_points") or []),
-                        "gold_memory_evidence_app_log_ids": _extract_evidence_ids(
-                            qa_item.get("gold_memory_evidence_app_log_ids")
-                        ),
-                    }
-                )
-            else:
-                normalized.append(
-                    {
-                        "qa_id": str(qa_item.get("qa_id") or ""),
-                        "service_category": str(qa_item.get("service_category") or ""),
-                        "question": str(qa_item.get("question") or qa_item.get("apply_question") or ""),
-                        "reference_answer": str(qa_item.get("reference_answer") or qa_item.get("apply_reference_answer") or ""),
-                        "rubric": list(qa_item.get("rubric") or []),
-                        "apply_scenario": str(qa_item.get("apply_scenario") or ""),
-                        "apply_question": str(qa_item.get("question") or qa_item.get("apply_question") or ""),
-                        "apply_reference_answer": str(qa_item.get("reference_answer") or qa_item.get("apply_reference_answer") or ""),
-                        "answer_scoring_points": list(qa_item.get("answer_scoring_points") or []),
-                        "gold_memory_evidence_app_log_ids": _extract_evidence_ids(
-                            qa_item.get("gold_memory_evidence_app_log_ids")
-                        ),
-                    }
-                )
+        normalized = (
+            _extract_active_rq3_pack_items(items)
+            if task_contract_is_v2(task_contract_version)
+            else _extract_legacy_rq3_pack_items(items)
+        )
         if normalized:
             out[str(key)] = normalized
     return out
+
+
+def _extract_active_rq3_pack_items(items: Sequence[Any]) -> List[Dict[str, Any]]:
+    normalized: List[Dict[str, Any]] = []
+    for qa_item in items:
+        if not isinstance(qa_item, dict):
+            continue
+        normalized.append(
+            {
+                "qa_id": str(qa_item.get("qa_id") or ""),
+                "service_family": str(qa_item.get("service_family") or ""),
+                "scenario": str(qa_item.get("scenario") or ""),
+                "task_instruction": str(qa_item.get("task_instruction") or ""),
+                "reference_answer": str(qa_item.get("reference_answer") or ""),
+                "output_template": qa_item.get("output_template"),
+                "reference_output": qa_item.get("reference_output"),
+                "answer_scoring_points": list(qa_item.get("answer_scoring_points") or []),
+                "gold_memory_evidence_app_log_ids": _extract_evidence_ids(
+                    qa_item.get("gold_memory_evidence_app_log_ids")
+                ),
+            }
+        )
+    return normalized
+
+
+def _extract_legacy_rq3_pack_items(items: Sequence[Any]) -> List[Dict[str, Any]]:
+    normalized: List[Dict[str, Any]] = []
+    for qa_item in items:
+        if not isinstance(qa_item, dict):
+            continue
+        normalized.append(
+            {
+                "qa_id": str(qa_item.get("qa_id") or ""),
+                "service_category": str(qa_item.get("service_category") or ""),
+                "question": str(qa_item.get("question") or qa_item.get("apply_question") or ""),
+                "reference_answer": str(qa_item.get("reference_answer") or qa_item.get("apply_reference_answer") or ""),
+                "rubric": list(qa_item.get("rubric") or []),
+                "apply_scenario": str(qa_item.get("apply_scenario") or ""),
+                "apply_question": str(qa_item.get("question") or qa_item.get("apply_question") or ""),
+                "apply_reference_answer": str(qa_item.get("reference_answer") or qa_item.get("apply_reference_answer") or ""),
+                "answer_scoring_points": list(qa_item.get("answer_scoring_points") or []),
+                "gold_memory_evidence_app_log_ids": _extract_evidence_ids(
+                    qa_item.get("gold_memory_evidence_app_log_ids")
+                ),
+            }
+        )
+    return normalized
 
 
 def _extract_rq3_apply_answers_by_key(prediction: Dict[str, Any]) -> Dict[str, List[Dict[str, Any]]]:
@@ -431,6 +446,10 @@ def _materialize_slots(
             slot["reference_value"] = point.get("reference_value", point.get("point_text"))
         elif point_type == POINT_TYPE_MICRO:
             slot["point_text"] = str(point.get("point_text") or "")
+            if point.get("source_field_path"):
+                slot["source_field_path"] = str(point.get("source_field_path") or "")
+            if "reference_value" in point:
+                slot["reference_value"] = point.get("reference_value")
         else:
             if point.get("reference_value") is not None:
                 slot["reference_value"] = point.get("reference_value")
@@ -438,12 +457,92 @@ def _materialize_slots(
                 slot["point_text"] = str(point.get("point_text") or "")
         if target_path:
             slot["target_path"] = target_path
+        point_role = str(point.get("point_role") or "").strip()
+        if point_role:
+            slot["point_role"] = point_role
         if list_index is not None:
             slot["list_index"] = int(list_index)
         if slot_group:
             slot["slot_group"] = slot_group
         slots.append(slot)
     return slots
+
+
+def _strip_slot_polarity(slots: Sequence[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    stripped: List[Dict[str, Any]] = []
+    for slot in slots:
+        if not isinstance(slot, dict):
+            continue
+        copied = dict(slot)
+        copied.pop("polarity", None)
+        stripped.append(copied)
+    return stripped
+
+
+def _materialize_active_rq3_slots(
+    *,
+    checkpoint_id: str,
+    state_key: str,
+    exp_item: Dict[str, Any],
+    pred_item: Dict[str, Any],
+    qa_id: str,
+) -> Dict[str, Any]:
+    answer_scoring_points = exp_item.get("answer_scoring_points")
+    if not isinstance(answer_scoring_points, list) or not answer_scoring_points:
+        raise ValueError(
+            "Task C pack item is missing non-empty answer_scoring_points[]. "
+            "Current protocol does not allow option-style fallback during evaluation "
+            f"(checkpoint_id={checkpoint_id}, state_key={state_key}, qa_id={qa_id})."
+        )
+    service_family = str(exp_item.get("service_family") or "")
+    predicted_blob = (
+        str((pred_item or {}).get("answer") or "")
+        if service_family == "user_communication"
+        else (pred_item or {}).get("output")
+    )
+    slots = _strip_slot_polarity(_materialize_slots(answer_scoring_points, predicted_blob))
+    return {
+        "state_key": state_key,
+        "qa_id": qa_id,
+        "service_family": service_family,
+        "scenario": str(exp_item.get("scenario") or ""),
+        "task_instruction": str(exp_item.get("task_instruction") or ""),
+        "reference_answer": str(exp_item.get("reference_answer") or ""),
+        "reference_output": exp_item.get("reference_output"),
+        "predicted_answer": str((pred_item or {}).get("answer") or ""),
+        "predicted_output": (pred_item or {}).get("output"),
+        "slots": slots,
+    }
+
+
+def _materialize_legacy_rq3_slots(
+    *,
+    checkpoint_id: str,
+    state_key: str,
+    exp_item: Dict[str, Any],
+    pred_item: Dict[str, Any],
+    qa_id: str,
+) -> Dict[str, Any]:
+    answer_scoring_points = exp_item.get("answer_scoring_points")
+    if not isinstance(answer_scoring_points, list) or not answer_scoring_points:
+        raise ValueError(
+            "Task C pack item is missing non-empty answer_scoring_points[]. "
+            "Current protocol does not allow option-style fallback during evaluation "
+            f"(checkpoint_id={checkpoint_id}, state_key={state_key}, qa_id={qa_id})."
+        )
+    slots = _materialize_slots(answer_scoring_points, str((pred_item or {}).get("answer") or ""))
+    return {
+        "state_key": state_key,
+        "qa_id": qa_id,
+        "service_family": "",
+        "scenario": str(exp_item.get("apply_scenario") or ""),
+        "task_instruction": str(exp_item.get("question") or exp_item.get("apply_question") or ""),
+        "reference_answer": str(exp_item.get("reference_answer") or exp_item.get("apply_reference_answer") or ""),
+        "reference_output": None,
+        "predicted_answer": str((pred_item or {}).get("answer") or ""),
+        "predicted_output": None,
+        "slots": slots,
+    }
 
 
 def _score_id_metrics(
@@ -755,6 +854,7 @@ def evaluate_checkpoints(
             if not points:
                 continue
             slots = _materialize_slots(points, pred_snapshot.get(key))
+            slots = _strip_slot_polarity(slots)
             if slots:
                 snapshot_slots_by_key[key] = slots
 
@@ -878,6 +978,7 @@ def evaluate_checkpoints(
         change_evidence_content_scores = score_change_evidence_content(pred_change_evidence_records)
         snapshot_evidence_content_scores = score_evidence_content(pred_evidence_records)
 
+        active_task_contract = task_contract_is_v2(benchmark_contract_version)
         expected_rq3 = _extract_rq3_pack_by_key(
             checkpoint,
             task_contract_version=benchmark_contract_version,
@@ -912,42 +1013,23 @@ def evaluate_checkpoints(
                 rq3_predicted_evidence_by_item[item_id] = _extract_evidence_ids(predicted_evidence_records)
                 rq3_evidence_records_by_item[item_id] = predicted_evidence_records
 
-                answer_scoring_points = exp_item.get("answer_scoring_points")
-                if not isinstance(answer_scoring_points, list) or not answer_scoring_points:
-                    raise ValueError(
-                        "Task C pack item is missing non-empty answer_scoring_points[]. "
-                        "Current protocol does not allow option-style fallback during evaluation "
-                        f"(checkpoint_id={checkpoint_id}, state_key={key}, qa_id={qa_id})."
+                rq3_slots_by_item[item_id] = (
+                    _materialize_active_rq3_slots(
+                        checkpoint_id=checkpoint_id,
+                        state_key=key,
+                        exp_item=exp_item,
+                        pred_item=pred_item,
+                        qa_id=qa_id,
                     )
-                predicted_blob = (
-                    str((pred_item or {}).get("answer") or "")
-                    if (
-                        task_contract_is_v2(benchmark_contract_version)
-                        and str(exp_item.get("service_family") or "") == "user_communication"
-                    )
-                    else (
-                        (pred_item or {}).get("output")
-                        if task_contract_is_v2(benchmark_contract_version)
-                        else str((pred_item or {}).get("answer") or "")
+                    if active_task_contract
+                    else _materialize_legacy_rq3_slots(
+                        checkpoint_id=checkpoint_id,
+                        state_key=key,
+                        exp_item=exp_item,
+                        pred_item=pred_item,
+                        qa_id=qa_id,
                     )
                 )
-                rq3_slots_by_item[item_id] = {
-                    "state_key": key,
-                    "qa_id": qa_id,
-                    "service_family": str(exp_item.get("service_family") or ""),
-                    "scenario": str(exp_item.get("scenario") or exp_item.get("apply_scenario") or ""),
-                    "task_instruction": str(exp_item.get("task_instruction") or exp_item.get("question") or exp_item.get("apply_question") or ""),
-                    "reference_answer": str(
-                        exp_item.get("reference_answer") or exp_item.get("apply_reference_answer") or ""
-                    ),
-                    "reference_output": exp_item.get("reference_output"),
-                    "predicted_answer": str((pred_item or {}).get("answer") or ""),
-                    "predicted_output": (pred_item or {}).get("output"),
-                    "slots": _materialize_slots(
-                        answer_scoring_points,
-                        predicted_blob,
-                    ),
-                }
 
         rq3_content_scores = _score_evidence_content_structural(rq3_evidence_records_by_item)
         rq3_apply_evidence_scores = _score_id_metrics(

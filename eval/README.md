@@ -88,6 +88,7 @@ Evaluation focus for this task:
 TCE eval implementation details:
 - prediction-to-benchmark alignment is done by `metadata.checkpoint_timestamp` first; unmatched timestamps are excluded to avoid silent checkpoint-id drift.
 - when `--enable-llm-judge` is enabled, results are written incrementally (checkpoint-by-checkpoint) to the output json.
+- `--resume` reuses cached slot-judge units only when their stored payload is complete and does not contain evaluator-generated `judge_error:` judgments; failed judge units are retried automatically.
 - openai/azure judge calls use structured response with dynamic pydantic schemas; other providers fall back to JSON parsing.
 - TCE semantic scoring now uses slot-level LLM judge only.
 - legacy whole-state / whole-change `1-5` rubric judge is removed from the active protocol.
@@ -96,11 +97,12 @@ TCE eval implementation details:
 - Task C currently uses slot-level LLM judge over per-item `answer_scoring_points[]`.
 - if a current Task C pack item is missing `answer_scoring_points[]`, evaluator treats it as invalid protocol input and fails instead of falling back to option-style scoring.
 - legacy option metrics may appear only when inspecting historical artifacts; they are not part of the current write/eval contract.
+- active terminology is point-specific evaluation: `field`, `list_item`, and `micro` are all scoring-point types; `atomic fact` is only legacy shorthand for a `micro` point.
 - Slot-level LLM judge request granularity:
   - Task A: one request per `state_key`, containing all slots for that key
   - Task B: one request per changed `state_key`, containing all `before/after/change_reason` slots for that key
     - legacy/v1 only; active `taskabc_v2` no longer requires standalone Task B
-  - Task C: one request per `(state_key, qa_id)` item, containing all answer atomic-fact slots for that item
+  - Task C: one request per `(state_key, qa_id)` item, containing all answer scoring-point slots for that item
 - `--save-eyeball` stores `groundtruth_snapshot`, `prediction_snapshot`, `groundtruth_evidence`, and `prediction_evidence` for manual inspection.
 
 ### TCE Slot-Level LLM Judge I/O Schema
