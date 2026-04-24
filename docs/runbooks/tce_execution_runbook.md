@@ -14,7 +14,9 @@ Contributor-facing generation and adapter obligations are maintained in:
 
 Current execution note:
 - This runbook is the broad execution reference for TCE.
+- For a single place to copy generation / eval / viewer commands, use `docs/runbooks/tce_v2_command_index.md`.
 - For the current TCE v2 pre-batch build validation pass across baselines, use `docs/plans/tce_v2_build_progress_master_sheet.md` as the active command sheet and status tracker.
+- Current workflow policy: `final_qa` is disabled unless explicitly re-enabled for a specific purpose.
 
 ## 0. Execution Prerequisites
 
@@ -353,6 +355,7 @@ python3 -m eval.eval_tce \
 - Check `summary` + `checkpoints` + `prediction_alignment` exist.
 - Check snapshot/change/apply/gap metrics exist.
 - Check evidence metrics are id-matching based.
+- If resuming eval with `--resume`, confirm any prior slot-judge units that contain evaluator-generated `judge_error:` judgments are retried rather than skipped.
 - Check LLM judge request granularity:
   - snapshot judge should issue one request per `state_key`
   - change judge should issue one request per changed `state_key`

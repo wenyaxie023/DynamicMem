@@ -39,7 +39,13 @@ Task C personalized-service contract:
 - checkpoint may include `state_questionability` and `rq3_apply_service_qa` with per-key apply QA items
 - prediction may include `rq3_apply_answers` with per-item answer/evidence
 - full protocol supplement: `docs/protocols/tce_rq3_know_apply_contract.md`
-- current Task C write path first generates `service_category`, `question`, and `reference_answer`, then generates `answer_scoring_points[]` only after QA validation passes
+- under active `taskabc_v2`, Task C no longer uses the legacy apply-QA-style `{service_category, question, reference_answer}` write path
+- current `taskabc_v2` Task C write path generates one family-specific item per key:
+  - `user_communication`: `scenario`, `task_instruction`, `reference_answer`
+  - structured families: `scenario`, `task_instruction`, `output_template`, `reference_output`
+- active scoring terminology is point-specific evaluation: `micro` and `field` are point types; `atomic fact` is only legacy shorthand for a `micro` point
+- `user_communication` materializes deterministic micro `answer_scoring_points[]` from the validated state after item validation passes
+- structured families materialize deterministic field-based `answer_scoring_points[]` from `reference_output` after item validation passes
 
 RQ3 apply prediction snippet:
 ```json

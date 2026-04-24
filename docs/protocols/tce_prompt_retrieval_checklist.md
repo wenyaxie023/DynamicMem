@@ -15,11 +15,11 @@ This checklist tracks where TCE (especially RAG baseline) builds retrieval query
 Pack-first runtime contract:
 - `retrieval_query_text` comes from task-pack `retrieval_query`
 - `answer_query_text` comes from task-pack `question_text` / `question`
-- Task C v2 uses distinct retrieval vs answer inputs:
+- Task C v2 does not use a separate question-only answer surface:
   - retrieval uses pack-authored `retrieval_query`
-  - answering uses pack-authored `scenario + task_instruction` for `user_communication`
-  - answering uses pack-authored `scenario + task_instruction + output_template` for structured families
-- `checkpoint_timestamp` is still injected by shared `tce_core` into `QuerySpec`, not by baseline-local wrappers
+  - answering reuses that same `retrieval_query` as the canonical visible task body
+  - for structured families, `retrieval_query` must already include `output_template`
+- `checkpoint_timestamp` may still be carried in shared runtime metadata such as `QuerySpec`, but active Task C v2 pack-authoring prompts do not expose it as a prompt input field
 - shared Task A / B / C answer prompts now use the pack-authored direct question text without baseline-local checkpoint wrappers
 - explicit-retrieval baselines must consume `QuerySpec.retrieval_query_text` directly; they must not regenerate or fallback to baseline-local retrieval query text
 
@@ -47,15 +47,6 @@ Change reasoning prompt template:
 - Same direct-question + memory/output/rules structure as Task A
 - Output schema key:
   - `change_analysis[key] = {before, after, change_reason, evidence}`
-
-Service application answer prompt template:
-- Functions:
-  - `build_service_application_prompt_with_inline_memory(...)`
-  - `build_service_application_prompt_with_agent_memory(...)`
-- File: `tce_core/prompts.py`
-- Same direct-question + memory/output/rules structure as Task A/B
-- Output schema key:
-  - `{answer, evidence}`
 
 State questionability (L2 validate) prompt template:
 - Function: `build_state_questionability_validation_prompt(...)`
@@ -110,6 +101,8 @@ Apply atomic-fact generation / validation prompt templates:
     - `question`
     - `reference_answer`
     - not question-only surface wording
+  - active `taskabc_v2` `user_communication` should materialize deterministic micro points from validated state fields after semantic acceptance
+  - active `taskabc_v2` `user_communication` main-path materialization should preserve state-field coverage directly; prompt-generated atomic facts are legacy / fallback behavior only
   - atomic facts should prefer stable semantic requirements over brittle exact surface forms
   - repeated slots that all hinge on the same narrow identifier / model / spec should be rejected
   - atomic-fact rewrite is atomic-fact-only; it must not rewrite QA
@@ -117,24 +110,33 @@ Apply atomic-fact generation / validation prompt templates:
 
 Apply validation / rewrite prompt templates:
 - Functions:
-  - `build_rq3_apply_validation_prompt(...)`
-  - `build_rq3_apply_rewrite_prompt(...)`
+  - `build_task_c_v2_validation_prompt(...)`
+  - `build_task_c_v2_rewrite_prompt(...)`
 - File: `tce_core/prompts.py`
 - Validation prompt contract:
   - LLM returns only `criteria[*] = {criterion, pass, analysis}`
-  - required criteria:
-    - `personalization_necessity`
-    - `service_decision_quality`
-    - `answer_groundedness`
-  - `service_decision_quality` should judge whether the item is a real state-dependent assistant action; for `habit` states, schedule-grounded service execution / conflict-handling items can still pass
-  - `answer_groundedness` should judge whether the reference answer stays within information explicit in `state_value` or the question
-  - final artifact field `qa_validation.is_valid` is computed programmatically in `tce_core/task_packs.py`, not delegated to the LLM
+  - this is item-semantic validation, not scoring-contract validation
+  - active `taskabc_v2` uses one shared five-criterion schema across families:
+    - `answerability`
+    - `service_completion_quality`
+    - `full_field_dependency`
+    - `low_leakage`
+    - `output_groundedness`
+  - criterion definitions should point the validator to the relevant fields or payload regions to inspect, rather than relying on vague free-form analysis
+  - semantic validation must not use rubric pairability or scoring-point coverage as semantic pass/fail criteria
+  - semantic validation prompt inputs must not include `answer_scoring_points`, `scoring_rubric`, scoring criteria, or scoring-point coverage hints
+  - final artifact field `item_validation.is_valid` is computed programmatically in `tce_core/task_packs.py`, not delegated to the LLM
+  - answer scoring points are materialized later by deterministic code in `tce_core/scoring_points.py`
 - Rewrite prompt contract:
-  - rewrite prompt must include the failed QA item itself
-  - rewrite prompt must include validator feedback:
-    - `failed_rules`
-    - `criteria`
-  - rewrite prompt rewrites QA only; it must not accept or emit `rubric`
+  - rewrite prompt must include the failed item itself
+- rewrite prompt must include validator feedback:
+  - `failed_rules`
+  - `criteria`
+- `user_communication` rewrite may update `reference_answer`
+- rewrite prompts must not include, generate, or rewrite `answer_scoring_points`, `scoring_rubric`, scoring criteria, scoring descriptions, or scoring-point coverage hints
+- structured-family scoring points are materialized programmatically from the accepted `reference_output`
+- Task C v2 rewrite output should be a delta patch over mutable fields only; unchanged fields may be omitted
+- builder-side rewrite application should merge that delta onto the invalid item
 
 ## 3) Prompt Assembly + LLM Call: where happens
 
@@ -210,16 +212,19 @@ Pack-first generation path:
   - requires pack-authored `rq3_apply_service_qa.keys[*].items[*].retrieval_query`
   - Task C v2 synthesis prompt should be selected by `service_family`, with family-specific example wording
   - Task C v2 `user_communication` synthesis prompt should implement `Habit-Conditioned User Communication` in natural-language assistant-response form with a `reference_answer`
-  - Task C v2 preference-family prompt should implement `Preference-Conditioned Filtering Parameter Completion`
-  - Task C v2 internal family id `information_request_construction` should contract preference inputs to statement-only when the raw preference state also includes auxiliary `signals`
-  - Task C v2 `action_configuration` synthesis prompt should implement `Attribute-Conditioned Action Configuration`
-  - Task C v2 structured-family synthesis prompts should ask for a family-appropriate service object, not a raw copy of the source state
-  - Task C v2 structured-family `output_template/reference_output` should preserve one required output leaf per source leaf, in source-leaf order, so paired slot scoring stays deterministic
-  - `taskabc_v1` final answer prompt must include the item `question`
-  - `taskabc_v2` `user_communication` final answer prompt must include `scenario + task_instruction`
-  - `taskabc_v2` structured-family final answer prompt must include `scenario + task_instruction + output_template`
-  - `service_family` may be included as lightweight context
-  - no fallback to generated service-application retrieval query or baseline-local retrieval-query regeneration when item `retrieval_query` is blank
+  - Task C v2 `user_communication` synthesis prompt should align few-shot state schema with the real nested `schedule.* / timing.* / location` input shape used by Stage 2
+- Task C v2 preference-family prompt should implement `Preference-Conditioned Filtering Parameter Completion`
+- Task C v2 internal family id `information_request_construction` should contract preference inputs to statement-only when the raw preference state also includes auxiliary `signals`
+- Task C v2 `action_configuration` synthesis prompt should implement `Attribute-Conditioned Action Configuration`
+- Task C v2 structured-family synthesis prompts should ask for a family-appropriate service object, not a raw copy of the source state
+- Task C v2 structured-family semantic synthesis prompts should author only `output_template` plus `reference_output`; scoring points are materialized later in code
+- Task C v2 `user_communication` scoring points should align one-to-one with retained source-state field paths
+- `taskabc_v1` final answer prompt must include the item `question`
+- `taskabc_v2` final answer prompt must reuse pack-authored item `retrieval_query` as the visible task body
+- `taskabc_v2` structured-family `retrieval_query` must already embed `output_template`
+- Task C v2 runtime prompting should not reintroduce a separate question-only `answer_query_text` surface
+- internal family ids such as `service_family` should not be exposed to runtime answer prompts unless a prompt genuinely depends on them
+- no fallback to generated service-application retrieval query or baseline-local retrieval-query regeneration when item `retrieval_query` is blank
 
 ## 4) Runtime Output: where to inspect
 

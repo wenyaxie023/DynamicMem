@@ -32,7 +32,7 @@ Current Task C v2 design:
 - treat `full-field dependency` and `point_pairability` as build-time validity rules
 - use family-appropriate point-based scoring as the primary direction
 - require a family-appropriate service object rather than a raw copy of the source state
-- preserve one required output leaf per source leaf in the same source-leaf order so slot pairing stays deterministic
+- preserve one rubric-backed scoring point per required output leaf so slot scoring stays deterministic
 
 ## Benchmark Extension
 
@@ -137,22 +137,26 @@ Prediction contract notes:
   - `task_instruction`
   - `reference_answer` for `user_communication`
   - `output_template` / `reference_output` for structured families
-- `taskabc_v2` structured-family `output_template` and `reference_output` must form a family-appropriate top-level service object
+- `taskabc_v2` structured-family `output_template` and `reference_output` must form a family-appropriate structured scoring contract
 - they must not be a raw copy of the current contracted `state_value`
-- they must preserve every source leaf exactly once
-- required output leaves must appear in source-leaf order
+- after semantic acceptance, the builder must materialize structured-family scoring points programmatically so they align one-to-one with the scalar leaves in `reference_output`
 - for `preferences -> Preference-Conditioned Filtering Parameter Completion`, the contracted Task C v2 source input is `{"statement": ...}` only
 - auxiliary preference `signals` may remain benchmark-side support metadata, but they are not shown to the answering assistant and are not part of paired slot scoring
 - `taskabc_v2` `answer_scoring_points[]` are:
-  - natural-language answer points for `user_communication`
-  - positive-only paired field points for structured families
+  - micro answer points materialized from retained source-state fields for `user_communication`
+- active `taskabc_v2` `habits -> user_communication` also prepends one micro point with `point_role = identity_gate`; this point checks whether the answer is actually about the targeted habit/routine itself
+- active `taskabc_v2` `user_communication` leaf point text is generated deterministically from the code-generated field id and validated state value, not from LLM-generated scoring descriptions
+  - positive-only field points materialized from `reference_output` for structured families
+- active terminology: both families use point-specific evaluation; `atomic fact` is only legacy shorthand for a `micro` point, not a separate evaluation contract
+- `reference_answer` for `user_communication` is a canonical gold realization for context; current slot-level eval judges the lowered `answer_scoring_points[]`, not holistic answer similarity
+- when a current `taskabc_v2` `habits -> user_communication` item includes an `identity_gate` point and that gate is judged incorrect, evaluator must assign the whole item score `0` instead of averaging any remaining leaf-level points
 - missing / empty `answer_scoring_points[]` is a Task C protocol violation for current pack-first eval; evaluator must fail
 - `taskabc_v2` programmatic structural checks must validate:
   - canonical family mapping
   - family-appropriate structured service object
   - non-empty scenario / task instruction
-  - source/output field coverage for paired points
-  - deterministic source-leaf-order pairing
+  - `output_template` / `reference_output` shape match
+  - rubric coverage over required `reference_output` leaves
 
 Final answering prompt contract:
 - shared Task C prompting comes from `tce_core/prompts.py`
@@ -162,9 +166,8 @@ Final answering prompt contract:
 - builder-side normalization should inject the final `service_family` field; synthesis output may omit it
 - the stable runtime family id `information_request_construction` is retained for compatibility, but its paper-facing meaning is now `Preference-Conditioned Filtering Parameter Completion`
 - `taskabc_v1` visible prompt uses the pack-authored item `question`
-- `taskabc_v2` visible prompt uses:
-  - `scenario + task_instruction` for `user_communication`
-  - `scenario + task_instruction + output_template` for structured families
+- `taskabc_v2` visible prompt reuses pack-authored item `retrieval_query` as the canonical task body
+- for structured families, that `retrieval_query` must already include `output_template`
 - retrieval query for apply answering comes from `items[*].retrieval_query`
 - `taskabc_v2` answering prompt must require:
   - one short assistant response for `user_communication`
@@ -207,7 +210,8 @@ python -m data_construction.build_tce_rq3_apply_pack \
 
 Formal reuse policy:
 - `--reuse-scope key_value_signature` is the canonical protocol default
-- if `validated_state_value_signature` and `evidence_signature` are unchanged, the builder must reuse the prior checkpoint's full Task C pack
+- if `validated_state_value_signature` is unchanged, the builder must reuse the prior checkpoint's authored Task C item set instead of regenerating it
+- when a reused Task C item set is copied into a later checkpoint, checkpoint-local gold evidence anchors must be refreshed from the current checkpoint's `state_observability`
 - unchanged apply states must not be re-generated under the formal protocol
 
 Run TCE generation:

@@ -38,6 +38,10 @@ Shared generation config contract:
   - `retrieval`
   - `final_qa`
 - `baseline_params` is reserved for backend-specific knobs only
+- current project policy:
+  - `final_qa` remains a supported optional section in the config schema
+  - but active TCE workflows should treat it as explicit opt-in and disabled by default
+  - current Task C / baseline lock work should not enable it
 
 ## 2. Canonical Entrypoints
 
@@ -166,7 +170,9 @@ All stateful TCE baselines must satisfy these invariants:
 - such preprocessing caches are not retrieval-visible memory state and must not be queried directly at checkpoint time
 - if a preprocessing cache exists, checkpoint state must still be materialized by sequential replay of the confirmed prefix only
 - `prepare_checkpoint_state(...)` must only resolve the current checkpoint's prepared snapshot / collection; it must not advance builder state during test
-- build and test must consume the same shared `data.benchmark` and `data.app_logs_path` inputs rather than silently switching to a baseline-local checkpoint source
+- build and test must consume the same shared source-timeline inputs rather than silently switching to a baseline-local checkpoint source
+- at minimum this source scope includes the shared `data.app_logs_path` plus the checkpoint cut definitions needed to materialize checkpoint memory state
+- a later benchmark revision may change Task A / Task C evaluation packs without forcing a rebuild, as long as the source-timeline fingerprint used for checkpoint materialization is unchanged
 
 2. Checkpoint isolation
 - retrieval at checkpoint `cp_i` may read only the snapshot / collection / manifest entry corresponding to `cp_i`
@@ -181,6 +187,14 @@ All stateful TCE baselines must satisfy these invariants:
 - `resume` must continue ingest from the confirmed local prefix recorded in builder progress files
 - message-history-derived ingest reconstruction is not part of the canonical resume contract
 - checkpoint snapshots / `manifest.json` are required persisted artifacts for checkpoint retrieval / testing, but they are not the authoritative source for builder/ingest resume
+- builder reuse validity should distinguish:
+  - source/build fingerprint:
+    - app-log stream plus checkpoint materialization boundaries
+  - evaluation-pack fingerprint:
+    - authored Task A / Task C packs used only during generation/evaluation
+- changing only the evaluation-pack fingerprint must not force rebuilding persisted memory artifacts
+- if a builder decides it cannot safely reuse or resume existing persisted memory artifacts, it must fail closed by default
+- destructive rebuilds that clear existing builder state, databases, collections, or checkpoint artifacts require explicit opt-in via shared `runtime.allow_destructive_rebuild=true`
 
 5. Shared orchestrator behavior
 - Task A must remain per-key
@@ -188,7 +202,9 @@ All stateful TCE baselines must satisfy these invariants:
 - contributors must not fork local prediction JSON schemas
 - contributors must not reintroduce baseline-local task-query semantics outside shared `tce_core`
 - agent-memory baselines may use backend-native retrieval+answer APIs inside `answer_query(...)` only if:
-  - shared visible task prompting still comes from the shared agent-memory prompt builders driven by `QuerySpec.answer_query_text`
+  - shared visible task prompting still comes from the shared prompt builders driven by pack-authored task text
+  - for active `taskabc_v2` Task C, this means pack-authored item `retrieval_query` as the canonical visible task body
+  - for structured Task C families, that `retrieval_query` must already embed `output_template`
   - backend-native retrieval is driven by `QuerySpec.retrieval_query_text`
   - `retrieve_context_for_query(...)` still surfaces auditable retrieval metadata for `per_key_retrieval`
 
@@ -244,6 +260,7 @@ Required interface:
 - runtime:
   - `max_visible_logs`
   - `resume`
+  - `allow_destructive_rebuild`
   - `max_checkpoints`
   - `debug`
   - `debug_dir`
@@ -285,6 +302,7 @@ Shared runtime config:
 - `runtime.enable_change_reasoning`
 - `runtime.enable_rq3_apply_service_qa`
 - `runtime.rq3_apply_save_prompt_and_raw`
+- `runtime.allow_destructive_rebuild`
 - `runtime.checkpoint_workers`
 - `runtime.within_checkpoint_workers`
 - `runtime.save_every_generation_keys`
@@ -309,6 +327,7 @@ Shared final-QA config:
 Rules:
 - `enable_change_reasoning=true` is the standard switch for legacy Task B generation
 - `enable_rq3_apply_service_qa` remains the standard runtime switch for Task C generation
+- `allow_destructive_rebuild=false` is the default safety posture; backends must not clear existing persisted memory artifacts unless the caller explicitly opts in
 - shared retrieval top-k settings apply only to baselines that implement explicit query-time retrieval
 - explicit-retrieval baselines must consume shared `QuerySpec.retrieval_query_text` directly; they must not regenerate or fallback to baseline-local retrieval query text
 - agent-memory baselines such as `letta` / `memgpt` may ignore explicit-retriever config when they do not perform query-time retrieval
