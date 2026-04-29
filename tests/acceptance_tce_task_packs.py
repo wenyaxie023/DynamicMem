@@ -11,6 +11,7 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
+from tce_core.prompts import TASK_C_V2_USER_COMMUNICATION_TASK_INSTRUCTION
 from tce_core.task_packs import _rewrite_apply_item, _validate_apply_item, build_task_packs
 from tce_contracts import (
     CANONICAL_RESEARCH_DOC_V2,
@@ -135,7 +136,7 @@ class TceTaskPackAcceptance(unittest.TestCase):
         )
 
         self.assertEqual(rewritten["scenario"], "It is 06:10. Nothing has been logged yet, and the user is idle.")
-        self.assertEqual(rewritten["task_instruction"], item["task_instruction"])
+        self.assertEqual(rewritten["task_instruction"], TASK_C_V2_USER_COMMUNICATION_TASK_INSTRUCTION)
         self.assertEqual(rewritten["reference_answer"], item["reference_answer"])
         self.assertNotIn("scoring_rubric", rewritten)
 
@@ -230,7 +231,7 @@ class TceTaskPackAcceptance(unittest.TestCase):
 
         class _FakeApplyGeneratorClient:
             def ask(self, prompt: str, response_type: str = "json"):
-                if "Generate exactly one item for a preference-conditioned structured filtering task." in prompt:
+                if "Generate exactly one preference-conditioned filtering task" in prompt:
                     return {
                         "items": [
                             {
@@ -327,7 +328,7 @@ class TceTaskPackAcceptance(unittest.TestCase):
 
         class _FakeApplyGeneratorClient:
             def ask(self, prompt: str, response_type: str = "json"):
-                if "Generate exactly one item for a habit-conditioned assistant-message task." in prompt:
+                if "Generate exactly one habit-conditioned communication task" in prompt:
                     return {
                         "items": [
                             {
@@ -410,6 +411,87 @@ class TceTaskPackAcceptance(unittest.TestCase):
         self.assertTrue(item["item_validation"]["is_valid"])
         self.assertTrue(item["scoring_validation"]["is_valid"])
         self.assertTrue(item["scoring_validation"]["uses_identity_gate"])
+
+    def test_v2_apply_filters_key_when_no_item_passes_semantic_validation(self):
+        benchmark = {
+            "user_id": "001_user_001",
+            "checkpoints": [
+                {
+                    "checkpoint_id": "cp1",
+                    "as_of": {"timestamp": "2025-01-01 08:00:00"},
+                    "state_questionability": {
+                        "habits_state:family_video_call": {"is_questionable": True}
+                    },
+                    "validated_snapshot_state": {
+                        "habits_state": {
+                            "family_video_call": {
+                                "schedule": {
+                                    "frequency_type": "weekly",
+                                    "days_of_week": [6],
+                                }
+                            }
+                        }
+                    },
+                    "state_observability": {
+                        "habits_state": {
+                            "family_video_call": {"evidence_app_log_ids": ["log_0001"]}
+                        }
+                    },
+                }
+            ],
+        }
+
+        class _InvalidApplyGeneratorClient:
+            def ask(self, prompt: str, response_type: str = "json"):
+                if "Generate exactly one habit-conditioned communication task" in prompt:
+                    return {
+                        "items": [
+                            {
+                                "scenario": "It is 7:00 PM. The user is relaxing.",
+                                "task_instruction": "As the assistant, what single message should be sent to the user right now?",
+                                "reference_answer": "It is Sunday evening, so it is time for the family video call.",
+                            }
+                        ]
+                    }
+                return {}
+
+        class _RejectingApplyValidatorClient:
+            def ask(self, prompt: str, response_type: str = "json"):
+                if "Validate whether this item is a strong current-moment assistant message task." in prompt:
+                    return {
+                        "criteria": [
+                            {"criterion": "answerability", "pass": False, "analysis": "not anchored to the scheduled day"},
+                            {"criterion": "service_completion_quality", "pass": True, "analysis": "ok"},
+                            {"criterion": "full_field_dependency", "pass": True, "analysis": "ok"},
+                            {"criterion": "low_leakage", "pass": True, "analysis": "ok"},
+                            {"criterion": "output_groundedness", "pass": False, "analysis": "adds unsupported evening timing"},
+                        ]
+                    }
+                return {}
+
+        result = build_task_packs(
+            benchmark=copy.deepcopy(benchmark),
+            tasks=["apply"],
+            generator_client=_InvalidApplyGeneratorClient(),
+            validator_client=_RejectingApplyValidatorClient(),
+            provider="test",
+            model="generator",
+            validator_provider="test",
+            validator_model="validator",
+            item_count_per_key=1,
+            max_rewrites=0,
+            apply_workers=1,
+            save_raw=True,
+        )
+
+        pack = result["checkpoints"][0]["rq3_apply_service_qa"]
+        self.assertNotIn("habits_state:family_video_call", pack["keys"])
+        filtered = pack["filtered_keys"]["habits_state:family_video_call"]
+        self.assertEqual(filtered["reason_codes"], ["no_accepted_task_c_items"])
+        self.assertTrue(filtered["manual_review_required"])
+        self.assertEqual(filtered["discarded_count"], 1)
+        self.assertEqual(pack["records"][0]["accepted_count"], 0)
+        self.assertEqual(pack["records"][0]["discarded_count"], 1)
 
     def test_v2_preference_task_c_contracts_state_to_statement_only(self):
         benchmark = {
@@ -643,7 +725,7 @@ class TceTaskPackAcceptance(unittest.TestCase):
 
             def ask(self, prompt: str, response_type: str = "json"):
                 del response_type
-                if "Generate exactly one item for a habit-conditioned assistant-message task." in prompt:
+                if "Generate exactly one habit-conditioned communication task" in prompt:
                     type(self).generation_calls += 1
                     return {
                         "items": [
@@ -810,7 +892,7 @@ class TceTaskPackAcceptance(unittest.TestCase):
         class _FakeApplyGeneratorClient:
             def ask(self, prompt: str, response_type: str = "json"):
                 del response_type
-                if "Generate exactly one item for a preference-conditioned structured filtering task." not in prompt:
+                if "Generate exactly one preference-conditioned filtering task" not in prompt:
                     return {}
                 return {
                     "item": {
@@ -923,6 +1005,44 @@ class TceTaskPackAcceptance(unittest.TestCase):
         scoring_paths = {str(point.get("target_path") or "") for point in item["scoring_points"]}
         self.assertFalse(any("schedule_dates" in path for path in scoring_paths))
         self.assertFalse(any("priority" in path for path in scoring_paths))
+
+    def test_v2_task_a_filters_empty_shell_left_after_excluded_fields_removed(self):
+        benchmark = {
+            "user_id": "001_user_001",
+            "task_contract_version": CURRENT_TASK_CONTRACT_VERSION,
+            "checkpoints": [
+                {
+                    "checkpoint_id": "cp1",
+                    "as_of": {"timestamp": "2025-01-01 08:00:00"},
+                    "state_questionability": {
+                        "habits_state:weekend_woodworking_session": {
+                            "validated_field_paths": ["schedule.schedule_dates"]
+                        }
+                    },
+                    "validated_snapshot_state": {
+                        "habits_state": {
+                            "weekend_woodworking_session": {
+                                "schedule": {
+                                    "schedule_dates": ["2025-01-04", "2025-01-11"],
+                                },
+                            }
+                        }
+                    },
+                }
+            ],
+        }
+
+        result = build_task_packs(
+            benchmark=copy.deepcopy(benchmark),
+            tasks=["state_completion"],
+        )
+
+        pack = result["checkpoints"][0]["state_completion_pack"]
+        self.assertEqual(pack["keys"], {})
+        self.assertEqual(
+            pack["filtered_keys"]["habits_state:weekend_woodworking_session"]["reason_codes"],
+            ["task_a_value_empty_after_excluded_fields_removed"],
+        )
 
     def test_state_completion_reuses_and_change_tracking_scopes_to_validated_intersection(self):
         benchmark = {

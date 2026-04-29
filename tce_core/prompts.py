@@ -4,6 +4,20 @@ from typing import Any, Dict, List, Optional
 from tce_contracts import CURRENT_TASK_CONTRACT_VERSION
 
 
+TASK_C_V2_USER_COMMUNICATION_TASK_INSTRUCTION = (
+    "As the assistant, what single message should be sent to the user right now? "
+    "Make it complete for this moment by using the user's routine details, not a generic reminder."
+)
+TASK_C_V2_INFORMATION_REQUEST_TASK_INSTRUCTION = (
+    "As the assistant, complete the filtering parameters that should be sent right now. "
+    "Use the user's preference statement to shape the filters, and do not write the final recommendation."
+)
+TASK_C_V2_ACTION_CONFIGURATION_TASK_INSTRUCTION = (
+    "As the assistant, complete the action configuration that should be sent right now. "
+    "Use the user's known attributes to fill the required execution fields, and do not write a message or recommendation."
+)
+
+
 def _coerce_inline_memory_blocks(
     *,
     inline_memory_blocks: Optional[List[str]],
@@ -516,28 +530,24 @@ def _build_task_c_v2_user_communication_question_pack_prompt(
     if str(state_type or "").strip() != "habit":
         raise ValueError("Task C v2 user_communication prompt requires state_type='habit'.")
 
-    fixed_task_instruction = (
-        "As the assistant, what single message should be sent to the user right now? "
-        "Make it complete for this moment by using the user's routine details, not a generic reminder."
-    )
+    fixed_task_instruction = TASK_C_V2_USER_COMMUNICATION_TASK_INSTRUCTION
     return f"""[Task]
-Generate exactly one item for a habit-conditioned assistant-message task.
+Generate exactly one habit-conditioned communication task for a user-facing assistant.
 
-The answering assistant will see:
-- state_value
-- scenario
-- task_instruction
+Each item contains:
+- `scenario`: synthesize this field.
+- `task_instruction`: copy the fixed string exactly.
+- `reference_answer`: synthesize this field as the intended correct assistant message.
 
-Your job is to create an item where a fully correct answer requires using the habit information in state_value, not just the scenario.
-
-[What the answering assistant must do]
-The answer must be exactly one proactive assistant-to-user message for this moment.
+The task should require the assistant to use the user's habit state, not only the scenario.
+The reference_answer must be exactly one proactive assistant-to-user message for this moment.
 It must be free-form natural language.
 
 [Design Principle]
-Keep `scenario` and `task_instruction` leakage-safe:
-- they may set up the current moment and the local task,
-- but they must not restate, paraphrase, or strongly imply the user-state facts that should instead be recovered from `state_value`.
+Keep `scenario` leakage-safe:
+- `task_instruction` is fixed and must be copied exactly.
+- `scenario` may set up the current moment and local situation,
+- but it must not restate, paraphrase, or strongly imply the user-state facts that should instead be recovered from `state_value`.
 
 [Definitions]
 - terminal field: one leaf field in state_value whose value is scalar or array-valued and not further decomposed.
@@ -551,7 +561,7 @@ Keep `scenario` and `task_instruction` leakage-safe:
    - "scenario"
    - "task_instruction"
    - "reference_answer"
-4. task_instruction must be exactly this string:
+4. Copy task_instruction exactly as this fixed string:
    {fixed_task_instruction}
 5. scenario must be short, concrete, and written as third-person world background.
 6. scenario must not use first-person or second-person wording such as "I", "we", "you", "your", or "you've".
@@ -563,14 +573,14 @@ Keep `scenario` and `task_instruction` leakage-safe:
    - whether something has or has not happened yet,
    - whether something has or has not been prepared,
    - at most one additional situational fact that plausibly matters right now.
-9. scenario must not restate or paraphrase the routine action, frequency, scheduled day, start time, end time, location, priority, or any other fact already present in state_value, except that it may state the current day/date/time as part of the world background.
+9. scenario must not restate or paraphrase the routine action, frequency, start time, end time, location, or any other fact already present in state_value, except that it may state the current day/date/time as part of the world background.
 10. reference_answer must be exactly one natural assistant-to-user message, not a meta description.
 11. reference_answer must be complete enough that a fully correct answer would use every terminal field in state_value.
 12. Before finalizing, silently confirm the item would later pass the same five semantic validation criteria:
-   - answerability: scenario plus task_instruction define one clear current-moment communication task.
+   - answerability: scenario plus the fixed task_instruction define one clear current-moment communication task.
    - service_completion_quality: the item asks for one concrete assistant communication rather than recall or raw state restatement.
    - full_field_dependency: a fully correct message needs all non-derived field paths in state_value.
-   - low_leakage: scenario and task_instruction do not restate or strongly imply the habit facts that should come from state_value.
+   - low_leakage: scenario does not restate or strongly imply the habit facts that should come from state_value.
    - output_groundedness: reference_answer is a short natural-language assistant message whose personalized content is supported by state_value without adding unsupported user-specific facts.
 
 [Good Example A Input]
@@ -682,24 +692,20 @@ def _build_task_c_v2_information_request_question_pack_prompt(
     if str(state_type or "").strip() != "preference":
         raise ValueError("Task C v2 information_request_construction prompt requires state_type='preference'.")
 
-    fixed_task_instruction = (
-        "As the assistant, complete the filtering parameters that should be sent right now. "
-        "Use the user's preference statement to shape the filters, and do not write the final recommendation."
-    )
+    fixed_task_instruction = TASK_C_V2_INFORMATION_REQUEST_TASK_INSTRUCTION
+    fixed_task_instruction_json = json.dumps(fixed_task_instruction, ensure_ascii=False)
 
     return f"""[Task]
-Generate exactly one item for a preference-conditioned structured filtering task.
+Generate exactly one preference-conditioned filtering task for an assistant that prepares structured retrieval or recommendation parameters.
 
-The answering assistant will see:
-- state_value
-- scenario
-- task_instruction
-- output_template
+Each item contains:
+- `scenario`: synthesize this field.
+- `task_instruction`: copy the fixed string exactly.
+- `output_template`: synthesize this field.
+- `reference_output`: synthesize this field as the intended correct filled object.
 
-Your job is to create an item where a fully correct answer requires using the preference information in state_value, not just the scenario.
-
-[What the answering assistant must do]
-The answer must fill a structured filtering-parameter object for a downstream retrieval, screening, or recommendation system.
+The task should require the assistant to use the user's preference state to fill filtering parameters, not only the scenario.
+The reference_output must fill a structured filtering-parameter object for a downstream retrieval, screening, or recommendation system.
 It must not be a final recommendation, a ranked list, or a free-form explanation.
 
 [Key design goal]
@@ -707,9 +713,10 @@ This is a filtering task, not a copy-the-statement task.
 The generated item should require the answering assistant to translate the user's preference statement into semantically meaningful filtering parameters.
 
 [Design Principle]
-Keep `scenario` and `task_instruction` leakage-safe:
-- they may set up the current product or service moment and the local completion task,
-- but they must not restate, paraphrase, or strongly imply the user-state facts that should instead be recovered from `state_value`.
+Keep `scenario` leakage-safe:
+- `task_instruction` is fixed and must be copied exactly.
+- `scenario` may set up the current product or service moment and local completion task,
+- but it must not restate, paraphrase, or strongly imply the user-state facts that should instead be recovered from `state_value`.
 
 You may synthesize request-facing keys.
 
@@ -730,7 +737,7 @@ That means:
    - "task_instruction"
    - "output_template"
    - "reference_output"
-4. task_instruction must be exactly this string:
+4. Copy task_instruction exactly as this fixed string:
    {fixed_task_instruction}
 5. scenario must be short, natural, and written as world background.
 6. scenario must not use first-person or second-person wording such as "I", "we", "you", "your", or "you've".
@@ -760,10 +767,10 @@ That means:
    - priorities or goals.
 17. reference_output must be a coherent canonical fill of output_template.
 18. Before finalizing, silently confirm the item would later pass the same five semantic validation criteria:
-   - answerability: scenario plus task_instruction define one clear current-moment structured completion task.
+   - answerability: scenario plus the fixed task_instruction define one clear current-moment structured completion task.
    - service_completion_quality: the item defines a real structured filtering task rather than free-form QA or a raw state dump.
    - full_field_dependency: a fully correct reference_output needs all non-derived field paths in state_value.
-   - low_leakage: scenario and task_instruction do not restate or strongly imply the preference facts that should come from state_value.
+   - low_leakage: scenario does not restate or strongly imply the preference facts that should come from state_value.
    - output_groundedness: output_template plus reference_output define a task-appropriate filtering object grounded in state_value rather than a raw state copy or unsupported content.
 
 [Good Example A Input]
@@ -881,7 +888,7 @@ state_value: {json.dumps({
 {{
   "item": {{
     "scenario": "The user prefers quiet neighborhood coffee shops over loud chain cafes, and a shortlist is being prepared.",
-    "task_instruction": {fixed_task_instruction},
+    "task_instruction": {fixed_task_instruction_json},
     "output_template": {{
       "filtering_params": {{
         "preference_statement": "<fill>"
@@ -908,7 +915,7 @@ Why the bad example fails:
 {{
   "item": {{
     "scenario": "...",
-    "task_instruction": {fixed_task_instruction},
+    "task_instruction": {fixed_task_instruction_json},
     "output_template": {{
       "<synthesized_request_key>": {{
         "<synthesized_filter_key>": "<fill or nested fills>"
@@ -931,24 +938,20 @@ def _build_task_c_v2_action_configuration_question_pack_prompt(
     if str(state_type or "").strip() != "attribute":
         raise ValueError("Task C v2 action_configuration prompt requires state_type='attribute'.")
 
-    fixed_task_instruction = (
-        "As the assistant, complete the action configuration that should be sent right now. "
-        "Use the user's known attributes to fill the required execution fields, and do not write a message or recommendation."
-    )
+    fixed_task_instruction = TASK_C_V2_ACTION_CONFIGURATION_TASK_INSTRUCTION
+    fixed_task_instruction_json = json.dumps(fixed_task_instruction, ensure_ascii=False)
 
     return f"""[Task]
-Generate exactly one item for an attribute-conditioned action-configuration task.
+Generate exactly one attribute-conditioned action-configuration task for an assistant that prepares structured tool or workflow payloads.
 
-The answering assistant will see:
-- state_value
-- scenario
-- task_instruction
-- output_template
+Each item contains:
+- `scenario`: synthesize this field.
+- `task_instruction`: copy the fixed string exactly.
+- `output_template`: synthesize this field.
+- `reference_output`: synthesize this field as the intended correct filled object.
 
-Your job is to create an item where a fully correct answer requires using the attribute information in state_value, not just the scenario.
-
-[What the answering assistant must do]
-The answer must fill a structured action-configuration object for a downstream tool, workflow, form, or executable service.
+The task should require the assistant to use the user's attribute state to fill execution fields, not only the scenario.
+The reference_output must fill a structured action-configuration object for a downstream tool, workflow, form, or executable service.
 It must not be a user-facing message, a retrieval request, or a free-form explanation.
 
 [Key design goal]
@@ -956,9 +959,10 @@ This is an execution-configuration task, not a copy-the-attribute task.
 The generated item should require the answering assistant to translate the user's known attributes into the specific fields needed to carry out an action.
 
 [Design Principle]
-Keep `scenario` and `task_instruction` leakage-safe:
-- they may set up the current product or service moment and the local execution task,
-- but they must not restate, paraphrase, or strongly imply the user-state facts that should instead be recovered from `state_value`.
+Keep `scenario` leakage-safe:
+- `task_instruction` is fixed and must be copied exactly.
+- `scenario` may set up the current product or service moment and local execution task,
+- but it must not restate, paraphrase, or strongly imply the user-state facts that should instead be recovered from `state_value`.
 
 You may synthesize configuration-facing keys.
 
@@ -980,7 +984,7 @@ That means:
    - "task_instruction"
    - "output_template"
    - "reference_output"
-4. task_instruction must be exactly this string:
+4. Copy task_instruction exactly as this fixed string:
    {fixed_task_instruction}
 5. scenario must be short, natural, and written as world background.
 6. scenario must not use first-person or second-person wording such as "I", "we", "you", "your", or "you've".
@@ -1007,10 +1011,10 @@ That means:
 17. reference_output must preserve all grounded attribute facts needed by the synthesized configuration schema.
 18. For list-valued state_value, preserve source order when the configuration represents per-item entries.
 19. Before finalizing, silently confirm the item would later pass the same five semantic validation criteria:
-   - answerability: scenario plus task_instruction define one clear current-moment structured completion task.
+   - answerability: scenario plus the fixed task_instruction define one clear current-moment structured completion task.
    - service_completion_quality: the item defines a real structured action-configuration task rather than free-form QA or a raw state dump.
    - full_field_dependency: a fully correct reference_output needs all non-derived field paths in state_value.
-   - low_leakage: scenario and task_instruction do not restate or strongly imply the attribute facts that should come from state_value.
+   - low_leakage: scenario does not restate or strongly imply the attribute facts that should come from state_value.
    - output_groundedness: output_template plus reference_output define a task-appropriate action-configuration object grounded in state_value rather than a raw state copy or unsupported content.
 
 [Good Example A Input]
@@ -1190,7 +1194,7 @@ Why the bad example fails:
 {{
   "item": {{
     "scenario": "...",
-    "task_instruction": {fixed_task_instruction},
+    "task_instruction": {fixed_task_instruction_json},
     "output_template": {{
       "<synthesized_configuration_key>": {{
         "<synthesized_execution_field>": "<fill or nested fills>"
@@ -2230,40 +2234,44 @@ def build_task_c_v2_rewrite_prompt(
     reference_answer: str = "",
 ) -> str:
     normalized_family = str(service_family or "").strip()
+    validation_feedback = {
+        "failed_rules": list(failed_rules or []),
+        "criteria": list(semantic_criteria or []),
+    }
     if normalized_family == "user_communication":
         return """[Task Instruction]
-Rewrite the invalid item so it becomes a strong current-moment assistant message task.
-Use the failed rules and validation feedback to fix the item directly.
+Rewrite the invalid item using the validation_feedback.
+Return a JSON delta patch over mutable fields only.
 
 [Definitions]
+- validation_feedback: validator feedback containing `failed_rules` and per-criterion `criteria`.
 - failed_rules: the names of the checks that failed and must be fixed.
-- validation feedback: feedback for each criterion explaining what failed and why.
-- answerability: `scenario` plus `task_instruction` define one clear current-moment communication task.
+- criteria: feedback for each criterion explaining what passed, what failed, and why.
+- answerability: `scenario` plus the fixed `task_instruction` define one clear current-moment communication task.
 - service_completion_quality: the item asks for one concrete assistant communication rather than a recall question, a raw state restatement, or a generic check-in.
 - full_field_dependency: a good answer depends on all important non-derived field paths in `state_value`.
-- low leakage: `scenario` and `task_instruction` do not restate, paraphrase, or strongly imply the habit facts that should come from `state_value`.
+- low leakage: `scenario` does not restate, paraphrase, or strongly imply the habit facts that should come from `state_value`.
 - output_groundedness: a short natural-language assistant response whose key personalized content is supported by `state_value`.
+
+[Repair Instructions]
+- If `answerability` failed: rewrite `scenario` so the current moment is clear enough and it is clear what communication should be sent now.
+- If `service_completion_quality` failed: rewrite the item so it asks for one concrete assistant communication rather than a recall question, raw state restatement, or generic check-in.
+- If `full_field_dependency` failed: rewrite `scenario` and/or `reference_answer` so a good answer depends on all important state fields.
+- If `low_leakage` failed: remove any restatement of the habit action, cadence, scheduled day, timing, location, or priority from `scenario`.
+- If `output_groundedness` failed: rewrite `reference_answer` so its personalized content is grounded in `state_value` without adding unsupported user-specific facts.
 
 [Constraints]
 1. Rewrite only the mutable item fields:
    - `scenario`
-   - `task_instruction`
    - `reference_answer`
 2. Keep the item in natural-language assistant-response form; do not rewrite it into a structured payload.
 3. Fix every failed rule and every failed semantic criterion.
-4. Repair semantic problems first:
-   - If `answerability` failed, rewrite the current-moment setup so it is clear what communication should be sent now.
-   - If `service_completion_quality` failed, rewrite the item so it asks for one concrete assistant communication rather than a recall question.
-   - If `full_field_dependency` failed, rewrite the item so a good answer depends on all important state fields.
-   - If `low_leakage` failed, remove any restatement of action, cadence, scheduled day, timing, location, or priority from `scenario` and `task_instruction`.
-   - If `output_groundedness` failed, make the revised `reference_answer` more state-grounded without adding unsupported user-specific facts.
-5. Return a JSON delta patch over mutable fields only.
-6. Include only the fields you actually changed; omit unchanged fields.
-7. Do not add any keys other than:
+4. Apply the repair instruction for each failed rule shown in validation_feedback.
+5. Include only the fields you actually changed; omit unchanged fields.
+6. Do not add any keys other than:
    - `scenario`
-   - `task_instruction`
    - `reference_answer`
-8. Return JSON only.
+7. Return JSON only.
 
 [Example]
 [Example Input]
@@ -2274,14 +2282,16 @@ invalid_item: {{
   "task_instruction": "Write the short reminder message the assistant should send right now.",
   "reference_answer": "Your Sunday family dinner starts soon, so it is a good time to begin getting things ready."
 }}
-failed_rules: ["answerability", "low_leakage"]
-semantic_criteria: [
-  {{"criterion": "answerability", "analysis": "The item never makes clear what should be sent right now.", "pass": false}},
-  {{"criterion": "service_completion_quality", "analysis": "The item asks for one communication action.", "pass": true}},
-  {{"criterion": "full_field_dependency", "analysis": "The state fields are mostly used.", "pass": true}},
-  {{"criterion": "low_leakage", "analysis": "The scenario repeats that this is the user's Sunday family dinner.", "pass": false}},
-  {{"criterion": "output_groundedness", "analysis": "The answer stays grounded once the setup is clarified.", "pass": true}}
-]
+validation_feedback: {{
+  "failed_rules": ["answerability", "low_leakage"],
+  "criteria": [
+    {{"criterion": "answerability", "analysis": "The item never makes clear what should be sent right now.", "pass": false}},
+    {{"criterion": "service_completion_quality", "analysis": "The item asks for one communication action.", "pass": true}},
+    {{"criterion": "full_field_dependency", "analysis": "The state fields are mostly used.", "pass": true}},
+    {{"criterion": "low_leakage", "analysis": "The scenario repeats that this is the user's Sunday family dinner.", "pass": false}},
+    {{"criterion": "output_groundedness", "analysis": "The answer stays grounded once the setup is clarified.", "pass": true}}
+  ]
+}}
 
 [Example Output]
 {{
@@ -2296,8 +2306,7 @@ Input Payload:
     "task_instruction": {task_instruction},
     "reference_answer": {reference_answer}
   }}
-- failed_rules: {failed_rules}
-- semantic_criteria: {semantic_criteria}
+- validation_feedback: {validation_feedback}
 
 Output JSON ONLY:
 {{
@@ -2309,44 +2318,43 @@ Output JSON ONLY:
             scenario=json.dumps(str(scenario or ""), ensure_ascii=False),
             task_instruction=json.dumps(str(task_instruction or ""), ensure_ascii=False),
             reference_answer=json.dumps(str(reference_answer or ""), ensure_ascii=False),
-            failed_rules=json.dumps(list(failed_rules or []), ensure_ascii=False),
-            semantic_criteria=json.dumps(list(semantic_criteria or []), ensure_ascii=False, indent=2),
+            validation_feedback=json.dumps(validation_feedback, ensure_ascii=False, indent=2),
         )
     return """[Task Instruction]
-Rewrite the invalid item so it becomes a strong structured completion task.
-Use the failed rules and validation feedback to fix the item directly.
+Rewrite the invalid item using the validation_feedback.
+Return a JSON delta patch over mutable fields only.
 
 [Definitions]
+- validation_feedback: validator feedback containing `failed_rules` and per-criterion `criteria`.
 - failed_rules: the names of the checks that failed and must be fixed.
-- validation feedback: feedback for each criterion explaining what failed and why.
-- answerability: `scenario` plus `task_instruction` define one clear current-moment structured completion task.
+- criteria: feedback for each criterion explaining what passed, what failed, and why.
+- answerability: `scenario` plus the fixed `task_instruction` define one clear current-moment structured completion task.
 - service_completion_quality: the item defines a real structured service-completion task rather than a free-form QA question or raw state dump.
 - full_field_dependency: every required non-derived field path in `state_value` is needed by the ideal structured completion.
-- low leakage: `scenario` and `task_instruction` do not restate, paraphrase, or strongly imply the user-state facts that should come from `state_value`.
+- low leakage: `scenario` does not restate, paraphrase, or strongly imply the user-state facts that should come from `state_value`.
 - output_groundedness: `output_template` plus `reference_output` define a task-appropriate service object grounded in `state_value`.
+
+[Repair Instructions]
+- If `answerability` failed: rewrite `scenario` so it is clear what structured object should be completed now.
+- If `service_completion_quality` failed: rewrite `scenario`, `output_template`, and/or `reference_output` so the item becomes a real structured service-completion task.
+- If `full_field_dependency` failed: rewrite the service object so every required part of `state_value` is needed by the ideal structured completion.
+- If `low_leakage` failed: remove any restatement of key preference or attribute facts from `scenario`.
+- If `output_groundedness` failed: repair `output_template` and `reference_output` so they form a task-appropriate service object rather than a raw state copy, with every required output value grounded in `state_value`.
 
 [Constraints]
 1. Rewrite only the mutable item fields:
    - `scenario`
-   - `task_instruction`
    - `output_template`
    - `reference_output`
 2. `output_template` and `reference_output` must remain top-level structured service objects appropriate for this task type.
 3. Fix every failed rule and every failed semantic criterion.
-4. Repair semantic problems first:
-   - If `answerability` failed, rewrite the scenario and task instruction so it is clear what structured object should be completed now.
-   - If `service_completion_quality` failed, rewrite the scenario and task instruction so the item becomes a real structured service-completion task.
-   - If `full_field_dependency` failed, rewrite the service object so every required part of `state_value` is needed.
-   - If `low_leakage` failed, remove any restatement of the key preference or attribute facts from `scenario` and `task_instruction`.
-   - If `output_groundedness` failed, repair the item so it becomes a task-appropriate service object rather than a raw state copy and so every required output value stays grounded in `state_value`.
-5. Return a JSON delta patch over mutable fields only.
-6. Include only the fields you actually changed; omit unchanged fields.
-7. Do not add any keys other than:
+4. Apply the repair instruction for each failed rule shown in validation_feedback.
+5. Include only the fields you actually changed; omit unchanged fields.
+6. Do not add any keys other than:
    - `scenario`
-   - `task_instruction`
    - `output_template`
    - `reference_output`
-8. Return JSON only.
+7. Return JSON only.
 
 [Example]
 [Example Input]
@@ -2358,14 +2366,16 @@ invalid_item: {{
   "output_template": {{"request_profile": {{"preference_statement": "<fill>"}}}},
   "reference_output": {{"request_profile": {{"preference_statement": "prefers self-paced webinars"}}}}
 }}
-failed_rules: ["answerability", "output_groundedness"]
-semantic_criteria: [
-  {{"criterion": "answerability", "analysis": "The item does not make clear what payload should be completed now.", "pass": false}},
-  {{"criterion": "service_completion_quality", "analysis": "The item is already framed as a structured completion task.", "pass": true}},
-  {{"criterion": "full_field_dependency", "analysis": "The only state field is required.", "pass": true}},
-  {{"criterion": "low_leakage", "analysis": "The scenario does not restate the preference.", "pass": true}},
-  {{"criterion": "output_groundedness", "analysis": "The current payload still behaves too much like a raw state copy.", "pass": false}}
-]
+validation_feedback: {{
+  "failed_rules": ["answerability", "output_groundedness"],
+  "criteria": [
+    {{"criterion": "answerability", "analysis": "The item does not make clear what payload should be completed now.", "pass": false}},
+    {{"criterion": "service_completion_quality", "analysis": "The item is already framed as a structured completion task.", "pass": true}},
+    {{"criterion": "full_field_dependency", "analysis": "The only state field is required.", "pass": true}},
+    {{"criterion": "low_leakage", "analysis": "The scenario does not restate the preference.", "pass": true}},
+    {{"criterion": "output_groundedness", "analysis": "The current payload still behaves too much like a raw state copy.", "pass": false}}
+  ]
+}}
 
 [Example Output]
 {{
@@ -2382,8 +2392,7 @@ Input Payload:
     "output_template": {output_template},
     "reference_output": {reference_output}
   }}
-- failed_rules: {failed_rules}
-- semantic_criteria: {semantic_criteria}
+- validation_feedback: {validation_feedback}
 
 Output JSON ONLY:
 {{
@@ -2396,8 +2405,7 @@ Output JSON ONLY:
         task_instruction=json.dumps(str(task_instruction or ""), ensure_ascii=False),
         output_template=json.dumps(output_template, ensure_ascii=False, indent=2),
         reference_output=json.dumps(reference_output, ensure_ascii=False, indent=2),
-        failed_rules=json.dumps(list(failed_rules or []), ensure_ascii=False),
-        semantic_criteria=json.dumps(list(semantic_criteria or []), ensure_ascii=False, indent=2),
+        validation_feedback=json.dumps(validation_feedback, ensure_ascii=False, indent=2),
     )
 
 

@@ -10,6 +10,9 @@ from typing import Any, Callable, Dict, List, Optional, Sequence, Set, Tuple
 from tqdm import tqdm
 
 from .prompts import (
+    TASK_C_V2_ACTION_CONFIGURATION_TASK_INSTRUCTION,
+    TASK_C_V2_INFORMATION_REQUEST_TASK_INSTRUCTION,
+    TASK_C_V2_USER_COMMUNICATION_TASK_INSTRUCTION,
     build_task_c_task_body,
     build_rq3_apply_question_pack_prompt,
     build_rq3_apply_rewrite_prompt,
@@ -47,7 +50,7 @@ CHANGE_TRACKING_PACK_VERSION = "v6"
 APPLY_PACK_VERSION_V1 = "v6"
 APPLY_PACK_VERSION_V2 = "v9"
 APPLY_PACK_PROMPT_VERSION_V1 = "apply_pack_prompt_v13"
-APPLY_PACK_PROMPT_VERSION_V2 = "apply_pack_prompt_v16_taskc_mixed_family"
+APPLY_PACK_PROMPT_VERSION_V2 = "apply_pack_prompt_v20_taskc_rewrite_feedback"
 CHANGE_REASON_TEMPLATE = "<fill the blank>"
 EVIDENCE_TEMPLATE = [{"app_log_id": "<app_log_id>", "evidence_content": "<supporting snippet>"}]
 APPLY_VALIDATION_SEMANTIC_CRITERIA_V1 = [
@@ -78,6 +81,7 @@ _REASON_TASK_C_V2_MISSING_REFERENCE_OUTPUT = "missing_reference_output"
 _REASON_TASK_C_V2_OUTPUT_TEMPLATE_MISMATCH = "output_template_mismatch"
 _REASON_TASK_C_V2_NOT_STRUCTURED_SERVICE_OBJECT = "not_structured_service_object"
 _REASON_TASK_C_V2_RAW_STATE_MIRROR = "raw_state_mirror"
+_REASON_TASK_C_V2_NO_ACCEPTED_ITEMS = "no_accepted_task_c_items"
 
 
 def _apply_pack_version(task_contract_version: str) -> str:
@@ -120,6 +124,17 @@ def _infer_task_c_v2_service_family(state_key: str) -> str:
 
 def _task_c_v2_uses_structured_output(service_family: str) -> bool:
     return str(service_family or "").strip() != "user_communication"
+
+
+def _task_c_v2_task_instruction(service_family: str, generated_value: Any = "") -> str:
+    normalized_family = str(service_family or "").strip()
+    if normalized_family == "user_communication":
+        return TASK_C_V2_USER_COMMUNICATION_TASK_INSTRUCTION
+    if normalized_family == "information_request_construction":
+        return TASK_C_V2_INFORMATION_REQUEST_TASK_INSTRUCTION
+    if normalized_family == "action_configuration":
+        return TASK_C_V2_ACTION_CONFIGURATION_TASK_INSTRUCTION
+    return str(generated_value or "").strip()
 
 
 def _task_c_v2_fill_template(value: Any) -> Any:
@@ -742,7 +757,10 @@ def _normalize_generated_items(
                 "qa_id": f"q{idx+1}",
                 "service_family": expected_family,
                 "scenario": str(item.get("scenario") or "").strip(),
-                "task_instruction": str(item.get("task_instruction") or "").strip(),
+                "task_instruction": _task_c_v2_task_instruction(
+                    expected_family,
+                    item.get("task_instruction"),
+                ),
                 "retrieval_query": "",
             }
             if _task_c_v2_uses_structured_output(expected_family):
@@ -1028,7 +1046,10 @@ def _rewrite_apply_item(
             "qa_id": str(item.get("qa_id") or ""),
             "service_family": str(item.get("service_family") or _infer_task_c_v2_service_family(state_key)).strip(),
             "scenario": _rewrite_string_delta("scenario"),
-            "task_instruction": _rewrite_string_delta("task_instruction"),
+            "task_instruction": _task_c_v2_task_instruction(
+                str(item.get("service_family") or _infer_task_c_v2_service_family(state_key)),
+                _rewrite_string_delta("task_instruction"),
+            ),
             "retrieval_query": "",
         }
         if _task_c_v2_uses_structured_output(rewritten["service_family"]):
@@ -1391,7 +1412,7 @@ def build_apply_service_pack_inplace(
 
                 cached = reuse_cache.get(cache_key or "")
                 if cache_key is not None and isinstance(cached, dict):
-                    key_payload[state_key] = _refresh_reused_apply_key_node(
+                    reused_node = _refresh_reused_apply_key_node(
                         cached,
                         state_sig=state_sig,
                         evidence_sig=evidence_sig,
@@ -1399,10 +1420,18 @@ def build_apply_service_pack_inplace(
                         apply_pack_prompt_version=apply_pack_prompt_version,
                         apply_pack_version=apply_pack_version,
                     )
-                    key_payload[state_key]["pack_source"] = "reused"
+                    reused_node["pack_source"] = "reused"
+                    if task_contract_is_v2(task_contract_version) and not reused_node.get("items"):
+                        filtered_keys[state_key] = {
+                            "reason_codes": [_REASON_TASK_C_V2_NO_ACCEPTED_ITEMS],
+                            "manual_review_required": True,
+                            "discarded_count": len(reused_node.get("discarded_items") or []),
+                        }
+                    else:
+                        key_payload[state_key] = reused_node
                     cp_reused += 1
-                    cp_accepted_items += len(key_payload[state_key].get("items") or [])
-                    cp_discarded_items += len(key_payload[state_key].get("discarded_items") or [])
+                    cp_accepted_items += len(reused_node.get("items") or [])
+                    cp_discarded_items += len(reused_node.get("discarded_items") or [])
                     processed_apply_keys += 1
                     if (
                         save_callback is not None
@@ -1451,8 +1480,15 @@ def build_apply_service_pack_inplace(
                     }
                     if discarded:
                         key_node["discarded_items"] = discarded
-                    key_payload[state_key] = key_node
-                    if cache_key_value:
+                    if task_contract_is_v2(task_contract_version) and not accepted:
+                        filtered_keys[state_key] = {
+                            "reason_codes": [_REASON_TASK_C_V2_NO_ACCEPTED_ITEMS],
+                            "manual_review_required": True,
+                            "discarded_count": len(discarded),
+                        }
+                    else:
+                        key_payload[state_key] = key_node
+                    if cache_key_value and accepted:
                         reuse_cache[cache_key_value] = copy.deepcopy(key_node)
                     cp_computed += 1
                     cp_accepted_items += len(accepted)
