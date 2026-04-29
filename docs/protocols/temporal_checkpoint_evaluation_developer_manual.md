@@ -161,14 +161,21 @@ Required outputs per checkpoint:
 - `state_validation_summary`
 
 Required behavior:
-- validation is field-aware, not just key-aware
+- validation is field-level; active filtering is computed from accepted fields
 - `validated_snapshot_state` must agree with the accepted field-level result
 - evidence must be recomputed from checkpoint-local `state_observability`
+- evidence logs for L2 validation come from `state_observability.evidence_app_log_ids`
 - resume must skip already valid Stage 1 results when signatures still match
 - active v2 must apply a deterministic pre-validation exclusion set before L1/L2 questionability:
   - exclude preference support fields `signal` / `signals`
   - exclude authoring-only habit metadata fields `priority`, `schedule_date`, and `schedule_dates`
-  - these excluded fields must not appear in `askable_fields`, must not affect `is_questionable`, and must not survive into `validated_state_value`
+  - these excluded fields must not appear in `askable_fields` and must not survive into `validated_state_value`
+- the L2 state-validation prompt must return only `field_verdicts`
+- prompt-level `field_verdicts` must be an object keyed by the fixed `candidate_field_paths` shown in the output template
+- stored `field_verdicts` are normalized by code into a list with attached `field_name`; extra or renamed model output keys are ignored
+- invalid fields are filtered individually; valid fields are retained individually
+- if no fields are valid, `validated_state_value` becomes empty and the key naturally has no retained validated fields
+- new active v2 Stage 1 artifacts should not rely on a model-authored top-level `is_questionable` or L2 `reason_codes`
 
 Active acceptance:
 - only Stage 1 outputs above are required for active v2

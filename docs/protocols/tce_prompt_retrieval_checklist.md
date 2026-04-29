@@ -51,15 +51,17 @@ Change reasoning prompt template:
 State questionability (L2 validate) prompt template:
 - Function: `build_state_questionability_validation_prompt(...)`
 - File: `tce_core/prompts.py`
-- Required section order (prompt-writing checklist aligned):
-  - `[Task Instruction]`
-  - `[Definitions]`
-  - `[Constraints]`
-  - `[Example]`
-  - `[Input/Output Format]`
 - Output schema key:
-  - `field_verdicts[*] = {field_name, reason_analysis, is_valid}`
-  - top-level `{is_questionable, reason_codes, field_verdicts}`
+  - prompt output: `field_verdicts[field_path] = {reason_analysis, is_valid}`
+  - stored artifact: `field_verdicts[*] = {field_name, reason_analysis, is_valid}`
+  - no prompt-authored top-level `is_questionable`
+  - no prompt-authored `reason_codes`
+- Runtime behavior:
+  - prompt renders a fixed `field_verdicts` object with one key per `candidate_field_paths` entry
+  - code normalizes `field_verdicts` by expected candidate field path and ignores extra/renamed model keys
+  - code filters individual fields strictly from valid field verdicts
+  - no active state-level questionability decision is produced by L2
+  - L2 evidence logs are built from `state_observability.evidence_app_log_ids`
 
 Change reason metadata validation prompt template:
 - Function: `build_change_reason_validation_prompt(...)`
@@ -67,7 +69,8 @@ Change reason metadata validation prompt template:
 - Purpose:
   - validate whether `state_observability.last_change_reason` is evidence-supported enough to be used as Task B `reference_change_reason`
 - Output schema key:
-  - `{exists, reason_analysis, is_valid, reason_codes}`
+  - prompt output: `change_reason_verdict = {reason_analysis, is_valid}`
+  - stored artifact: `change_reason_validation = {reason_analysis, is_valid}`
 
 Apply pack generation prompt template:
 - Function: `build_rq3_apply_question_pack_prompt(...)`

@@ -124,7 +124,7 @@ Notes:
 
 ```bash
 python3 -m generation.run_tce \
-  --config configs/experiments/tce/amem_build_only.yaml
+  --config configs/experiments/tce/amem_raw_build_only.yaml
 ```
 
 ### 3.3 MemoryOS build-only
@@ -158,8 +158,8 @@ python3 -m generation.run_tce \
 ### 3.5 HippoRAG2 build-only
 
 ```bash
-python3 -m generation.run_tce \
-  --config configs/experiments/tce/hipporag2_build_only.yaml
+python3 -m generation.run_tce_batch \
+  --config configs/experiments/tce/hipporag2_build_only_raw.yaml --users 004_user_004
 ```
 
 Raw-benchmark build-only variant:
