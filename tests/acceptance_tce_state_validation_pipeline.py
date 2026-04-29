@@ -19,16 +19,9 @@ class _CountingValidatorClient:
     def ask(self, prompt: str, response_type: str = "json"):
         if "Validate whether this state is inferable from evidence" in prompt:
             _CountingValidatorClient.calls += 1
-            field_name = "timing.start_time"
-            if '- candidate_field_paths: ["current_value"]' in prompt:
-                field_name = "current_value"
             return {
-                "is_questionable": True,
-                "reason_codes": ["mock_pass"],
-                "llm_reason": "mock inferable",
                 "field_verdicts": [
                     {
-                        "field_name": field_name,
                         "reason_analysis": "mock evidence",
                         "is_valid": True,
                     }
@@ -328,10 +321,75 @@ class TceStateValidationPipelineAcceptance(unittest.TestCase):
         qmeta = result["checkpoints"][0]["state_questionability"]["user_attributes_state:eldest_child"]
         self.assertEqual(qmeta["askable_fields"], ["current_value"])
         self.assertEqual(qmeta["validated_field_paths"], ["current_value"])
-        self.assertTrue(qmeta["is_questionable"])
+        self.assertNotIn("l2_is_questionable", qmeta)
         self.assertEqual(
             result["checkpoints"][0]["validated_snapshot_state"]["user_attributes_state"]["eldest_child"],
             "Leo (15), high school sophomore",
+        )
+
+    def test_l2_accepts_keyed_field_verdicts_from_prompt_shape(self):
+        class _KeyedValidatorClient:
+            prompt = ""
+
+            def ask(self, prompt: str, response_type: str = "json"):
+                del response_type
+                if "Validate whether this state is inferable from evidence" in prompt:
+                    _KeyedValidatorClient.prompt = prompt
+                    return {
+                        "field_verdicts": {
+                            "timing.start_time": {
+                                "reason_analysis": "mock start evidence",
+                                "is_valid": True,
+                            },
+                            "made_up.path": {
+                                "reason_analysis": "should be ignored",
+                                "is_valid": True,
+                            },
+                        }
+                    }
+                return {}
+
+        benchmark = {
+            "user_id": "001_user_001",
+            "checkpoints": [
+                {
+                    "checkpoint_id": "cp1",
+                    "as_of": {"timestamp": "2025-01-01 08:00:00"},
+                    "expected_snapshot_state": {
+                        "habits_state": {
+                            "morning_walk": {
+                                "timing": {
+                                    "start_time": "06:30",
+                                    "end_time": "07:00",
+                                }
+                            }
+                        }
+                    },
+                    "state_observability": {
+                        "habits_state": {
+                            "morning_walk": {"is_valid": True, "evidence_app_log_ids": ["log_0001"]}
+                        }
+                    },
+                }
+            ],
+        }
+
+        result = build_state_validation(
+            benchmark=copy.deepcopy(benchmark),
+            validator_client=_KeyedValidatorClient(),
+            app_logs_by_id={},
+            max_checkpoints=None,
+            l2_evidence_top_k=0,
+        )
+
+        qmeta = result["checkpoints"][0]["state_questionability"]["habits_state:morning_walk"]
+        self.assertIn('"timing.start_time"', _KeyedValidatorClient.prompt)
+        self.assertIn('"timing.end_time"', _KeyedValidatorClient.prompt)
+        self.assertEqual(qmeta["validated_field_paths"], ["timing.start_time"])
+        self.assertEqual(qmeta["dropped_field_paths"], ["timing.end_time"])
+        self.assertEqual(
+            result["checkpoints"][0]["validated_snapshot_state"]["habits_state"]["morning_walk"],
+            {"timing": {"start_time": "06:30"}},
         )
 
     def test_stage1_pre_excludes_schedule_dates_before_questionability(self):
@@ -384,8 +442,8 @@ class TceStateValidationPipelineAcceptance(unittest.TestCase):
 
         qmeta = result["checkpoints"][0]["state_questionability"]["habits_state:daily_walk"]
         self.assertTrue(qmeta["l1_is_questionable"])
-        self.assertTrue(qmeta["is_questionable"])
-        self.assertNotIn("schedule_dates_evidence_undercoverage", qmeta["reason_codes"])
+        self.assertNotIn("l2_is_questionable", qmeta)
+        self.assertNotIn("reason_codes", qmeta)
         self.assertFalse(any("schedule_dates" in path for path in qmeta["askable_fields"]))
         self.assertFalse(any("schedule_dates" in path for path in qmeta["validated_field_paths"]))
         self.assertEqual(_CountingValidatorClient.calls, 1)
@@ -393,6 +451,53 @@ class TceStateValidationPipelineAcceptance(unittest.TestCase):
             "schedule_dates",
             json.dumps(result["checkpoints"][0]["validated_snapshot_state"]["habits_state"]["daily_walk"]),
         )
+
+    def test_stage1_skips_l2_when_only_excluded_schedule_dates_remain(self):
+        _CountingValidatorClient.calls = 0
+        benchmark = {
+            "user_id": "001_user_001",
+            "checkpoints": [
+                {
+                    "checkpoint_id": "cp1",
+                    "as_of": {"timestamp": "2025-01-06 08:00:00"},
+                    "expected_snapshot_state": {
+                        "habits_state": {
+                            "daily_walk": {
+                                "schedule": {
+                                    "schedule_dates": [
+                                        "2025-01-01",
+                                        "2025-01-02",
+                                    ]
+                                }
+                            }
+                        }
+                    },
+                    "state_observability": {
+                        "habits_state": {
+                            "daily_walk": {
+                                "is_valid": True,
+                                "evidence_app_log_ids": ["log_0001"],
+                            }
+                        }
+                    },
+                }
+            ],
+        }
+
+        result = build_state_validation(
+            benchmark=copy.deepcopy(benchmark),
+            validator_client=_CountingValidatorClient(),
+            app_logs_by_id={},
+            max_checkpoints=None,
+            l2_evidence_top_k=0,
+        )
+
+        qmeta = result["checkpoints"][0]["state_questionability"]["habits_state:daily_walk"]
+        self.assertEqual(_CountingValidatorClient.calls, 0)
+        self.assertEqual(qmeta["askable_fields"], [])
+        self.assertEqual(qmeta["validated_field_paths"], [])
+        self.assertEqual(qmeta["validated_state_value"], {})
+        self.assertEqual(result["checkpoints"][0]["validated_snapshot_state"], {})
 
     def test_stage1_pre_excludes_preference_signals_from_validated_snapshot(self):
         class _PreferenceValidatorClient:
@@ -403,11 +508,8 @@ class TceStateValidationPipelineAcceptance(unittest.TestCase):
                 if "Validate whether this state is inferable from evidence" in prompt:
                     _PreferenceValidatorClient.calls += 1
                     return {
-                        "is_questionable": True,
-                        "reason_codes": ["mock_pass"],
                         "field_verdicts": [
                             {
-                                "field_name": "statement",
                                 "reason_analysis": "mock evidence",
                                 "is_valid": True,
                             }
@@ -450,7 +552,7 @@ class TceStateValidationPipelineAcceptance(unittest.TestCase):
         )
 
         qmeta = result["checkpoints"][0]["state_questionability"]["preferences_state:learning_modality"]
-        self.assertTrue(qmeta["is_questionable"])
+        self.assertNotIn("l2_is_questionable", qmeta)
         self.assertEqual(qmeta["askable_fields"], ["statement"])
         self.assertEqual(qmeta["validated_field_paths"], ["statement"])
         self.assertEqual(qmeta["validated_state_value"], {"statement": "prefers self-paced webinars"})
@@ -469,11 +571,8 @@ class TceStateValidationPipelineAcceptance(unittest.TestCase):
                 if "Validate whether this state is inferable from evidence" in prompt:
                     _PriorityValidatorClient.calls += 1
                     return {
-                        "is_questionable": True,
-                        "reason_codes": ["mock_pass"],
                         "field_verdicts": [
                             {
-                                "field_name": "timing.start_time",
                                 "reason_analysis": "mock evidence",
                                 "is_valid": True,
                             }
@@ -516,7 +615,7 @@ class TceStateValidationPipelineAcceptance(unittest.TestCase):
         )
 
         qmeta = result["checkpoints"][0]["state_questionability"]["habits_state:daily_walk"]
-        self.assertTrue(qmeta["is_questionable"])
+        self.assertNotIn("l2_is_questionable", qmeta)
         self.assertFalse(any("priority" in path for path in qmeta["askable_fields"]))
         self.assertFalse(any("priority" in path for path in qmeta["validated_field_paths"]))
         self.assertEqual(
@@ -532,23 +631,20 @@ class TceStateValidationPipelineAcceptance(unittest.TestCase):
             def ask(self, prompt: str, response_type: str = "json"):
                 if "Validate whether this state is inferable from evidence" in prompt:
                     return {
-                        "is_questionable": True,
-                        "reason_codes": ["mock_pass"],
                         "field_verdicts": [
                             {
-                                "field_name": "current_value",
                                 "reason_analysis": "mock evidence",
                                 "is_valid": True,
                             }
                         ],
                     }
-                if "Validate whether one canonical gold change reason is sufficiently supported" in prompt:
+                if "Validate whether the provided change reason is supported by evidence" in prompt:
                     _ChangeReasonValidatorClient.calls += 1
                     return {
-                        "exists": True,
-                        "reason_analysis": "The evidence supports the later schedule shift.",
-                        "is_valid": True,
-                        "reason_codes": [],
+                        "change_reason_verdict": {
+                            "reason_analysis": "The evidence supports the later schedule shift.",
+                            "is_valid": True,
+                        },
                     }
                 return {}
 
@@ -587,15 +683,13 @@ class TceStateValidationPipelineAcceptance(unittest.TestCase):
         self.assertEqual(
             qmeta["change_reason_validation"],
             {
-                "exists": True,
                 "reason_analysis": "The evidence supports the later schedule shift.",
                 "is_valid": True,
-                "reason_codes": [],
             },
         )
         self.assertEqual(
             qmeta["validation_identity"]["change_reason_prompt_version"],
-            "change_reason_validate_prompt_v1",
+            "change_reason_validate_prompt_v2_verdict_only",
         )
 
     def test_resume_backfills_missing_change_reason_validation(self):
@@ -607,23 +701,20 @@ class TceStateValidationPipelineAcceptance(unittest.TestCase):
                 if "Validate whether this state is inferable from evidence" in prompt:
                     _BackfillChangeReasonValidatorClient.state_calls += 1
                     return {
-                        "is_questionable": True,
-                        "reason_codes": ["mock_pass"],
                         "field_verdicts": [
                             {
-                                "field_name": "current_value",
                                 "reason_analysis": "mock evidence",
                                 "is_valid": True,
                             }
                         ],
                     }
-                if "Validate whether one canonical gold change reason is sufficiently supported" in prompt:
+                if "Validate whether the provided change reason is supported by evidence" in prompt:
                     _BackfillChangeReasonValidatorClient.change_reason_calls += 1
                     return {
-                        "exists": True,
-                        "reason_analysis": "The evidence supports the change reason.",
-                        "is_valid": True,
-                        "reason_codes": [],
+                        "change_reason_verdict": {
+                            "reason_analysis": "The evidence supports the change reason.",
+                            "is_valid": True,
+                        },
                     }
                 return {}
 
@@ -647,10 +738,7 @@ class TceStateValidationPipelineAcceptance(unittest.TestCase):
                     },
                     "state_questionability": {
                         "habits_state:morning_walk": {
-                            "is_questionable": True,
                             "l1_is_questionable": True,
-                            "l2_is_questionable": True,
-                            "reason_codes": ["mock_pass"],
                             "askable_fields": ["current_value"],
                             "validated_field_paths": ["current_value"],
                             "dropped_field_paths": [],
@@ -669,7 +757,7 @@ class TceStateValidationPipelineAcceptance(unittest.TestCase):
                                 "validated_state_value_signature": "\"07:00\"",
                                 "evidence_signature": "[seeded]",
                                 "validator_version": "qv3_l1_l2_preexclude_derived",
-                                "prompt_version": "state_validate_prompt_v2",
+                                "prompt_version": "state_validate_prompt_v4_field_keyed",
                             },
                         }
                     },
@@ -704,10 +792,8 @@ class TceStateValidationPipelineAcceptance(unittest.TestCase):
         self.assertEqual(
             qmeta["change_reason_validation"],
             {
-                "exists": True,
                 "reason_analysis": "The evidence supports the change reason.",
                 "is_valid": True,
-                "reason_codes": [],
             },
         )
 

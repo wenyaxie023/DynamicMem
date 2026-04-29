@@ -1959,95 +1959,98 @@ def build_state_questionability_validation_prompt(
     state_key: str,
     state_value: Any,
     askable_fields: List[str],
-    state_observability: Dict[str, Any],
     evidence_logs: List[Dict[str, Any]],
 ) -> str:
+    normalized_fields = [
+        str(path).strip().lower()
+        for path in list(askable_fields or [])
+        if str(path).strip()
+    ]
+    output_template = {
+        "field_verdicts": {
+            path: {
+                "reason_analysis": "<why this exact field value is or is not inferable from evidence>",
+                "is_valid": "<bool>",
+            }
+            for path in normalized_fields
+        }
+    }
     return """[Task Instruction]
-Validate whether this state is inferable from evidence and question-worthy for apply QA generation.
-Evaluate field-level inferability first, then produce a key-level decision.
-Success means only evidence-supported fields are marked valid.
+Validate whether this state is inferable from evidence.
+Evaluate field-level inferability.
+Success means each candidate field is marked valid only when the target value for that field is supported by evidence.
 
 [Definitions]
 - state_key: the state item being validated.
 - state_value: the structured target value for this state_key at checkpoint time.
-- candidate_field_paths: field paths to evaluate for inferability.
-- state_observability: observability metadata for this state key (for example `is_valid`, `evidence_app_log_ids`, `last_app_log_id`).
+- candidate_field_paths: field paths to evaluate for inferability. The target value for each path is found inside state_value.
 - evidence_logs: related app logs up to checkpoint time; these are the primary evidence.
-- field_verdict: one field-level decision with `{{field_name, reason_analysis, is_valid}}`.
-- key-level `is_questionable`: true only when at least one field verdict has `is_valid=true`.
+- field_verdicts: an object keyed exactly by candidate field path. Each value is one field-level decision with `{{reason_analysis, is_valid}}`.
 
 [Constraints]
 1. Evaluate each path in `candidate_field_paths` independently.
-2. Output exactly one `field_verdicts` item per candidate field path.
-3. Use field names exactly from `candidate_field_paths`; do not invent paths.
-4. Set `is_valid=true` only if evidence logs support inferring that field with high confidence.
-5. If evidence is missing or ambiguous, set `is_valid=false` and explain why in `reason_analysis`.
-6. Set top-level `is_questionable=true` only when at least one field has `is_valid=true`.
-7. Keep `reason_codes` concise and machine-friendly (snake_case preferred).
-8. Output JSON ONLY with no markdown and no extra keys.
+2. Output exactly one `field_verdicts` entry per candidate field path.
+3. Use exactly the field keys shown in the output template; do not add, remove, or rename field keys.
+4. For each candidate field, compare the target value in `state_value` against the evidence logs.
+5. Set `is_valid=true` only if evidence logs support inferring that exact field value with high confidence.
+6. If evidence is missing, ambiguous, contradicted, or supports only a weaker/generalized value, set `is_valid=false` and explain why in `reason_analysis`.
+7. Output JSON ONLY with no markdown and no extra keys.
 
 [Example]
 [Example Input]
 state_key: "habits_state:budget_review"
+state_value: {{
+  "schedule": {{
+    "days_of_week": [6]
+  }},
+  "timing": {{
+    "start_time": "09:00",
+    "end_time": "10:00"
+  }}
+}}
 candidate_field_paths: ["schedule.days_of_week", "timing.start_time", "timing.end_time"]
-evidence_logs: [{{"app_log_id":"log_0101","api_name":"scheduleService","response":"...Sunday 09:00 reminder..."}}]
+evidence_logs: [
+  {{
+    "app_log_id": "log_0101",
+    "api_name": "scheduleService",
+    "response": "Created a recurring Sunday 09:00 reminder for the user's budget review."
+  }}
+]
 
 [Example Output]
 {{
-  "is_questionable": true,
-  "reason_codes": ["partial_field_support"],
-  "field_verdicts": [
-    {{
-      "field_name": "schedule.days_of_week",
-      "reason_analysis": "Weekly Sunday pattern is explicit in multiple logs.",
+  "field_verdicts": {{
+    "schedule.days_of_week": {{
+      "reason_analysis": "The evidence explicitly says the budget review reminder is recurring on Sunday, matching days_of_week=[6].",
       "is_valid": true
     }},
-    {{
-      "field_name": "timing.start_time",
-      "reason_analysis": "Start action repeatedly appears at 09:00.",
+    "timing.start_time": {{
+      "reason_analysis": "The evidence explicitly gives the reminder time as 09:00, matching the target start_time.",
       "is_valid": true
     }},
-    {{
-      "field_name": "timing.end_time",
-      "reason_analysis": "No evidence provides a duration or explicit end time.",
+    "timing.end_time": {{
+      "reason_analysis": "The evidence does not provide a duration or explicit end time, so 10:00 is not supported.",
       "is_valid": false
     }}
-  ]
+  }}
 }}
 
-[Input/Output Format]
-Input:
-- state_key: string
-- state_value: object
-- candidate_field_paths: string[]
-- state_observability: object
-- evidence_logs: object[]
-
-Input Payload:
-- state_key: {state_key}
-- state_value: {state_value}
-- candidate_field_paths: {askable_fields}
-- state_observability: {state_observability}
-- evidence_logs: {evidence_logs}
-
-Output JSON ONLY:
+[Input]
 {{
-  "is_questionable": "<bool>",
-  "reason_codes": ["<short_code>", "..."],
-  "field_verdicts": [
-    {{
-      "field_name": "<field path from candidate_field_paths>",
-      "reason_analysis": "<why inferable or not inferable from evidence>",
-      "is_valid": "<bool>"
-    }}
-  ]
+  "state_key": {state_key},
+  "state_value": {state_value},
+  "candidate_field_paths": {askable_fields},
+  "evidence_logs": {evidence_logs}
 }}
+
+[Output JSON ONLY]
+{output_template}
 """.format(
         state_key=state_key,
         state_value=json.dumps(state_value, ensure_ascii=False),
-        askable_fields=json.dumps(list(askable_fields or []), ensure_ascii=False),
-        state_observability=json.dumps(state_observability or {}, ensure_ascii=False),
+        askable_fields=json.dumps(normalized_fields, ensure_ascii=False),
         evidence_logs=json.dumps(list(evidence_logs or []), ensure_ascii=False),
+        output_template=json.dumps(output_template, ensure_ascii=False, indent=2),
     )
 
 
@@ -2056,72 +2059,71 @@ def build_change_reason_validation_prompt(
     state_key: str,
     state_value: Any,
     change_reason: str,
-    state_observability: Dict[str, Any],
     evidence_logs: List[Dict[str, Any]],
 ) -> str:
     return """[Task Instruction]
-Validate whether the provided change reason is sufficiently supported by the evidence logs to use as trusted reference metadata.
-This is a metadata validation task, not a field-level state validation task.
+Validate whether the provided change reason is supported by evidence.
 
 [Definitions]
 - state_key: the state item whose change reason is being validated.
-- state_value: the structured target value for this state_key at checkpoint time.
-- change_reason: the provided reference reason text for why the state changed.
-- state_observability: observability metadata for this state key (for example `is_valid`, `evidence_app_log_ids`, `last_app_log_id`, `last_change_reason`).
+- state_value: the target value for this state_key at checkpoint time.
+- change_reason: the provided reason text for why the state changed.
 - evidence_logs: related app logs up to checkpoint time; these are the primary evidence.
-- valid change reason: a reason text that is explicitly supported, or strongly and conservatively inferable, from the evidence logs and does not conflict with the state change implied by the evidence.
+- change_reason_verdict: one decision with `{{reason_analysis, is_valid}}`.
 
 [Constraints]
-1. Judge only whether `change_reason` is evidence-supported enough to be used as trusted reference metadata.
-2. Be conservative: if evidence is missing, indirect, or ambiguous, mark the change reason invalid.
+1. Judge only whether `change_reason` is evidence-supported.
+2. Compare the claim in `change_reason` against `state_value` and `evidence_logs`.
 3. Do not rewrite the change reason.
-4. `exists` must be `true` when a non-empty `change_reason` is provided.
-5. Set `is_valid=true` only when the evidence logs support this change reason with high confidence.
-6. If invalid, explain the evidence gap or mismatch in `reason_analysis`.
-7. Keep `reason_codes` concise and machine-friendly (snake_case preferred).
-8. Output JSON ONLY with no markdown and no extra keys.
+4. Set `is_valid=true` only when the evidence logs support this change reason with high confidence.
+5. If evidence is missing, indirect, ambiguous, contradicted, or supports only a weaker/generalized explanation, set `is_valid=false`.
+6. Explain the evidence match or gap in `reason_analysis`.
+7. Output JSON ONLY with no markdown and no extra keys.
 
 [Example]
 [Example Input]
-state_key: "profile_state:commute_mode"
-change_reason: "Switched to train commuting after downtown parking fees increased."
-evidence_logs: [{{"app_log_id":"log_0201","api_name":"commutePlanner","response":"...parking fees downtown rose again... train commute selected for weekdays..."}}]
+state_key: "habits_state:morning_walk"
+state_value: {{
+  "timing": {{
+    "start_time": "07:00"
+  }}
+}}
+change_reason: "Routine shifted later after the user's morning schedule changed."
+evidence_logs: [
+  {{
+    "app_log_id": "log_0201",
+    "api_name": "scheduleService",
+    "response": "Updated the morning walk reminder to 07:00 because the user's morning meeting moved later."
+  }}
+]
 
 [Example Output]
 {{
-  "exists": true,
-  "reason_analysis": "The evidence explicitly mentions higher downtown parking fees and the switch to train commuting.",
-  "is_valid": true,
-  "reason_codes": []
+  "change_reason_verdict": {{
+    "reason_analysis": "The evidence explicitly says the morning walk reminder moved to 07:00 because the user's morning schedule changed, matching the provided change reason.",
+    "is_valid": true
+  }}
 }}
 
-[Input/Output Format]
-Input:
-- state_key: string
-- state_value: object
-- change_reason: string
-- state_observability: object
-- evidence_logs: object[]
-
-Input Payload:
-- state_key: {state_key}
-- state_value: {state_value}
-- change_reason: {change_reason}
-- state_observability: {state_observability}
-- evidence_logs: {evidence_logs}
-
-Output JSON ONLY:
+[Input]
 {{
-  "exists": "<bool>",
-  "reason_analysis": "<why the change reason is or is not evidence-supported>",
-  "is_valid": "<bool>",
-  "reason_codes": ["<short_code>", "..."]
+  "state_key": {state_key},
+  "state_value": {state_value},
+  "change_reason": {change_reason},
+  "evidence_logs": {evidence_logs}
+}}
+
+[Output JSON ONLY]
+{{
+  "change_reason_verdict": {{
+    "reason_analysis": "<why this change reason is or is not evidence-supported>",
+    "is_valid": "<bool>"
+  }}
 }}
 """.format(
         state_key=state_key,
         state_value=json.dumps(state_value, ensure_ascii=False),
         change_reason=json.dumps(str(change_reason or ""), ensure_ascii=False),
-        state_observability=json.dumps(state_observability or {}, ensure_ascii=False),
         evidence_logs=json.dumps(list(evidence_logs or []), ensure_ascii=False),
     )
 

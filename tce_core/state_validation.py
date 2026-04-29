@@ -17,8 +17,8 @@ from .questionability import evaluate_state_questionability
 from .task_spec import flatten_snapshot
 
 STATE_VALIDATOR_VERSION = "qv3_l1_l2_preexclude_derived"
-STATE_VALIDATE_PROMPT_VERSION = "state_validate_prompt_v2"
-CHANGE_REASON_VALIDATE_PROMPT_VERSION = "change_reason_validate_prompt_v1"
+STATE_VALIDATE_PROMPT_VERSION = "state_validate_prompt_v4_field_keyed"
+CHANGE_REASON_VALIDATE_PROMPT_VERSION = "change_reason_validate_prompt_v2_verdict_only"
 
 
 def bool_like(value: Any, *, default: bool = False) -> bool:
@@ -130,11 +130,6 @@ def collect_evidence_ids(obs: Dict[str, Any]) -> List[str]:
             sid = str(item).strip()
             if sid and sid not in out:
                 out.append(sid)
-    last_id = obs.get("last_app_log_id")
-    if last_id is not None:
-        sid = str(last_id).strip()
-        if sid and sid not in out:
-            out.append(sid)
     return out
 
 
@@ -146,7 +141,6 @@ def compute_evidence_signature(
 ) -> str:
     payload = {
         "evidence_app_log_ids": sorted(collect_evidence_ids(obs)),
-        "last_app_log_id": str(obs.get("last_app_log_id", "") or ""),
         "is_valid": bool(obs.get("is_valid")),
         "validator_version": validator_version,
         "prompt_version": prompt_version,
@@ -211,58 +205,62 @@ def validate_state_questionability_with_llm(
     state_key: str,
     state_value: Any,
     askable_fields: List[str],
-    state_observability: Dict[str, Any],
     evidence_logs: List[Dict[str, Any]],
 ) -> Dict[str, Any]:
     prompt = build_state_questionability_validation_prompt(
         state_key=state_key,
         state_value=state_value,
         askable_fields=askable_fields,
-        state_observability=state_observability,
         evidence_logs=evidence_logs,
     )
     raw = _call_json(validator_client, prompt)
+    normalized_paths = [str(path).strip().lower() for path in list(askable_fields or []) if str(path).strip()]
     if not isinstance(raw, dict):
         return {
-            "is_questionable": False,
-            "reason_codes": ["llm_validate_error"],
-            "field_verdicts": [],
+            "field_verdicts": [
+                {
+                    "field_name": path,
+                    "reason_analysis": "LLM validation did not return a valid JSON object.",
+                    "is_valid": False,
+                }
+                for path in normalized_paths
+            ],
         }
 
-    out_is_q = bool_like(raw.get("is_questionable"), default=False)
-    out_reason_codes: List[str] = []
-    for code in (raw.get("reason_codes") or []):
-        scode = str(code).strip()
-        if scode:
-            out_reason_codes.append(scode)
     out_field_verdicts: List[Dict[str, Any]] = []
     raw_field_verdicts = raw.get("field_verdicts")
+    if isinstance(raw_field_verdicts, dict):
+        raw_verdict_by_path = {
+            str(path).strip().lower(): item
+            for path, item in raw_field_verdicts.items()
+            if str(path).strip()
+        }
+        raw_field_verdicts = [raw_verdict_by_path.get(path) for path in normalized_paths]
+    else:
+        if not isinstance(raw_field_verdicts, list):
+            raw_field_verdicts = raw.get("field_validations")
+        if not isinstance(raw_field_verdicts, list):
+            raw_field_verdicts = []
     if not isinstance(raw_field_verdicts, list):
-        raw_field_verdicts = raw.get("field_validations")
-    if isinstance(raw_field_verdicts, list):
-        for item in raw_field_verdicts:
-            if not isinstance(item, dict):
-                continue
-            field_name = str(item.get("field_name") or item.get("field_path") or "").strip().lower()
-            if not field_name:
-                continue
-            out_field_verdicts.append(
-                {
-                    "field_name": field_name,
-                    "reason_analysis": str(item.get("reason_analysis") or item.get("reason") or "").strip(),
-                    "is_valid": bool_like(
-                        item.get("is_valid"),
-                        default=bool_like(item.get("is_questionable"), default=False),
-                    ),
-                }
-            )
-    if not out_is_q and not out_reason_codes:
-        out_reason_codes.append("llm_not_questionable")
-    return {
-        "is_questionable": out_is_q,
-        "reason_codes": out_reason_codes,
-        "field_verdicts": out_field_verdicts,
-    }
+        raw_field_verdicts = []
+    for idx, field_name in enumerate(normalized_paths):
+        item = raw_field_verdicts[idx] if idx < len(raw_field_verdicts) else None
+        if isinstance(item, dict):
+            reason_analysis = str(item.get("reason_analysis") or item.get("reason") or "").strip()
+            is_valid = bool_like(item.get("is_valid"), default=False)
+            if not reason_analysis:
+                reason_analysis = "No validation analysis was returned for this field."
+        else:
+            reason_analysis = "LLM validation did not return a verdict for this field."
+            is_valid = False
+        out_field_verdicts.append(
+            {
+                "field_name": field_name,
+                "reason_analysis": reason_analysis,
+                "is_valid": is_valid,
+            }
+        )
+    return {"field_verdicts": out_field_verdicts}
 
 
 def validate_change_reason_with_llm(
@@ -271,47 +269,30 @@ def validate_change_reason_with_llm(
     state_key: str,
     state_value: Any,
     change_reason: str,
-    state_observability: Dict[str, Any],
     evidence_logs: List[Dict[str, Any]],
 ) -> Dict[str, Any]:
-    exists = bool(str(change_reason or "").strip())
-    if not exists:
-        return {
-            "exists": False,
-            "reason_analysis": "",
-            "is_valid": False,
-            "reason_codes": [],
-        }
+    has_change_reason = bool(str(change_reason or "").strip())
+    if not has_change_reason:
+        return {"reason_analysis": "", "is_valid": False}
     prompt = build_change_reason_validation_prompt(
         state_key=state_key,
         state_value=state_value,
         change_reason=change_reason,
-        state_observability=state_observability,
         evidence_logs=evidence_logs,
     )
     raw = _call_json(validator_client, prompt)
     if not isinstance(raw, dict):
-        return {
-            "exists": True,
-            "reason_analysis": "",
-            "is_valid": False,
-            "reason_codes": ["llm_validate_error"],
-        }
-    out_exists = bool_like(raw.get("exists"), default=True)
-    out_reason_analysis = str(raw.get("reason_analysis") or raw.get("analysis") or "").strip()
-    out_is_valid = bool_like(raw.get("is_valid"), default=False)
-    out_reason_codes: List[str] = []
-    for code in list(raw.get("reason_codes") or []):
-        scode = str(code).strip()
-        if scode:
-            out_reason_codes.append(scode)
-    if out_exists and not out_is_valid and not out_reason_codes:
-        out_reason_codes.append("change_reason_not_supported")
+        return {"reason_analysis": "LLM validation did not return a valid JSON object.", "is_valid": False}
+    verdict = raw.get("change_reason_verdict")
+    if not isinstance(verdict, dict):
+        verdict = raw
+    out_reason_analysis = str(verdict.get("reason_analysis") or verdict.get("analysis") or "").strip()
+    out_is_valid = bool_like(verdict.get("is_valid"), default=False)
+    if not out_reason_analysis:
+        out_reason_analysis = "No validation analysis was returned for this change reason."
     return {
-        "exists": out_exists,
         "reason_analysis": out_reason_analysis,
-        "is_valid": out_exists and out_is_valid,
-        "reason_codes": out_reason_codes,
+        "is_valid": out_is_valid,
     }
 
 
@@ -358,18 +339,12 @@ def _build_change_reason_validation_payload(
         top_k=l2_evidence_top_k,
     )
     if validator_client is None:
-        return {
-            "exists": True,
-            "reason_analysis": "",
-            "is_valid": True,
-            "reason_codes": [],
-        }
+        return {"reason_analysis": "", "is_valid": True}
     return validate_change_reason_with_llm(
         validator_client=validator_client,
         state_key=state_key,
         state_value=state_value,
         change_reason=change_reason,
-        state_observability=obs,
         evidence_logs=evidence_logs,
     )
 
@@ -394,45 +369,41 @@ def _build_final_questionability_payload(
         )
 
     l1_is_questionable = bool(qmeta_l1.get("is_questionable"))
-    evidence_logs = build_evidence_logs(
-        obs=obs,
-        app_logs_by_id=app_logs_by_id,
-        top_k=l2_evidence_top_k,
-    )
-    if l1_is_questionable:
+    if not l1_is_questionable:
+        qmeta_l2 = {
+            "field_verdicts": [
+                {
+                    "field_name": path,
+                    "reason_analysis": "Skipped because deterministic L1 validation did not accept this state.",
+                    "is_valid": False,
+                }
+                for path in candidate_field_paths
+            ],
+        }
+    elif not candidate_field_paths:
+        qmeta_l2 = {"field_verdicts": []}
+    else:
+        evidence_logs = build_evidence_logs(
+            obs=obs,
+            app_logs_by_id=app_logs_by_id,
+            top_k=l2_evidence_top_k,
+        )
         qmeta_l2 = validate_state_questionability_with_llm(
             validator_client=validator_client,
             state_key=state_key,
             state_value=state_value,
             askable_fields=candidate_field_paths,
-            state_observability=obs,
             evidence_logs=evidence_logs,
         )
-    else:
-        qmeta_l2 = {
-            "is_questionable": False,
-            "reason_codes": ["l2_skipped_due_to_l1_fail"],
-            "field_verdicts": [],
-        }
 
-    merged_reason_codes: List[str] = []
-    for code in list(qmeta_l1.get("reason_codes") or []) + list(qmeta_l2.get("reason_codes") or []):
-        scode = str(code).strip()
-        if scode and scode not in merged_reason_codes:
-            merged_reason_codes.append(scode)
-
-    l2_is_questionable = bool_like(qmeta_l2.get("is_questionable"), default=False)
     field_verdicts = qmeta_l2.get("field_verdicts") if isinstance(qmeta_l2.get("field_verdicts"), list) else []
     allowed_fields = {
         str(item.get("field_name") or item.get("field_path") or "").strip().lower()
         for item in field_verdicts
         if isinstance(item, dict)
-        and bool_like(item.get("is_valid"), default=bool_like(item.get("is_questionable"), default=False))
+        and bool_like(item.get("is_valid"), default=False)
     }
-    if allowed_fields:
-        validated_field_paths = [path for path in candidate_field_paths if path in allowed_fields]
-    else:
-        validated_field_paths = list(candidate_field_paths) if l2_is_questionable else []
+    validated_field_paths = [path for path in candidate_field_paths if path in allowed_fields]
     dropped_field_paths = [path for path in candidate_field_paths if path not in set(validated_field_paths)]
     validated_state_value = prune_value_by_paths(state_value, set(validated_field_paths))
     if validated_state_value is None:
@@ -445,12 +416,8 @@ def _build_final_questionability_payload(
         app_logs_by_id=app_logs_by_id,
         l2_evidence_top_k=l2_evidence_top_k,
     )
-    is_questionable_final = l1_is_questionable and l2_is_questionable and bool(validated_field_paths)
     out = {
-        "is_questionable": is_questionable_final,
         "l1_is_questionable": l1_is_questionable,
-        "l2_is_questionable": l2_is_questionable,
-        "reason_codes": merged_reason_codes,
         "askable_fields": candidate_field_paths,
         "validated_field_paths": validated_field_paths,
         "dropped_field_paths": dropped_field_paths,
@@ -507,8 +474,38 @@ def _normalize_saved_questionability_entry(
     if normalized_validated_state_value is None:
         normalized_validated_state_value = {}
     out["validated_state_value"] = normalized_validated_state_value
-    out["reason_codes"] = [str(code).strip() for code in list(out.get("reason_codes") or []) if str(code).strip()]
-    out["field_verdicts"] = list(out.get("field_verdicts") or [])
+    raw_field_verdicts = list(out.get("field_verdicts") or [])
+    normalized_verdicts: List[Dict[str, Any]] = []
+    verdict_by_path: Dict[str, Dict[str, Any]] = {}
+    for item in raw_field_verdicts:
+        if not isinstance(item, dict):
+            continue
+        field_name = str(item.get("field_name") or item.get("field_path") or "").strip().lower()
+        if not field_name:
+            continue
+        verdict_by_path[field_name] = item
+    for path in askable_fields:
+        item = verdict_by_path.get(path)
+        if isinstance(item, dict):
+            normalized_verdicts.append(
+                {
+                    "field_name": path,
+                    "reason_analysis": str(item.get("reason_analysis") or item.get("reason") or "").strip(),
+                    "is_valid": bool_like(
+                        item.get("is_valid"),
+                        default=path in set(validated_field_paths),
+                    ),
+                }
+            )
+        else:
+            normalized_verdicts.append(
+                {
+                    "field_name": path,
+                    "reason_analysis": "",
+                    "is_valid": path in set(validated_field_paths),
+                }
+            )
+    out["field_verdicts"] = normalized_verdicts
     change_reason = extract_last_change_reason(obs)
     raw_change_reason_validation = (
         out.get("change_reason_validation")
@@ -517,26 +514,16 @@ def _normalize_saved_questionability_entry(
     )
     if change_reason or raw_change_reason_validation is not None:
         if isinstance(raw_change_reason_validation, dict):
+            raw_verdict = raw_change_reason_validation.get("change_reason_verdict")
+            if not isinstance(raw_verdict, dict):
+                raw_verdict = raw_change_reason_validation
             out["change_reason_validation"] = {
-                "exists": bool_like(raw_change_reason_validation.get("exists"), default=bool(change_reason)),
                 "reason_analysis": str(
-                    raw_change_reason_validation.get("reason_analysis")
-                    or raw_change_reason_validation.get("analysis")
+                    raw_verdict.get("reason_analysis")
+                    or raw_verdict.get("analysis")
                     or ""
                 ).strip(),
-                "is_valid": bool_like(raw_change_reason_validation.get("is_valid"), default=False),
-                "reason_codes": [
-                    str(code).strip()
-                    for code in list(raw_change_reason_validation.get("reason_codes") or [])
-                    if str(code).strip()
-                ],
-            }
-        elif change_reason:
-            out["change_reason_validation"] = {
-                "exists": True,
-                "reason_analysis": "",
-                "is_valid": False,
-                "reason_codes": ["change_reason_validation_missing"],
+                "is_valid": bool_like(raw_verdict.get("is_valid"), default=False),
             }
     out.pop("llm_reason", None)
     out["validator_version"] = str(out.get("validator_version") or STATE_VALIDATOR_VERSION)
@@ -544,13 +531,11 @@ def _normalize_saved_questionability_entry(
     out["validation_source"] = validation_source if validation_source in {"computed", "reused"} else "computed"
     out["l1_is_questionable"] = bool_like(
         out.get("l1_is_questionable"),
-        default=bool_like(out.get("is_questionable"), default=False),
+        default=bool_like(out.get("is_questionable"), default=bool(validated_field_paths)),
     )
-    out["l2_is_questionable"] = bool_like(
-        out.get("l2_is_questionable"),
-        default=bool_like(out.get("is_questionable"), default=False),
-    )
-    out["is_questionable"] = bool_like(out.get("is_questionable"), default=False) and bool(validated_field_paths)
+    out.pop("l2_is_questionable", None)
+    out.pop("is_questionable", None)
+    out.pop("reason_codes", None)
 
     validation_identity = out.get("validation_identity") if isinstance(out.get("validation_identity"), dict) else {}
     if not validation_identity:
@@ -588,11 +573,15 @@ def _build_checkpoint_summary(
         if not isinstance(qmeta, dict):
             continue
         processed_count += 1
-        l2_is_questionable = bool_like(qmeta.get("l2_is_questionable"), default=False)
-        is_questionable_final = bool_like(qmeta.get("is_questionable"), default=False)
-        if l2_is_questionable:
+        validated_field_paths = [
+            str(path).strip()
+            for path in list(qmeta.get("validated_field_paths") or [])
+            if str(path).strip()
+        ]
+        is_accepted = bool(validated_field_paths)
+        if is_accepted:
             cp_l2_pass += 1
-        if is_questionable_final:
+        if is_accepted:
             cp_final_pass += 1
             validated_snapshot_flat[key] = qmeta.get("validated_state_value")
         if str(qmeta.get("validation_source") or "").strip().lower() == "reused":
@@ -630,15 +619,6 @@ def _needs_change_reason_revalidation(*, qmeta: Dict[str, Any], obs: Dict[str, A
         else None
     )
     if change_reason_validation is None:
-        return True
-    reason_codes = {
-        str(code).strip()
-        for code in list(change_reason_validation.get("reason_codes") or [])
-        if str(code).strip()
-    }
-    if "change_reason_validation_missing" in reason_codes:
-        return True
-    if not bool_like(change_reason_validation.get("exists"), default=False):
         return True
     if str(validation_identity.get("change_reason_signature") or "") != compute_change_reason_signature(obs):
         return True
@@ -972,7 +952,7 @@ def write_state_validation_reports(*, payload: Dict[str, Any], output_path: Path
 
         qmap = checkpoint.get("state_questionability") if isinstance(checkpoint.get("state_questionability"), dict) else {}
         for state_key, qmeta in qmap.items():
-            if not isinstance(qmeta, dict) or not bool(qmeta.get("is_questionable")):
+            if not isinstance(qmeta, dict) or not list(qmeta.get("validated_field_paths") or []):
                 continue
             try:
                 state_value_text = json.dumps(qmeta.get("validated_state_value"), ensure_ascii=False, sort_keys=True)
