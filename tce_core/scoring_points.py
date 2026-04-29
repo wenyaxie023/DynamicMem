@@ -425,18 +425,26 @@ def _normalize_value_rubric_validation(
     raw: Any,
     *,
     expected_point_ids: Sequence[str],
-) -> Tuple[List[Dict[str, Any]], bool, List[str], List[str]]:
+) -> Tuple[List[Dict[str, Any]], bool, str, List[str], List[str]]:
     schema_failures: List[str] = []
     if not isinstance(raw, dict):
-        return [], False, [], ["llm_invalid"]
+        return [], False, "", [], ["llm_invalid"]
     raw_points = raw.get("points")
     raw_set_pass = raw.get("set_pass")
+    raw_set_analysis = raw.get("set_analysis")
     raw_set_failures = raw.get("set_failures")
     if not isinstance(raw_points, list):
-        return [], False, [], ["llm_invalid"]
+        return [], False, "", [], ["llm_invalid"]
     if not isinstance(raw_set_pass, bool):
         schema_failures.append("llm_invalid")
         raw_set_pass = False
+    if raw_set_analysis is None:
+        set_analysis = ""
+    elif isinstance(raw_set_analysis, str):
+        set_analysis = raw_set_analysis.strip()
+    else:
+        schema_failures.append("llm_invalid")
+        set_analysis = ""
     if not isinstance(raw_set_failures, list):
         schema_failures.append("llm_invalid")
         raw_set_failures = []
@@ -509,7 +517,7 @@ def _normalize_value_rubric_validation(
             continue
         if normalized not in set_failures:
             set_failures.append(normalized)
-    return normalized_points, bool(raw_set_pass), set_failures, _dedupe_preserve_order(schema_failures)
+    return normalized_points, bool(raw_set_pass), set_analysis, set_failures, _dedupe_preserve_order(schema_failures)
 
 
 def _validate_value_rubric_points(
@@ -525,6 +533,7 @@ def _validate_value_rubric_points(
             "is_valid": False,
             "point_results": [],
             "set_pass": False,
+            "set_analysis": "",
             "set_failures": [],
             "failed_point_ids": [],
             "failed_rules": _dedupe_preserve_order(["rubric_invalid", *schema_failures]),
@@ -534,6 +543,7 @@ def _validate_value_rubric_points(
             "is_valid": True,
             "point_results": [],
             "set_pass": True,
+            "set_analysis": "",
             "set_failures": [],
             "failed_point_ids": [],
             "failed_rules": [],
@@ -549,7 +559,7 @@ def _validate_value_rubric_points(
     except Exception:
         raw = None
     expected_point_ids = [str(point.get("point_id") or "").strip() for point in points if isinstance(point, dict)]
-    point_results, set_pass, set_failures, normalize_failures = _normalize_value_rubric_validation(
+    point_results, set_pass, set_analysis, set_failures, normalize_failures = _normalize_value_rubric_validation(
         raw,
         expected_point_ids=expected_point_ids,
     )
@@ -581,6 +591,7 @@ def _validate_value_rubric_points(
         "is_valid": is_valid,
         "point_results": point_results,
         "set_pass": bool(set_pass),
+        "set_analysis": set_analysis,
         "set_failures": set_failures,
         "failed_point_ids": failed_point_ids,
         "failed_rules": failed_rules,
@@ -602,6 +613,7 @@ def _validate_change_reason_rubric_points(
             "is_valid": False,
             "point_results": [],
             "set_pass": False,
+            "set_analysis": "",
             "set_failures": [],
             "failed_point_ids": [],
             "failed_rules": _dedupe_preserve_order(["rubric_invalid", *schema_failures]),
@@ -611,6 +623,7 @@ def _validate_change_reason_rubric_points(
             "is_valid": True,
             "point_results": [],
             "set_pass": True,
+            "set_analysis": "",
             "set_failures": [],
             "failed_point_ids": [],
             "failed_rules": [],
@@ -628,7 +641,7 @@ def _validate_change_reason_rubric_points(
     except Exception:
         raw = None
     expected_point_ids = [str(point.get("point_id") or "").strip() for point in points if isinstance(point, dict)]
-    point_results, set_pass, set_failures, normalize_failures = _normalize_value_rubric_validation(
+    point_results, set_pass, set_analysis, set_failures, normalize_failures = _normalize_value_rubric_validation(
         raw,
         expected_point_ids=expected_point_ids,
     )
@@ -660,6 +673,7 @@ def _validate_change_reason_rubric_points(
         "is_valid": is_valid,
         "point_results": point_results,
         "set_pass": bool(set_pass),
+        "set_analysis": set_analysis,
         "set_failures": set_failures,
         "failed_point_ids": failed_point_ids,
         "failed_rules": failed_rules,
@@ -682,6 +696,7 @@ def validate_apply_answer_rubric_points(
             "is_valid": False,
             "point_results": [],
             "set_pass": False,
+            "set_analysis": "",
             "set_failures": [],
             "failed_point_ids": [],
             "failed_rules": _dedupe_preserve_order(["rubric_invalid", *schema_failures]),
@@ -691,6 +706,7 @@ def validate_apply_answer_rubric_points(
             "is_valid": True,
             "point_results": [],
             "set_pass": True,
+            "set_analysis": "",
             "set_failures": [],
             "failed_point_ids": [],
             "failed_rules": [],
@@ -709,7 +725,7 @@ def validate_apply_answer_rubric_points(
     except Exception:
         raw = None
     expected_point_ids = [str(point.get("point_id") or "").strip() for point in points if isinstance(point, dict)]
-    point_results, set_pass, set_failures, normalize_failures = _normalize_value_rubric_validation(
+    point_results, set_pass, set_analysis, set_failures, normalize_failures = _normalize_value_rubric_validation(
         raw,
         expected_point_ids=expected_point_ids,
     )
@@ -741,6 +757,7 @@ def validate_apply_answer_rubric_points(
         "is_valid": is_valid,
         "point_results": point_results,
         "set_pass": bool(set_pass),
+        "set_analysis": set_analysis,
         "set_failures": set_failures,
         "failed_point_ids": failed_point_ids,
         "failed_rules": failed_rules,
@@ -932,12 +949,28 @@ def build_micro_points_for_value(
     for _ in range(MAX_VALUE_RUBRIC_REWRITES):
         if generator_client is None:
             break
+        point_text_by_id = {
+            str(point.get("point_id") or "").strip(): str(point.get("point_text") or "").strip()
+            for point in rewritten_points
+            if isinstance(point, dict)
+        }
+        validation_feedback_points: List[Dict[str, Any]] = []
+        for result in list(validation.get("point_results") or []):
+            if not isinstance(result, dict):
+                continue
+            point_id = str(result.get("point_id") or "").strip()
+            enriched = dict(result)
+            if point_id and "point_text" not in enriched:
+                enriched["point_text"] = point_text_by_id.get(point_id, "")
+            validation_feedback_points.append(enriched)
         rewrite_prompt = build_value_rubric_rewrite_prompt(
             state_key=state_key,
             text_value=text_value,
-            points=rewritten_points,
-            validation_points=list(validation.get("point_results") or []),
-            set_failures=list(validation.get("set_failures") or []),
+            validation_feedback={
+                "points": validation_feedback_points,
+                "set_analysis": str(validation.get("set_analysis") or ""),
+                "set_failures": list(validation.get("set_failures") or []),
+            },
             max_points=MAX_MICRO_POINTS,
         )
         rewrite_raw = None
@@ -1555,8 +1588,8 @@ def score_points(points: Sequence[Dict[str, Any]], predicted_blob: Any) -> Tuple
                 target_index,
             )
         else:
-            predicted_value = predicted_blob
-            similarity = _text_f1(reference_value, predicted_blob)
+            predicted_value = extract_value_at_path(predicted_blob, target_path) if target_path else predicted_blob
+            similarity = _text_f1(reference_value, predicted_value)
             predicted_for_reason = predicted_value
         raw_score = _map_similarity_to_binary_hit(similarity, point_type)
         if polarity == POINT_POLARITY_NEGATIVE:

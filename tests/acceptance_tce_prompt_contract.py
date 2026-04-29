@@ -25,6 +25,8 @@ from tce_core.prompts import (
     build_task_c_v2_rewrite_prompt,
     build_task_c_v2_validation_prompt,
     build_value_micro_points_prompt,
+    build_value_rubric_rewrite_prompt,
+    build_value_rubric_validation_prompt,
 )
 from tce_core.final_checkpoint_qa import (
     build_final_qa_prompt_with_agent_memory,
@@ -156,11 +158,31 @@ class TcePromptContractAcceptance(unittest.TestCase):
         self.assertLess(prompt.index("[Example]"), prompt.index("[Input/Output Format]"))
         self.assertIn("Generate 1 to 3 scoring points.", prompt)
         self.assertIn("shared binary `0/1` hit scale", prompt)
-        self.assertIn("Prefer stable semantic requirements over brittle exact surface forms.", prompt)
-        self.assertIn("Do not generate multiple points that all hinge on the same narrow identifier", prompt)
+        self.assertIn("stable: prefer stable semantic requirements over brittle exact surface forms", prompt)
+        self.assertIn("distinct: points in the same set must not repeat the same meaning", prompt)
+        self.assertIn("coverage_gap", prompt)
         self.assertIn('"rubric": [', prompt)
         self.assertNotIn("reference_value", prompt)
         self.assertNotIn("target_path", prompt)
+
+        validation_prompt = build_value_rubric_validation_prompt(
+            state_key="preferences_state:learning_modality",
+            text_value="Prefers self-paced white papers and webinars over large conferences.",
+            points=[],
+        )
+        rewrite_prompt = build_value_rubric_rewrite_prompt(
+            state_key="preferences_state:learning_modality",
+            text_value="Prefers self-paced white papers and webinars over large conferences.",
+            validation_feedback={"points": [], "set_analysis": "", "set_failures": []},
+            max_points=5,
+        )
+        for value_prompt in (prompt, validation_prompt, rewrite_prompt):
+            self.assertIn("unsupported", value_prompt)
+            self.assertIn("drift", value_prompt)
+            self.assertIn("not_atomic", value_prompt)
+            self.assertIn("redundant", value_prompt)
+            self.assertIn("over_specific", value_prompt)
+        self.assertIn('"set_analysis":', validation_prompt)
 
     def test_apply_atomic_fact_prompts_include_state_grounding_and_over_specific(self) -> None:
         gen_prompt = build_apply_answer_scoring_points_prompt(

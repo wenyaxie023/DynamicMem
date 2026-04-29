@@ -29,6 +29,7 @@ class TceScoringPointsAcceptance(unittest.TestCase):
                         }
                     ],
                     "set_pass": False,
+                    "set_analysis": "The set-level rubric is acceptable, but the single point is too over-specific.",
                     "set_failures": [],
                 }
 
@@ -52,6 +53,7 @@ class TceScoringPointsAcceptance(unittest.TestCase):
 
         self.assertFalse(validation["is_valid"])
         self.assertIn("over_specific", validation["failed_rules"])
+        self.assertIn("set-level rubric", validation["set_analysis"])
 
     def test_schedule_date_mismatch_gets_zero_score(self):
         points = [
@@ -215,6 +217,37 @@ class TceScoringPointsAcceptance(unittest.TestCase):
         self.assertEqual(points[0]["point_type"], "micro")
         self.assertEqual(points[0]["target_path"], "signals.0")
         self.assertIn("webinar-based continuing education", points[0]["point_text"])
+
+    def test_micro_points_score_only_against_target_path_and_average(self):
+        points = [
+            {
+                "point_id": "p1",
+                "point_type": "micro",
+                "target_path": "statement",
+                "point_text": "prefers webinars",
+            },
+            {
+                "point_id": "p2",
+                "point_type": "micro",
+                "target_path": "statement",
+                "point_text": "avoids large conferences",
+            },
+            {
+                "point_id": "p3",
+                "point_type": "micro",
+                "target_path": "statement",
+                "point_text": "likes self-paced reading",
+            },
+        ]
+        predicted = {
+            "statement": "prefers webinars",
+            "notes": "avoids large conferences and likes self-paced reading",
+        }
+
+        score, judgments = score_points(points, predicted)
+
+        self.assertAlmostEqual(score, 1.0 / 3.0)
+        self.assertEqual([judgment["score_0_1"] for judgment in judgments], [1.0, 0.0, 0.0])
 
     def test_indexed_field_path_reads_from_list_position(self):
         points = [

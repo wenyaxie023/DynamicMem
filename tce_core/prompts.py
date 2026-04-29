@@ -2403,6 +2403,29 @@ Output JSON ONLY:
 
 # Task A complex-text scoring-point generation prompt.
 # Use this when a single state leaf is too semantic to score as one field point.
+_VALUE_RUBRIC_FAILURE_DEFINITIONS = """- unsupported: the scoring point requires content that is not stated or clearly entailed by the source text.
+- drift: the scoring point changes, overextends, weakens, strengthens, or reverses the source meaning.
+- not_atomic: the scoring point combines multiple independently checkable requirements or cannot be judged as one binary hit.
+- redundant: the scoring point repeats the same requirement or meaning as another point in the same set.
+- over_specific: the scoring point depends on unnecessary exact model / spec / parameter / exact wording; use exact identifiers only when they are canonical facts or needed to disambiguate."""
+
+_VALUE_RUBRIC_SET_FAILURE_DEFINITIONS = """- coverage_gap: the set omits a major scoreable meaning unit from the source text, so the rubric would not adequately test the source meaning."""
+
+_VALUE_RUBRIC_VALIDITY_REQUIREMENTS = """- supported: each point must be directly supported by the source text; this avoids `unsupported`.
+- faithful: each point must preserve the source meaning without stronger preferences, motivations, implications, reversals, or weaker/generalized claims; this avoids `drift`.
+- atomic: each point must express one independently judgeable requirement on the shared binary `0/1` hit scale; this avoids `not_atomic`.
+- distinct: points in the same set must not repeat the same meaning or all hinge on the same narrow identifier, model name, spec, parameter, or exact wording; this avoids `redundant`.
+- stable: prefer stable semantic requirements over brittle exact surface forms; use an exact identifier only when it is the canonical memory fact or needed to disambiguate; this avoids `over_specific`.
+- covered: the set should cover the major scoreable meaning units in the source text within the {max_points}-point limit; this avoids `coverage_gap`."""
+
+_VALUE_RUBRIC_REPAIR_INSTRUCTIONS = """- unsupported -> delete the unsupported claim or replace it with a claim directly supported by the source text.
+- drift -> rewrite the point so it preserves the source meaning without strengthening, weakening, reversing, or adding unstated implications.
+- not_atomic -> split the point into separate atomic points when the {max_points}-point limit allows; otherwise keep the most central scoreable meaning.
+- redundant -> merge or delete repeated meaning so each remaining point tests a distinct requirement.
+- over_specific -> rewrite to a stable semantic requirement unless the exact identifier is the canonical memory fact or needed to disambiguate.
+- coverage_gap -> add or revise points so the final set covers the major scoreable meaning units in the source text within the {max_points}-point limit."""
+
+
 def build_value_micro_points_prompt(
     *,
     state_key: str,
@@ -2410,7 +2433,7 @@ def build_value_micro_points_prompt(
     max_points: int,
 ) -> str:
     max_points = max(1, min(3, int(max_points)))
-    template = ["<one scoring point>" for _ in range(max_points)]
+    template = '[\n    "<one scoring point>",\n    ...,\n    "<one scoring point>"\n  ]'
     return """[Task Instruction]
 Break one complex state field into 1 to {max_points} scoring points.
 Each scoring point should capture one scoreable meaning unit that a model prediction should express.
@@ -2419,25 +2442,27 @@ Each scoring point should capture one scoreable meaning unit that a model predic
 - complex state field: one statement-like field whose meaning should not be judged as one holistic blob.
 - scoring point: one scoring requirement.
 - scoreable scoring point: one concrete aspect of correctness that can be judged independently on the shared binary `0/1` hit scale.
-- brittle scoring point: a point that depends on unnecessary exact model / spec / parameter / exact wording instead of stable semantic meaning.
+- Invalid scoring point categories:
+{failure_definitions}
+- Invalid set-level categories:
+{set_failure_definitions}
+- Valid scoring-point set requirements:
+{validity_requirements}
 
 [Constraints]
 1. Generate 1 to {max_points} scoring points.
-2. Each scoring point must be independently judgeable on the shared binary `0/1` hit scale.
-3. Keep all scoring points positive.
-4. Every scoring point must be directly supported by the source text.
-5. Do not add stronger preferences, motivations, or implications that are not stated.
-6. Do not repeat the same meaning in multiple points.
-7. Prefer stable semantic requirements over brittle exact surface forms.
-8. Do not generate multiple points that all hinge on the same narrow identifier, model name, spec, parameter, or exact wording.
-9. Use an exact identifier only when it is itself the canonical memory fact or is necessary to disambiguate two otherwise-confusable meanings.
-10. Output JSON only.
+2. Keep all scoring points positive.
+3. Follow every valid scoring-point set requirement: `supported`, `faithful`, `atomic`, `distinct`, `stable`, `covered`.
+4. Avoid every invalid point-level category: `unsupported`, `drift`, `not_atomic`, `redundant`, `over_specific`.
+5. Avoid the set-level category: `coverage_gap`.
+6. Output JSON only.
 
 [Example]
-Input source text:
-"Prefers self-paced white papers and webinars over large conferences."
+[Example Input]
+- state_key: "preferences_state:learning_modality"
+- text_value: "Prefers self-paced white papers and webinars over large conferences."
 
-Output JSON ONLY:
+[Example Output]
 {{
   "rubric": [
     "The answer states that self-paced white papers or webinars are the preferred format.",
@@ -2458,7 +2483,10 @@ Output JSON ONLY:
         max_points=max_points,
         state_key=json.dumps(str(state_key or ""), ensure_ascii=False),
         text_value=json.dumps(str(text_value or ""), ensure_ascii=False),
-        template=json.dumps(template, ensure_ascii=False, indent=2),
+        template=template,
+        failure_definitions=_VALUE_RUBRIC_FAILURE_DEFINITIONS,
+        set_failure_definitions=_VALUE_RUBRIC_SET_FAILURE_DEFINITIONS,
+        validity_requirements=_VALUE_RUBRIC_VALIDITY_REQUIREMENTS.format(max_points=max_points),
     )
 
 
@@ -2478,43 +2506,54 @@ Judge whether each scoring point stays grounded in the source text without drift
 - source text: the original state text that the rubric-point set must stay faithful to.
 - scoring point: one scoreable meaning unit.
 - point_text: the scoring statement that the evaluator will judge independently.
-- drift: the scoring point changes, overextends, or reverses the meaning of the source text.
 - scoring-point requirement: one point that checks exactly one concrete aspect of correctness and can be scored independently.
-- over_specific: the scoring point depends on unnecessary exact model / spec / parameter / exact wording and is therefore too brittle.
+- Invalid scoring point categories:
+{failure_definitions}
+- Invalid set-level categories:
+{set_failure_definitions}
 
 [Constraints]
 1. Validate every point independently.
-2. Mark a point as failed if it is unsupported, drifts, is redundant, is over-specific, or is not independently scoreable enough.
+2. Mark a point as failed if it matches any invalid scoring point category.
 3. Use only these fail reasons when needed: `unsupported`, `drift`, `not_atomic`, `redundant`, `over_specific`.
 4. Use only these set-level failures when needed: `coverage_gap`.
 5. `set_pass` can be true only if every point passes and there is no set-level failure.
-6. Keep each `analysis` concise and specific.
-7. Output JSON only.
+6. `set_analysis` must briefly explain the set-level decision, especially any `coverage_gap`.
+7. Keep each point `analysis` and the `set_analysis` concise and specific.
+8. Output JSON only.
 
 [Example]
-Source text:
-"Prefers self-paced white papers and webinars over large conferences."
+[Example Input]
+- state_key: "preferences_state:learning_modality"
+- text_value: "Prefers self-paced white papers and webinars over large conferences."
+- points: [
+  {{
+    "point_id": "scp_pref_p1",
+    "point_text": "The answer states that self-paced white papers or webinars are preferred learning formats."
+  }},
+  {{
+    "point_id": "scp_pref_p2",
+    "point_text": "The answer says the user dislikes all in-person events."
+  }}
+]
 
-Candidate points:
+[Example Output]
 {{
   "points": [
     {{
       "point_id": "scp_pref_p1",
-      "point_text": "The user only learns effectively through live conferences."
-    }}
-  ]
-}}
-
-Output JSON ONLY:
-{{
-  "points": [
+      "analysis": "This point is directly supported by the source text and captures the preferred self-paced formats.",
+      "pass": true,
+      "fail_reasons": []
+    }},
     {{
-      "point_id": "scp_pref_p1",
-      "analysis": "The point reverses the stated preference and is not supported by the source text.",
+      "point_id": "scp_pref_p2",
+      "analysis": "The source only contrasts with large conferences; it does not say the user dislikes all in-person events.",
       "pass": false,
       "fail_reasons": ["drift", "unsupported"]
     }}
   ],
+  "set_analysis": "The set has one valid point for the preferred formats, but no valid point captures that large conferences are not preferred.",
   "set_pass": false,
   "set_failures": ["coverage_gap"]
 }}
@@ -2535,6 +2574,7 @@ Output JSON ONLY:
       "fail_reasons": []
     }}
   ],
+  "set_analysis": "<brief set-level analysis; explain coverage_gap when present>",
   "set_pass": "<bool>",
   "set_failures": []
 }}
@@ -2542,6 +2582,8 @@ Output JSON ONLY:
         state_key=json.dumps(str(state_key or ""), ensure_ascii=False),
         text_value=json.dumps(str(text_value or ""), ensure_ascii=False),
         points=json.dumps(points, ensure_ascii=False, indent=2),
+        failure_definitions=_VALUE_RUBRIC_FAILURE_DEFINITIONS,
+        set_failure_definitions=_VALUE_RUBRIC_SET_FAILURE_DEFINITIONS,
     )
 
 
@@ -2551,13 +2593,11 @@ def build_value_rubric_rewrite_prompt(
     *,
     state_key: str,
     text_value: str,
-    points: List[Dict[str, Any]],
-    validation_points: List[Dict[str, Any]],
-    set_failures: List[str],
+    validation_feedback: Dict[str, Any],
     max_points: int,
 ) -> str:
     max_points = max(1, min(3, int(max_points)))
-    template = ["<one scoring point>" for _ in range(max_points)]
+    template = '[\n    "<one corrected scoring point>",\n    ...,\n    "<one corrected scoring point>"\n  ]'
     return """[Task Instruction]
 Rewrite an invalid scoring-point set for one complex state field.
 Return a corrected scoring-point set that stays faithful to the source text.
@@ -2567,48 +2607,53 @@ Return a corrected scoring-point set that stays faithful to the source text.
 - point_text: one scoring statement that the evaluator will judge independently.
 - faithful rewrite: a rewrite that removes drift, unsupported content, and redundancy while preserving the source meaning.
 - robust rewrite: a rewrite that avoids unnecessary exact model / spec / parameter wording when a broader semantic fact is sufficient.
+- full-set rewrite: return a complete replacement rubric for the whole set, not a patch and not only the failed points.
+- Invalid scoring point categories:
+{failure_definitions}
+- Invalid set-level categories:
+{set_failure_definitions}
+- Repair instructions:
+{repair_instructions}
 
 [Constraints]
 1. Return 1 to {max_points} positive scoring points.
-2. Each scoring point must be independently judgeable on the shared binary `0/1` hit scale.
-3. Fix every invalid point so the final set is directly supported by the source text.
-4. Do not add stronger preferences, motivations, or implications that are not stated.
-5. Keep every point independently scoreable and non-redundant.
-6. Repair any `over_specific` or brittle point by rewriting it into a broader, more stable semantic fact unless the exact identifier is truly necessary.
-7. Output JSON only.
+2. Return a complete replacement `rubric` for the whole set.
+3. Apply the repair instruction for each failed point reason and set-level failure shown in validation feedback.
+4. Preserve any valid source meaning from the prior set, but rewrite freely when needed to make the final set valid.
+5. Do not copy failed wording just to preserve an old point.
+6. Output JSON only.
 
 [Example]
-Source text:
-"Prefers self-paced white papers and webinars over large conferences."
+[Example Input]
+- state_key: "preferences_state:learning_modality"
+- text_value: "Prefers self-paced white papers and webinars over large conferences."
+- validation_feedback:
+  {{
+    "points": [
+      {{
+        "point_id": "scp_pref_p1",
+        "point_text": "The answer states that self-paced white papers or webinars are preferred learning formats.",
+        "analysis": "This point is directly supported by the source text and captures the preferred self-paced formats.",
+        "pass": true,
+        "fail_reasons": []
+      }},
+      {{
+        "point_id": "scp_pref_p2",
+        "point_text": "The answer says the user dislikes all in-person events.",
+        "analysis": "The source only contrasts with large conferences; it does not say the user dislikes all in-person events.",
+        "pass": false,
+        "fail_reasons": ["drift", "unsupported"]
+      }}
+    ],
+    "set_analysis": "The set has one valid point for the preferred formats, but no valid point captures that large conferences are not preferred.",
+    "set_failures": ["coverage_gap"]
+  }}
 
-Invalid points:
-{{
-  "points": [
-    {{
-      "point_id": "scp_pref_p1",
-      "point_text": "The user only learns effectively through live conferences."
-    }}
-  ]
-}}
-
-Validation feedback:
-{{
-  "points": [
-    {{
-      "point_id": "scp_pref_p1",
-      "analysis": "The point reverses the stated preference and introduces unsupported meaning.",
-      "pass": false,
-      "fail_reasons": ["drift", "unsupported"]
-    }}
-  ],
-  "set_failures": ["coverage_gap"]
-}}
-
-Output JSON ONLY:
+[Example Output]
 {{
   "rubric": [
-    "The answer states that self-paced white papers or webinars are the preferred format.",
-    "The answer does not recommend large conferences as the preferred format."
+    "The answer states that self-paced white papers or webinars are preferred learning formats.",
+    "The answer states that large conferences are not the preferred learning format."
   ]
 }}
 
@@ -2616,9 +2661,7 @@ Output JSON ONLY:
 Input:
 - state_key: {state_key}
 - text_value: {text_value}
-- invalid_points: {points}
-- validation_points: {validation_points}
-- set_failures: {set_failures}
+- validation_feedback: {validation_feedback}
 
 Output JSON ONLY:
 {{
@@ -2628,10 +2671,11 @@ Output JSON ONLY:
         max_points=max_points,
         state_key=json.dumps(str(state_key or ""), ensure_ascii=False),
         text_value=json.dumps(str(text_value or ""), ensure_ascii=False),
-        points=json.dumps(points, ensure_ascii=False, indent=2),
-        validation_points=json.dumps(validation_points, ensure_ascii=False, indent=2),
-        set_failures=json.dumps(list(set_failures or []), ensure_ascii=False),
-        template=json.dumps(template, ensure_ascii=False, indent=2),
+        validation_feedback=json.dumps(validation_feedback or {}, ensure_ascii=False, indent=2),
+        template=template,
+        failure_definitions=_VALUE_RUBRIC_FAILURE_DEFINITIONS,
+        set_failure_definitions=_VALUE_RUBRIC_SET_FAILURE_DEFINITIONS,
+        repair_instructions=_VALUE_RUBRIC_REPAIR_INSTRUCTIONS.format(max_points=max_points),
     )
 
 
