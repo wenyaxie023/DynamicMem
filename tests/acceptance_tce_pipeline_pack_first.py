@@ -193,6 +193,13 @@ class TcePipelinePackFirstAcceptance(unittest.TestCase):
             result["predictions"][0]["snapshot_state"]["profile_state:favorite_coffee"],
             "latte",
         )
+        retrieval_meta = result["predictions"][0]["metadata"]["per_key_retrieval"][0]["retrieval_metadata"]
+        self.assertGreater(retrieval_meta["inline_memory_total_tokens"], 0)
+        self.assertIn(
+            retrieval_meta["inline_memory_tokenizer_backend"],
+            {"tiktoken", "basic_regex"},
+        )
+        self.assertEqual(retrieval_meta["inline_memory_block_count"], 1)
         self.assertEqual(result["task_contract_version"], CURRENT_TASK_CONTRACT_VERSION)
         self.assertEqual(result["research_frame_version"], RESEARCH_FRAME_VERSION_V2)
 
@@ -387,7 +394,7 @@ class TcePipelinePackFirstAcceptance(unittest.TestCase):
         seen_task_text = {"value": None}
 
         def ask_json(prompt: str):
-            if '"snapshot_state"' in prompt:
+            if '"user_state"' in prompt or '"snapshot_state"' in prompt:
                 return {"snapshot_state": {}, "evidence": {}}
             return {
                 "answer": "B. webinars",
@@ -837,7 +844,7 @@ class TcePipelinePackFirstAcceptance(unittest.TestCase):
         seen_task_text = {"value": None}
 
         def ask_json(prompt: str):
-            if '"snapshot_state"' in prompt:
+            if '"user_state"' in prompt or '"snapshot_state"' in prompt:
                 return {
                     "snapshot_state": {"preferences_state:learning_modality": {"statement": "prefers self-paced webinars"}},
                     "evidence": {
@@ -847,7 +854,7 @@ class TcePipelinePackFirstAcceptance(unittest.TestCase):
                     },
                 }
             return {
-                "output": {"request_profile": {"preferred_profile": "prefers self-paced webinars"}},
+                "answer": {"request_profile": {"preferred_profile": "prefers self-paced webinars"}},
                 "evidence": [{"app_log_id": "log_0001", "evidence_content": "prefers self-paced webinars"}],
             }
 
@@ -898,12 +905,12 @@ class TcePipelinePackFirstAcceptance(unittest.TestCase):
         self.assertNotIn("Required output fields:", seen_task_text["value"])
         item = prediction["rq3_apply_answers"]["preferences_state:learning_modality"]["items"][0]
         self.assertEqual(item["service_family"], "information_request_construction")
-        self.assertEqual(item["output"], {"request_profile": {"preferred_profile": "prefers self-paced webinars"}})
+        self.assertEqual(item["answer"], {"request_profile": {"preferred_profile": "prefers self-paced webinars"}})
         self.assertEqual(
             item["evidence"],
             [{"app_log_id": "log_0001", "evidence_content": "prefers self-paced webinars"}],
         )
-        self.assertNotIn("answer", item)
+        self.assertNotIn("output", item)
 
     def test_pipeline_runs_task_c_v2_user_communication_with_natural_language_answer(self):
         benchmark = {
@@ -952,7 +959,7 @@ class TcePipelinePackFirstAcceptance(unittest.TestCase):
         seen_task_text = {"value": None}
 
         def ask_json(prompt: str):
-            if '"snapshot_state"' in prompt:
+            if '"user_state"' in prompt or '"snapshot_state"' in prompt:
                 return {
                     "snapshot_state": {"habits_state:morning_walk": {"timing": {"start_time": "06:30"}}},
                     "evidence": {
@@ -1777,7 +1784,10 @@ class TcePipelinePackFirstAcceptance(unittest.TestCase):
         self.assertEqual(md["effective_checkpoint_workers"], 1)
         self.assertEqual(md["effective_within_checkpoint_workers"], 1)
         self.assertIn("[Memory]", result["predictions"][0]["metadata"]["prompt"][0])
-        self.assertIn("Use your memory about the user", result["predictions"][0]["metadata"]["prompt"][0])
+        self.assertIn(
+            "system's stored checkpoint-bounded memory about the user's trajectory",
+            result["predictions"][0]["metadata"]["prompt"][0],
+        )
         self.assertNotIn("[User memory]\n{'app_log_id':", result["predictions"][0]["metadata"]["prompt"][0])
 
 

@@ -83,7 +83,7 @@ class _FakeLLMClient:
                     }
                 }
             }
-        if '"answer"' in prompt and '"snapshot_state"' not in prompt:
+        if '"answer"' in prompt and '"snapshot_state"' not in prompt and '"user_state"' not in prompt:
             evidence = []
             if current_log_id and current_value is not None:
                 evidence = [{"app_log_id": current_log_id, "evidence_content": "favorite_coffee {}".format(current_value)}]
@@ -130,7 +130,7 @@ class _FakeRagLLMClient(_FakeLLMClient):
                     }
                 }
             }
-        if '"answer"' in prompt and '"snapshot_state"' not in prompt:
+        if '"answer"' in prompt and '"snapshot_state"' not in prompt and '"user_state"' not in prompt:
             evidence = []
             if first_log_id and first_value is not None:
                 evidence = [{"app_log_id": first_log_id, "evidence_content": "favorite_coffee {}".format(first_value)}]
@@ -385,7 +385,7 @@ class _FakeMemoryOS:
         target_key = "profile_state:backup_coffee" if "profile_state:backup_coffee" in prompt else "profile_state:favorite_coffee"
         if '"change_analysis"' in prompt:
             return {"change_analysis": {}}
-        if '"snapshot_state"' in prompt:
+        if '"user_state"' in prompt or '"snapshot_state"' in prompt:
             return {
                 "snapshot_state": {target_key: coffee},
                 "evidence": {

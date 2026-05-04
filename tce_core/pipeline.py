@@ -2,6 +2,7 @@
 
 import copy
 import json
+import re
 import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
@@ -56,6 +57,7 @@ from .exposure_checkpoint_builder import (
 )
 
 EXCLUDED_VALUE_FIELDS = {"priority", "schedule_date", "schedule_dates"}
+_BASIC_TOKEN_RE = re.compile(r"\w+|[^\w\s]", re.UNICODE)
 
 
 def parse_ts(ts: str) -> datetime:
@@ -78,6 +80,57 @@ def parse_ts(ts: str) -> datetime:
 
 def to_log_text(log: Dict[str, Any]) -> str:
     return json.dumps(log, ensure_ascii=False)
+
+
+def _inline_memory_token_stats(
+    inline_memory_blocks: Sequence[str],
+    tokenizer_model: str,
+) -> Dict[str, Any]:
+    text = "\n<->\n".join(str(block) for block in inline_memory_blocks if str(block).strip())
+    if not text:
+        return {
+            "inline_memory_total_tokens": 0,
+            "inline_memory_tokenizer_model": str(tokenizer_model or ""),
+            "inline_memory_tokenizer_backend": "empty",
+        }
+    try:
+        import tiktoken  # type: ignore[import-not-found]
+
+        try:
+            enc = tiktoken.encoding_for_model(str(tokenizer_model or "gpt-4o-mini"))
+            tokenizer_model_used = str(tokenizer_model or "gpt-4o-mini")
+        except Exception:
+            enc = tiktoken.get_encoding("o200k_base")
+            tokenizer_model_used = "o200k_base"
+        return {
+            "inline_memory_total_tokens": len(enc.encode(text)),
+            "inline_memory_tokenizer_model": tokenizer_model_used,
+            "inline_memory_tokenizer_backend": "tiktoken",
+        }
+    except ModuleNotFoundError:
+        tokens = _BASIC_TOKEN_RE.findall(text)
+        return {
+            "inline_memory_total_tokens": len(tokens),
+            "inline_memory_tokenizer_model": "basic_regex_v1",
+            "inline_memory_tokenizer_backend": "basic_regex",
+            "inline_memory_tokenizer_warning": "tiktoken_unavailable",
+        }
+
+
+def _attach_inline_memory_stats(
+    retrieval_meta: Dict[str, Any],
+    retrieval_result: RetrievalResult,
+    tokenizer_model: str,
+) -> None:
+    inline_memory_blocks = [str(block) for block in retrieval_result.inline_memory_blocks]
+    retrieval_meta.setdefault("inline_memory_blocks", inline_memory_blocks)
+    retrieval_meta.setdefault("inline_memory_block_count", len(inline_memory_blocks))
+    retrieval_meta.setdefault(
+        "inline_memory_total_chars",
+        sum(len(block) for block in inline_memory_blocks),
+    )
+    for key, value in _inline_memory_token_stats(inline_memory_blocks, tokenizer_model).items():
+        retrieval_meta.setdefault(key, value)
 
 
 def flatten_snapshot(snapshot: Any) -> Dict[str, Any]:
@@ -491,21 +544,18 @@ def _normalize_rq3_apply_answer_output(
     service_family: str = "",
 ) -> Dict[str, Any]:
     if not isinstance(raw_out, dict):
-        return {"output": None, "answer": "", "evidence": []}
+        return {"answer": "", "evidence": []}
     if task_contract_is_v2(task_contract_version):
         if str(service_family or "").strip() == "user_communication":
             answer = raw_out.get("answer")
             if answer is None:
                 answer = raw_out.get("final_answer", "")
             return {
-                "output": None,
                 "answer": str(answer or "").strip(),
                 "evidence": normalize_evidence_prediction({"_": raw_out.get("evidence")}, ["_"]).get("_", []),
             }
-        output = raw_out.get("output")
         return {
-            "output": output,
-            "answer": "",
+            "answer": raw_out.get("answer"),
             "evidence": normalize_evidence_prediction({"_": raw_out.get("evidence")}, ["_"]).get("_", []),
         }
     answer = raw_out.get("answer")
@@ -513,7 +563,7 @@ def _normalize_rq3_apply_answer_output(
         answer = raw_out.get("final_answer", "")
     text = str(answer or "").strip()
     evidence_records = normalize_evidence_prediction({"_": raw_out.get("evidence")}, ["_"]).get("_", [])
-    return {"output": None, "answer": text, "evidence": evidence_records}
+    return {"answer": text, "evidence": evidence_records}
 
 
 def build_generation_text_format(
@@ -570,7 +620,7 @@ def build_generation_text_format(
     return create_model(  # type: ignore[call-overload]
         f"TcePredOutput_{model_idx}",
         __config__=ConfigDict(extra="forbid"),
-        snapshot_state=(snapshot_model, ...),
+        user_state=(snapshot_model, ...),
         evidence=(evidence_model, ...),
     )
 
@@ -578,9 +628,10 @@ def build_generation_text_format(
 def normalize_generation_output(raw_out: Any, target_keys: List[str]) -> Dict[str, Any]:
     if isinstance(raw_out, dict):
         # Native schema path.
-        if "snapshot_state" in raw_out or "evidence" in raw_out:
+        if "user_state" in raw_out or "snapshot_state" in raw_out or "evidence" in raw_out:
+            state_payload = raw_out.get("user_state") if "user_state" in raw_out else raw_out.get("snapshot_state", {})
             return {
-                "snapshot_state": raw_out.get("snapshot_state", {}),
+                "snapshot_state": state_payload,
                 "evidence": raw_out.get("evidence", {}),
             }
 
@@ -637,6 +688,82 @@ def _rq3_apply_item_id(state_key: str, qa_id: str) -> str:
     return "{}::{}".format(str(state_key or "").strip(), str(qa_id or "").strip())
 
 
+def _extract_task_a_resume_state(
+    prediction_item: Any,
+    target_keys: Sequence[str],
+) -> Dict[str, Any]:
+    valid_snapshot_state: Dict[str, Any] = {}
+    valid_evidence: Dict[str, Any] = {}
+    valid_records_by_key: Dict[str, Dict[str, Any]] = {}
+    valid_retrieval_by_key: Dict[str, Dict[str, Any]] = {}
+    pending_keys: List[str] = []
+
+    if not isinstance(prediction_item, dict):
+        return {
+            "valid_snapshot_state": valid_snapshot_state,
+            "valid_evidence": valid_evidence,
+            "valid_records_by_key": valid_records_by_key,
+            "valid_retrieval_by_key": valid_retrieval_by_key,
+            "pending_keys": list(target_keys),
+        }
+
+    snapshot_state = prediction_item.get("snapshot_state")
+    if not isinstance(snapshot_state, dict):
+        snapshot_state = {}
+    evidence = prediction_item.get("evidence")
+    if not isinstance(evidence, dict):
+        evidence = {}
+
+    metadata = prediction_item.get("metadata")
+    metadata = metadata if isinstance(metadata, dict) else {}
+    raw_model_output = metadata.get("raw_model_output")
+    records = raw_model_output.get("records") if isinstance(raw_model_output, dict) else None
+    if isinstance(records, list):
+        for record in records:
+            if not isinstance(record, dict):
+                continue
+            key = str(record.get("key") or "").strip()
+            if key:
+                valid_records_by_key[key] = copy.deepcopy(record)
+
+    retrieval_records = metadata.get("per_key_retrieval")
+    if isinstance(retrieval_records, list):
+        for record in retrieval_records:
+            if not isinstance(record, dict):
+                continue
+            key = str(record.get("key") or "").strip()
+            if key:
+                valid_retrieval_by_key[key] = copy.deepcopy(record)
+
+    for key in target_keys:
+        value = snapshot_state.get(key)
+        if _is_effectively_empty_prediction_value(value):
+            pending_keys.append(key)
+            valid_records_by_key.pop(key, None)
+            valid_retrieval_by_key.pop(key, None)
+            continue
+        valid_snapshot_state[key] = copy.deepcopy(value)
+        valid_evidence[key] = copy.deepcopy(evidence.get(key, []))
+
+    valid_records_by_key = {
+        key: record
+        for key, record in valid_records_by_key.items()
+        if key in valid_snapshot_state
+    }
+    valid_retrieval_by_key = {
+        key: record
+        for key, record in valid_retrieval_by_key.items()
+        if key in valid_snapshot_state
+    }
+    return {
+        "valid_snapshot_state": valid_snapshot_state,
+        "valid_evidence": valid_evidence,
+        "valid_records_by_key": valid_records_by_key,
+        "valid_retrieval_by_key": valid_retrieval_by_key,
+        "pending_keys": pending_keys,
+    }
+
+
 def _is_rq3_apply_answer_valid(
     answer_item: Any,
     *,
@@ -648,8 +775,6 @@ def _is_rq3_apply_answer_valid(
     status = str(answer_item.get("status") or "").strip().lower()
     if status == "invalid":
         return False
-    if task_contract_is_v2(task_contract_version) and str(service_family or "").strip() != "user_communication":
-        return not _is_effectively_empty_prediction_value(answer_item.get("output"))
     return not _is_effectively_empty_prediction_value(answer_item.get("answer"))
 
 
@@ -1229,6 +1354,24 @@ def run_pipeline(
                 per_key_retrieval_by_key: Dict[str, Dict[str, Any]] = {}
                 item["snapshot_state"] = {}
                 item["evidence"] = {}
+                task_a_resume_state = _extract_task_a_resume_state(
+                    existing_item if resume else None,
+                    target_keys,
+                )
+                item["snapshot_state"].update(task_a_resume_state.get("valid_snapshot_state") or {})
+                item["evidence"].update(task_a_resume_state.get("valid_evidence") or {})
+                per_key_records_by_key.update(task_a_resume_state.get("valid_records_by_key") or {})
+                per_key_retrieval_by_key.update(task_a_resume_state.get("valid_retrieval_by_key") or {})
+                pending_target_keys = list(task_a_resume_state.get("pending_keys") or [])
+                reused_task_a_keys = len(target_keys) - len(pending_target_keys)
+                if resume and existing_item is not None and reused_task_a_keys > 0:
+                    print(
+                        "[TCE][resume] checkpoint {} reusing {} Task A keys and rerunning {} pending keys.".format(
+                            cid,
+                            reused_task_a_keys,
+                            len(pending_target_keys),
+                        )
+                    )
 
                 def _run_state_completion_key(key_idx: int, key: str) -> Dict[str, Any]:
                     single_keys = [key]
@@ -1251,7 +1394,7 @@ def run_pipeline(
                         answer_query_text=answer_query_text,
                         task_payload={
                             "target_value_templates": single_template,
-                            "model_idx": checkpoint_order.index(cid) * 1000 + key_idx,
+                            "model_idx": checkpoint_order.index(cid) * 1000 + target_keys.index(key),
                         },
                     )
                     retrieval_options = RetrievalOptions(
@@ -1296,6 +1439,7 @@ def run_pipeline(
                     retrieval_meta.update(dict((answer_result.debug_metadata or {}).get("retrieval_metadata") or {}))
                     retrieval_meta.setdefault("checkpoint_state_kind", checkpoint_handle.state_kind)
                     retrieval_meta.setdefault("retrieval_query", query_spec.retrieval_query_text)
+                    _attach_inline_memory_stats(retrieval_meta, retrieval_result, exposure_tokenizer_model)
                     return {
                         "key": key,
                         "snapshot_value": align_prediction_to_template(
@@ -1318,34 +1462,62 @@ def run_pipeline(
                         },
                     }
 
-                with ThreadPoolExecutor(max_workers=within_checkpoint_workers) as executor:
-                    futures = {
-                        executor.submit(_run_state_completion_key, key_idx, key): key
-                        for key_idx, key in enumerate(target_keys)
-                    }
-                    for future in as_completed(futures):
-                        result = future.result()
-                        key = result["key"]
-                        item["snapshot_state"][key] = result["snapshot_value"]
-                        item["evidence"][key] = result["evidence"]
-                        per_key_records_by_key[key] = result["record"]
-                        per_key_retrieval_by_key[key] = result["retrieval"]
-                        ordered_records = [
-                            per_key_records_by_key[state_key]
-                            for state_key in target_keys
-                            if state_key in per_key_records_by_key
-                        ]
-                        ordered_retrieval = [
-                            per_key_retrieval_by_key[state_key]
-                            for state_key in target_keys
-                            if state_key in per_key_retrieval_by_key
-                        ]
-                        item["metadata"]["retrieval_mode"] = "per_key_isolated"
-                        item["metadata"]["per_key_retrieval"] = ordered_retrieval
-                        if save_prompt_and_raw:
-                            item["metadata"]["prompt"] = [x["prompt"] for x in ordered_records]
-                            item["metadata"]["raw_model_output"] = {"mode": "per_key", "records": ordered_records}
-                        _maybe_persist()
+                with tqdm(
+                    total=len(pending_target_keys),
+                    desc=f"{baseline_name.upper()} {cid} Task A",
+                    unit="key",
+                    position=1,
+                    leave=False,
+                    disable=checkpoint_workers != 1 or not pending_target_keys,
+                ) as task_a_progress:
+                    with ThreadPoolExecutor(max_workers=within_checkpoint_workers) as executor:
+                        futures = {
+                            executor.submit(_run_state_completion_key, key_idx, key): key
+                            for key_idx, key in enumerate(pending_target_keys)
+                        }
+                        for future in as_completed(futures):
+                            result = future.result()
+                            key = result["key"]
+                            item["snapshot_state"][key] = result["snapshot_value"]
+                            item["evidence"][key] = result["evidence"]
+                            per_key_records_by_key[key] = result["record"]
+                            per_key_retrieval_by_key[key] = result["retrieval"]
+                            ordered_records = [
+                                per_key_records_by_key[state_key]
+                                for state_key in target_keys
+                                if state_key in per_key_records_by_key
+                            ]
+                            ordered_retrieval = [
+                                per_key_retrieval_by_key[state_key]
+                                for state_key in target_keys
+                                if state_key in per_key_retrieval_by_key
+                            ]
+                            item["metadata"]["retrieval_mode"] = "per_key_isolated"
+                            item["metadata"]["per_key_retrieval"] = ordered_retrieval
+                            if save_prompt_and_raw:
+                                item["metadata"]["prompt"] = [x["prompt"] for x in ordered_records]
+                                item["metadata"]["raw_model_output"] = {"mode": "per_key", "records": ordered_records}
+                            task_a_progress.set_postfix({"key": key})
+                            task_a_progress.update(1)
+                            _maybe_persist()
+
+                ordered_records = [
+                    per_key_records_by_key[state_key]
+                    for state_key in target_keys
+                    if state_key in per_key_records_by_key
+                ]
+                ordered_retrieval = [
+                    per_key_retrieval_by_key[state_key]
+                    for state_key in target_keys
+                    if state_key in per_key_retrieval_by_key
+                ]
+                item["metadata"]["retrieval_mode"] = "per_key_isolated"
+                item["metadata"]["per_key_retrieval"] = ordered_retrieval
+                if save_prompt_and_raw:
+                    item["metadata"]["prompt"] = [x["prompt"] for x in ordered_records]
+                    item["metadata"]["raw_model_output"] = {"mode": "per_key", "records": ordered_records}
+                if reused_task_a_keys > 0 and not pending_target_keys:
+                    _maybe_persist()
 
             if task_selection == "task_c_only" and enable_change_reasoning:
                 item["change_analysis"] = {}
@@ -1420,6 +1592,7 @@ def run_pipeline(
                         retrieval_meta.update(dict((answer_result.debug_metadata or {}).get("retrieval_metadata") or {}))
                         retrieval_meta.setdefault("checkpoint_state_kind", checkpoint_handle.state_kind)
                         retrieval_meta.setdefault("retrieval_query", query_spec.retrieval_query_text)
+                        _attach_inline_memory_stats(retrieval_meta, retrieval_result, exposure_tokenizer_model)
                         return {
                             "key": key,
                             "change_value": parsed_single.get(
@@ -1494,10 +1667,6 @@ def run_pipeline(
                         for key, value in (resume_state.get("valid_answers_by_key") or {}).items()
                     }
                     rq3_raw_records: List[Dict[str, Any]] = []
-                    for key in sorted(rq3_pack.keys()):
-                        rq3_raw_records.extend(
-                            [copy.deepcopy(x) for x in (resume_state.get("valid_raw_records_by_key") or {}).get(key, [])]
-                        )
                     discard_counts: Dict[str, int] = {}
                     invalid_counts: Dict[str, int] = {}
                     pending_items_by_key = dict(resume_state.get("pending_items_by_key") or {})
@@ -1515,6 +1684,15 @@ def run_pipeline(
                                 pending_items,
                             )
                         )
+
+                    task_c_progress = tqdm(
+                        total=pending_items,
+                        desc=f"{baseline_name.upper()} {cid} Task C",
+                        unit="item",
+                        position=1,
+                        leave=False,
+                        disable=checkpoint_workers != 1 or pending_items <= 0,
+                    )
 
                     def _run_apply_key(key: str) -> Dict[str, Any]:
                         item_answers: List[Dict[str, Any]] = [
@@ -1600,10 +1778,10 @@ def run_pipeline(
                             is_valid = False
                             if structured_task_c_v2 and service_family != "user_communication":
                                 answer_payload["service_family"] = service_family
-                                normalized_output = apply_norm.get("output")
-                                is_valid = not _is_effectively_empty_prediction_value(normalized_output)
+                                normalized_answer = apply_norm.get("answer")
+                                is_valid = not _is_effectively_empty_prediction_value(normalized_answer)
                                 if is_valid:
-                                    answer_payload["output"] = normalized_output
+                                    answer_payload["answer"] = normalized_answer
                             elif structured_task_c_v2:
                                 answer_payload["service_family"] = service_family
                                 normalized_answer = apply_norm.get("answer", "")
@@ -1629,6 +1807,7 @@ def run_pipeline(
                             retrieval_meta.update(dict((answer_result.debug_metadata or {}).get("retrieval_metadata") or {}))
                             retrieval_meta.setdefault("checkpoint_state_kind", checkpoint_handle.state_kind)
                             retrieval_meta.setdefault("retrieval_query", query_spec.retrieval_query_text)
+                            _attach_inline_memory_stats(retrieval_meta, retrieval_result, exposure_tokenizer_model)
                             raw_records.append(
                                 {
                                     "key": key,
@@ -1645,6 +1824,8 @@ def run_pipeline(
                                     "invalid_reason": invalid_reason if not is_valid else "",
                                 }
                             )
+                            task_c_progress.set_postfix({"key": key, "qa_id": qa_id})
+                            task_c_progress.update(1)
                         expected_items = (((cp.get("rq3_apply_service_qa") or {}).get("keys", {}).get(key, {}) or {}).get("items", []))
                         return {
                             "key": key,
@@ -1654,27 +1835,30 @@ def run_pipeline(
                             "raw_records": raw_records,
                         }
 
-                    with ThreadPoolExecutor(max_workers=within_checkpoint_workers) as executor:
-                        futures = {executor.submit(_run_apply_key, key): key for key in sorted(rq3_pack.keys())}
-                        for future in as_completed(futures):
-                            result = future.result()
-                            key = result["key"]
-                            rq3_answers[key] = result["answers"]
-                            discard_counts[key] = result["discard_count"]
-                            invalid_counts[key] = result["invalid_count"]
-                            task_c_invalid_item_count += int(result["invalid_count"])
-                            rq3_raw_records.extend(result["raw_records"])
-                            item["rq3_apply_answers"] = rq3_answers
-                            item["metadata"]["rq3_apply"] = {
-                                "enabled": True,
-                                "rq3_apply_retrieval_top_k": rq3_apply_retrieval_top_k,
-                                "validator_model": str(((cp.get("rq3_apply_service_qa") or {}).get("validator") or {}).get("model", "")),
-                                "discard_counts": discard_counts,
-                                "invalid_counts": invalid_counts,
-                            }
-                            if rq3_apply_save_prompt_and_raw:
-                                item["metadata"]["rq3_apply"]["records"] = rq3_raw_records
-                            _maybe_persist()
+                    try:
+                        with ThreadPoolExecutor(max_workers=within_checkpoint_workers) as executor:
+                            futures = {executor.submit(_run_apply_key, key): key for key in sorted(rq3_pack.keys())}
+                            for future in as_completed(futures):
+                                result = future.result()
+                                key = result["key"]
+                                rq3_answers[key] = result["answers"]
+                                discard_counts[key] = result["discard_count"]
+                                invalid_counts[key] = result["invalid_count"]
+                                task_c_invalid_item_count += int(result["invalid_count"])
+                                rq3_raw_records.extend(result["raw_records"])
+                                item["rq3_apply_answers"] = rq3_answers
+                                item["metadata"]["rq3_apply"] = {
+                                    "enabled": True,
+                                    "rq3_apply_retrieval_top_k": rq3_apply_retrieval_top_k,
+                                    "validator_model": str(((cp.get("rq3_apply_service_qa") or {}).get("validator") or {}).get("model", "")),
+                                    "discard_counts": discard_counts,
+                                    "invalid_counts": invalid_counts,
+                                }
+                                if rq3_apply_save_prompt_and_raw:
+                                    item["metadata"]["rq3_apply"]["records"] = rq3_raw_records
+                                _maybe_persist()
+                    finally:
+                        task_c_progress.close()
             else:
                 item["metadata"]["rq3_apply"] = {"enabled": False}
 
@@ -1708,7 +1892,6 @@ def run_pipeline(
         pending = []
         for cp in checkpoints:
             cid = str(cp.get("checkpoint_id"))
-            progress.set_postfix({"checkpoint_id": cid})
             existing_item = existing.get(cid)
             if existing_item is not None and _is_checkpoint_prediction_reusable_for_resume(
                 cp,
@@ -1726,6 +1909,7 @@ def run_pipeline(
                     "but Task C outputs are missing or empty; regenerating this checkpoint.".format(cid)
                 )
             pending.append(cp)
+        progress.set_postfix({"pending": len(pending)})
 
         with ThreadPoolExecutor(max_workers=checkpoint_workers) as executor:
             futures = {
@@ -1734,8 +1918,8 @@ def run_pipeline(
             }
             for future in as_completed(futures):
                 cid = futures[future]
-                progress.set_postfix({"checkpoint_id": cid})
                 future.result()
+                progress.set_postfix({"completed": cid})
                 progress.update(1)
 
         final_qa_summary: Optional[Dict[str, Any]] = None
@@ -1828,6 +2012,7 @@ def run_pipeline(
                         retrieval_meta = dict(retrieval_result.debug_metadata or {})
                         retrieval_meta.setdefault("checkpoint_state_kind", final_checkpoint_handle.state_kind)
                         retrieval_meta.setdefault("retrieval_query", query_spec.retrieval_query_text)
+                        _attach_inline_memory_stats(retrieval_meta, retrieval_result, exposure_tokenizer_model)
                         t1 = datetime.now().timestamp()
                         raw = None
                         answer_result = AnswerExecutionResult(raw_output={}, prompt="", debug_metadata={})

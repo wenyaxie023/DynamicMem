@@ -118,7 +118,7 @@ class _FakeLettaAgentLoop:
                     }
                 }
             }
-        if '"answer"' in question and '"snapshot_state"' not in question:
+        if '"answer"' in question and '"snapshot_state"' not in question and '"user_state"' not in question:
             return {
                 "answer": "Recommend espresso",
                 "evidence": [
@@ -157,7 +157,7 @@ class _FakeLettaAgentLoop:
                     }
                 }
             }
-        if '"answer"' in question and '"snapshot_state"' not in question:
+        if '"answer"' in question and '"snapshot_state"' not in question and '"user_state"' not in question:
             return {
                 "answer": "Recommend espresso",
                 "evidence": [

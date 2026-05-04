@@ -153,7 +153,7 @@ class _FakeMemoryOS:
         target_key = "profile_state:backup_coffee" if "profile_state:backup_coffee" in prompt else "profile_state:favorite_coffee"
         if '"change_analysis"' in prompt:
             return {"change_analysis": {}}
-        if '"snapshot_state"' in prompt:
+        if '"user_state"' in prompt or '"snapshot_state"' in prompt:
             return {
                 "snapshot_state": {target_key: coffee},
                 "evidence": {
