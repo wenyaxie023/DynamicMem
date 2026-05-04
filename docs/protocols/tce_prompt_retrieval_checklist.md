@@ -31,12 +31,16 @@ Snapshot generation prompt template:
   - `build_state_completion_prompt_with_agent_memory(...)`
 - File: `tce_core/prompts.py`
 - Includes sections:
+  - `[Instructions]`
+  - `[Output format]`
   - direct question block from pack `question_text` only
   - `[Memory]`
   - inline-memory mode pastes retrieved memory blocks into `[Memory]`
-  - agent-memory mode uses `[Memory]` to instruct the model to rely on agent-stored memory
-  - `[Instructions]`
-  - `[Output format]`
+  - agent-memory mode uses `[Memory]` to instruct the model to rely on the system's stored checkpoint-bounded memory about the user's trajectory
+  - model-facing state output key is `user_state`; runtime normalizes it into
+    persisted prediction `snapshot_state`
+  - habit completions include schedule vocabulary and encoding guidance; non-habit
+    completions omit that schedule supplement
   - evidence schema uses `{"app_log_id", "evidence_content"}`
 
 Change reasoning prompt template:
@@ -44,7 +48,7 @@ Change reasoning prompt template:
   - `build_change_reasoning_prompt_with_inline_memory(...)`
   - `build_change_reasoning_prompt_with_agent_memory(...)`
 - File: `tce_core/prompts.py`
-- Same direct-question + memory/output/rules structure as Task A
+- Legacy compatibility prompt currently keeps the direct question and memory before its instructions/output schema
 - Output schema key:
   - `change_analysis[key] = {before, after, change_reason, evidence}`
 
@@ -116,15 +120,23 @@ Apply validation / rewrite prompt templates:
   - `build_task_c_v2_validation_prompt(...)`
   - `build_task_c_v2_rewrite_prompt(...)`
 - File: `tce_core/prompts.py`
+- Structured-family generation prompt intent:
+  - preference / attribute prompts should generate one or two filled output leaves
+  - preference / attribute structured outputs should use string-valued leaves, usually in a compact object with one or two keys
+  - `core` is a leaf/field-level role, not a state-level role; at least one filled output leaf should be a field-local core leaf
+  - detail leaves are allowed when they add grounded, service-useful precision for the same service object
+  - `reference_output` remains the intended structured gold answer and must stay grounded in `state_value`
+  - require one `reference_anchors` entry per filled leaf so each fill records its state / reference basis and role (`core` or `detail`)
 - Validation prompt contract:
   - LLM returns only `criteria[*] = {criterion, pass, analysis}`
   - this is item-semantic validation, not scoring-contract validation
   - active `taskabc_v2` uses one shared five-criterion schema across families:
     - `answerability`
-    - `service_completion_quality`
+    - `service_realism`
     - `full_field_dependency`
     - `low_leakage`
     - `output_groundedness`
+  - `service_realism` means the item should describe a realistic assistant-mediated service action that a user could naturally be doing now, not a backend placeholder, arbitrary workflow, contrived form, or task invented only to expose the state
   - criterion definitions should point the validator to the relevant fields or payload regions to inspect, rather than relying on vague free-form analysis
   - semantic validation must not use rubric pairability or scoring-point coverage as semantic pass/fail criteria
   - semantic validation prompt inputs must not include `answer_scoring_points`, `scoring_rubric`, scoring criteria, or scoring-point coverage hints
@@ -135,11 +147,94 @@ Apply validation / rewrite prompt templates:
 - rewrite prompt must include validator feedback:
   - `failed_rules`
   - `criteria`
+- `user_communication` validation should not mark the fixed generic task instruction as leakage merely because it mentions using routine details
+- `user_communication` validation may use the `state_key` suffix as grounding for the routine label when `state_value` stores only schedule/timing/location fields
 - `user_communication` rewrite may update `reference_answer`
 - rewrite prompts must not include, generate, or rewrite `answer_scoring_points`, `scoring_rubric`, scoring criteria, scoring descriptions, or scoring-point coverage hints
 - structured-family scoring points are materialized programmatically from the accepted `reference_output`
 - Task C v2 rewrite output should be a delta patch over mutable fields only; unchanged fields may be omitted
 - builder-side rewrite application should merge that delta onto the invalid item
+
+Task C runtime answer prompt template:
+- Function:
+  - `_build_task_c_runtime_prompt(...)`
+- File: `tce_core/prompts.py`
+- Current design intent:
+  - text mode is used by `user_communication`
+  - structured mode is used by `information_request_construction` and `action_configuration`
+  - use a concise runtime-answering prompt rather than the synthesis-data prompt checklist structure
+  - the prompt must place runtime answering instructions and output format before actual answer materials
+  - actual answer materials should appear after the rules as `[Assistant Task]` followed by `[Memory]`
+  - for `user_communication`, the pack-authored assistant task's `[Task Instruction]` defines what assistant message to write
+  - the runtime prompt's answering rules define completeness, evidence, and JSON-only output requirements
+  - runtime instructions should define `[Memory]...[/Memory]` as the system memory about the user's trajectory
+  - structured-family prompts should ask the model to return the completed object under `answer`
+  - for `user_communication`, the `answer` field should contain a concise but complete assistant message: usually one or two natural sentences, while retaining all task-relevant routine details supported by memory
+  - for `user_communication`, the model-facing output schema should describe `answer` as a concise but complete assistant message, not merely a short response
+
+Slot-level evaluation judge prompt template:
+- Functions:
+  - `build_snapshot_slot_judge_prompt(...)`
+  - `build_change_slot_judge_prompt(...)`
+  - `build_apply_slot_judge_prompt(...)`
+- File: `eval/prompts_tce.py`
+- Required section order:
+  - `[Task Instruction]`
+  - `[Definitions]`
+  - `[Constraints]`
+  - `[Example]`
+  - `[Input/Output Format]`
+- Current design intent:
+  - judge one boolean `correct` value for each checklist `point_id`
+  - Task A slot-level judge requests are opt-in and disabled by default; leave them off when using the Task A holistic judge as the active LLM-judge metric
+  - Task C slot-level judge requests are opt-in and disabled by default; leave them off when using the Task C holistic judge as the active LLM-judge metric
+  - use short prompt-local `point_id` values, then map them back to canonical scoring-point ids in evaluator code
+  - mark a point correct when the prediction satisfies the checklist item's core idea / practical value
+  - do not require exact wording, formatting, field name, or identical detail organization unless the checklist item explicitly requires it
+  - still mark a point incorrect when the core idea is omitted, contradicted, unrelated, too vague to establish, or conflicts with other prediction content
+
+Task A holistic evaluation judge prompt template:
+- Function:
+  - `build_snapshot_holistic_judge_prompt(...)`
+- File: `eval/prompts_tce.py`
+- Required section order:
+  - `[Task Instruction]`
+  - `[Definitions]`
+  - `[Constraints]`
+  - `[Example]`
+  - `[Input/Output Format]`
+- Current design intent:
+  - frame the method as Core + Detail field evaluation
+  - judge deterministic evaluator-derived fields under the predicted state value against the golden user-state value
+  - do not show or consume task-pack `scoring_points`
+  - choose habit / preference / attribute instructions and examples from the state-key family
+  - habit timing guidance uses explicit minute-offset boundaries: exact detail, within 5 minutes may preserve core, within 10 minutes is partial detail, and larger offsets are wrong detail unless the field is an approximate window
+  - habit location guidance treats compatible added specificity as preserving core, such as `sofa in living room` for reference `sofa`
+  - return one `field_judgments[]` item for every requested field
+  - in each field judgment, write `analysis` before boolean `core_correct` and integer `detail_quality`
+  - compute each field's 0-1 score in evaluator code as `0.8 * core_correct + 0.2 * (detail_quality / 2)`
+
+Task C holistic evaluation judge prompt template:
+- Function:
+  - `build_apply_holistic_judge_prompt(...)`
+- File: `eval/prompts_tce.py`
+- Required section order:
+  - `[Task Instruction]`
+  - `[Definitions]`
+  - `[Constraints]`
+  - `[Example]`
+  - `[Input/Output Format]`
+- Current design intent:
+  - frame the model-facing method as Core + Detail field evaluation for personalized service responses
+  - avoid benchmark-internal labels or source names such as `Task C`, `service_family`, `service_type`, raw `state_key`, and memory terminology
+  - do not show or consume task-pack `answer_scoring_points`
+  - for user-communication items, judge the already-materialized checklist fields: the identity gate when present plus one field for each retained state-field requirement, each against the full reference and predicted assistant message
+  - for structured items, judge deterministic evaluator-derived fields under the reference service output
+  - core is the service output field's central practical value for the service moment, not raw state reconstruction
+  - details are service-useful precision such as time, date, place, cadence, qualifiers, exclusions, constraints, encoding, tier/version, branch/address, examples, or scope
+  - return one `field_judgments[]` item for every requested field
+  - in each field judgment, write `analysis` before boolean `core_correct` and integer `detail_quality`
+  - compute each field's 0-1 score in evaluator code as `0.8 * core_correct + 0.2 * (detail_quality / 2)`, then aggregate item scores as `rq3_apply_holistic_score_mean`
 
 ## 3) Prompt Assembly + LLM Call: where happens
 
@@ -216,10 +311,15 @@ Pack-first generation path:
   - Task C v2 synthesis prompt should be selected by `service_family`, with family-specific example wording
   - Task C v2 `user_communication` synthesis prompt should implement `Habit-Conditioned User Communication` in natural-language assistant-response form with a `reference_answer`
   - Task C v2 `user_communication` synthesis prompt should align few-shot state schema with the real nested `schedule.* / timing.* / location` input shape used by Stage 2
-- Task C v2 preference-family prompt should implement `Preference-Conditioned Filtering Parameter Completion`
+- Task C v2 preference-family prompt should implement `Preference-Conditioned Search-Filter Completion`
 - Task C v2 internal family id `information_request_construction` should contract preference inputs to statement-only when the raw preference state also includes auxiliary `signals`
 - Task C v2 `action_configuration` synthesis prompt should implement `Attribute-Conditioned Action Configuration`
 - Task C v2 structured-family synthesis prompts should ask for a family-appropriate service object, not a raw copy of the source state
+- Task C v2 structured-family scenarios should read like natural user product moments:
+  - preference filtering: the user is browsing, searching, comparing, or planning options, and the assistant fills search/filter fields before showing matches
+  - action configuration: the user is setting up, connecting, completing, or submitting something, and the assistant fills setup/form/configuration fields
+  - structured tasks should not make the correct output depend on an extra user choice not determined by `state_value`
+  - avoid backend-ish wording such as payload dispatch, downstream modules, coordinator workflows, or unexplained "shortlists being prepared"
 - Task C v2 structured-family semantic synthesis prompts should author only `output_template` plus `reference_output`; scoring points are materialized later in code
 - Task C v2 `user_communication` scoring points should align one-to-one with retained source-state field paths
 - `taskabc_v1` final answer prompt must include the item `question`

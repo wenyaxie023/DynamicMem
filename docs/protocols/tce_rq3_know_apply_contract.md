@@ -170,7 +170,7 @@ Final answering prompt contract:
 - for structured families, that `retrieval_query` must already include `output_template`
 - retrieval query for apply answering comes from `items[*].retrieval_query`
 - `taskabc_v2` answering prompt must require:
-  - one short assistant response for `user_communication`
+  - a concise but complete assistant message for `user_communication`, packaged in JSON under `answer`
   - a structured `output` object for structured families
 - `service_family` may be included as lightweight context
 

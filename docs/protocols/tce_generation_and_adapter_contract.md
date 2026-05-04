@@ -358,6 +358,10 @@ Contributors must document any backend-specific extras in the baseline config te
 Amem standalone path contract:
 - builder CLI uses `--data-storage-path` and `--snapshot-dir`
 - standalone generation CLI uses `--snapshot-dir` or `--snapshot-root`
+- `baseline_params.linked_neighbor_top_k` is an AMem-only generation knob:
+  - when omitted, linked-neighbor expansion reuses the active shared retrieval top-k, preserving upstream/native behavior
+  - when set to `0`, linked-neighbor expansion is disabled
+  - positive values set the maximum linked neighbors appended per retrieved primary AMem memory
 - legacy `--checkpoint-dir` compatibility alias is not part of the active contract
 
 ## 11. Prediction Contract
