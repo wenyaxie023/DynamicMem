@@ -222,6 +222,67 @@ class AmemFaithfulTest(unittest.TestCase):
         self.assertIn("content 2", rendered)
         self.assertIn("content 1", rendered)
 
+    def test_find_related_memories_raw_honors_linked_neighbor_top_k(self):
+        with mock.patch(
+            "generation.Amem.agentic_memory.memory_system.SimpleEmbeddingRetriever",
+            _FakeRetriever,
+        ), mock.patch(
+            "generation.Amem.agentic_memory.memory_system.LLMController",
+            _FakeLLMController,
+        ):
+            memory_system = AgenticMemorySystem(reset_collection=False)
+
+        memory_system.memories = {
+            "note_1": MemoryNote("content 1", id="note_1", timestamp="1", context="ctx1", keywords=["k1"], tags=["t1"]),
+            "note_2": MemoryNote("content 2", id="note_2", timestamp="2", context="ctx2", keywords=["k2"], tags=["t2"]),
+            "note_3": MemoryNote(
+                "content 3",
+                id="note_3",
+                timestamp="3",
+                context="ctx3",
+                keywords=["k3"],
+                tags=["t3"],
+                links=[0, 1],
+            ),
+        }
+        memory_system.find_related_memories = mock.Mock(return_value=("neighbors", [2]))
+
+        rendered_without_neighbors = memory_system.find_related_memories_raw(
+            "question",
+            k=1,
+            linked_neighbor_top_k=0,
+        )
+        rendered_with_two_neighbors = memory_system.find_related_memories_raw(
+            "question",
+            k=1,
+            linked_neighbor_top_k=2,
+        )
+
+        self.assertIn("content 3", rendered_without_neighbors)
+        self.assertNotIn("content 1", rendered_without_neighbors)
+        self.assertNotIn("content 2", rendered_without_neighbors)
+        self.assertIn("content 3", rendered_with_two_neighbors)
+        self.assertIn("content 1", rendered_with_two_neighbors)
+        self.assertIn("content 2", rendered_with_two_neighbors)
+
+    def test_find_related_memories_raw_rejects_negative_linked_neighbor_top_k(self):
+        with mock.patch(
+            "generation.Amem.agentic_memory.memory_system.SimpleEmbeddingRetriever",
+            _FakeRetriever,
+        ), mock.patch(
+            "generation.Amem.agentic_memory.memory_system.LLMController",
+            _FakeLLMController,
+        ):
+            memory_system = AgenticMemorySystem(reset_collection=False)
+
+        memory_system.memories = {
+            "note_1": MemoryNote("content 1", id="note_1", timestamp="1", context="ctx1", keywords=["k1"], tags=["t1"]),
+        }
+        memory_system.find_related_memories = mock.Mock(return_value=("neighbors", [0]))
+
+        with self.assertRaisesRegex(ValueError, "linked_neighbor_top_k"):
+            memory_system.find_related_memories_raw("question", k=1, linked_neighbor_top_k=-1)
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

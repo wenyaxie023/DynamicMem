@@ -1,9 +1,10 @@
 import json
 import os
+import tempfile
 import time
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, Tuple
+from typing import Any, Dict, Optional, Tuple
 
 from .base import TceAdapterArgs
 
@@ -24,12 +25,90 @@ def _is_true(value) -> bool:
     return str(value).strip().lower() in {"1", "true", "yes", "y", "on"}
 
 
+_MEMORY_ACTIONS = {"build_only", "build_then_predict", "predict_from_prebuilt"}
+
+
+def _normalize_memory_action(value: Any) -> str:
+    raw = str(value or "").strip().lower().replace("-", "_").replace(" ", "_")
+    aliases = {
+        "build": "build_only",
+        "build_only": "build_only",
+        "build_then_predict": "build_then_predict",
+        "build_and_predict": "build_then_predict",
+        "predict": "predict_from_prebuilt",
+        "predict_only": "predict_from_prebuilt",
+        "prebuilt": "predict_from_prebuilt",
+        "prebuilt_only": "predict_from_prebuilt",
+        "generation_only": "predict_from_prebuilt",
+        "predict_from_prebuilt": "predict_from_prebuilt",
+    }
+    action = aliases.get(raw)
+    if action not in _MEMORY_ACTIONS:
+        raise ValueError(
+            "Unsupported amem baseline_params.memory_action: {}. "
+            "Use one of: build_only, build_then_predict, predict_from_prebuilt.".format(value)
+        )
+    return action
+
+
+def _optional_nonnegative_int(extras: Dict[str, Any], key: str) -> Optional[int]:
+    raw = extras.get(key)
+    if raw is None or str(raw).strip() == "":
+        return None
+    try:
+        value = int(str(raw).strip())
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"amem baseline_params.{key} must be a non-negative integer.") from exc
+    if value < 0:
+        raise ValueError(f"amem baseline_params.{key} must be a non-negative integer.")
+    return value
+
+
+def _resolve_memory_action(extras: Dict[str, Any]) -> str:
+    explicit = str(extras.get("memory_action") or "").strip()
+    legacy_build_only = _is_true(extras.get("build_only"))
+    legacy_prebuilt_only = _is_true(extras.get("skip_build")) or _is_true(extras.get("prebuilt_only"))
+    if legacy_build_only and legacy_prebuilt_only:
+        raise ValueError(
+            "amem adapter cannot combine legacy build_only with skip_build/prebuilt_only. "
+            "Use baseline_params.memory_action instead."
+        )
+    if explicit:
+        action = _normalize_memory_action(explicit)
+        if legacy_build_only and action != "build_only":
+            raise ValueError(
+                "Conflicting amem memory controls: build_only=true but memory_action={}.".format(action)
+            )
+        if legacy_prebuilt_only and action != "predict_from_prebuilt":
+            raise ValueError(
+                "Conflicting amem memory controls: skip_build/prebuilt_only=true but memory_action={}.".format(action)
+            )
+        return action
+    if legacy_build_only:
+        return "build_only"
+    if legacy_prebuilt_only:
+        return "predict_from_prebuilt"
+    return "build_then_predict"
+
+
 def _atomic_write_json(path: Path, payload: Any) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    tmp_path = path.with_suffix(path.suffix + ".tmp")
-    with tmp_path.open("w", encoding="utf-8") as f:
-        json.dump(payload, f, ensure_ascii=False, indent=2)
-    os.replace(tmp_path, path)
+    fd, tmp_name = tempfile.mkstemp(
+        dir=str(path.parent),
+        prefix=f".{path.name}.",
+        suffix=".tmp",
+    )
+    tmp_path = Path(tmp_name)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            json.dump(payload, f, ensure_ascii=False, indent=2)
+        os.replace(tmp_path, path)
+    except Exception:
+        try:
+            tmp_path.unlink()
+        except OSError:
+            pass
+        raise
 
 
 def _merge_usage_summary(base: Dict[str, Any], delta: Dict[str, Any]) -> Dict[str, Any]:
@@ -189,7 +268,20 @@ def run(args: TceAdapterArgs):
             "use baseline_params.data_storage_path for builder state and baseline_params.snapshot_dir for snapshots."
         )
 
-    from generation.Amem.amem import evaluate_membench
+    user_id = args.user_id
+    if not user_id:
+        raise ValueError("amem adapter requires shared runtime.user_id")
+    memory_action = _resolve_memory_action(args.extras)
+    linked_neighbor_top_k = _optional_nonnegative_int(args.extras, "linked_neighbor_top_k")
+    runs_builder = memory_action in {"build_only", "build_then_predict"}
+    runs_prediction = memory_action in {"build_then_predict", "predict_from_prebuilt"}
+    data_storage_path = args.extras.get("data_storage_path")
+    if not data_storage_path and runs_builder:
+        raise ValueError("amem adapter requires baseline_params.data_storage_path")
+    snapshot_dir = args.extras.get("snapshot_dir")
+    if not snapshot_dir:
+        raise ValueError("amem adapter requires baseline_params.snapshot_dir")
+
     from generation.Amem.agentic_memory.llm_controller import (
         get_usage_summary as amem_usage_summary,
         reset_usage_tracker as reset_amem_usage_tracker,
@@ -200,9 +292,6 @@ def run(args: TceAdapterArgs):
         resolve_openai_compatible_credentials,
     )
 
-    user_id = args.user_id
-    if not user_id:
-        raise ValueError("amem adapter requires shared runtime.user_id")
     repo_root = Path(__file__).resolve().parents[2]
     load_repo_dotenv(repo_root)
 
@@ -216,16 +305,18 @@ def run(args: TceAdapterArgs):
         if not embedding_api_base_url:
             embedding_api_base_url = resolved_embedding_base
 
-    llm_controller_api_key, llm_controller_api_base_url = resolve_openai_compatible_credentials(
-        args.llm_provider,
-        require_api_key=True,
-    )
+    evaluate_membench = None
+    llm_controller_api_key = None
+    llm_controller_api_base_url = None
+    if runs_builder:
+        from generation.Amem.amem import evaluate_membench
+
+        llm_controller_api_key, llm_controller_api_base_url = resolve_openai_compatible_credentials(
+            args.llm_provider,
+            require_api_key=True,
+        )
     final_sidecar_path = _usage_cost_sidecar_path(args.output)
     live_sidecar_path = _live_usage_cost_sidecar_path(args.output)
-    build_only = _is_true(args.extras.get("build_only"))
-    data_storage_path = args.extras.get("data_storage_path")
-    if not data_storage_path:
-        raise ValueError("amem adapter requires baseline_params.data_storage_path")
 
     def _write_live_snapshot(
         *,
@@ -249,6 +340,98 @@ def run(args: TceAdapterArgs):
             retrieval_usage=retrieval_usage,
             answer_llm_usage=answer_llm_usage,
         )
+
+    def _run_prediction_phase(*, build_duration_s: float, build_memory_usage: Dict[str, Any]):
+        reset_amem_usage_tracker()
+        generation_t0 = time.time()
+
+        def _generation_usage_callback(payload: Dict[str, Any]) -> None:
+            retrieval_usage = amem_usage_summary()
+            answer_llm_usage = payload if isinstance(payload, dict) else {}
+            _write_live_snapshot(
+                build_duration_s=build_duration_s,
+                generation_duration_s=time.time() - generation_t0,
+                build_memory_usage=build_memory_usage,
+                retrieval_usage=retrieval_usage,
+                answer_llm_usage=answer_llm_usage,
+            )
+
+        result = run_generation(
+            benchmark_path=args.benchmark,
+            app_logs_path=args.app_logs_path,
+            output_path=args.output,
+            user_id=user_id,
+            size=args.extras.get("size", "small"),
+            snapshot_dir=snapshot_dir,
+            retrieval_top_k=args.retrieval_top_k,
+            max_visible_logs=args.max_visible_logs,
+            llm_provider=args.llm_provider,
+            llm_model=args.llm_model,
+            llm_max_workers=args.llm_max_workers,
+            answer_temperature=args.llm_temperature,
+            answer_top_p=args.llm_top_p,
+            answer_top_k=args.llm_top_k,
+            embedding_backend="openai" if args.retriever_provider in {"openai", "azure"} else args.retriever_provider,
+            embedding_model_name=args.retriever_model,
+            embedding_api_key=embedding_api_key,
+            embedding_api_base_url=embedding_api_base_url,
+            resume=args.resume,
+            max_checkpoints=args.max_checkpoints,
+            debug=args.debug,
+            debug_dir=args.debug_dir,
+            save_prompt_and_raw=args.save_prompt_and_raw,
+            enable_change_reasoning=args.enable_change_reasoning,
+            enable_rq3_apply_service_qa=args.enable_rq3_apply_service_qa,
+            rq3_apply_save_prompt_and_raw=args.rq3_apply_save_prompt_and_raw,
+            rq3_apply_retrieval_top_k=args.rq3_apply_retrieval_top_k,
+            linked_neighbor_top_k=linked_neighbor_top_k,
+            checkpoint_workers=args.checkpoint_workers,
+            within_checkpoint_workers=args.within_checkpoint_workers,
+            save_every_generation_keys=args.save_every_generation_keys,
+            enable_final_qa=args.enable_final_qa,
+            final_qa_path=args.final_qa_path,
+            final_qa_output_path=args.final_qa_output_path,
+            final_qa_retrieval_top_k=args.final_qa_retrieval_top_k,
+            final_qa_save_prompt_and_raw=args.final_qa_save_prompt_and_raw,
+            usage_callback=_generation_usage_callback,
+        )
+        generation_duration_s = time.time() - generation_t0
+        retrieval_usage = amem_usage_summary()
+        answer_llm_usage = {}
+        if isinstance(result, dict) and isinstance(result.get("answer_llm_usage"), dict):
+            answer_llm_usage = dict(result.get("answer_llm_usage") or {})
+        _write_usage_cost_sidecar(
+            sidecar_path=final_sidecar_path,
+            output_path=args.output,
+            llm_provider=args.llm_provider,
+            llm_model=args.llm_model,
+            retriever_provider=args.retriever_provider,
+            embedding_model_name=args.retriever_model,
+            build_duration_s=build_duration_s,
+            generation_duration_s=generation_duration_s,
+            total_duration_s=build_duration_s + generation_duration_s,
+            build_memory_usage=build_memory_usage,
+            retrieval_usage=retrieval_usage,
+            answer_llm_usage=answer_llm_usage,
+        )
+        _write_live_snapshot(
+            build_duration_s=build_duration_s,
+            generation_duration_s=generation_duration_s,
+            build_memory_usage=build_memory_usage,
+            retrieval_usage=retrieval_usage,
+            answer_llm_usage=answer_llm_usage,
+        )
+        return result
+
+    if memory_action == "predict_from_prebuilt":
+        snapshot_root = Path(str(snapshot_dir)).expanduser().resolve() / user_id / args.extras.get("size", "small")
+        manifest_path = snapshot_root / "manifest.json"
+        if not manifest_path.exists():
+            raise FileNotFoundError(
+                "amem memory_action=predict_from_prebuilt requires prebuilt checkpoint snapshots. "
+                f"Missing manifest: {manifest_path}"
+            )
+        return _run_prediction_phase(build_duration_s=0.0, build_memory_usage={})
 
     reset_amem_usage_tracker()
     build_t0 = time.time()
@@ -285,7 +468,7 @@ def run(args: TceAdapterArgs):
         ),
         data_storage_path=data_storage_path,
         save_every=int(args.extras.get("save_every", 50)),
-        snapshot_dir=args.extras.get("snapshot_dir"),
+        snapshot_dir=snapshot_dir,
         embedding_api_key=embedding_api_key,
         embedding_api_base_url=embedding_api_base_url,
         progress_callback=_builder_progress_callback,
@@ -300,7 +483,7 @@ def run(args: TceAdapterArgs):
         answer_llm_usage={},
     )
 
-    if build_only:
+    if memory_action == "build_only":
         _write_usage_cost_sidecar(
             sidecar_path=final_sidecar_path,
             output_path=args.output,
@@ -320,88 +503,13 @@ def run(args: TceAdapterArgs):
             "build_only": {
                 "enabled": True,
                 "data_storage_path": str(data_storage_path),
-                "snapshot_dir": str(args.extras.get("snapshot_dir") or ""),
+                "snapshot_dir": str(snapshot_dir or ""),
                 "user_id": user_id,
                 "size": args.extras.get("size", "small"),
             },
         }
 
-    reset_amem_usage_tracker()
-    generation_t0 = time.time()
+    if not runs_prediction:
+        return {"predictions": []}
 
-    def _generation_usage_callback(payload: Dict[str, Any]) -> None:
-        retrieval_usage = amem_usage_summary()
-        answer_llm_usage = payload if isinstance(payload, dict) else {}
-        _write_live_snapshot(
-            build_duration_s=build_duration_s,
-            generation_duration_s=time.time() - generation_t0,
-            build_memory_usage=build_memory_usage,
-            retrieval_usage=retrieval_usage,
-            answer_llm_usage=answer_llm_usage,
-        )
-
-    result = run_generation(
-        benchmark_path=args.benchmark,
-        app_logs_path=args.app_logs_path,
-        output_path=args.output,
-        user_id=user_id,
-        size=args.extras.get("size", "small"),
-        snapshot_dir=args.extras.get("snapshot_dir"),
-        retrieval_top_k=args.retrieval_top_k,
-        max_visible_logs=args.max_visible_logs,
-        llm_provider=args.llm_provider,
-        llm_model=args.llm_model,
-        llm_max_workers=args.llm_max_workers,
-        answer_temperature=args.llm_temperature,
-        answer_top_p=args.llm_top_p,
-        answer_top_k=args.llm_top_k,
-        embedding_backend="openai" if args.retriever_provider in {"openai", "azure"} else args.retriever_provider,
-        embedding_model_name=args.retriever_model,
-        embedding_api_key=embedding_api_key,
-        embedding_api_base_url=embedding_api_base_url,
-        resume=args.resume,
-        max_checkpoints=args.max_checkpoints,
-        debug=args.debug,
-        debug_dir=args.debug_dir,
-        save_prompt_and_raw=args.save_prompt_and_raw,
-        enable_change_reasoning=args.enable_change_reasoning,
-        enable_rq3_apply_service_qa=args.enable_rq3_apply_service_qa,
-        rq3_apply_save_prompt_and_raw=args.rq3_apply_save_prompt_and_raw,
-        rq3_apply_retrieval_top_k=args.rq3_apply_retrieval_top_k,
-        checkpoint_workers=args.checkpoint_workers,
-        within_checkpoint_workers=args.within_checkpoint_workers,
-        save_every_generation_keys=args.save_every_generation_keys,
-        enable_final_qa=args.enable_final_qa,
-        final_qa_path=args.final_qa_path,
-        final_qa_output_path=args.final_qa_output_path,
-        final_qa_retrieval_top_k=args.final_qa_retrieval_top_k,
-        final_qa_save_prompt_and_raw=args.final_qa_save_prompt_and_raw,
-        usage_callback=_generation_usage_callback,
-    )
-    generation_duration_s = time.time() - generation_t0
-    retrieval_usage = amem_usage_summary()
-    answer_llm_usage = {}
-    if isinstance(result, dict) and isinstance(result.get("answer_llm_usage"), dict):
-        answer_llm_usage = dict(result.get("answer_llm_usage") or {})
-    _write_usage_cost_sidecar(
-        sidecar_path=final_sidecar_path,
-        output_path=args.output,
-        llm_provider=args.llm_provider,
-        llm_model=args.llm_model,
-        retriever_provider=args.retriever_provider,
-        embedding_model_name=args.retriever_model,
-        build_duration_s=build_duration_s,
-        generation_duration_s=generation_duration_s,
-        total_duration_s=build_duration_s + generation_duration_s,
-        build_memory_usage=build_memory_usage,
-        retrieval_usage=retrieval_usage,
-        answer_llm_usage=answer_llm_usage,
-    )
-    _write_live_snapshot(
-        build_duration_s=build_duration_s,
-        generation_duration_s=generation_duration_s,
-        build_memory_usage=build_memory_usage,
-        retrieval_usage=retrieval_usage,
-        answer_llm_usage=answer_llm_usage,
-    )
-    return result
+    return _run_prediction_phase(build_duration_s=build_duration_s, build_memory_usage=build_memory_usage)

@@ -1,12 +1,53 @@
 from .base import TceAdapterArgs
 
 
+_MEMORY_ACTIONS = {"build_only", "build_then_predict", "predict_from_prebuilt"}
+
+
 def _is_true(value) -> bool:
     if isinstance(value, bool):
         return value
     if value is None:
         return False
     return str(value).strip().lower() in {"1", "true", "yes", "y", "on"}
+
+
+def _normalize_memory_action(value) -> str:
+    raw = str(value or "").strip().lower().replace("-", "_").replace(" ", "_")
+    aliases = {
+        "build": "build_only",
+        "build_only": "build_only",
+        "build_then_predict": "build_then_predict",
+        "build_and_predict": "build_then_predict",
+        "predict": "predict_from_prebuilt",
+        "predict_only": "predict_from_prebuilt",
+        "prebuilt": "predict_from_prebuilt",
+        "prebuilt_only": "predict_from_prebuilt",
+        "generation_only": "predict_from_prebuilt",
+        "predict_from_prebuilt": "predict_from_prebuilt",
+    }
+    action = aliases.get(raw)
+    if action not in _MEMORY_ACTIONS:
+        raise ValueError(
+            "Unsupported memoryos baseline_params.memory_action: {}. "
+            "Use one of: build_only, build_then_predict, predict_from_prebuilt.".format(value)
+        )
+    return action
+
+
+def _resolve_memory_action(extras) -> str:
+    explicit = str(extras.get("memory_action") or "").strip()
+    legacy_build_only = _is_true(extras.get("build_only"))
+    if explicit:
+        action = _normalize_memory_action(explicit)
+        if legacy_build_only and action != "build_only":
+            raise ValueError(
+                "Conflicting memoryos memory controls: build_only=true but memory_action={}.".format(action)
+            )
+        return action
+    if legacy_build_only:
+        return "build_only"
+    return "build_then_predict"
 
 
 def run(args: TceAdapterArgs):
@@ -22,6 +63,7 @@ def run(args: TceAdapterArgs):
     user_id = args.user_id
     if not user_id:
         raise ValueError("memoryos adapter requires shared runtime.user_id")
+    memory_action = _resolve_memory_action(args.extras)
     repo_root = Path(__file__).resolve().parents[2]
     load_repo_dotenv(repo_root)
 
@@ -69,7 +111,8 @@ def run(args: TceAdapterArgs):
         embedding_model_name=args.retriever_model,
         llm_controller_model=args.extras.get("llm_controller_model", args.llm_model),
         assistant_id=args.extras.get("assistant_id", "assistant"),
-        build_only=_is_true(args.extras.get("build_only")),
+        build_only=memory_action == "build_only",
+        predict_from_prebuilt=memory_action == "predict_from_prebuilt",
         resume=args.resume,
         max_checkpoints=args.max_checkpoints,
         debug=args.debug,
@@ -87,4 +130,7 @@ def run(args: TceAdapterArgs):
         final_qa_output_path=args.final_qa_output_path,
         final_qa_retrieval_top_k=args.final_qa_retrieval_top_k,
         final_qa_save_prompt_and_raw=args.final_qa_save_prompt_and_raw,
+        allow_destructive_rebuild=(
+            bool(args.allow_destructive_rebuild) or _is_true(args.extras.get("allow_destructive_rebuild"))
+        ),
     )

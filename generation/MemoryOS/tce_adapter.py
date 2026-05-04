@@ -19,7 +19,6 @@ except Exception:  # pragma: no cover - optional runtime dependency
 
 from generation.common.llm_client import LLMClient
 from generation.common.provider_config import resolve_openai_compatible_credentials
-from generation.MemoryOS.memory_evolution_viewer import build_memory_evolution_payload, write_viewer_payload
 from generation.tce_safety import ensure_destructive_rebuild_allowed
 from tce_core.orchestrator_protocol import (
     CheckpointHandle,
@@ -84,21 +83,6 @@ def _memoryos_usage_summary() -> Dict[str, Any]:
 
 def _usage_cost_sidecar_path(output_path: Path) -> Path:
     return output_path.parent / "usage_cost.json"
-
-
-def _memory_viewer_data_path(output_path: Path) -> Path:
-    return output_path.parent / "memory_viewer_data.json"
-
-
-def _export_memory_viewer(snapshot_root: Path, output_path: Path) -> None:
-    manifest_path = snapshot_root / "manifest.json"
-    if not manifest_path.exists():
-        return
-    try:
-        payload = build_memory_evolution_payload(snapshot_root)
-        write_viewer_payload(payload, output_path)
-    except Exception as exc:
-        print(f"MemoryOS viewer export skipped for {snapshot_root}: {exc}", file=sys.stderr)
 
 
 def _load_usage_cost_sidecar(sidecar_path: Path) -> Dict[str, Any]:
@@ -276,6 +260,25 @@ def _existing_checkpoint_ids(snapshot_root: Path) -> Set[str]:
         if checkpoint_id:
             out.add(checkpoint_id)
     return out
+
+
+def _require_prebuilt_checkpoint_snapshots(snapshot_root: Path, required_checkpoint_ids: Set[str]) -> None:
+    manifest_path = snapshot_root / "manifest.json"
+    if not manifest_path.exists():
+        raise FileNotFoundError(
+            "MemoryOS memory_action=predict_from_prebuilt requires prebuilt checkpoint snapshots. "
+            f"Missing manifest: {manifest_path}"
+        )
+    existing_checkpoint_ids = _existing_checkpoint_ids(snapshot_root)
+    missing = sorted(required_checkpoint_ids - existing_checkpoint_ids)
+    if missing:
+        preview = ", ".join(missing[:10])
+        if len(missing) > 10:
+            preview = f"{preview}, ..."
+        raise FileNotFoundError(
+            "MemoryOS memory_action=predict_from_prebuilt requires all requested checkpoint snapshots. "
+            f"Missing checkpoint ids under {snapshot_root}: {preview}"
+        )
 
 
 def _snapshot_sort_key(entry: Dict[str, Any]) -> Tuple[int, str, str]:
@@ -472,6 +475,82 @@ def _restore_snapshot_into_memoryos(memory_system: Any, bundle: Dict[str, Any]) 
     memory_system.assistant_long_term_memory.load()
 
 
+def _format_memoryos_inline_context(memory_system: Any, retrieval: Any) -> str:
+    retrieval_payload = retrieval if isinstance(retrieval, dict) else {}
+    retrieved_pages = list(retrieval_payload.get("retrieved_pages") or [])
+    retrieved_user_knowledge = list(retrieval_payload.get("retrieved_user_knowledge") or [])
+    retrieved_assistant_knowledge = list(retrieval_payload.get("retrieved_assistant_knowledge") or [])
+
+    short_term_history = memory_system.short_term_memory.get_all()
+    history_text = "\n".join(
+        [
+            "User: {user_input}\nAssistant: {agent_response} (Time: {timestamp})".format(
+                user_input=qa.get("user_input", ""),
+                agent_response=qa.get("agent_response", ""),
+                timestamp=qa.get("timestamp", ""),
+            )
+            for qa in short_term_history
+            if isinstance(qa, dict)
+        ]
+    )
+
+    retrieval_text = "\n".join(
+        [
+            "[Historical Memory]\n"
+            "User: {user_input}\n"
+            "Assistant: {agent_response}\n"
+            "Time: {timestamp}\n"
+            "Conversation chain overview: {meta_info}".format(
+                user_input=page.get("user_input", ""),
+                agent_response=page.get("agent_response", ""),
+                timestamp=page.get("timestamp", ""),
+                meta_info=page.get("meta_info", "N/A"),
+            )
+            for page in retrieved_pages
+            if isinstance(page, dict)
+        ]
+    )
+
+    user_profile_text = memory_system.user_long_term_memory.get_raw_user_profile(memory_system.user_id)
+    if not user_profile_text or str(user_profile_text).lower() == "none":
+        user_profile_text = "No detailed profile available yet."
+
+    user_knowledge_background = ""
+    if retrieved_user_knowledge:
+        user_knowledge_lines = []
+        for entry in retrieved_user_knowledge:
+            if isinstance(entry, dict):
+                user_knowledge_lines.append(
+                    "- {knowledge} (Recorded: {timestamp})".format(
+                        knowledge=entry.get("knowledge", ""),
+                        timestamp=entry.get("timestamp", ""),
+                    )
+                )
+        if user_knowledge_lines:
+            user_knowledge_background = "\n[Relevant User Knowledge Entries]\n" + "\n".join(user_knowledge_lines)
+
+    assistant_knowledge_lines = []
+    for entry in retrieved_assistant_knowledge:
+        if isinstance(entry, dict):
+            assistant_knowledge_lines.append(
+                "- {knowledge} (Recorded: {timestamp})".format(
+                    knowledge=entry.get("knowledge", ""),
+                    timestamp=entry.get("timestamp", ""),
+                )
+            )
+    if not assistant_knowledge_lines:
+        assistant_knowledge_lines.append("- No relevant assistant knowledge found for this query.")
+
+    return "\n\n".join(
+        [
+            "[Recent Conversation History]\n{}".format(history_text),
+            "[Retrieved Historical Memory]\n{}".format(retrieval_text),
+            "[User Profile]\n{}{}".format(user_profile_text, user_knowledge_background),
+            "[Assistant Knowledge Base]\n{}".format("\n".join(assistant_knowledge_lines)),
+        ]
+    )
+
+
 def _ensure_snapshots_for_benchmark(
     *,
     benchmark_path: Path,
@@ -488,8 +567,8 @@ def _ensure_snapshots_for_benchmark(
     retriever_provider: str = "openai",
     resume: bool = False,
     allow_destructive_rebuild: bool = False,
+    require_prebuilt_snapshots: bool = False,
     progress_callback: Optional[Callable[[], None]] = None,
-    snapshot_callback: Optional[Callable[[Path], None]] = None,
 ) -> Path:
     benchmark = json.loads(benchmark_path.read_text(encoding="utf-8"))
     checkpoints = [cp for cp in benchmark.get("checkpoints", []) if isinstance(cp, dict)]
@@ -503,8 +582,9 @@ def _ensure_snapshots_for_benchmark(
         for cp in checkpoints
         if str(cp.get("checkpoint_id", "")).strip()
     }
-    if callable(snapshot_callback) and (snapshot_root / "manifest.json").exists():
-        snapshot_callback(snapshot_root)
+    if require_prebuilt_snapshots:
+        _require_prebuilt_checkpoint_snapshots(snapshot_root, required_checkpoint_ids)
+        return snapshot_root
     if required_checkpoint_ids and required_checkpoint_ids.issubset(_existing_checkpoint_ids(snapshot_root)):
         return snapshot_root
 
@@ -593,8 +673,6 @@ def _ensure_snapshots_for_benchmark(
                     trigger="periodic",
                 )
                 last_saved_event_idx = idx
-                if callable(snapshot_callback):
-                    snapshot_callback(snapshot_root)
                 if callable(progress_callback):
                     progress_callback()
             triggered = []
@@ -615,8 +693,6 @@ def _ensure_snapshots_for_benchmark(
                 )
                 saved_checkpoint_ids.add(checkpoint_id)
                 last_saved_event_idx = max(last_saved_event_idx, idx)
-                if callable(snapshot_callback):
-                    snapshot_callback(snapshot_root)
                 if callable(progress_callback):
                     progress_callback()
     except BaseException:
@@ -629,8 +705,6 @@ def _ensure_snapshots_for_benchmark(
                 checkpoint_app_log_id=last_processed_log_id,
                 trigger="interrupt",
             )
-            if callable(snapshot_callback):
-                snapshot_callback(snapshot_root)
             if callable(progress_callback):
                 progress_callback()
         raise
@@ -644,8 +718,6 @@ def _ensure_snapshots_for_benchmark(
             checkpoint_app_log_id=last_processed_log_id,
             trigger="final",
         )
-        if callable(snapshot_callback):
-            snapshot_callback(snapshot_root)
         if callable(progress_callback):
             progress_callback()
 
@@ -740,14 +812,27 @@ def run_generation(
     final_qa_retrieval_top_k: Optional[int] = None,
     final_qa_save_prompt_and_raw: bool = False,
     build_only: bool = False,
+    predict_from_prebuilt: bool = False,
     allow_destructive_rebuild: bool = False,
 ) -> Dict[str, Any]:
+    if build_only and predict_from_prebuilt:
+        raise ValueError("MemoryOS cannot combine build_only with predict_from_prebuilt.")
     benchmark_path = benchmark_path.expanduser().resolve()
     app_logs_path = app_logs_path.expanduser().resolve()
     output_path = output_path.expanduser().resolve()
     memory_user_id = _memory_user_id(user_id, size)
+    if predict_from_prebuilt:
+        benchmark = json.loads(benchmark_path.read_text(encoding="utf-8"))
+        checkpoints = [cp for cp in benchmark.get("checkpoints", []) if isinstance(cp, dict)]
+        if max_checkpoints is not None:
+            checkpoints = checkpoints[: max(0, int(max_checkpoints))]
+        required_checkpoint_ids = {
+            str(cp.get("checkpoint_id", "")).strip()
+            for cp in checkpoints
+            if str(cp.get("checkpoint_id", "")).strip()
+        }
+        _require_prebuilt_checkpoint_snapshots(_snapshot_root(snapshot_dir, memory_user_id), required_checkpoint_ids)
     sidecar_path = _usage_cost_sidecar_path(output_path)
-    viewer_data_path = _memory_viewer_data_path(output_path)
     base_sidecar_payload = _load_usage_cost_sidecar(sidecar_path) if resume else {}
     if not resume and sidecar_path.exists():
         try:
@@ -787,9 +872,6 @@ def run_generation(
             base_payload=base_sidecar_payload,
         )
 
-    def _persist_memory_viewer(snapshot_root: Path) -> None:
-        _export_memory_viewer(snapshot_root, viewer_data_path)
-
     build_writer_stop = threading.Event()
 
     def _build_progress_writer() -> None:
@@ -822,13 +904,12 @@ def run_generation(
             retrieval_top_k=retrieval_top_k,
             resume=resume,
             allow_destructive_rebuild=allow_destructive_rebuild,
+            require_prebuilt_snapshots=predict_from_prebuilt,
             progress_callback=_persist_build_progress,
-            snapshot_callback=_persist_memory_viewer,
         )
     finally:
         build_writer_stop.set()
         build_writer.join(timeout=1.0)
-    _persist_memory_viewer(snapshot_root)
     build_duration_s = time.perf_counter() - build_start
     build_memory_usage = _memoryos_usage_summary()
     _write_usage_cost_sidecar(
@@ -955,13 +1036,14 @@ def run_generation(
                 user_query=retrieval_query,
                 user_id=memo.user_id,
             )
+            inline_memory_context = _format_memoryos_inline_context(memo, retrieval)
         retrieved_pages = list((retrieval or {}).get("retrieved_pages") or [])
-        retrieval_payload = retrieval if isinstance(retrieval, dict) else {"retrieval": retrieval}
         result = RetrievalResult(
             mode="inline_memory",
-            inline_memory_blocks=[json.dumps(retrieval_payload, ensure_ascii=False, indent=2)],
+            inline_memory_blocks=[inline_memory_context],
             debug_metadata={
                 "retrieval_mode": "memoryos_snapshot",
+                "inline_memory_format": "memoryos_get_response_text",
                 "snapshot_id": bundle.get("snapshot_id"),
                 "snapshot_checkpoint_id": bundle.get("checkpoint_id"),
                 "snapshot_checkpoint_app_log_id": bundle.get("checkpoint_app_log_id"),

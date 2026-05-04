@@ -3,6 +3,7 @@ import argparse
 import json
 import pickle
 import re
+import sys
 from datetime import datetime
 from pathlib import Path
 from types import SimpleNamespace
@@ -81,13 +82,25 @@ def _extract_app_log_ids_from_native_context(raw_context: Any) -> List[str]:
 class _NativeAnswerPathRetriever:
     """Thin adapter that reuses the upstream/native retrieval path only."""
 
-    def __init__(self, *, memory_system: Any, ask_json_fn: Callable[[str], Any], retrieve_k: int):
+    def __init__(
+        self,
+        *,
+        memory_system: Any,
+        ask_json_fn: Callable[[str], Any],
+        retrieve_k: int,
+        linked_neighbor_top_k: Optional[int] = None,
+    ):
         self.memory_system = memory_system
         self.ask_json = ask_json_fn
         self.retrieve_k = int(retrieve_k)
+        self.linked_neighbor_top_k = linked_neighbor_top_k
 
     def retrieve_memory(self, content: str, k: int = 10) -> str:
-        return self.memory_system.find_related_memories_raw(content, k=k)
+        return self.memory_system.find_related_memories_raw(
+            content,
+            k=k,
+            linked_neighbor_top_k=self.linked_neighbor_top_k,
+        )
 
     def generate_query_llm(self, question: str) -> str:
         prompt = _build_keyword_generation_prompt(question)
@@ -213,6 +226,7 @@ def run_generation(
     enable_rq3_apply_service_qa: bool = False,
     rq3_apply_save_prompt_and_raw: bool = True,
     rq3_apply_retrieval_top_k: Optional[int] = None,
+    linked_neighbor_top_k: Optional[int] = None,
     snapshot_root: Optional[str] = None,
     checkpoint_workers: int = 1,
     within_checkpoint_workers: int = 1,
@@ -227,6 +241,8 @@ def run_generation(
     _ensure_nltk()
     benchmark_path = benchmark_path.expanduser().resolve()
     app_logs_path = app_logs_path.expanduser().resolve()
+    if linked_neighbor_top_k is not None and int(linked_neighbor_top_k) < 0:
+        raise ValueError("linked_neighbor_top_k must be a non-negative integer.")
     output_path = output_path.expanduser().resolve()
     client = LLMClient(
         provider=llm_provider,
@@ -300,7 +316,10 @@ def run_generation(
             raw_usage = usage_summary_fn()
             if isinstance(raw_usage, dict):
                 answer_usage = raw_usage
-        usage_callback(answer_usage)
+        try:
+            usage_callback(answer_usage)
+        except Exception as exc:
+            print(f"[AMEM][usage] failed to write live usage sidecar: {exc}", file=sys.stderr)
 
     def ask_json(prompt: str) -> Any:
         result = client.ask(prompt, response_type="json")
@@ -423,6 +442,7 @@ def run_generation(
                     "snapshot_checkpoint_id": bundle.get("checkpoint_id"),
                     "snapshot_checkpoint_app_log_id": bundle.get("checkpoint_app_log_id"),
                     "retrieval_top_k": top_k_for_call,
+                    "linked_neighbor_top_k": linked_neighbor_top_k if linked_neighbor_top_k is not None else k,
                     "num_retrieved_logs": 0,
                     "retrieved_app_log_ids": [],
                     "generated_keywords": "",
@@ -439,6 +459,7 @@ def run_generation(
             memory_system=memory_system,
             ask_json_fn=ask_json,
             retrieve_k=k,
+            linked_neighbor_top_k=linked_neighbor_top_k,
         )
         generated_keywords, raw_context = native_retriever.retrieve_context(retrieval_query, k=k)
         _emit_usage_update()
@@ -454,6 +475,7 @@ def run_generation(
                 "snapshot_checkpoint_id": bundle.get("checkpoint_id"),
                 "snapshot_checkpoint_app_log_id": bundle.get("checkpoint_app_log_id"),
                 "retrieval_top_k": top_k_for_call,
+                "linked_neighbor_top_k": linked_neighbor_top_k if linked_neighbor_top_k is not None else k,
                 "num_retrieved_logs": len(selected_ids),
                 "generated_keywords": generated_keywords,
                 "retrieved_app_log_ids": selected_ids,
@@ -547,6 +569,15 @@ def main() -> None:
         help="Top-k memories retrieved from snapshot Chroma per checkpoint.",
     )
     parser.add_argument(
+        "--linked-neighbor-top-k",
+        type=int,
+        default=None,
+        help=(
+            "AMem linked neighbors to append per retrieved primary memory. "
+            "Default reuses --retrieval-top-k; 0 disables linked-neighbor expansion."
+        ),
+    )
+    parser.add_argument(
         "--max-visible-logs",
         type=int,
         default=None,
@@ -599,6 +630,7 @@ def main() -> None:
         snapshot_dir=args.snapshot_dir,
         snapshot_root=args.snapshot_root,
         retrieval_top_k=args.retrieval_top_k,
+        linked_neighbor_top_k=args.linked_neighbor_top_k,
         max_visible_logs=args.max_visible_logs,
         llm_provider=args.llm_provider,
         llm_model=args.llm_model,

@@ -247,6 +247,7 @@ def _build_builder_fingerprint(
     *,
     benchmark_path: Path,
     app_logs_path: Path,
+    checkpoint_specs: Optional[List[Dict[str, Any]]] = None,
     preprocess_fingerprint: str = "",
     llm_model: str = "",
     llm_base_url: Optional[str] = None,
@@ -255,10 +256,21 @@ def _build_builder_fingerprint(
     batch_size: int = 0,
     openie_mode: str = "",
 ) -> str:
+    source_checkpoints = []
+    for spec in checkpoint_specs or []:
+        if not isinstance(spec, dict):
+            continue
+        source_checkpoints.append(
+            {
+                "checkpoint_id": str(spec.get("checkpoint_id") or ""),
+                "checkpoint_app_log_id": str(spec.get("checkpoint_app_log_id") or ""),
+                "cut_index": int(spec.get("cut_index", -1)),
+            }
+        )
     payload = {
         "artifact_version": ARTIFACT_VERSION,
-        "benchmark_path": str(Path(benchmark_path).resolve()),
         "app_logs_path": str(Path(app_logs_path).resolve()),
+        "checkpoint_specs": source_checkpoints,
         "preprocess_fingerprint": str(preprocess_fingerprint or ""),
         "llm_model": str(llm_model or ""),
         "llm_base_url": str(llm_base_url or ""),
@@ -268,6 +280,15 @@ def _build_builder_fingerprint(
         "openie_mode": str(openie_mode or ""),
     }
     return hashlib.sha256(json.dumps(payload, sort_keys=True, ensure_ascii=False).encode("utf-8")).hexdigest()
+
+
+def _entry_matches_source_checkpoint(entry: Dict[str, Any], spec: Dict[str, Any]) -> bool:
+    if str(entry.get("checkpoint_id") or "").strip() != str(spec.get("checkpoint_id") or "").strip():
+        return False
+    if str(entry.get("checkpoint_app_log_id") or "").strip() != str(spec.get("checkpoint_app_log_id") or "").strip():
+        return False
+    last_event_idx = entry.get("last_event_idx")
+    return isinstance(last_event_idx, int) and int(last_event_idx) == int(spec.get("cut_index", -1))
 
 
 def _reset_save_root(data_storage_root: Path, snapshot_root: Path, *, allow_destructive_rebuild: bool) -> None:
@@ -858,6 +879,7 @@ class HippoRAG2Runner:
             replay_target_idx = min(replay_target_idx, max(-1, int(target_log_index)))
 
         checkpoint_specs: List[Dict[str, Any]] = []
+        checkpoint_specs_by_id: Dict[str, Dict[str, Any]] = {}
         checkpoint_by_cut_index: Dict[int, List[Dict[str, Any]]] = {}
         required_checkpoint_ids: Set[str] = set()
         for cp in checkpoints:
@@ -874,12 +896,14 @@ class HippoRAG2Runner:
                 "cut_index": int(cut_index),
             }
             checkpoint_specs.append(spec)
+            checkpoint_specs_by_id[checkpoint_id] = spec
             checkpoint_by_cut_index.setdefault(int(cut_index), []).append(spec)
             required_checkpoint_ids.add(checkpoint_id)
 
         builder_fingerprint = _build_builder_fingerprint(
             benchmark_path=benchmark_path,
             app_logs_path=app_logs_path,
+            checkpoint_specs=checkpoint_specs,
             llm_model=self.llm_model,
             llm_base_url=self.llm_base_url,
             embedding_model=self.embedding_model,
@@ -898,7 +922,14 @@ class HippoRAG2Runner:
             snapshot_path_raw = str(entry.get("snapshot_path") or "").strip()
             if not checkpoint_id or not snapshot_path_raw:
                 continue
-            if (self.snapshot_root / snapshot_path_raw).exists() and str(entry.get("config_fingerprint") or "") == builder_fingerprint:
+            snapshot_dir = self.snapshot_root / snapshot_path_raw
+            model_dir = snapshot_dir / "{}_{}".format(self.llm_model, self.embedding_model)
+            fingerprint_matches = str(entry.get("config_fingerprint") or "") == builder_fingerprint
+            source_checkpoint_matches = _entry_matches_source_checkpoint(
+                entry,
+                checkpoint_specs_by_id.get(checkpoint_id, {}),
+            )
+            if snapshot_dir.exists() and model_dir.exists() and (fingerprint_matches or source_checkpoint_matches):
                 existing_entries_by_id[checkpoint_id] = dict(entry)
 
         last_confirmed_idx = max(
@@ -912,8 +943,20 @@ class HippoRAG2Runner:
             and existing_entries_by_id
             and last_confirmed_idx >= replay_target_idx
             and required_checkpoint_ids.issubset(existing_entries_by_id.keys())
-            and local_runtime_ready
         ):
+            if not local_runtime_ready:
+                latest_entry = max(
+                    existing_entries_by_id.values(),
+                    key=lambda item: (int(item.get("last_event_idx", -1)), str(item.get("snapshot_id", ""))),
+                )
+                _write_builder_progress(
+                    self.save_root,
+                    config_fingerprint=builder_fingerprint,
+                    confirmed_last_log_index=int(latest_entry.get("last_event_idx", last_confirmed_idx)),
+                    confirmed_last_app_log_id=str(latest_entry.get("last_app_log_id") or "").strip() or None,
+                    active_workspace_path=workspace_dir,
+                    status="complete",
+                )
             return self.save_root
 
         if not resume:
@@ -929,11 +972,25 @@ class HippoRAG2Runner:
         saved_checkpoint_ids: Set[str] = set(existing_entries_by_id.keys())
 
         if resume:
-            snapshot = _nearest_resume_snapshot(
-                self.snapshot_root,
-                config_fingerprint=builder_fingerprint,
-                confirmed_last_log_index=max(last_confirmed_idx, replay_target_idx),
-            )
+            snapshot = None
+            if existing_entries_by_id:
+                snapshot = dict(
+                    max(
+                        existing_entries_by_id.values(),
+                        key=lambda item: (int(item.get("last_event_idx", -1)), str(item.get("snapshot_id", ""))),
+                    )
+                )
+                snapshot_path_raw = str(snapshot.get("snapshot_path") or "").strip()
+                if snapshot_path_raw:
+                    snapshot["snapshot_dir"] = str(self.snapshot_root / snapshot_path_raw)
+                else:
+                    snapshot = None
+            if snapshot is None:
+                snapshot = _nearest_resume_snapshot(
+                    self.snapshot_root,
+                    config_fingerprint=builder_fingerprint,
+                    confirmed_last_log_index=max(last_confirmed_idx, replay_target_idx),
+                )
             if snapshot is None:
                 _reset_save_root(
                     self.save_root,
@@ -1316,12 +1373,14 @@ def run_generation(
     builder_save_every_logs: int = 5,
     interleave_build_and_test: bool = False,
     build_only: bool = False,
+    predict_from_prebuilt: bool = False,
     answer_temperature: Optional[float] = 0.0,
     answer_top_p: Optional[float] = 1.0,
     answer_top_k: Optional[int] = None,
     enable_change_reasoning: bool = False,
     enable_rq3_apply_service_qa: bool = False,
     rq3_apply_save_prompt_and_raw: bool = True,
+    task_selection: str = "all",
     rq3_apply_retrieval_top_k: Optional[int] = None,
     checkpoint_workers: int = 1,
     within_checkpoint_workers: int = 1,
@@ -1338,6 +1397,8 @@ def run_generation(
     output_path = output_path.expanduser().resolve()
     snapshot_dir = snapshot_dir.expanduser().resolve()
     data_storage_path = data_storage_path.expanduser().resolve()
+    if build_only and predict_from_prebuilt:
+        raise ValueError("HippoRAG2 build_only and predict_from_prebuilt cannot both be true.")
     provider_env = _configure_hipporag_openai_env(
         llm_provider=llm_provider,
         retriever_provider=retriever_provider,
@@ -1427,6 +1488,7 @@ def run_generation(
             enable_change_reasoning=enable_change_reasoning,
             enable_rq3_apply_service_qa=enable_rq3_apply_service_qa,
             rq3_apply_save_prompt_and_raw=rq3_apply_save_prompt_and_raw,
+            task_selection=task_selection,
             rq3_apply_retrieval_top_k=rq3_apply_retrieval_top_k,
             retrieval_options_backend={
                 "retriever_provider": retriever_provider,
@@ -1437,6 +1499,7 @@ def run_generation(
                 "builder_save_every_logs": max(1, int(builder_save_every_logs)),
                 "interleave_build_and_test": bool(interleave_build_and_test),
                 "build_only": bool(build_only),
+                "predict_from_prebuilt": bool(predict_from_prebuilt),
             },
             checkpoint_workers=checkpoint_workers,
             within_checkpoint_workers=within_checkpoint_workers,
@@ -1476,6 +1539,20 @@ def run_generation(
                 usage_tracker.set_answer_usage(_current_answer_usage())
                 usage_tracker.finalize()
                 return result
+            elif predict_from_prebuilt:
+                client = LLMClient(
+                    provider=llm_provider,
+                    model_name=llm_model,
+                    max_workers=llm_max_workers,
+                    temperature=answer_temperature,
+                    top_p=answer_top_p,
+                    top_k=answer_top_k,
+                )
+                result = _run_pipeline_once(
+                    pipeline_resume=resume,
+                    pipeline_max_checkpoints=max_checkpoints,
+                    pipeline_enable_final_qa=enable_final_qa,
+                )
             elif interleave_build_and_test and requested_checkpoints:
                 client = LLMClient(
                     provider=llm_provider,
@@ -1560,6 +1637,7 @@ def main() -> None:
     parser.add_argument("--builder-save-every-logs", type=int, default=5)
     parser.add_argument("--interleave-build-and-test", action="store_true")
     parser.add_argument("--build-only", action="store_true")
+    parser.add_argument("--predict-from-prebuilt", action="store_true")
     parser.add_argument("--max-checkpoints", type=int, default=None)
     parser.add_argument("--resume", action="store_true")
     parser.add_argument("--debug", action="store_true")
@@ -1611,6 +1689,7 @@ def main() -> None:
         builder_save_every_logs=args.builder_save_every_logs,
         interleave_build_and_test=args.interleave_build_and_test,
         build_only=args.build_only,
+        predict_from_prebuilt=args.predict_from_prebuilt,
         answer_temperature=args.llm_temperature,
         answer_top_p=args.llm_top_p,
         answer_top_k=args.llm_top_k,

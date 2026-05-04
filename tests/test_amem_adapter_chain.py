@@ -52,6 +52,8 @@ class AmemAdapterChainTest(unittest.TestCase):
             extras={
                 "size": "large",
                 "save_every": 5,
+                "linked_neighbor_top_k": 0,
+                "memory_action": "build_then_predict",
                 "data_storage_path": "/tmp/amem-runtime",
                 "snapshot_dir": "/tmp/amem-snapshots",
             },
@@ -97,6 +99,7 @@ class AmemAdapterChainTest(unittest.TestCase):
             self.assertEqual(test_kwargs["user_id"], "001_user_001")
             self.assertEqual(test_kwargs["size"], "large")
             self.assertEqual(test_kwargs["snapshot_dir"], "/tmp/amem-snapshots")
+            self.assertEqual(test_kwargs["linked_neighbor_top_k"], 0)
             self.assertEqual(test_kwargs["embedding_api_key"], "retriever-key")
             self.assertEqual(test_kwargs["embedding_api_base_url"], "https://retriever.example")
 
@@ -176,7 +179,13 @@ class AmemAdapterChainTest(unittest.TestCase):
                 retriever_provider="azure",
                 retriever_model="text-embedding-3-large",
                 retrieval_top_k=20,
-                extras={"size": "large", "save_every": 5, "data_storage_path": "/tmp/amem-runtime"},
+                extras={
+                    "size": "large",
+                    "save_every": 5,
+                    "memory_action": "build_then_predict",
+                    "data_storage_path": "/tmp/amem-runtime",
+                    "snapshot_dir": "/tmp/amem-snapshots",
+                },
             )
 
             with mock.patch.object(provider_config, "load_repo_dotenv") as load_repo_dotenv_mock, mock.patch.object(
@@ -259,8 +268,9 @@ class AmemAdapterChainTest(unittest.TestCase):
                 extras={
                     "size": "large",
                     "save_every": 5,
-                    "build_only": "true",
+                    "memory_action": "build_only",
                     "data_storage_path": "/tmp/amem-runtime",
+                    "snapshot_dir": "/tmp/amem-snapshots",
                 },
             )
 
@@ -287,6 +297,179 @@ class AmemAdapterChainTest(unittest.TestCase):
             sidecar = json.loads((output_path.parent / "usage_cost.json").read_text(encoding="utf-8"))
             self.assertEqual(sidecar["usage"]["build_memory"]["request_count"], 3)
             self.assertEqual(sidecar["usage"]["retrieval"]["request_count"], 0)
+
+    def test_amem_adapter_predict_from_prebuilt_skips_builder(self):
+        evaluate_membench_mock = mock.Mock(side_effect=AssertionError("builder should not run"))
+        run_generation_mock = mock.Mock(return_value={"predictions": []})
+
+        fake_amem_builder = ModuleType("generation.Amem.amem")
+        fake_amem_builder.evaluate_membench = evaluate_membench_mock
+
+        fake_amem_tce = ModuleType("generation.Amem.tce")
+        fake_amem_tce.run_generation = run_generation_mock
+
+        fake_usage_module = ModuleType("generation.Amem.agentic_memory.llm_controller")
+        fake_usage_module.reset_usage_tracker = mock.Mock()
+        fake_usage_module.get_usage_summary = mock.Mock(return_value={})
+
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            snapshot_dir = root / "snapshots"
+            manifest_path = snapshot_dir / "001_user_001" / "large" / "manifest.json"
+            manifest_path.parent.mkdir(parents=True)
+            manifest_path.write_text(json.dumps({"latest_snapshot": None, "snapshots": []}), encoding="utf-8")
+            output_path = root / "prediction.json"
+            args = TceAdapterArgs(
+                baseline="amem",
+                user_id="001_user_001",
+                benchmark=Path("/tmp/bench.json"),
+                app_logs_path=Path("/tmp/app_log_large.json"),
+                output=output_path,
+                llm_provider="azure",
+                llm_model="gpt-5-mini",
+                llm_max_workers=1,
+                retriever_provider="azure",
+                retriever_model="text-embedding-3-large",
+                retrieval_top_k=20,
+                extras={
+                    "size": "large",
+                    "save_every": 5,
+                    "memory_action": "predict_from_prebuilt",
+                    "data_storage_path": str(root / "runtime"),
+                    "snapshot_dir": str(snapshot_dir),
+                },
+            )
+
+            with mock.patch.object(provider_config, "load_repo_dotenv"), mock.patch.object(
+                provider_config, "resolve_openai_compatible_credentials"
+            ) as resolve_creds_mock, mock.patch.dict(
+                sys.modules,
+                {
+                    "generation.Amem.amem": fake_amem_builder,
+                    "generation.Amem.tce": fake_amem_tce,
+                    "generation.Amem.agentic_memory.llm_controller": fake_usage_module,
+                },
+            ):
+                resolve_creds_mock.side_effect = [
+                    ("retriever-key", "https://retriever.example"),
+                    ("llm-key", "https://llm.example"),
+                ]
+                result = amem_adapter.run(args)
+
+            self.assertEqual(result["predictions"], [])
+            evaluate_membench_mock.assert_not_called()
+            run_generation_mock.assert_called_once()
+            self.assertEqual(resolve_creds_mock.call_count, 1)
+            test_kwargs = run_generation_mock.call_args[1]
+            self.assertEqual(test_kwargs["snapshot_dir"], str(snapshot_dir))
+            self.assertEqual(test_kwargs["embedding_api_key"], "retriever-key")
+            sidecar = json.loads((output_path.parent / "usage_cost.json").read_text(encoding="utf-8"))
+            self.assertEqual(sidecar["timing"]["build_memory_duration_s"], 0.0)
+
+    def test_amem_adapter_legacy_skip_build_alias_uses_prebuilt_snapshots(self):
+        evaluate_membench_mock = mock.Mock(side_effect=AssertionError("builder should not run"))
+        run_generation_mock = mock.Mock(return_value={"predictions": []})
+
+        fake_amem_builder = ModuleType("generation.Amem.amem")
+        fake_amem_builder.evaluate_membench = evaluate_membench_mock
+
+        fake_amem_tce = ModuleType("generation.Amem.tce")
+        fake_amem_tce.run_generation = run_generation_mock
+
+        fake_usage_module = ModuleType("generation.Amem.agentic_memory.llm_controller")
+        fake_usage_module.reset_usage_tracker = mock.Mock()
+        fake_usage_module.get_usage_summary = mock.Mock(return_value={})
+
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            snapshot_dir = root / "snapshots"
+            manifest_path = snapshot_dir / "001_user_001" / "large" / "manifest.json"
+            manifest_path.parent.mkdir(parents=True)
+            manifest_path.write_text(json.dumps({"latest_snapshot": None, "snapshots": []}), encoding="utf-8")
+            args = TceAdapterArgs(
+                baseline="amem",
+                user_id="001_user_001",
+                benchmark=Path("/tmp/bench.json"),
+                app_logs_path=Path("/tmp/app_log_large.json"),
+                output=root / "prediction.json",
+                llm_provider="azure",
+                llm_model="gpt-5-mini",
+                llm_max_workers=1,
+                retriever_provider="azure",
+                retriever_model="text-embedding-3-large",
+                retrieval_top_k=20,
+                extras={
+                    "size": "large",
+                    "skip_build": "true",
+                    "snapshot_dir": str(snapshot_dir),
+                },
+            )
+
+            with mock.patch.object(provider_config, "load_repo_dotenv"), mock.patch.object(
+                provider_config, "resolve_openai_compatible_credentials"
+            ) as resolve_creds_mock, mock.patch.dict(
+                sys.modules,
+                {
+                    "generation.Amem.amem": fake_amem_builder,
+                    "generation.Amem.tce": fake_amem_tce,
+                    "generation.Amem.agentic_memory.llm_controller": fake_usage_module,
+                },
+            ):
+                resolve_creds_mock.side_effect = [
+                    ("retriever-key", "https://retriever.example"),
+                    ("llm-key", "https://llm.example"),
+                ]
+                amem_adapter.run(args)
+
+            evaluate_membench_mock.assert_not_called()
+            run_generation_mock.assert_called_once()
+            self.assertEqual(resolve_creds_mock.call_count, 1)
+
+    def test_amem_adapter_rejects_conflicting_memory_action_flags(self):
+        args = TceAdapterArgs(
+            baseline="amem",
+            user_id="001_user_001",
+            benchmark=Path("/tmp/bench.json"),
+            app_logs_path=Path("/tmp/app_log_large.json"),
+            output=Path("/tmp/out.json"),
+            llm_provider="openai",
+            llm_model="gpt-5-mini",
+            llm_max_workers=1,
+            retriever_provider="openai",
+            retriever_model="text-embedding-3-large",
+            retrieval_top_k=20,
+            extras={
+                "memory_action": "predict_from_prebuilt",
+                "build_only": "true",
+                "snapshot_dir": "/tmp/amem-snapshots",
+            },
+        )
+
+        with self.assertRaisesRegex(ValueError, "Conflicting amem memory controls"):
+            amem_adapter.run(args)
+
+    def test_amem_adapter_rejects_negative_linked_neighbor_top_k(self):
+        args = TceAdapterArgs(
+            baseline="amem",
+            user_id="001_user_001",
+            benchmark=Path("/tmp/bench.json"),
+            app_logs_path=Path("/tmp/app_log_large.json"),
+            output=Path("/tmp/out.json"),
+            llm_provider="openai",
+            llm_model="gpt-5-mini",
+            llm_max_workers=1,
+            retriever_provider="openai",
+            retriever_model="text-embedding-3-large",
+            retrieval_top_k=20,
+            extras={
+                "memory_action": "predict_from_prebuilt",
+                "linked_neighbor_top_k": "-1",
+                "snapshot_dir": "/tmp/amem-snapshots",
+            },
+        )
+
+        with self.assertRaisesRegex(ValueError, "linked_neighbor_top_k"):
+            amem_adapter.run(args)
 
     def test_amem_adapter_rejects_legacy_checkpoint_dir_extra(self):
         args = TceAdapterArgs(

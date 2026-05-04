@@ -1,12 +1,53 @@
 from .base import TceAdapterArgs
 
 
+_MEMORY_ACTIONS = {"build_only", "build_then_predict", "predict_from_prebuilt"}
+
+
 def _is_true(value) -> bool:
     if isinstance(value, bool):
         return value
     if value is None:
         return False
     return str(value).strip().lower() in {"1", "true", "yes", "y", "on"}
+
+
+def _normalize_memory_action(value) -> str:
+    raw = str(value or "").strip().lower().replace("-", "_")
+    aliases = {
+        "build": "build_only",
+        "build_only": "build_only",
+        "build_then_predict": "build_then_predict",
+        "build_and_predict": "build_then_predict",
+        "predict": "predict_from_prebuilt",
+        "predict_only": "predict_from_prebuilt",
+        "prebuilt": "predict_from_prebuilt",
+        "prebuilt_only": "predict_from_prebuilt",
+        "generation_only": "predict_from_prebuilt",
+        "predict_from_prebuilt": "predict_from_prebuilt",
+    }
+    action = aliases.get(raw, raw)
+    if action not in _MEMORY_ACTIONS:
+        raise ValueError(
+            "Unsupported simplemem baseline_params.memory_action: {}. "
+            "Use one of: build_only, build_then_predict, predict_from_prebuilt.".format(value)
+        )
+    return action
+
+
+def _resolve_memory_action(extras) -> str:
+    explicit = str(extras.get("memory_action") or "").strip()
+    legacy_build_only = _is_true(extras.get("build_only"))
+    if explicit:
+        action = _normalize_memory_action(explicit)
+        if legacy_build_only and action != "build_only":
+            raise ValueError(
+                "Conflicting simplemem memory controls: build_only=true but memory_action={}.".format(action)
+            )
+        return action
+    if legacy_build_only:
+        return "build_only"
+    return "build_then_predict"
 
 
 def run(args: TceAdapterArgs):
@@ -18,6 +59,7 @@ def run(args: TceAdapterArgs):
     data_storage_path = args.extras.get("data_storage_path")
     if not data_storage_path:
         raise ValueError("simplemem adapter requires baseline_params.data_storage_path")
+    memory_action = _resolve_memory_action(args.extras)
 
     return run_generation(
         benchmark_path=args.benchmark,
@@ -78,7 +120,8 @@ def run(args: TceAdapterArgs):
             if str(args.extras.get("builder_llm_temperature", "")).strip()
             else 0.1
         ),
-        build_only=_is_true(args.extras.get("build_only")),
+        build_only=memory_action == "build_only",
+        predict_from_prebuilt=memory_action == "predict_from_prebuilt",
         allow_destructive_rebuild=(
             bool(args.allow_destructive_rebuild) or _is_true(args.extras.get("allow_destructive_rebuild"))
         ),

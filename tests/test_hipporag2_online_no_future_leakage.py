@@ -155,6 +155,13 @@ class _FakeHippoRAG:
             self.indexed_docs = list(payload) if isinstance(payload, list) else []
         else:
             self.indexed_docs = []
+        llm_model_name = str(kwargs.get("llm_model_name") or "")
+        embedding_model_name = str(kwargs.get("embedding_model_name") or "")
+        if llm_model_name and embedding_model_name:
+            (self.save_dir / "{}_{}".format(llm_model_name, embedding_model_name)).mkdir(
+                parents=True,
+                exist_ok=True,
+            )
         self.ready_to_retrieve = True
         self.preprocess_calls = []
         self.__class__.created.append(self)
@@ -279,7 +286,7 @@ class _FakeLLMClient:
                     }
                 }
             }
-        if '"answer"' in prompt and '"snapshot_state"' not in prompt:
+        if '"answer"' in prompt and '"snapshot_state"' not in prompt and '"user_state"' not in prompt:
             return {
                 "answer": "Recommend espresso",
                 "evidence": [
@@ -751,6 +758,78 @@ class HippoRAG2ProtocolTests(unittest.TestCase):
                 ]
                 self.assertTrue(any("log_0001" in doc for doc in replayed_docs))
 
+    def test_materializer_reuses_snapshots_when_eval_pack_path_changes(self):
+        with _install_import_stubs():
+            mod = _reload_online_tce()
+
+        build_benchmark = _make_benchmark()
+        eval_benchmark = _make_benchmark()
+        eval_benchmark["checkpoints"][0]["rq3_apply_service_qa"]["keys"][
+            "profile_state:favorite_coffee"
+        ]["items"][0]["question"] = "What coffee should be recommended in the updated eval pack?"
+        app_logs = _make_app_logs()
+
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            build_benchmark_path = root / "benchmark_build.json"
+            eval_benchmark_path = root / "benchmark_eval.json"
+            app_logs_path = root / "app_logs.json"
+            data_storage_root = root / "hipporag_runtime"
+            snapshot_root = root / "hipporag_snapshots"
+            build_benchmark_path.write_text(json.dumps(build_benchmark, ensure_ascii=False, indent=2), encoding="utf-8")
+            eval_benchmark_path.write_text(json.dumps(eval_benchmark, ensure_ascii=False, indent=2), encoding="utf-8")
+            app_logs_path.write_text(json.dumps(app_logs, ensure_ascii=False, indent=2), encoding="utf-8")
+
+            with mock.patch.object(mod, "HippoRAG", _FakeHippoRAG):
+                _FakeHippoRAG.reset()
+                runner = mod.HippoRAG2Runner(
+                    data_storage_root=data_storage_root,
+                    snapshot_root=snapshot_root,
+                    all_logs=app_logs,
+                    llm_model="gpt-5-mini",
+                    llm_base_url="https://example.com/v1",
+                    embedding_model="text-embedding-3-large",
+                    embedding_base_url="https://example.com/v1",
+                    batch_size=1,
+                    retrieval_top_k=5,
+                    openie_mode="online",
+                    allow_destructive_rebuild=True,
+                )
+                runner.materialize_checkpoint_snapshots(
+                    benchmark_path=build_benchmark_path,
+                    app_logs_path=app_logs_path,
+                    resume=False,
+                    max_checkpoints=2,
+                    builder_save_every_logs=1,
+                )
+                first_progress = json.loads((data_storage_root / "builder" / "progress.json").read_text(encoding="utf-8"))
+
+                _FakeHippoRAG.reset()
+                runner = mod.HippoRAG2Runner(
+                    data_storage_root=data_storage_root,
+                    snapshot_root=snapshot_root,
+                    all_logs=app_logs,
+                    llm_model="gpt-5-mini",
+                    llm_base_url="https://example.com/v1",
+                    embedding_model="text-embedding-3-large",
+                    embedding_base_url="https://example.com/v1",
+                    batch_size=1,
+                    retrieval_top_k=5,
+                    openie_mode="online",
+                    allow_destructive_rebuild=False,
+                )
+                runner.materialize_checkpoint_snapshots(
+                    benchmark_path=eval_benchmark_path,
+                    app_logs_path=app_logs_path,
+                    resume=True,
+                    max_checkpoints=2,
+                    builder_save_every_logs=1,
+                )
+                second_progress = json.loads((data_storage_root / "builder" / "progress.json").read_text(encoding="utf-8"))
+
+                self.assertEqual(first_progress["config_fingerprint"], second_progress["config_fingerprint"])
+                self.assertEqual(_FakeHippoRAG.global_index_invocations, 0)
+
     def test_run_generation_emits_pack_first_tce_predictions(self):
         with _install_import_stubs():
             mod = _reload_online_tce()
@@ -941,6 +1020,18 @@ class HippoRAG2ProtocolTests(unittest.TestCase):
                 expected_fingerprint = mod._build_builder_fingerprint(
                     benchmark_path=benchmark_path,
                     app_logs_path=app_logs_path,
+                    checkpoint_specs=[
+                        {
+                            "checkpoint_id": "cp_0001",
+                            "checkpoint_app_log_id": "log_0001",
+                            "cut_index": 0,
+                        },
+                        {
+                            "checkpoint_id": "cp_0002",
+                            "checkpoint_app_log_id": "log_0002",
+                            "cut_index": 1,
+                        },
+                    ],
                     llm_model="gpt-5-mini",
                     llm_base_url="https://example.com/v1",
                     embedding_model="text-embedding-3-large",
@@ -1244,6 +1335,101 @@ class HippoRAG2ProtocolTests(unittest.TestCase):
             self.assertEqual(result["build_only"]["requested_checkpoint_ids"], ["cp_0001"])
             self.assertTrue((output_path.parent / "usage_cost.json").exists())
 
+    def test_run_generation_predict_from_prebuilt_skips_materialization(self):
+        with _install_import_stubs():
+            mod = _reload_online_tce()
+
+        benchmark = _make_benchmark()
+        app_logs = _make_app_logs()
+
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            benchmark_path = root / "benchmark.json"
+            app_logs_path = root / "app_logs.json"
+            output_path = root / "prediction.json"
+            data_storage_path = root / "runtime_state"
+            snapshot_dir = root / "snapshots"
+            benchmark_path.write_text(json.dumps(benchmark, ensure_ascii=False, indent=2), encoding="utf-8")
+            app_logs_path.write_text(json.dumps(app_logs, ensure_ascii=False, indent=2), encoding="utf-8")
+
+            pipeline_calls = []
+
+            def _fake_run_pipeline(**kwargs):
+                pipeline_calls.append(
+                    {
+                        "resume": kwargs.get("resume"),
+                        "max_checkpoints": kwargs.get("max_checkpoints"),
+                        "backend": kwargs.get("retrieval_options_backend"),
+                    }
+                )
+                return {"predictions": [{"checkpoint_id": "cp_0001"}]}
+
+            with mock.patch.object(
+                mod.HippoRAG2Runner,
+                "materialize_checkpoint_snapshots",
+                side_effect=AssertionError("predict_from_prebuilt must not materialize snapshots"),
+            ), mock.patch.object(
+                mod,
+                "run_pipeline",
+                side_effect=_fake_run_pipeline,
+            ), mock.patch.object(
+                mod,
+                "LLMClient",
+                _FakeLLMClient,
+            ), mock.patch.object(
+                mod,
+                "_configure_hipporag_openai_env",
+                return_value={
+                    "llm_api_key": "dummy",
+                    "llm_base_url": "https://example.com/v1",
+                    "retriever_api_key": "dummy",
+                    "retriever_base_url": "https://example.com/v1",
+                },
+            ):
+                result = mod.run_generation(
+                    benchmark_path=benchmark_path,
+                    app_logs_path=app_logs_path,
+                    output_path=output_path,
+                    snapshot_dir=snapshot_dir,
+                    data_storage_path=data_storage_path,
+                    max_visible_logs=None,
+                    llm_provider="azure",
+                    llm_model="gpt-5-mini",
+                    llm_max_workers=2,
+                    resume=True,
+                    max_checkpoints=1,
+                    debug=False,
+                    debug_dir=None,
+                    save_prompt_and_raw=True,
+                    retriever_provider="azure",
+                    retriever_model="text-embedding-3-large",
+                    retriever_batch_size=8,
+                    retrieval_top_k=2,
+                    builder_save_every_logs=1,
+                    interleave_build_and_test=False,
+                    predict_from_prebuilt=True,
+                    enable_change_reasoning=True,
+                    enable_rq3_apply_service_qa=True,
+                    rq3_apply_save_prompt_and_raw=True,
+                    rq3_apply_retrieval_top_k=2,
+                    checkpoint_workers=2,
+                    within_checkpoint_workers=2,
+                    save_every_generation_keys=1,
+                    enable_final_qa=True,
+                    final_qa_path=None,
+                    final_qa_output_path=None,
+                    final_qa_retrieval_top_k=2,
+                    final_qa_save_prompt_and_raw=True,
+                )
+
+            self.assertEqual(result, {"predictions": [{"checkpoint_id": "cp_0001"}]})
+            self.assertEqual(len(pipeline_calls), 1)
+            self.assertTrue(pipeline_calls[0]["resume"])
+            self.assertEqual(pipeline_calls[0]["max_checkpoints"], 1)
+            self.assertTrue(pipeline_calls[0]["backend"]["predict_from_prebuilt"])
+            self.assertFalse(pipeline_calls[0]["backend"]["build_only"])
+            self.assertTrue((output_path.parent / "usage_cost.json").exists())
+
     def test_non_v2_builder_root_triggers_clean_rebuild(self):
         with _install_import_stubs():
             mod = _reload_online_tce()
@@ -1377,6 +1563,7 @@ class HippoRAG2ProtocolTests(unittest.TestCase):
                 "builder_save_every_logs": "7",
                 "interleave_build_and_test": "true",
                 "build_only": "true",
+                "__task_selection__": "task_c_only",
             },
         )
 
@@ -1397,9 +1584,63 @@ class HippoRAG2ProtocolTests(unittest.TestCase):
         self.assertEqual(kwargs["builder_save_every_logs"], 7)
         self.assertTrue(kwargs["interleave_build_and_test"])
         self.assertTrue(kwargs["build_only"])
+        self.assertFalse(kwargs["predict_from_prebuilt"])
         self.assertTrue(kwargs["enable_change_reasoning"])
         self.assertTrue(kwargs["enable_rq3_apply_service_qa"])
+        self.assertEqual(kwargs["task_selection"], "task_c_only")
         self.assertTrue(kwargs["enable_final_qa"])
+
+    def test_adapter_routes_predict_from_prebuilt(self):
+        args = TceAdapterArgs(
+            baseline="hipporag2",
+            user_id="001_user_001",
+            benchmark=Path("/tmp/benchmark.json"),
+            app_logs_path=Path("/tmp/app_logs.json"),
+            output=Path("/tmp/prediction.json"),
+            llm_provider="azure",
+            llm_model="gpt-5-mini",
+            llm_max_workers=4,
+            llm_temperature=0.0,
+            llm_top_p=1.0,
+            llm_top_k=None,
+            resume=True,
+            max_checkpoints=3,
+            debug=False,
+            debug_dir=None,
+            save_prompt_and_raw=True,
+            enable_change_reasoning=False,
+            enable_rq3_apply_service_qa=True,
+            rq3_apply_save_prompt_and_raw=True,
+            checkpoint_workers=4,
+            within_checkpoint_workers=4,
+            save_every_generation_keys=5,
+            retriever_provider="azure",
+            retriever_model="text-embedding-3-large",
+            retriever_batch_size=64,
+            retrieval_top_k=20,
+            rq3_apply_retrieval_top_k=20,
+            enable_final_qa=False,
+            final_qa_path=None,
+            final_qa_output_path=None,
+            final_qa_retrieval_top_k=5,
+            final_qa_save_prompt_and_raw=False,
+            extras={
+                "memory_action": "predict_from_prebuilt",
+                "snapshot_dir": "/tmp/hipporag2_snapshots",
+                "data_storage_path": "/tmp/hipporag2_runtime",
+            },
+        )
+
+        with _install_import_stubs():
+            with mock.patch(
+                "generation.HippoRAG2.generation_tce.online_tce.run_generation",
+                return_value={"predictions": []},
+            ) as mocked_run:
+                hipporag2_adapter.run(args)
+
+        kwargs = mocked_run.call_args[1]
+        self.assertFalse(kwargs["build_only"])
+        self.assertTrue(kwargs["predict_from_prebuilt"])
 
 
 if __name__ == "__main__":

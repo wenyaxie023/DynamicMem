@@ -678,6 +678,7 @@ class SimpleMemTceTest(unittest.TestCase):
         self.assertEqual(captured["snapshot_dir"], "/tmp/simplemem_snapshots")
         self.assertEqual(captured["data_storage_path"], "/tmp/simplemem_runtime")
         self.assertTrue(captured["build_only"])
+        self.assertFalse(captured["predict_from_prebuilt"])
         self.assertEqual(captured["builder_llm_provider"], "azure")
         self.assertEqual(captured["window_size"], 7)
         self.assertEqual(captured["overlap_size"], 2)
@@ -692,6 +693,38 @@ class SimpleMemTceTest(unittest.TestCase):
         self.assertEqual(captured["max_reflection_rounds"], 3)
         self.assertTrue(captured["enable_parallel_retrieval"])
         self.assertEqual(captured["max_retrieval_workers"], 5)
+
+    def test_adapter_routes_predict_from_prebuilt(self) -> None:
+        captured = {}
+
+        def _fake_run_generation(**kwargs):
+            captured.update(kwargs)
+            return {"ok": True}
+
+        args = TceAdapterArgs(
+            baseline="simplemem",
+            user_id="001_user_001",
+            benchmark=Path("/tmp/benchmark.json"),
+            app_logs_path=Path("/tmp/app_logs.json"),
+            output=Path("/tmp/out.json"),
+            llm_provider="openai",
+            llm_model="gpt-5-mini",
+            llm_max_workers=1,
+            retriever_provider="openai",
+            retriever_model="text-embedding-3-large",
+            retriever_batch_size=16,
+            retrieval_top_k=12,
+            extras={
+                "snapshot_dir": "/tmp/simplemem_snapshots",
+                "data_storage_path": "/tmp/simplemem_runtime",
+                "memory_action": "predict_from_prebuilt",
+            },
+        )
+        with mock.patch("generation.simplemem.generation_tce.tce.run_generation", side_effect=_fake_run_generation):
+            simplemem_adapter.run(args)
+
+        self.assertFalse(captured["build_only"])
+        self.assertTrue(captured["predict_from_prebuilt"])
 
     def test_run_generation_builds_snapshots_and_retrieves_raw_logs_from_lineage(self) -> None:
         with tempfile.TemporaryDirectory() as td:
@@ -909,6 +942,88 @@ class SimpleMemTceTest(unittest.TestCase):
             self.assertTrue((snapshot_dir / "manifest.json").exists())
             self.assertTrue((data_storage_path / "builder_progress.json").exists())
 
+    def test_build_only_resume_continues_from_checkpoint_prefix(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            benchmark_path = root / "benchmark.json"
+            app_logs_path = root / "app_logs.json"
+            output_path = root / "prediction" / "simplemem_build_only.json"
+            snapshot_dir = root / "snapshots"
+            data_storage_path = root / "runtime_data"
+            _write_json(benchmark_path, _benchmark_payload())
+            _write_json(app_logs_path, _app_logs_payload())
+
+            with mock.patch.object(simplemem_tce, "SimpleMemSystem", _FakeSimpleMemSystem), mock.patch.object(
+                simplemem_tce, "SharedLLMClient", _FakeLLMClient
+            ), mock.patch.object(
+                simplemem_tce, "run_pipeline", side_effect=AssertionError("run_pipeline should not execute in build_only mode")
+            ):
+                simplemem_tce.run_generation(
+                    benchmark_path=benchmark_path,
+                    app_logs_path=app_logs_path,
+                    output_path=output_path,
+                    snapshot_dir=str(snapshot_dir),
+                    data_storage_path=str(data_storage_path),
+                    max_visible_logs=None,
+                    llm_provider="openai",
+                    llm_model="gpt-5-mini",
+                    llm_max_workers=1,
+                    retriever_provider="openai",
+                    retriever_model="text-embedding-3-large",
+                    retriever_batch_size=8,
+                    resume=False,
+                    max_checkpoints=1,
+                    debug=False,
+                    debug_dir=None,
+                    save_prompt_and_raw=False,
+                    retrieval_top_k=10,
+                    build_only=True,
+                    window_size=2,
+                    overlap_size=0,
+                    save_every_logs=1,
+                )
+                first_manifest = json.loads((snapshot_dir / "manifest.json").read_text(encoding="utf-8"))
+                self.assertEqual([entry["checkpoint_id"] for entry in first_manifest["snapshots"]], ["cp1"])
+                cp1_checkpoint_path = snapshot_dir / first_manifest["snapshots"][0]["checkpoint_path"]
+                cp1_checkpoint = json.loads(cp1_checkpoint_path.read_text(encoding="utf-8"))
+                cp1_checkpoint["source_data_fingerprint"] = None
+                cp1_checkpoint["app_logs_path"] = "app_logs.json"
+                _write_json(cp1_checkpoint_path, cp1_checkpoint)
+
+                with mock.patch.object(simplemem_tce, "REPO_ROOT_DIR", root):
+                    result = simplemem_tce.run_generation(
+                        benchmark_path=benchmark_path,
+                        app_logs_path=app_logs_path,
+                        output_path=output_path,
+                        snapshot_dir=str(snapshot_dir),
+                        data_storage_path=str(data_storage_path),
+                        max_visible_logs=None,
+                        llm_provider="openai",
+                        llm_model="gpt-5-mini",
+                        llm_max_workers=1,
+                        retriever_provider="openai",
+                        retriever_model="text-embedding-3-large",
+                        retriever_batch_size=8,
+                        resume=True,
+                        max_checkpoints=None,
+                        debug=False,
+                        debug_dir=None,
+                        save_prompt_and_raw=False,
+                        retrieval_top_k=10,
+                        build_only=True,
+                        allow_destructive_rebuild=False,
+                        window_size=2,
+                        overlap_size=0,
+                        save_every_logs=1,
+                    )
+
+            self.assertEqual(result["predictions"], [])
+            manifest = json.loads((snapshot_dir / "manifest.json").read_text(encoding="utf-8"))
+            progress = json.loads((data_storage_path / "builder_progress.json").read_text(encoding="utf-8"))
+            self.assertEqual([entry["checkpoint_id"] for entry in manifest["snapshots"]], ["cp1", "cp2"])
+            self.assertEqual(progress["completed_snapshot_ids"], ["cp1", "cp2"])
+            self.assertEqual(progress["confirmed_last_log_idx"], 2)
+
     def test_resume_reuses_build_only_memory_when_only_eval_pack_changes(self) -> None:
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
@@ -1000,6 +1115,7 @@ class SimpleMemTceTest(unittest.TestCase):
                     debug_dir=None,
                     save_prompt_and_raw=False,
                     retrieval_top_k=10,
+                    predict_from_prebuilt=True,
                     window_size=2,
                     overlap_size=0,
                     save_every_logs=1,
@@ -1018,6 +1134,48 @@ class SimpleMemTceTest(unittest.TestCase):
             self.assertEqual(progress["benchmark_path"], str(eval_benchmark_path.resolve()))
             self.assertTrue(progress.get("source_data_fingerprint"))
             self.assertTrue(progress.get("evaluation_pack_fingerprint"))
+
+    def test_predict_from_prebuilt_fails_closed_when_snapshots_missing(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            benchmark_path = root / "benchmark.json"
+            app_logs_path = root / "app_logs.json"
+            output_path = root / "prediction" / "simplemem_pred.json"
+            snapshot_dir = root / "snapshots"
+            data_storage_path = root / "runtime_data"
+            _write_json(benchmark_path, _benchmark_payload())
+            _write_json(app_logs_path, _app_logs_payload())
+
+            with mock.patch.object(simplemem_tce, "SimpleMemSystem", _FakeSimpleMemSystem), mock.patch.object(
+                simplemem_tce, "SharedLLMClient", _FakeLLMClient
+            ), mock.patch.object(simplemem_tce, "run_pipeline", side_effect=AssertionError("run_pipeline should not execute")):
+                with self.assertRaisesRegex(FileNotFoundError, "predict_from_prebuilt requires prebuilt checkpoint snapshots"):
+                    simplemem_tce.run_generation(
+                        benchmark_path=benchmark_path,
+                        app_logs_path=app_logs_path,
+                        output_path=output_path,
+                        snapshot_dir=str(snapshot_dir),
+                        data_storage_path=str(data_storage_path),
+                        max_visible_logs=None,
+                        llm_provider="openai",
+                        llm_model="gpt-5-mini",
+                        llm_max_workers=1,
+                        retriever_provider="openai",
+                        retriever_model="text-embedding-3-large",
+                        retriever_batch_size=8,
+                        resume=True,
+                        max_checkpoints=None,
+                        debug=False,
+                        debug_dir=None,
+                        save_prompt_and_raw=False,
+                        retrieval_top_k=10,
+                        predict_from_prebuilt=True,
+                        window_size=2,
+                        overlap_size=0,
+                        save_every_logs=1,
+                    )
+
+            self.assertEqual(_FakeSimpleMemSystem.build_calls, 0)
 
     def test_resume_refuses_destructive_rebuild_without_explicit_opt_in(self) -> None:
         with tempfile.TemporaryDirectory() as td:

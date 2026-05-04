@@ -337,7 +337,12 @@ class AgenticMemorySystem:
             logger.error(f"Error in find_related_memories: {str(e)}")
             return "", []
 
-    def find_related_memories_raw(self, query: str, k: int = 5) -> str:
+    def find_related_memories_raw(
+        self,
+        query: str,
+        k: int = 5,
+        linked_neighbor_top_k: Optional[int] = None,
+    ) -> str:
         """Find related memories using raw note content plus linked neighbors."""
         if not self.memories:
             return ""
@@ -345,6 +350,9 @@ class AgenticMemorySystem:
         primary_indices = self.find_related_memories(query, k=k)[1]
         ordered_memories = [memory for _, memory in self._ordered_memory_items()]
         memory_str = ""
+        neighbor_limit = int(k if linked_neighbor_top_k is None else linked_neighbor_top_k)
+        if neighbor_limit < 0:
+            raise ValueError("linked_neighbor_top_k must be a non-negative integer.")
 
         for primary_idx in primary_indices[:k]:
             if primary_idx < 0 or primary_idx >= len(ordered_memories):
@@ -355,6 +363,8 @@ class AgenticMemorySystem:
                 f"\tmemory context: {memory.context}\tmemory keywords: {str(memory.keywords)}"
                 f"\tmemory tags: {str(memory.tags)}\n"
             )
+            if neighbor_limit <= 0:
+                continue
             neighbor_count = 0
             for raw_link in memory.links:
                 link_idx = self._normalize_link_index(raw_link)
@@ -367,7 +377,7 @@ class AgenticMemorySystem:
                     f"\tmemory tags: {str(neighbor.tags)}\n"
                 )
                 neighbor_count += 1
-                if neighbor_count >= k:
+                if neighbor_count >= neighbor_limit:
                     break
 
         return memory_str

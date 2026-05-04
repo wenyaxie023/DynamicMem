@@ -77,12 +77,15 @@ class AmemStandaloneCliTest(unittest.TestCase):
             "001_user_001",
             "--snapshot-root",
             "/tmp/snapshots/001_user_001/large",
+            "--linked-neighbor-top-k",
+            "0",
         ]
         with mock.patch.object(sys, "argv", argv), mock.patch.object(
             amem_tce, "run_generation", return_value={"predictions": []}
         ) as run_mock:
             amem_tce.main()
         self.assertEqual(run_mock.call_args.kwargs["snapshot_root"], "/tmp/snapshots/001_user_001/large")
+        self.assertEqual(run_mock.call_args.kwargs["linked_neighbor_top_k"], 0)
         self.assertEqual(run_mock.call_args.kwargs["output_path"], Path("/tmp/pred.json"))
 
 

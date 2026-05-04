@@ -45,6 +45,29 @@ def _safe_name(value: str) -> str:
     return cleaned or "default"
 
 
+def _resolved_path_candidates(raw_path: Any) -> set[str]:
+    raw = str(raw_path or "").strip()
+    if not raw:
+        return set()
+    path = Path(raw).expanduser()
+    candidates = [path]
+    if not path.is_absolute():
+        candidates.append(REPO_ROOT_DIR / path)
+    resolved: set[str] = {str(candidate) for candidate in candidates}
+    for candidate in candidates:
+        try:
+            resolved.add(str(candidate.resolve()))
+        except OSError:
+            resolved.add(str(candidate.absolute()))
+    return resolved
+
+
+def _paths_maybe_same_file(left: Any, right: Any) -> bool:
+    left_candidates = _resolved_path_candidates(left)
+    right_candidates = _resolved_path_candidates(right)
+    return bool(left_candidates and right_candidates and left_candidates.intersection(right_candidates))
+
+
 def _atomic_write_json(path: Path, payload: Any) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp_path = path.with_suffix(path.suffix + ".tmp")
@@ -419,6 +442,55 @@ def _required_checkpoint_snapshots_match(
     return True
 
 
+def _checkpoint_snapshot_matches_target(
+    snapshot_root: Path,
+    entry: Dict[str, Any],
+    target: Mapping[str, Any],
+) -> bool:
+    try:
+        bundle = _load_snapshot_bundle(snapshot_root, entry)
+    except Exception:
+        return False
+    checkpoint_payload = bundle.get("checkpoint_payload") if isinstance(bundle.get("checkpoint_payload"), dict) else {}
+    expected_app_log_id = str(target.get("checkpoint_app_log_id") or "")
+    stored_app_log_id = str(
+        checkpoint_payload.get("checkpoint_app_log_id")
+        or bundle.get("checkpoint_app_log_id")
+        or entry.get("checkpoint_app_log_id")
+        or ""
+    )
+    if expected_app_log_id and stored_app_log_id and stored_app_log_id != expected_app_log_id:
+        return False
+    expected_log_idx = int(target.get("target_log_idx") or -1)
+    stored_log_idx = checkpoint_payload.get("checkpoint_log_index")
+    if stored_log_idx is None:
+        stored_log_idx = bundle.get("checkpoint_log_index", entry.get("checkpoint_log_index"))
+    return stored_log_idx is None or int(stored_log_idx) == expected_log_idx
+
+
+def _matching_checkpoint_prefix_entries(
+    snapshot_root: Path,
+    checkpoint_targets: Sequence[Mapping[str, Any]],
+) -> List[Dict[str, Any]]:
+    manifest_by_checkpoint = {
+        str(entry.get("checkpoint_id") or ""): entry
+        for entry in _load_manifest_entries(snapshot_root)
+        if isinstance(entry, dict) and str(entry.get("checkpoint_id") or "").strip()
+    }
+    prefix: List[Dict[str, Any]] = []
+    for target in checkpoint_targets:
+        checkpoint_id = str(target.get("checkpoint_id") or "").strip()
+        if not checkpoint_id:
+            continue
+        entry = manifest_by_checkpoint.get(checkpoint_id)
+        if entry is None or not _checkpoint_snapshot_exists(snapshot_root, entry):
+            break
+        if not _checkpoint_snapshot_matches_target(snapshot_root, entry, target):
+            return []
+        prefix.append(dict(entry))
+    return prefix
+
+
 @dataclass
 class SimpleMemBaselineConfig:
     output_root: Path
@@ -496,6 +568,7 @@ def run_generation(
     builder_llm_max_workers: Optional[int] = None,
     builder_llm_temperature: Optional[float] = 0.1,
     build_only: bool = False,
+    predict_from_prebuilt: bool = False,
     allow_destructive_rebuild: bool = False,
     window_size: int = 5,
     overlap_size: int = 1,
@@ -511,6 +584,9 @@ def run_generation(
     enable_parallel_retrieval: bool = False,
     max_retrieval_workers: int = 1,
 ) -> Dict[str, Any]:
+
+    if build_only and predict_from_prebuilt:
+        raise ValueError("SimpleMem build_only and predict_from_prebuilt cannot both be true.")
 
     load_repo_dotenv(REPO_ROOT_DIR)
     benchmark_path = benchmark_path.expanduser().resolve()
@@ -569,7 +645,6 @@ def run_generation(
     benchmark_payload = json.loads(benchmark_path.read_text(encoding="utf-8"))
     all_logs = normalize_app_logs(json.loads(app_logs_path.read_text(encoding="utf-8")))
     checkpoint_targets = _build_checkpoint_targets(benchmark_payload, all_logs, max_checkpoints=max_checkpoints)
-    required_checkpoint_ids = {str(item["checkpoint_id"]) for item in checkpoint_targets if str(item["checkpoint_id"])}
     source_data_fingerprint = _build_source_data_fingerprint(
         app_logs=all_logs,
         checkpoint_targets=checkpoint_targets,
@@ -807,18 +882,25 @@ def run_generation(
         _persist_builder_progress(confirmed_last_log_idx=-1, status="initialized")
 
     def _restore_builder_state_from_snapshot() -> bool:
-        latest_entry = _latest_snapshot_entry(config.snapshot_root)
-        if latest_entry is None:
+        prefix_entries = _matching_checkpoint_prefix_entries(config.snapshot_root, checkpoint_targets)
+        if not prefix_entries:
             return False
+        latest_entry = prefix_entries[-1]
         bundle = _load_snapshot_bundle(config.snapshot_root, latest_entry)
         checkpoint_payload = bundle.get("checkpoint_payload") if isinstance(bundle.get("checkpoint_payload"), dict) else {}
         stored_source_fingerprint = str(checkpoint_payload.get("source_data_fingerprint") or "").strip()
+        prefix_targets = checkpoint_targets[: len(prefix_entries)]
+        prefix_source_data_fingerprint = _build_source_data_fingerprint(
+            app_logs=all_logs,
+            checkpoint_targets=prefix_targets,
+        )
         if stored_source_fingerprint:
-            if stored_source_fingerprint != source_data_fingerprint:
+            if stored_source_fingerprint not in {source_data_fingerprint, prefix_source_data_fingerprint}:
                 return False
-        elif str(checkpoint_payload.get("app_logs_path") or "") not in {"", str(app_logs_path)}:
-            return False
-        if not _required_checkpoint_snapshots_match(config.snapshot_root, checkpoint_targets):
+        elif str(checkpoint_payload.get("app_logs_path") or "") and not _paths_maybe_same_file(
+            checkpoint_payload.get("app_logs_path"),
+            app_logs_path,
+        ):
             return False
         builder_state = checkpoint_payload.get("builder_state")
         if not isinstance(builder_state, dict):
@@ -831,14 +913,7 @@ def run_generation(
         shutil.copytree(str(snapshot_db_dir), str(config.live_db_root))
         _reopen_builder_system(clear_db=False)
         build_system.import_builder_state(builder_state)
-        restored_snapshot_ids = [
-            str(entry.get("checkpoint_id") or "")
-            for entry in _load_manifest_entries(config.snapshot_root)
-            if isinstance(entry, dict)
-            and str(entry.get("checkpoint_id") or "").strip()
-            and _checkpoint_snapshot_exists(config.snapshot_root, entry)
-            and str(entry.get("checkpoint_id") or "") in required_checkpoint_ids
-        ]
+        restored_snapshot_ids = [str(entry.get("checkpoint_id") or "") for entry in prefix_entries]
         builder_progress.clear()
         _persist_builder_progress(
             confirmed_last_log_idx=int(checkpoint_payload.get("confirmed_last_log_idx") or latest_entry.get("last_event_idx") or -1),
@@ -848,7 +923,18 @@ def run_generation(
         )
         return True
 
-    if resume:
+    if predict_from_prebuilt:
+        if not _required_checkpoint_snapshots_match(config.snapshot_root, checkpoint_targets):
+            raise FileNotFoundError(
+                "SimpleMem memory_action=predict_from_prebuilt requires prebuilt checkpoint snapshots "
+                "matching all requested checkpoints under {}.".format(config.snapshot_root)
+            )
+        if not _restore_builder_state_from_snapshot():
+            raise RuntimeError(
+                "SimpleMem memory_action=predict_from_prebuilt found checkpoint snapshots under {} "
+                "but could not restore snapshot state without rebuilding.".format(config.snapshot_root)
+            )
+    elif resume:
         if not _restore_builder_state_from_snapshot():
             _reset_builder_state(reason="resume restore fallback")
     else:
@@ -1261,6 +1347,7 @@ def main() -> None:
     parser.add_argument("--max-checkpoints", type=int, default=None)
     parser.add_argument("--resume", action="store_true")
     parser.add_argument("--build-only", action="store_true")
+    parser.add_argument("--predict-from-prebuilt", action="store_true")
     parser.add_argument("--debug", action="store_true")
     parser.add_argument("--save-prompt-and-raw", action="store_true")
     args = parser.parse_args()
@@ -1288,6 +1375,7 @@ def main() -> None:
         save_prompt_and_raw=args.save_prompt_and_raw,
         retrieval_top_k=args.retrieval_top_k,
         build_only=args.build_only,
+        predict_from_prebuilt=args.predict_from_prebuilt,
         window_size=args.window_size,
         overlap_size=args.overlap_size,
         save_every_logs=args.save_every_logs,
