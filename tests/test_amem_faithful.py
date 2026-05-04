@@ -7,6 +7,7 @@ from unittest import mock
 if "numpy" not in sys.modules:
     sys.modules["numpy"] = types.SimpleNamespace(
         ndarray=object,
+        float32=float,
         asarray=lambda *args, **kwargs: [],
         zeros=lambda *args, **kwargs: [],
         argsort=lambda *args, **kwargs: [],

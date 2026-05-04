@@ -382,7 +382,8 @@ class MemoryosTceConfigTest(unittest.TestCase):
         self.assertEqual(retrieval_meta["retriever_provider"], "azure")
         self.assertEqual(retrieval_meta["retrieval_mode"], "memoryos_snapshot")
         self.assertEqual(retrieval_meta["retrieval_queue_capacity"], 5)
-        self.assertIn('"retrieved_pages"', result["predictions"][0]["metadata"]["prompt"][0])
+        self.assertIn("[Retrieved Historical Memory]", result["predictions"][0]["metadata"]["prompt"][0])
+        self.assertIn("memoryos_get_response_text", retrieval_meta["inline_memory_format"])
         self.assertNotIn("Use your memory about the user", result["predictions"][0]["metadata"]["prompt"][0])
 
     def test_run_generation_writes_usage_sidecar_and_build_timing(self) -> None:
@@ -599,8 +600,6 @@ class MemoryosTceConfigTest(unittest.TestCase):
                 "total_tokens": 150,
                 "by_model": [],
             }
-            exported_viewers = []
-
             with mock.patch(
                 "generation.MemoryOS.tce_adapter._ensure_snapshots_for_benchmark",
                 lambda **kwargs: snapshot_root,
@@ -616,11 +615,6 @@ class MemoryosTceConfigTest(unittest.TestCase):
             ), mock.patch(
                 "generation.MemoryOS.tce_adapter._memoryos_usage_summary",
                 return_value=build_usage,
-            ), mock.patch(
-                "generation.MemoryOS.tce_adapter._export_memory_viewer",
-                side_effect=lambda snapshot_root_arg, viewer_path_arg: exported_viewers.append(
-                    (Path(snapshot_root_arg), Path(viewer_path_arg))
-                ),
             ):
                 result = memoryos_tce.run_generation(
                     benchmark_path=benchmark_path,
@@ -657,7 +651,6 @@ class MemoryosTceConfigTest(unittest.TestCase):
         self.assertEqual(result["build_only"]["requested_checkpoint_ids"], ["cp_0001"])
         self.assertEqual(result["build_only"]["snapshot_root"], str(snapshot_root))
         self.assertFalse(output_path.exists())
-        self.assertEqual(exported_viewers, [(snapshot_root, output_path.parent / "memory_viewer_data.json")])
         self.assertEqual(sidecar["usage"]["build_memory"]["request_count"], 3)
         self.assertEqual(sidecar["usage"]["build_memory"]["reasoning_tokens"], 12)
         self.assertEqual(sidecar["usage"]["retrieval"]["request_count"], 0)

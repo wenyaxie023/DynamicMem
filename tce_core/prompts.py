@@ -1419,7 +1419,7 @@ Output JSON ONLY:
 [Output format]
 Output JSON ONLY:
 {{
-  "answer": "<a concise, complete, and specific assistant message>",
+  "answer": "<concise but complete assistant message>",
   "evidence": [
     {{
       "app_log_id": "<app_log_id>",

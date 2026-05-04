@@ -430,7 +430,6 @@ def evaluate_membench(
             allow_destructive_rebuild=allow_destructive_rebuild,
             operation="clear existing Amem builder artifacts",
             paths=[builder_state_dir, state_path, checkpoint_path, snapshot_root],
-            details=["Amem collection: {}".format(collection_name)],
         )
 
     memory_system = AgenticMemorySystem(
@@ -582,6 +581,18 @@ def evaluate_membench(
         if last_event_idx >= 0:
             memory_system.save_state(state_path)
             _write_checkpoint(checkpoint_path, last_event_idx, processed)
+            if interrupted_exc is not None:
+                _write_snapshot_bundle(
+                    memory_system=memory_system,
+                    snapshot_root=snapshot_root,
+                    collection_name=memory_system.collection_name,
+                    last_event_idx=last_event_idx,
+                    processed=processed,
+                    logger=logger,
+                    trigger="interrupted",
+                    checkpoint_id=None,
+                    checkpoint_app_log_id=None,
+                )
         _write_live_usage_snapshot()
     if interrupted_exc is not None:
         raise interrupted_exc

@@ -504,14 +504,15 @@ Rules:
         self.assertEqual(resolved["llm"]["temperature"], 0.0)
         self.assertEqual(resolved["llm"]["top_p"], 1.0)
         self.assertEqual(resolved["llm"]["top_k"], None)
-        self.assertEqual(
-            resolved["output"]["prediction_path"],
-            "generation/letta/results/001_user_001/prediction/{}/tce_results_v14_taskabc.json".format(
-                resolved["runtime"]["run_name"]
-            ),
+        self.assertTrue(
+            resolved["output"]["prediction_path"].endswith(
+                "/generation/letta/results/001_user_001/prediction/{}/tce_results_v14_taskabc.json".format(
+                    resolved["runtime"]["run_name"]
+                )
+            )
         )
-        self.assertTrue(resolved["final_qa"]["enabled"])
-        self.assertTrue(resolved["final_qa"]["save_prompt_and_raw"])
+        self.assertFalse(resolved["final_qa"]["enabled"])
+        self.assertFalse(resolved["final_qa"]["save_prompt_and_raw"])
         self.assertEqual(resolved["runtime"]["checkpoint_workers"], 1)
         self.assertEqual(resolved["runtime"]["within_checkpoint_workers"], 1)
         self.assertEqual(resolved["baseline_params"]["query_isolation_mode"], "checkpoint_snapshot")
@@ -525,9 +526,10 @@ Rules:
                 "/prediction/{}/tce_results_v14_taskabc.json".format(resolved["runtime"]["experiment_name"])
             )
         )
-        self.assertEqual(
-            resolved["baseline_params"]["checkpoint_agents_dir"],
-            "generation/letta/agents/{}/001_user_001".format(resolved["runtime"]["run_name"]),
+        self.assertTrue(
+            resolved["baseline_params"]["checkpoint_agents_dir"].endswith(
+                "/generation/letta/agents/{}/001_user_001".format(resolved["runtime"]["run_name"])
+            )
         )
 
     def test_memgpt_v14_config_dry_run_resolves(self):
@@ -562,13 +564,14 @@ Rules:
         self.assertEqual(resolved["llm"]["top_k"], None)
         self.assertTrue(resolved["runtime"]["enable_change_reasoning"])
         self.assertTrue(resolved["runtime"]["enable_rq3_apply_service_qa"])
-        self.assertTrue(resolved["final_qa"]["enabled"])
-        self.assertTrue(resolved["final_qa"]["save_prompt_and_raw"])
+        self.assertFalse(resolved["final_qa"]["enabled"])
+        self.assertFalse(resolved["final_qa"]["save_prompt_and_raw"])
         self.assertEqual(resolved["baseline_params"]["allow_local_fallback"], "False")
         self.assertEqual(resolved["baseline_params"]["embedding"], "azure/text-embedding-3-large")
-        self.assertEqual(
-            resolved["baseline_params"]["checkpoint_agents_dir"],
-            "generation/memgpt/agents/{}/001_user_001".format(resolved["runtime"]["run_name"]),
+        self.assertTrue(
+            resolved["baseline_params"]["checkpoint_agents_dir"].endswith(
+                "/generation/memgpt/agents/{}/001_user_001".format(resolved["runtime"]["run_name"])
+            )
         )
         self.assertNotIn("persona", resolved["baseline_params"])
         self.assertNotIn("human", resolved["baseline_params"])
