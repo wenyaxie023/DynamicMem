@@ -25,5 +25,5 @@ retrieval:
   final_qa_top_k: 5
 
 final_qa:
-  enabled: true
-  save_prompt_and_raw: true
+  enabled: false
+  save_prompt_and_raw: false

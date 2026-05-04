@@ -35,7 +35,7 @@ retrieval:
   final_qa_top_k: 20
 
 final_qa:
-  enabled: true
+  enabled: false
 
 baseline_params:
   collection_name: membench_mem0_{user_id}_v14

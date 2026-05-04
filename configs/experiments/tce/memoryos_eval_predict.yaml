@@ -1,0 +1,19 @@
+runtime:
+  user_id: 004_user_004
+  experiment_name: predict0502_formal
+  enable_llm_judge: true
+  save_eyeball: true
+  resume: true
+
+data:
+  benchmark: data_construction/generated_outputs/gemini_3_flash_preview/{user_id}/tce_benchmark_vnext_20260502v1_formal_task_packs_human_revised.json
+  prediction: results/MemoryOS/results/{user_id}/prediction/{experiment_name}/tce_results.json
+
+output:
+  eval_path: results/MemoryOS/results/{user_id}/eval/{experiment_name}/tce_eval.json
+  llm_judge_input_output: results/MemoryOS/results/{user_id}/eval/{experiment_name}/tce_eval_llm_judge_audit.json
+
+llm:
+  provider: azure
+  model: gpt-5.4
+  max_workers: 4

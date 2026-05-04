@@ -1,0 +1,40 @@
+users:
+  - 001_user_001
+
+runtime:
+  baseline: amem
+  experiment_name: predict_0430
+  run_id: main
+  resume: true
+  within_checkpoint_workers: 1
+  enable_change_reasoning: false
+  enable_rq3_apply_service_qa: true
+  save_prompt_and_raw: true
+  rq3_apply_save_prompt_and_raw: true
+
+data:
+  benchmark: data_construction/generated_outputs/gemini_3_flash_preview/{user_id}/tce_benchmark_vnext_20260429_formal_task_packs.json
+  app_logs_path: data_construction/generated_outputs/gemini_3_flash_preview/{user_id}/app_log_large.json
+
+output:
+  prediction_path: results/Amem/results/{user_id}/prediction/{run_name}/tce_results.json
+
+llm:
+  provider: azure
+  model: gpt-5-mini
+  max_workers: 1
+
+retriever:
+  provider: azure
+  model: text-embedding-3-large
+
+retrieval:
+  top_k: 10
+  rq3_apply_top_k: 10
+
+baseline_params:
+  memory_action: predict_from_prebuilt
+  size: large
+  linked_neighbor_top_k: 10
+  snapshot_dir: results/Amem/snapshots/amem_build_only
+  data_storage_path: results/Amem/runtime_data/amem_build_only/{user_id}

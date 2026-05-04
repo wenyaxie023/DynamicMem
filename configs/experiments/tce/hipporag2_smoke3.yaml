@@ -34,8 +34,8 @@ retrieval:
   final_qa_top_k: 5
 
 final_qa:
-  enabled: true
-  save_prompt_and_raw: true
+  enabled: false
+  save_prompt_and_raw: false
 
 baseline_params:
   save_dir: results/HippoRAG2/outputs_smoke3/{user_id}_online

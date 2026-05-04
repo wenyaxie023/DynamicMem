@@ -23,8 +23,8 @@ retriever:
   model: text-embedding-3-large
 
 baseline_params:
+  memory_action: build_only
   size: large
   snapshot_dir: results/Amem/snapshots/{run_name}
   data_storage_path: results/Amem/runtime_data/{run_name}/{user_id}
   save_every: 5
-  build_only: true

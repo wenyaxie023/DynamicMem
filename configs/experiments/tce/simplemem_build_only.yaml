@@ -26,3 +26,4 @@ baseline_params:
   snapshot_dir: results/simplemem/snapshots/{run_name}/{user_id}
   data_storage_path: results/simplemem/runtime_data/{run_name}/{user_id}
   build_only: true
+  allow_destructive_rebuild: true

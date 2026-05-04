@@ -26,8 +26,8 @@ llm:
   max_workers: 1
 
 final_qa:
-  enabled: true
-  save_prompt_and_raw: true
+  enabled: false
+  save_prompt_and_raw: false
 
 baseline_params:
   embedding: azure/text-embedding-3-large

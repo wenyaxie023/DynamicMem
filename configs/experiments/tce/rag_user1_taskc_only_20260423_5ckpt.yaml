@@ -3,23 +3,25 @@ users:
 
 runtime:
   baseline: rag
-  experiment_name: rag_user1_v14_top20_c4_azure
-  resume: false
+  experiment_name: rag_user1_taskc_only_20260423_5ckpt
+  task_selection: task_c_only
+  resume: true
   debug: false
   save_prompt_and_raw: true
-  enable_change_reasoning: true
+  enable_change_reasoning: false
   enable_rq3_apply_service_qa: true
   rq3_apply_save_prompt_and_raw: true
   checkpoint_workers: 4
   within_checkpoint_workers: 4
   save_every_generation_keys: 5
+  max_checkpoints: 5
 
 data:
-  benchmark: data_construction/generated_outputs/gemini_3_flash_preview/001_user_001/tce_benchmark_vnext_20260319_formal_crv_task_packs_v14.json
+  benchmark: data_construction/generated_outputs/gemini_3_flash_preview/001_user_001/tce_benchmark_vnext_20260423_taskc_v2_rubric_rewrite_from_state_validated.json
   app_logs_path: data_construction/generated_outputs/gemini_3_flash_preview/001_user_001/app_log_large.json
 
 output:
-  prediction_path: generation/rag/results/001_user_001/prediction/{experiment_name}/tce_results_v14_taskabc.json
+  prediction_path: generation/rag/results/001_user_001/prediction/{experiment_name}/tce_results_taskc_only_5ckpt.json
 
 llm:
   provider: azure
@@ -34,7 +36,6 @@ retriever:
 retrieval:
   top_k: 20
   rq3_apply_top_k: 20
-  final_qa_top_k: 5
 
 final_qa:
   enabled: false

@@ -1,0 +1,46 @@
+users:
+  - 004_user_004
+
+runtime:
+  baseline: memoryos
+  experiment_name: prediction
+  run_id: main
+  resume: true
+  within_checkpoint_workers: 1
+  enable_change_reasoning: false
+  enable_rq3_apply_service_qa: true
+  save_prompt_and_raw: true
+  rq3_apply_save_prompt_and_raw: true
+  save_every_generation_keys: 5
+
+data:
+  benchmark: /projects/standard/zrliu/shared/wenya/xie00470/dynamicmem/data_construction/generated_outputs/gemini_3_flash_preview/004_user_004/tce_benchmark_vnext_20260428_tce_v2_field_validation_prompt_refresh_task_packs.json
+  app_logs_path: /projects/standard/zrliu/shared/wenya/xie00470/dynamicmem/data_construction/generated_outputs/gemini_3_flash_preview/004_user_004/app_log_large.json
+
+output:
+  prediction_path: results/MemoryOS/results/{user_id}/prediction/{run_name}/tce_results.json
+
+llm:
+  provider: azure
+  model: gpt-5-mini
+  max_workers: 1
+
+retriever:
+  provider: azure
+  model: text-embedding-3-large
+
+retrieval:
+  top_k: 1
+  rq3_apply_top_k: 1
+
+final_qa:
+  enabled: false
+
+baseline_params:
+  memory_action: predict_from_prebuilt
+  size: large
+  snapshot_dir: results/MemoryOS/snapshots/memoryos_v14_user1_azure_build_only_raw
+  data_storage_path: results/MemoryOS/runtime_data/memoryos_v14_user1_azure_build_only_raw
+  llm_controller_model: gpt-5-mini
+  assistant_id: assistant
+  allow_destructive_rebuild: false
