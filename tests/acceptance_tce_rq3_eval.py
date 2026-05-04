@@ -372,7 +372,7 @@ class TceRq3EvalAcceptance(unittest.TestCase):
                                 {
                                     "qa_id": "q1",
                                     "service_family": "information_request_construction",
-                                    "output": {"request_profile": {"preferred_profile": "prefers self-paced webinars"}},
+                                    "answer": {"request_profile": {"preferred_profile": "prefers self-paced webinars"}},
                                     "evidence": [
                                         {"app_log_id": "log_0001", "evidence_content": "prefers self-paced webinars"}
                                     ],

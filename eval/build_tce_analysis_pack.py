@@ -223,7 +223,7 @@ def _extract_rq3_answers_by_key(prediction: Mapping[str, Any]) -> Dict[str, List
             normalized.append(
                 {
                     "qa_id": str(item.get("qa_id") or ""),
-                    "answer": str(item.get("answer") or ""),
+                    "answer": item.get("answer"),
                     "evidence": _extract_evidence_records(item.get("evidence")),
                 }
             )

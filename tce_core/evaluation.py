@@ -7,7 +7,7 @@ from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 from .scoring_points import extract_value_at_path
 from .task_packs import extract_pack_keys
-from tce_contracts import infer_task_contract_version, task_contract_is_v2
+from tce_contracts import infer_task_contract_version, normalize_task_a_current_value, task_contract_is_v2
 
 EXCLUDED_VALUE_FIELDS = {"priority", "schedule_date", "schedule_dates"}
 POINT_TYPE_FIELD = "field"
@@ -388,8 +388,7 @@ def _extract_rq3_apply_answers_by_key(prediction: Dict[str, Any]) -> Dict[str, L
                 continue
             payload = {
                 "qa_id": str(qa_item.get("qa_id") or ""),
-                "answer": str(qa_item.get("answer") or ""),
-                "output": qa_item.get("output"),
+                "answer": qa_item.get("answer"),
                 "evidence": _extract_evidence_records(qa_item.get("evidence")),
                 "service_family": str(qa_item.get("service_family") or ""),
             }
@@ -495,10 +494,11 @@ def _materialize_active_rq3_slots(
             f"(checkpoint_id={checkpoint_id}, state_key={state_key}, qa_id={qa_id})."
         )
     service_family = str(exp_item.get("service_family") or "")
+    predicted_answer = (pred_item or {}).get("answer")
     predicted_blob = (
-        str((pred_item or {}).get("answer") or "")
+        str(predicted_answer or "")
         if service_family == "user_communication"
-        else (pred_item or {}).get("output")
+        else predicted_answer
     )
     slots = _strip_slot_polarity(_materialize_slots(answer_scoring_points, predicted_blob))
     return {
@@ -509,8 +509,8 @@ def _materialize_active_rq3_slots(
         "task_instruction": str(exp_item.get("task_instruction") or ""),
         "reference_answer": str(exp_item.get("reference_answer") or ""),
         "reference_output": exp_item.get("reference_output"),
-        "predicted_answer": str((pred_item or {}).get("answer") or ""),
-        "predicted_output": (pred_item or {}).get("output"),
+        "predicted_answer": str(predicted_answer or "") if service_family == "user_communication" else predicted_answer,
+        "predicted_output": None if service_family == "user_communication" else predicted_answer,
         "slots": slots,
     }
 
@@ -832,7 +832,17 @@ def evaluate_checkpoints(
         )
         state_completion_keys = extract_pack_keys(state_completion_pack)
         if has_state_completion_pack:
-            exp_snapshot = {k: current_validated_snapshot.get(k) for k in state_completion_keys}
+            exp_snapshot = {
+                k: projected_value
+                for k in state_completion_keys
+                if (
+                    projected_value := normalize_task_a_current_value(
+                        current_validated_snapshot.get(k),
+                        task_contract_version=benchmark_contract_version,
+                    )
+                )
+                is not None
+            }
         else:
             exp_snapshot = current_raw_snapshot
 

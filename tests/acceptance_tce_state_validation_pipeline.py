@@ -385,6 +385,16 @@ class TceStateValidationPipelineAcceptance(unittest.TestCase):
         qmeta = result["checkpoints"][0]["state_questionability"]["habits_state:morning_walk"]
         self.assertIn('"timing.start_time"', _KeyedValidatorClient.prompt)
         self.assertIn('"timing.end_time"', _KeyedValidatorClient.prompt)
+        self.assertIn("0=Monday", _KeyedValidatorClient.prompt)
+        self.assertIn("6=Sunday", _KeyedValidatorClient.prompt)
+        self.assertIn("days_of_month", _KeyedValidatorClient.prompt)
+        self.assertIn("semantic alignment", _KeyedValidatorClient.prompt)
+        self.assertIn("implicit behavioral support", _KeyedValidatorClient.prompt)
+        self.assertIn("Do not require exact wording", _KeyedValidatorClient.prompt)
+        self.assertIn("core user-specific claims", _KeyedValidatorClient.prompt)
+        self.assertIn("preferences_state:community_involvement_type", _KeyedValidatorClient.prompt)
+        self.assertIn("user_attributes_state:industry_software_skills", _KeyedValidatorClient.prompt)
+        self.assertIn("advanced Microsoft Project skill", _KeyedValidatorClient.prompt)
         self.assertEqual(qmeta["validated_field_paths"], ["timing.start_time"])
         self.assertEqual(qmeta["dropped_field_paths"], ["timing.end_time"])
         self.assertEqual(
@@ -757,7 +767,7 @@ class TceStateValidationPipelineAcceptance(unittest.TestCase):
                                 "validated_state_value_signature": "\"07:00\"",
                                 "evidence_signature": "[seeded]",
                                 "validator_version": "qv3_l1_l2_preexclude_derived",
-                                "prompt_version": "state_validate_prompt_v4_field_keyed",
+                                "prompt_version": "state_validate_prompt_v8_field_keyed_implicit_semantic_alignment",
                             },
                         }
                     },

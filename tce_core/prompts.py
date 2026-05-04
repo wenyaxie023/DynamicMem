@@ -5,17 +5,34 @@ from tce_contracts import CURRENT_TASK_CONTRACT_VERSION
 
 
 TASK_C_V2_USER_COMMUNICATION_TASK_INSTRUCTION = (
-    "As the assistant, what single message should be sent to the user right now? "
-    "Make it complete for this moment by using the user's routine details, not a generic reminder."
+    "Draft a concise but complete reminder text for the user in this scenario. "
+    "Use the relevant routine details from memory so the message is specific rather than generic."
 )
 TASK_C_V2_INFORMATION_REQUEST_TASK_INSTRUCTION = (
-    "As the assistant, complete the filtering parameters that should be sent right now. "
-    "Use the user's preference statement to shape the filters, and do not write the final recommendation."
+    "Fill the search filters the assistant should apply now. "
+    "Use the user's preference statement to set the filters, and do not write the final recommendation."
 )
 TASK_C_V2_ACTION_CONFIGURATION_TASK_INSTRUCTION = (
-    "As the assistant, complete the action configuration that should be sent right now. "
-    "Use the user's known attributes to fill the required execution fields, and do not write a message or recommendation."
+    "Use the user's known attributes to fill the setup or form fields that should be applied now to complete the configuration."
 )
+SCHEDULE_DATE_ENCODING_TEXT = (
+    "`day_of_week` and `days_of_week` use zero-based weekday indexes: "
+    "0=Monday, 1=Tuesday, 2=Wednesday, 3=Thursday, 4=Friday, 5=Saturday, 6=Sunday. "
+    "`day_of_month` and `days_of_month` use calendar day numbers 1-31; they are not zero-based. "
+    "`week_of_month` uses ordinal week numbers within the month: "
+    "1=first, 2=second, 3=third, 4=fourth, 5=fifth."
+)
+SCHEDULE_DATE_ENCODING_BULLETS = """- schedule date encodings:
+  - `day_of_week` and `days_of_week` use zero-based weekday indexes: 0=Monday, 1=Tuesday, 2=Wednesday, 3=Thursday, 4=Friday, 5=Saturday, 6=Sunday.
+  - `day_of_month` and `days_of_month` use calendar day numbers 1-31; they are not zero-based.
+  - `week_of_month` uses ordinal week numbers within the month: 1=first, 2=second, 3=third, 4=fourth, 5=fifth."""
+SCHEDULE_FORMAT_SUPPLEMENT = """- Habit schedule format vocabulary:
+  - `daily`: every day. Format: `{"frequency_type": "daily"}`
+  - `weekly`: every week on the listed weekday(s), such as every Tuesday and Thursday. Format: `{"frequency_type": "weekly", "days_of_week": [0-6 integers, 0=Monday ... 6=Sunday]}`
+  - `biweekly`: every two weeks on one listed weekday; `start_date` is the first occurrence and anchors the alternating-week pattern. Format: `{"frequency_type": "biweekly", "days_of_week": [single integer 0-6], "start_date": "YYYY-MM-DD"}`
+  - `monthly_by_date`: every month on specific calendar date(s), such as the 1st or 15th of each month. Format: `{"frequency_type": "monthly_by_date", "days_of_month": [1-28 integers]}`
+  - `monthly_nth_weekday`: every month on an ordinal weekday, such as the first Monday, third Friday, or last Sunday of the month. Format: `{"frequency_type": "monthly_nth_weekday", "week_of_month": "1-4 or last", "day_of_week": "0-6 integer"}`
+  Use these exact vocabulary values when the evidence supports them."""
 
 
 def _coerce_inline_memory_blocks(
@@ -37,12 +54,24 @@ def _render_inline_memory_section(
 ) -> str:
     context = "\n<->\n".join(str(block) for block in inline_memory_blocks if str(block).strip())
     return f"""[Memory]
-{context}"""
+{context}
+[/Memory]"""
 
 
 def _render_agent_memory_section() -> str:
     return """[Memory]
-    Use your memory about the user to answer the question."""
+Use the system's stored checkpoint-bounded memory about the user's trajectory to answer.
+[/Memory]"""
+
+
+def _is_habit_state_key(state_key: str) -> bool:
+    return str(state_key or "").strip().startswith("habits_state:")
+
+
+def _state_completion_schedule_instruction(target_keys: List[str]) -> str:
+    if not any(_is_habit_state_key(key) for key in target_keys):
+        return ""
+    return f"- Schedule date encoding: {SCHEDULE_DATE_ENCODING_TEXT}\n{SCHEDULE_FORMAT_SUPPLEMENT}\n"
 
 
 def build_task_c_task_body(
@@ -69,24 +98,23 @@ def _build_state_completion_prompt(
     target_keys: List[str],
     target_value_templates: Dict[str, Any],
 ) -> str:
-    snapshot_template = {k: target_value_templates.get(k, "<fill the blank>") for k in target_keys}
+    user_state_template = {k: target_value_templates.get(k, "<fill the blank>") for k in target_keys}
     evidence_template = {
         k: [{"app_log_id": "<app_log_id>", "evidence_content": "<supporting snippet>"}]
         for k in target_keys
     }
     fill_template = {
-        "snapshot_state": snapshot_template,
+        "user_state": user_state_template,
         "evidence": evidence_template,
     }
     fill_template_block = json.dumps(fill_template, ensure_ascii=False, indent=2)
+    schedule_instruction = _state_completion_schedule_instruction(target_keys)
 
-    return f"""{task_query}
-
-{memory_section}
-
-[Instructions]
-- Answer this user question based on the memory.
-- `evidence` for each key must be a list of objects with:
+    return f"""[Instructions]
+- Answer the user-state question below using only the system memory about the user's trajectory provided in [Memory]...[/Memory].
+- **Make each answer value as detailed and accurate as the memory supports.** Preserve specific names, times, dates, places, labels, and constraints instead of giving vague summaries.
+- Follow the template exactly, and fill every requested field with the most precise supported value.
+{schedule_instruction}- `evidence` for each key must be a list of objects with:
   - `app_log_id`: use the exact app log id when it can be identified; otherwise use "".
   - `evidence_content`: provide one short supporting snippet or close paraphrase. Keep it local and concise.
 - If evidence is unknown, use [].
@@ -95,8 +123,8 @@ def _build_state_completion_prompt(
 
 [Output format]
 {{
-  "snapshot_state": {{
-    "<key>": "<value or nested object following the template>",
+  "user_state": {{
+    "<key>": "<detailed, accurate value or nested object following the template>",
     "...": "<same structure as template>"
   }},
   "evidence": {{
@@ -112,6 +140,10 @@ def _build_state_completion_prompt(
 
 Template:
 {fill_template_block}
+
+{task_query}
+
+{memory_section}
 """
 
 
@@ -504,6 +536,7 @@ def _task_c_v2_contract_preference_state_input(state_value: Any) -> Any:
         return state_value
     return {"statement": statement}
 
+
 def build_rq3_apply_question_pack_prompt(
     *,
     checkpoint_timestamp: str,
@@ -553,6 +586,8 @@ Keep `scenario` leakage-safe:
 - terminal field: one leaf field in state_value whose value is scalar or array-valued and not further decomposed.
 - leaf path: the path to a terminal field using dot notation, for example: schedule.days_of_week or timing.start_time.
 - world-background scenario: a short third-person description of what is true right now in the world. It is not spoken by the assistant, not spoken by the user, and not written from the user's point of view.
+- current-world anchor: the weekday, calendar date, and current clock time in `scenario`. These anchors are allowed and are not leakage by themselves; they make the current-moment service task answerable.
+{SCHEDULE_DATE_ENCODING_BULLETS}
 
 [Hard Constraints]
 1. Generate exactly one item.
@@ -566,19 +601,21 @@ Keep `scenario` leakage-safe:
 5. scenario must be short, concrete, and written as third-person world background.
 6. scenario must not use first-person or second-person wording such as "I", "we", "you", "your", or "you've".
 7. scenario must anchor the current moment clearly enough for the task to be answerable:
-   - for weekly routines: include weekday + clock time;
-   - for monthly or date-like routines: include calendar anchor + clock time.
+   - for weekly or weekday-specific routines: include the current weekday + current clock time;
+   - for monthly or date-like routines: include the current calendar anchor + current clock time;
+   - if `state_value` contains `schedule.days_of_week`, `schedule.day_of_week`, `schedule.days_of_month`, `schedule.day_of_month`, or `schedule.week_of_month`, a clock time alone is not enough.
+   - interpret all schedule weekday/month fields using the schedule date encodings above; for example, days_of_week: [1] means Tuesday, not Monday.
 8. scenario may include only:
    - the current moment,
    - whether something has or has not happened yet,
    - whether something has or has not been prepared,
    - at most one additional situational fact that plausibly matters right now.
-9. scenario must not restate or paraphrase the routine action, frequency, start time, end time, location, or any other fact already present in state_value, except that it may state the current day/date/time as part of the world background.
+9. scenario must not restate or paraphrase the routine action, frequency, stored start time, stored end time, location, or any other personalized habit fact already present in state_value. It may state the current weekday/date/time as world background, but it must not say the routine itself starts, occurs, meets, happens, or is located at a state-derived value.
 10. reference_answer must be exactly one natural assistant-to-user message, not a meta description.
 11. reference_answer must be complete enough that a fully correct answer would use every terminal field in state_value.
 12. Before finalizing, silently confirm the item would later pass the same five semantic validation criteria:
    - answerability: scenario plus the fixed task_instruction define one clear current-moment communication task.
-   - service_completion_quality: the item asks for one concrete assistant communication rather than recall or raw state restatement.
+   - service_realism: the item describes a realistic assistant-mediated service action that a user could naturally be doing now. It should not feel like a backend placeholder, arbitrary workflow, contrived form, or a task invented only to expose the state.
    - full_field_dependency: a fully correct message needs all non-derived field paths in state_value.
    - low_leakage: scenario does not restate or strongly imply the habit facts that should come from state_value.
    - output_groundedness: reference_answer is a short natural-language assistant message whose personalized content is supported by state_value without adding unsupported user-specific facts.
@@ -668,6 +705,19 @@ Why the bad example fails:
 - The current moment is weakly grounded.
 - The reference answer is too generic.
 
+[Bad Example 2 — Do Not Imitate]
+{{
+  "item": {{
+    "scenario": "It is 09:25. The morning is quiet and nothing has been started yet.",
+    "task_instruction": {json.dumps(fixed_task_instruction, ensure_ascii=False)},
+    "reference_answer": "Your weekly client technical briefing is at 10:00 today at the regional corporate headquarters. Since Tuesday is the scheduled day, it is almost time to get ready."
+  }}
+}}
+
+Why the bad example fails:
+- For a weekly or weekday-specific routine, clock time alone does not establish that today is the scheduled day.
+- A better scenario would include the current weekday and current clock time, without naming the routine, cadence, location, or stored start time as an appointment fact.
+
 [Input]
 - state_key: {state_key}
 - state_value: {state_value}
@@ -696,7 +746,7 @@ def _build_task_c_v2_information_request_question_pack_prompt(
     fixed_task_instruction_json = json.dumps(fixed_task_instruction, ensure_ascii=False)
 
     return f"""[Task]
-Generate exactly one preference-conditioned filtering task for an assistant that prepares structured retrieval or recommendation parameters.
+Generate exactly one preference-conditioned search-filter task for an assistant helping the user browse, search, compare, or plan options.
 
 Each item contains:
 - `scenario`: synthesize this field.
@@ -704,13 +754,13 @@ Each item contains:
 - `output_template`: synthesize this field.
 - `reference_output`: synthesize this field as the intended correct filled object.
 
-The task should require the assistant to use the user's preference state to fill filtering parameters, not only the scenario.
-The reference_output must fill a structured filtering-parameter object for a downstream retrieval, screening, or recommendation system.
+The task should require the assistant to use the user's preference state to fill search/filter fields, not only the scenario.
+The reference_output must fill a structured search/filter object for the assistant to apply before showing matching options.
 It must not be a final recommendation, a ranked list, or a free-form explanation.
 
 [Key design goal]
-This is a filtering task, not a copy-the-statement task.
-The generated item should require the answering assistant to translate the user's preference statement into semantically meaningful filtering parameters.
+This is a search-filter task, not a copy-the-statement task.
+The generated item should require the answering assistant to translate the user's preference statement into semantically meaningful filters.
 
 [Design Principle]
 Keep `scenario` leakage-safe:
@@ -728,6 +778,11 @@ That means:
 - preference statement: the value in state_value.statement.
 - world-background scenario: a short third-person or neutral description of what is happening right now in the product or assistant context. It is not spoken by the assistant, not spoken by the user, and not written from the user's point of view.
 - canonical reference_output: one valid answer, but not necessarily the only valid answer.
+- fill leaf: one `"<fill>"` slot in output_template and the corresponding filled value in reference_output.
+- reference_anchors: audit notes tying each fill leaf to the state/reference basis used to create it. Anchors are for traceability, not for scoring.
+- core fill: a fill leaf whose value captures the field-local core preference needed for this service object. Core is leaf/field-level, not state-level.
+- detail fill: an optional second fill leaf that adds grounded precision, qualification, or exclusion for the same service object. It must be useful for the service task, not filler.
+{SCHEDULE_DATE_ENCODING_BULLETS}
 
 [Hard Constraints]
 1. Generate exactly one item.
@@ -737,39 +792,52 @@ That means:
    - "task_instruction"
    - "output_template"
    - "reference_output"
+   - "reference_anchors"
 4. Copy task_instruction exactly as this fixed string:
    {fixed_task_instruction}
 5. scenario must be short, natural, and written as world background.
 6. scenario must not use first-person or second-person wording such as "I", "we", "you", "your", or "you've".
-7. scenario must make the filtering situation feel like a plausible user or product moment, not like a backend log line.
+7. scenario must make the filtering situation feel like a plausible user product moment, not like a backend log line.
 8. Prefer natural situations such as:
-   - the user is about to browse options,
-   - a shortlist is being prepared,
-   - candidate results are being narrowed before display.
+   - the user is browsing options in an app,
+   - the user is searching for options,
+   - the user is comparing choices,
+   - the assistant is setting filters before showing matches.
 9. Avoid robotic phrasing such as:
    - "a filtering step is about to run"
    - "a screening request is about to be sent"
    - "a downstream module will execute now"
+   - "a shortlist is being prepared before anything is shown"
 10. scenario may include only:
    - the immediate user goal or option space,
-   - the fact that a shortlist or filtering pass is being prepared,
+   - the fact that the assistant is setting search/filter fields before showing matches,
    - at most one additional situational fact that plausibly matters right now.
 11. scenario must not restate or paraphrase the user's actual preference content.
 12. output_template and reference_output must both be top-level JSON objects.
 13. output_template and reference_output must have exactly the same nested shape.
 14. Every leaf in output_template must be the string "<fill>".
-15. Do not use a fixed universal key like only "preference_statement". Instead, synthesize request-facing keys and grouping that fit the domain implied by the preference statement.
-16. The synthesized schema should decompose the preference into meaningful filtering dimensions when appropriate, such as:
+15. output_template must contain one or two fill leaves total.
+16. At least one fill leaf must be a core fill for this item. A second fill leaf may be a detail fill when it is directly grounded and service-useful.
+17. reference_anchors must contain exactly one object for each fill leaf and no extra objects.
+18. Each reference_anchors object must include:
+   - "target_path": dot path to the reference_output leaf
+   - "role": either "core" or "detail"
+   - "state_reference": the state_value field or statement phrase that grounds the filled value
+   - "anchor_note": short explanation of why this fill is grounded
+19. Do not use a fixed universal key like only "preference_statement". Instead, synthesize request-facing keys and grouping that fit the domain implied by the preference statement.
+20. The synthesized schema should decompose the preference into meaningful filtering dimensions when appropriate, such as:
    - preferred types or formats,
    - desired attributes,
    - required features,
    - avoided or deprioritized options,
    - priorities or goals.
-17. reference_output must be a coherent canonical fill of output_template.
-18. Before finalizing, silently confirm the item would later pass the same five semantic validation criteria:
+21. reference_output must be a coherent canonical fill of output_template.
+22. reference_output is the intended structured gold answer; every filled value must be supported by state_value.
+23. If state_value contains schedule-like weekday/month fields, interpret them using the schedule date encodings above.
+24. Before finalizing, silently confirm the item would later pass the same five semantic validation criteria:
    - answerability: scenario plus the fixed task_instruction define one clear current-moment structured completion task.
-   - service_completion_quality: the item defines a real structured filtering task rather than free-form QA or a raw state dump.
-   - full_field_dependency: a fully correct reference_output needs all non-derived field paths in state_value.
+   - service_realism: the item describes a realistic assistant-mediated service action that a user could naturally be doing now. It should not feel like a backend placeholder, arbitrary workflow, contrived form, or a task invented only to expose the state.
+   - full_field_dependency: every fill leaf must be necessary for the service task and must require the preference statement in state_value, not only the scenario. At least one fill leaf must capture the field-local core preference; any detail leaf must add grounded service-relevant precision.
    - low_leakage: scenario does not restate or strongly imply the preference facts that should come from state_value.
    - output_groundedness: output_template plus reference_output define a task-appropriate filtering object grounded in state_value rather than a raw state copy or unsupported content.
 
@@ -782,33 +850,36 @@ state_value: {json.dumps({
 [Good Example A Output]
 {json.dumps({"item": {
     "scenario": (
-        "The user is deciding how to spend the next professional-development block. "
-        "A shortlist of learning options is being prepared before anything is shown."
+        "The user is browsing professional-development resources in a learning portal. "
+        "The assistant is setting search filters before showing matching options."
     ),
     "task_instruction": fixed_task_instruction,
     "output_template": {
-        "content_acquisition_filters": {
-            "preferred_modalities": ["<fill>", "<fill>"],
-            "content_characteristics": ["<fill>", "<fill>", "<fill>"],
-            "deprioritized_formats": ["<fill>"]
+        "content_search_filters": {
+            "resource_formats": "<fill>",
+            "avoid_setting": "<fill>"
         }
     },
     "reference_output": {
-        "content_acquisition_filters": {
-            "preferred_modalities": [
-                "technical white papers",
-                "webinars"
-            ],
-            "content_characteristics": [
-                "in-depth",
-                "self-paced",
-                "technical"
-            ],
-            "deprioritized_formats": [
-                "large live conferences"
-            ]
+        "content_search_filters": {
+            "resource_formats": "in-depth, self-paced technical white papers or webinars",
+            "avoid_setting": "large live conferences"
         }
     },
+    "reference_anchors": [
+        {
+            "target_path": "content_search_filters.resource_formats",
+            "role": "core",
+            "state_reference": "statement: in-depth, self-paced technical white papers and webinars over large live conferences",
+            "anchor_note": "This fill captures the field-local core learning-resource preference."
+        },
+        {
+            "target_path": "content_search_filters.avoid_setting",
+            "role": "detail",
+            "state_reference": "statement: over large live conferences",
+            "anchor_note": "This detail fill records the grounded exclusion needed for filtering."
+        }
+    ],
 }}, ensure_ascii=False, indent=2)}
 
 [Good Example B Input]
@@ -821,28 +892,35 @@ state_value: {json.dumps({
 {json.dumps({"item": {
     "scenario": (
         "The user is reviewing investment options for an upcoming planning session. "
-        "Candidate strategies are being narrowed before anything is surfaced."
+        "The assistant is setting strategy filters before showing matching options."
     ),
     "task_instruction": fixed_task_instruction,
     "output_template": {
         "investment_filters": {
-            "primary_objectives": ["<fill>", "<fill>"],
-            "time_horizon": "<fill>",
-            "deprioritized_strategies": ["<fill>"]
+            "strategy_goal": "<fill>",
+            "avoid_strategy": "<fill>"
         }
     },
     "reference_output": {
         "investment_filters": {
-            "primary_objectives": [
-                "capital preservation",
-                "tax-efficient growth"
-            ],
-            "time_horizon": "long-term",
-            "deprioritized_strategies": [
-                "high-risk speculative trading"
-            ]
+            "strategy_goal": "long-term capital preservation and tax-efficient growth",
+            "avoid_strategy": "high-risk speculative trading"
         }
     },
+    "reference_anchors": [
+        {
+            "target_path": "investment_filters.strategy_goal",
+            "role": "core",
+            "state_reference": "statement: long-term capital preservation and tax-efficient growth over high-risk speculative trading",
+            "anchor_note": "This fill captures the field-local core investment strategy preference."
+        },
+        {
+            "target_path": "investment_filters.avoid_strategy",
+            "role": "detail",
+            "state_reference": "statement: over high-risk speculative trading",
+            "anchor_note": "This detail fill adds the grounded strategy exclusion."
+        }
+    ],
 }}, ensure_ascii=False, indent=2)}
 
 [Good Example C Input]
@@ -855,33 +933,27 @@ state_value: {json.dumps({
 {json.dumps({"item": {
     "scenario": (
         "The user is choosing a place for a casual conversation later today. "
-        "Nearby coffee-shop options are being narrowed before results are shown."
+        "The assistant is setting venue filters before showing nearby options."
     ),
     "task_instruction": fixed_task_instruction,
     "output_template": {
         "venue_filters": {
-            "preferred_ambience": ["<fill>"],
-            "preferred_venue_types": ["<fill>"],
-            "required_features": ["<fill>"],
-            "deprioritized_venue_types": ["<fill>"]
+            "venue_match": "<fill>"
         }
     },
     "reference_output": {
         "venue_filters": {
-            "preferred_ambience": [
-                "quiet"
-            ],
-            "preferred_venue_types": [
-                "neighborhood coffee shops"
-            ],
-            "required_features": [
-                "table seating"
-            ],
-            "deprioritized_venue_types": [
-                "loud chain cafes"
-            ]
+            "venue_match": "quiet neighborhood coffee shop with table seating rather than loud chain cafes"
         }
     },
+    "reference_anchors": [
+        {
+            "target_path": "venue_filters.venue_match",
+            "role": "core",
+            "state_reference": "statement: quiet neighborhood coffee shops with table seating over loud chain cafes",
+            "anchor_note": "This fill captures the field-local core venue preference."
+        }
+    ],
 }}, ensure_ascii=False, indent=2)}
 
 [Bad Example — Do Not Imitate]
@@ -905,7 +977,7 @@ state_value: {json.dumps({
 Why the bad example fails:
 - The scenario leaks the user's actual preference.
 - The schema is not synthesized.
-- The output collapses the entire preference into one copied statement instead of a filtering-oriented decomposition.
+- The output collapses the entire preference into one copied statement instead of search/filter fields.
 
 [Input]
 - state_key: {state_key}
@@ -918,12 +990,20 @@ Why the bad example fails:
     "task_instruction": {fixed_task_instruction_json},
     "output_template": {{
       "<synthesized_request_key>": {{
-        "<synthesized_filter_key>": "<fill or nested fills>"
+        "<synthesized_filter_key>": "<fill>"
       }}
     }},
     "reference_output": {{
       "<same synthesized shape as output_template>": "..."
-    }}
+    }},
+    "reference_anchors": [
+      {{
+        "target_path": "<reference_output leaf path>",
+        "role": "core|detail",
+        "state_reference": "<state_value field or statement phrase>",
+        "anchor_note": "<why this fill is grounded>"
+      }}
+    ]
   }}
 }}
 """
@@ -942,7 +1022,7 @@ def _build_task_c_v2_action_configuration_question_pack_prompt(
     fixed_task_instruction_json = json.dumps(fixed_task_instruction, ensure_ascii=False)
 
     return f"""[Task]
-Generate exactly one attribute-conditioned action-configuration task for an assistant that prepares structured tool or workflow payloads.
+Generate exactly one attribute-conditioned action-configuration task for an assistant helping the user set up, connect, complete, or submit something.
 
 Each item contains:
 - `scenario`: synthesize this field.
@@ -951,12 +1031,12 @@ Each item contains:
 - `reference_output`: synthesize this field as the intended correct filled object.
 
 The task should require the assistant to use the user's attribute state to fill execution fields, not only the scenario.
-The reference_output must fill a structured action-configuration object for a downstream tool, workflow, form, or executable service.
+The reference_output must fill a structured action-configuration object for a user-facing tool, setup flow, form, or executable service.
 It must not be a user-facing message, a retrieval request, or a free-form explanation.
 
 [Key design goal]
-This is an execution-configuration task, not a copy-the-attribute task.
-The generated item should require the answering assistant to translate the user's known attributes into the specific fields needed to carry out an action.
+This is a setup/form-configuration task, not a copy-the-attribute task.
+The generated item should require the answering assistant to translate the user's known attributes into the specific fields needed to complete a user-facing action.
 
 [Design Principle]
 Keep `scenario` leakage-safe:
@@ -975,6 +1055,12 @@ That means:
 - world-background scenario: a short third-person or neutral description of what is happening right now in the product or assistant context. It is not spoken by the assistant, not spoken by the user, and not written from the user's point of view.
 - canonical reference_output: one valid answer, but not necessarily the only valid answer.
 - grounded decomposition: a raw attribute string may be split into multiple configuration leaves only when each resulting leaf is directly supported by the wording of state_value and serves a distinct execution role.
+- deterministic auto-fill: every filled value should be determined by state_value and the neutral setup/form context, not by an extra user choice.
+- fill leaf: one `"<fill>"` slot in output_template and the corresponding filled value in reference_output.
+- reference_anchors: audit notes tying each fill leaf to the state/reference basis used to create it. Anchors are for traceability, not for scoring.
+- core fill: a fill leaf whose value captures the field-local core attribute needed for this service object. Core is leaf/field-level, not state-level.
+- detail fill: an optional second fill leaf that adds grounded precision, qualification, or execution detail for the same service object. It must be useful for the service task, not filler.
+{SCHEDULE_DATE_ENCODING_BULLETS}
 
 [Hard Constraints]
 1. Generate exactly one item.
@@ -984,36 +1070,50 @@ That means:
    - "task_instruction"
    - "output_template"
    - "reference_output"
+   - "reference_anchors"
 4. Copy task_instruction exactly as this fixed string:
    {fixed_task_instruction}
 5. scenario must be short, natural, and written as world background.
 6. scenario must not use first-person or second-person wording such as "I", "we", "you", "your", or "you've".
-7. scenario must make the execution moment feel like a plausible user or product moment, not like a backend log line.
+7. scenario must make the execution moment feel like a plausible user product moment, not like a backend log line.
 8. Prefer natural situations such as:
    - the user is completing checkout,
-   - a setup flow is being finished,
-   - a profile or form is being prepared before submission,
-   - a device or account connection is being configured.
+   - the user is finishing a setup flow,
+   - the user is preparing a profile or form before submission,
+   - the user is connecting a device or account,
+   - the assistant is auto-filling setup/form/configuration fields.
 9. Avoid robotic phrasing such as:
    - "an action configuration is about to be sent"
    - "a downstream workflow will execute now"
    - "a payload is being prepared for a module"
+   - "a coordinator is processing a dispatch request"
 10. scenario may include only:
    - the immediate user goal or action being completed,
-   - the fact that a form, setup, or execution payload is being prepared,
+   - the fact that the assistant is filling setup, form, or configuration fields,
    - at most one additional situational fact that plausibly matters right now.
 11. scenario must not restate or paraphrase the user's actual attribute values.
 12. output_template and reference_output must both be top-level JSON objects.
 13. output_template and reference_output must have exactly the same nested shape.
 14. Every leaf in output_template must be the string "<fill>".
-15. Prefer configuration-facing schemas that decompose compound attribute strings into execution-relevant fields when the decomposition is directly supported by state_value.
-16. Do not invent facts that are not directly stated in state_value.
-17. reference_output must preserve all grounded attribute facts needed by the synthesized configuration schema.
-18. For list-valued state_value, preserve source order when the configuration represents per-item entries.
-19. Before finalizing, silently confirm the item would later pass the same five semantic validation criteria:
+15. output_template must contain one or two fill leaves total.
+16. At least one fill leaf must be a core fill for this item. A second fill leaf may be a detail fill when it is directly grounded and service-useful.
+17. reference_anchors must contain exactly one object for each fill leaf and no extra objects.
+18. Each reference_anchors object must include:
+   - "target_path": dot path to the reference_output leaf
+   - "role": either "core" or "detail"
+   - "state_reference": the state_value field or phrase that grounds the filled value
+   - "anchor_note": short explanation of why this fill is grounded
+19. Prefer configuration-facing schemas that decompose compound attribute strings into execution-relevant fields when the decomposition is directly supported by state_value.
+20. Do not invent facts that are not directly stated in state_value.
+21. Use scenarios where the assistant only auto-fills values determined by state_value. Avoid scenarios that require an extra user choice not in state_value, such as choosing a subset, quantity, recipient, priority, destination, or commitment.
+22. reference_output must preserve the selected grounded attribute facts needed by the synthesized configuration schema.
+23. reference_output is the intended structured gold answer; every filled value must be supported by state_value.
+24. For list-valued state_value, preserve source order when the configuration represents per-item entries.
+25. If state_value contains schedule-like weekday/month fields, interpret them using the schedule date encodings above.
+26. Before finalizing, silently confirm the item would later pass the same five semantic validation criteria:
    - answerability: scenario plus the fixed task_instruction define one clear current-moment structured completion task.
-   - service_completion_quality: the item defines a real structured action-configuration task rather than free-form QA or a raw state dump.
-   - full_field_dependency: a fully correct reference_output needs all non-derived field paths in state_value.
+   - service_realism: the item describes a realistic assistant-mediated service action that a user could naturally be doing now. It should not feel like a backend placeholder, arbitrary workflow, contrived form, or a task invented only to expose the state.
+   - full_field_dependency: every fill leaf must be necessary for the service task and must require the attribute value in state_value, not only the scenario. At least one fill leaf must capture the field-local core attribute; any detail leaf must add grounded service-relevant precision.
    - low_leakage: scenario does not restate or strongly imply the attribute facts that should come from state_value.
    - output_groundedness: output_template plus reference_output define a task-appropriate action-configuration object grounded in state_value rather than a raw state copy or unsupported content.
 
@@ -1024,31 +1124,40 @@ state_value: {json.dumps("Senior Coatings Consultant at PPG Industries (speciali
 [Good Example A Output]
 {json.dumps({"item": {
     "scenario": (
-        "A registration form for a technical industry symposium is being finalized. "
-        "The professional credential section is being completed before attendee details are submitted."
+        "The user is completing registration for a technical industry symposium. "
+        "The assistant is filling the professional credential fields before submission."
     ),
     "task_instruction": fixed_task_instruction,
     "output_template": {
         "symposium_registration": {
             "professional_profile": {
-                "job_title": "<fill>",
-                "organization": "<fill>",
-                "specialization_areas": ["<fill>", "<fill>"]
+                "role_title": "<fill>",
+                "specialization": "<fill>"
             }
         }
     },
     "reference_output": {
         "symposium_registration": {
             "professional_profile": {
-                "job_title": "Senior Coatings Consultant",
-                "organization": "PPG Industries",
-                "specialization_areas": [
-                    "heavy-duty infrastructure",
-                    "marine protection"
-                ]
+                "role_title": "Senior Coatings Consultant at PPG Industries",
+                "specialization": "heavy-duty infrastructure and marine protection"
             }
         }
     },
+    "reference_anchors": [
+        {
+            "target_path": "symposium_registration.professional_profile.role_title",
+            "role": "core",
+            "state_reference": "Senior Coatings Consultant at PPG Industries (specializing in heavy-duty infrastructure and marine protection)",
+            "anchor_note": "This fill captures the field-local core professional identity."
+        },
+        {
+            "target_path": "symposium_registration.professional_profile.specialization",
+            "role": "detail",
+            "state_reference": "specializing in heavy-duty infrastructure and marine protection",
+            "anchor_note": "This detail fill adds the grounded specialization needed by the credential fields."
+        }
+    ],
 }}, ensure_ascii=False, indent=2)}
 
 [Good Example B Input]
@@ -1061,48 +1170,28 @@ state_value: {json.dumps([
 [Good Example B Output]
 {json.dumps({"item": {
     "scenario": (
-        "A wellness app setup is being finalized. "
-        "Connected-device sources are being configured before health data syncing starts."
+        "The user is setting up a wellness app. "
+        "The assistant is filling the connected-device sync settings before health data syncing starts."
     ),
     "task_instruction": fixed_task_instruction,
     "output_template": {
         "wearable_sync_setup": {
-            "connected_sources": [
-                {
-                    "device_model": "<fill>",
-                    "device_variant": "<fill>",
-                    "enabled_metrics": ["<fill>", "<fill>"]
-                },
-                {
-                    "device_model": "<fill>",
-                    "device_variant": "<fill>",
-                    "enabled_metrics": ["<fill>", "<fill>"]
-                }
-            ]
+            "connected_health_sources": "<fill>"
         }
     },
     "reference_output": {
         "wearable_sync_setup": {
-            "connected_sources": [
-                {
-                    "device_model": "Apple Watch Series 9",
-                    "device_variant": "Midnight aluminum",
-                    "enabled_metrics": [
-                        "daily heart rate",
-                        "step tracking"
-                    ]
-                },
-                {
-                    "device_model": "Oura Ring Gen3",
-                    "device_variant": "Stealth finish",
-                    "enabled_metrics": [
-                        "sleep staging",
-                        "recovery metrics"
-                    ]
-                }
-            ]
+            "connected_health_sources": "Apple Watch Series 9 for daily heart rate and step tracking; Oura Ring Gen3 for sleep staging and recovery metrics"
         }
     },
+    "reference_anchors": [
+        {
+            "target_path": "wearable_sync_setup.connected_health_sources",
+            "role": "core",
+            "state_reference": "Apple Watch Series 9 ... daily heart rate and step tracking; Oura Ring Gen3 ... sleep staging and recovery metrics",
+            "anchor_note": "This fill captures the field-local core wearable sync sources."
+        }
+    ],
 }}, ensure_ascii=False, indent=2)}
 
 [Good Example C Input]
@@ -1116,52 +1205,36 @@ state_value: {json.dumps([
 [Good Example C Output]
 {json.dumps({"item": {
     "scenario": (
-        "A unified content and services hub is being connected for the user. "
-        "Subscription entitlements are being prepared before linked services are shown."
+        "The user is connecting subscriptions in a content and services hub. "
+        "The assistant is filling linked-service fields before the services are shown."
     ),
     "task_instruction": fixed_task_instruction,
     "output_template": {
         "subscription_entitlements": {
-            "linked_services": [
-                {
-                    "service_name": "<fill>",
-                    "plan_or_bundle": "<fill>",
-                    "usage_context": "<fill>"
-                },
-                {
-                    "service_name": "<fill>",
-                    "plan_or_bundle": "<fill>",
-                    "usage_context": "<fill>"
-                },
-                {
-                    "service_name": "<fill>",
-                    "plan_or_bundle": "<fill>",
-                    "usage_context": "<fill>"
-                }
-            ]
+            "linked_services": "<fill>",
+            "usage_context": "<fill>"
         }
     },
     "reference_output": {
         "subscription_entitlements": {
-            "linked_services": [
-                {
-                    "service_name": "Audible",
-                    "plan_or_bundle": "Premium Plus",
-                    "usage_context": "listening to non-fiction during 45-minute commutes"
-                },
-                {
-                    "service_name": "Disney Bundle",
-                    "plan_or_bundle": "including Hulu and ESPN+",
-                    "usage_context": "family entertainment and sports coverage"
-                },
-                {
-                    "service_name": "MasterClass",
-                    "plan_or_bundle": "annual subscription",
-                    "usage_context": "learning technical crafting and cooking skills"
-                }
-            ]
+            "linked_services": "Audible Premium Plus; Disney Bundle including Hulu and ESPN+; MasterClass annual subscription",
+            "usage_context": "non-fiction during 45-minute commutes, family entertainment and sports coverage, and learning technical crafting and cooking skills"
         }
     },
+    "reference_anchors": [
+        {
+            "target_path": "subscription_entitlements.linked_services",
+            "role": "core",
+            "state_reference": "Audible Premium Plus; Disney Bundle including Hulu and ESPN+; MasterClass annual subscription",
+            "anchor_note": "This fill captures the field-local core subscriptions to link."
+        },
+        {
+            "target_path": "subscription_entitlements.usage_context",
+            "role": "detail",
+            "state_reference": "non-fiction during 45-minute commutes; family entertainment and sports coverage; learning technical crafting and cooking skills",
+            "anchor_note": "This detail fill adds grounded usage context for the linked-service setup."
+        }
+    ],
 }}, ensure_ascii=False, indent=2)}
 
 [Bad Example — Do Not Imitate]
@@ -1186,6 +1259,55 @@ Why the bad example fails:
 - The task_instruction asks for a free-form recommendation instead of a structured action configuration.
 - The schema fails to decompose execution-relevant parts of the attribute strings into meaningful configuration fields.
 
+[Bad Example — Do Not Imitate]
+{{
+  "item": {{
+    "scenario": "A logistics coordinator is processing a freight dispatch request for a regional sports event. The system needs standard ground priority.",
+    "task_instruction": {fixed_task_instruction_json},
+    "output_template": {{
+      "dispatch_request": {{
+        "item_name": "<fill>",
+        "priority_level": "<fill>"
+      }}
+    }},
+    "reference_output": {{
+      "dispatch_request": {{
+        "item_name": "YETI Trailhead Camp Chairs",
+        "priority_level": "standard_ground"
+      }}
+    }}
+  }}
+}}
+
+Why the bad example fails:
+- The scenario invents a coordinator workflow instead of a natural user setup/form action.
+- The scenario leaks or supplies an operational value that should not come from the user's attribute.
+- The reference_output includes an unsupported dispatch priority.
+
+[Bad Example — Do Not Imitate]
+{{
+  "item": {{
+    "scenario": "The user is registering gear for a local youth league's equipment drive. The assistant is filling the donation details before the form is submitted.",
+    "task_instruction": {fixed_task_instruction_json},
+    "output_template": {{
+      "equipment_donation": {{
+        "quantity_to_donate": "<fill>",
+        "items": ["<fill>", "<fill>"]
+      }}
+    }},
+    "reference_output": {{
+      "equipment_donation": {{
+        "quantity_to_donate": 10,
+        "items": ["practice soccer balls", "cones"]
+      }}
+    }}
+  }}
+}}
+
+Why the bad example fails:
+- state_value may say the user has soccer gear, but it does not determine what subset or quantity the user wants to donate.
+- The correct donation fields depend on an extra user choice, so this is not a deterministic auto-fill task.
+
 [Input]
 - state_key: {state_key}
 - state_value: {state_value}
@@ -1197,12 +1319,20 @@ Why the bad example fails:
     "task_instruction": {fixed_task_instruction_json},
     "output_template": {{
       "<synthesized_configuration_key>": {{
-        "<synthesized_execution_field>": "<fill or nested fills>"
+        "<synthesized_execution_field>": "<fill>"
       }}
     }},
     "reference_output": {{
       "<same synthesized shape as output_template>": "..."
-    }}
+    }},
+    "reference_anchors": [
+      {{
+        "target_path": "<reference_output leaf path>",
+        "role": "core|detail",
+        "state_reference": "<state_value field or phrase>",
+        "anchor_note": "<why this fill is grounded>"
+      }}
+    ]
   }}
 }}
 """
@@ -1253,18 +1383,19 @@ def _build_task_c_runtime_prompt(
     task_body = str(task_body or "").strip()
     if normalized_mode == "structured":
         instructions = """[Instructions]
-- Fill the structured `output` object using the memory and the provided scenario.
-- Preserve the required nested structure exactly.
-- Do not add extra fields.
+- Use [Assistant Task] and the system-maintained memory of the user's trajectory in [Memory]...[/Memory] to complete the assistant task.
+- Put the completed task result in `answer`.
+- Put the memory evidence supporting that result in `evidence`.
 - `evidence` must be a list of objects with:
   - `app_log_id`: use the exact app log id when it can be identified; otherwise use "".
   - `evidence_content`: provide one short supporting snippet or close paraphrase. Keep it local and concise.
 - If evidence is unknown, use [].
-- Return JSON only.
+- Return JSON only; do not write any text outside the JSON object.
 
 [Output format]
+Output JSON ONLY:
 {{
-  "output": {output_template},
+  "answer": {output_template},
   "evidence": [
     {{
       "app_log_id": "<app_log_id>",
@@ -1276,17 +1407,19 @@ def _build_task_c_runtime_prompt(
         )
     else:
         instructions = """[Instructions]
-- Write one short natural-language assistant response that best fits the scenario using the memory.
-- Do not return a structured payload or bullet list.
+- Use [Assistant Task] and the system-maintained memory of the user's trajectory in [Memory]...[/Memory] to complete the assistant task.
+- Put the completed task result in `answer`.
+- Put the memory evidence supporting that result in `evidence`.
 - `evidence` must be a list of objects with:
   - `app_log_id`: use the exact app log id when it can be identified; otherwise use "".
   - `evidence_content`: provide one short supporting snippet or close paraphrase. Keep it local and concise.
 - If evidence is unknown, use [].
-- Return JSON only.
+- Return JSON only; do not write any text outside the JSON object.
 
 [Output format]
+Output JSON ONLY:
 {{
-  "answer": "<one short assistant response>",
+  "answer": "<a concise, complete, and specific assistant message>",
   "evidence": [
     {{
       "app_log_id": "<app_log_id>",
@@ -1294,11 +1427,13 @@ def _build_task_c_runtime_prompt(
     }}
   ]
 }}"""
-    return "{header}\n\n{memory_section}\n\n{instructions}\n".format(
-        header=task_body,
-        memory_section=memory_section,
+    return "{instructions}\n\n[Assistant Task]\n{task_body}[/Assistant Task]\n\n{memory_section}\n".format(
         instructions=instructions,
+        task_body=task_body,
+        memory_section=memory_section,
     )
+
+
 def _build_structured_service_completion_prompt(
     *,
     memory_section: str,
@@ -1586,6 +1721,7 @@ def build_task_c_v2_validation_prompt(
     task_instruction: str,
     output_template: Any,
     reference_output: Any,
+    reference_anchors: Any = None,
     reference_answer: str = "",
 ) -> str:
     normalized_family = str(service_family or "").strip()
@@ -1597,8 +1733,8 @@ def build_task_c_v2_validation_prompt(
                 "pass": "<bool>",
             },
             {
-                "criterion": "service_completion_quality",
-                "analysis": "<whether the item defines a real assistant communication task instead of raw state recall>",
+                "criterion": "service_realism",
+                "analysis": "<whether the item describes a realistic assistant-mediated service action that a user could naturally be doing now>",
                 "pass": "<bool>",
             },
             {
@@ -1608,12 +1744,12 @@ def build_task_c_v2_validation_prompt(
             },
             {
                 "criterion": "low_leakage",
-                "analysis": "<whether scenario and task_instruction avoid restating the key user-state facts>",
+                "analysis": "<whether item-specific scenario wording avoids restating personalized habit facts while allowing current-world anchors>",
                 "pass": "<bool>",
             },
             {
                 "criterion": "output_groundedness",
-                "analysis": "<whether each personalized part of reference_answer is grounded by the relevant fields in the provided state>",
+                "analysis": "<whether each personalized part of reference_answer is grounded by the relevant fields in the provided state or by the state_key routine label>",
                 "pass": "<bool>",
             },
         ]
@@ -1623,24 +1759,26 @@ Judge it using the five required criteria and give one short analysis for each.
 Do not output an overall verdict; only return the per-criterion judgments.
 
 [Definitions]
-- answerability: `scenario` plus `task_instruction` must define one clear communication task for the current moment. Judge this by checking whether the current moment is anchored well enough and whether the assistant can tell what kind of message should be sent now.
-- service_completion_quality: the item must ask the assistant to produce one concrete user-facing communication, not merely restate the habit or answer a recall question. Judge this by checking whether the task is a real assistant action rather than state restatement.
-- full_field_dependency: answering well should require all non-derived fields in `state_value`; dropping an important field path should make the communication materially weaker or incorrect. Judge this by checking which field paths in `state_value` are actually needed by the ideal message.
-- low_leakage: `scenario` and `task_instruction` should describe only the local situation and current communication task; they must not restate or strongly imply the key habit facts that should come from `state_value`. Judge this by comparing `scenario` and `task_instruction` against the field paths in `state_value`.
-- output_groundedness: `reference_answer` must be a short natural-language assistant response whose personalized content is grounded in `state_value`. Judge this by checking which parts of `reference_answer` are supported by which state fields, and fail if it adds unsupported user-specific facts.
+- answerability: `scenario` plus `task_instruction` must define one clear communication task for the current moment. Judge this by checking whether the current moment is anchored well enough and whether the assistant can tell what kind of message should be sent now. For day/date-specific routines, a clock time alone is not enough; the scenario needs the current weekday or calendar anchor.
+- service_realism: the item should describe a realistic assistant-mediated service action that a user could naturally be doing now. It should not feel like a backend placeholder, arbitrary workflow, contrived form, or a task invented only to expose the state. For habits, judge whether the reminder/message would be useful and natural at this moment, not merely a recall of stored routine data.
+- full_field_dependency: answering well should require all non-derived fields in `state_value`; dropping an important field path should make the communication materially weaker or incorrect. Judge this by checking which field paths in `state_value` are actually needed by the ideal message. For weekly habits, `frequency_type: "weekly"` is a meaningful cadence field when the ideal message says the routine is weekly; do not fail merely because `days_of_week` also identifies the current day.
+- low_leakage: item-specific `scenario` wording should describe only the local situation and current communication task; it must not restate or strongly imply personalized habit facts that should come from `state_value`. Current weekday/date/time are allowed as world-background anchors and are not leakage by themselves. The fixed generic `task_instruction` may mention using the user's routine details; do not count that generic wording as item leakage.
+- output_groundedness: `reference_answer` must be a short natural-language assistant response whose personalized content is grounded in `state_value` or the human-readable routine label in `state_key`. Judge this by checking which parts of `reference_answer` are supported by state fields or the state_key suffix, and fail if it adds unsupported user-specific facts.
+{schedule_date_encoding_bullets}
 
 [Constraints]
-1. Evaluate exactly the five required criteria in this fixed order: answerability, service_completion_quality, full_field_dependency, low_leakage, output_groundedness.
+1. Evaluate exactly the five required criteria in this fixed order: answerability, service_realism, full_field_dependency, low_leakage, output_groundedness.
 2. Output exactly one object for each required criterion.
 3. Use the criterion names exactly as given; do not rename, reorder, omit, or add criteria.
 4. Set `pass` to true only when the criterion is clearly satisfied.
 5. Keep each `analysis` concise but specific.
-6. Mark `answerability` as failed if the current-moment task is vague, underspecified, or unclear about what the assistant should send now.
-7. Mark `service_completion_quality` as failed if the item mainly behaves like a recall question, a raw state restatement, or a generic check-in rather than one concrete assistant communication.
-8. Mark `full_field_dependency` as failed if one or more important field paths in `state_value` are unused, optionalized, or collapsible without materially changing the ideal message.
-9. Mark `low_leakage` as failed if `scenario` or `task_instruction` restates or paraphrases the habit action, cadence, scheduled day, timing, location, or priority.
-10. Mark `output_groundedness` as failed if `reference_answer` introduces unsupported tactics, thresholds, or user-specific facts absent from `state_value`.
-11. Output JSON ONLY with no markdown and no extra keys.
+6. Mark `answerability` as failed if the current-moment task is vague, underspecified, unclear about what the assistant should send now, or gives only a clock time when `state_value` requires a scheduled weekday/date/nth-weekday.
+7. Mark `service_realism` as failed if the item feels like a backend placeholder, arbitrary workflow, contrived form, a task invented only to expose the state, raw state recall, or a generic check-in rather than a natural assistant-mediated service action.
+8. Mark `full_field_dependency` as failed if one or more important field paths in `state_value` are unused, optionalized, or collapsible without materially changing the ideal message. Do not fail weekly `frequency_type` just because the current weekday is also present; a weekly cadence claim is still a state-dependent requirement.
+9. Mark `low_leakage` as failed if item-specific `scenario` wording restates or paraphrases the habit action/identity, cadence, stored start/end time, location, modality, or priority. Do not fail low_leakage merely because scenario states the current weekday, calendar date, or current clock time, and do not fail merely because the fixed generic task_instruction says to use the user's routine details.
+10. Mark `answerability` as failed if `scenario` uses a weekday/date anchor that conflicts with encoded schedule fields in `state_value`.
+11. Mark `output_groundedness` as failed if `reference_answer` introduces unsupported tactics, thresholds, user-specific facts absent from `state_value` and `state_key`, or a weekday/date claim that conflicts with encoded schedule fields in `state_value`.
+12. Output JSON ONLY with no markdown and no extra keys.
 
 [Example]
 [Example Input]
@@ -1661,7 +1799,7 @@ candidate_item: {{
       "pass": true
     }},
     {{
-      "criterion": "service_completion_quality",
+      "criterion": "service_realism",
       "analysis": "The item asks for one concrete assistant reminder message rather than raw recall.",
       "pass": true
     }},
@@ -1672,7 +1810,7 @@ candidate_item: {{
     }},
     {{
       "criterion": "low_leakage",
-      "analysis": "The scenario gives only the local current moment and does not restate the routine details from the state.",
+      "analysis": "The scenario gives the local current weekday and time without restating the routine identity, cadence, stored start time, or location from the state.",
       "pass": true
     }},
     {{
@@ -1685,10 +1823,51 @@ candidate_item: {{
 
 [Example 2]
 [Example Input]
+state_key: "habits_state:family_movie_night"
+state_value: {{"schedule": {{"frequency_type": "weekly", "days_of_week": [5]}}, "timing": {{"start_time": "19:30"}}}}
+candidate_item: {{
+  "scenario": "It is Saturday at 19:15. The living room is currently empty and the television is off.",
+  "task_instruction": "Draft a neutral, specific reminder text for the user in this scenario based on the routine details, rather than a generic one.",
+  "reference_answer": "It's 19:15 on Saturday, so your weekly family movie night is starting at 19:30. Since the television is still off, would you like to get started?"
+}}
+
+[Example Output]
+{{
+  "criteria": [
+    {{
+      "criterion": "answerability",
+      "analysis": "The current moment is anchored to Saturday at 19:15, matching the scheduled weekday and giving a clear reminder moment.",
+      "pass": true
+    }},
+    {{
+      "criterion": "service_realism",
+      "analysis": "The item asks for one concrete user-facing message to send now, not a raw recall answer.",
+      "pass": true
+    }},
+    {{
+      "criterion": "full_field_dependency",
+      "analysis": "The weekly cadence, Saturday schedule, and 19:30 start time all matter for the ideal reminder.",
+      "pass": true
+    }},
+    {{
+      "criterion": "low_leakage",
+      "analysis": "The scenario gives only current-world context and does not name the routine, cadence, or stored start time; the fixed generic task instruction is not item-specific leakage.",
+      "pass": true
+    }},
+    {{
+      "criterion": "output_groundedness",
+      "analysis": "The routine label is grounded by the state_key suffix, and the weekly cadence, Saturday schedule, and 19:30 time are grounded by state_value.",
+      "pass": true
+    }}
+  ]
+}}
+
+[Example 3]
+[Example Input]
 state_key: "habits_state:evening_walk"
 state_value: {{"timing": {{"start_time": "19:00"}}, "schedule": {{"days_of_week": [2, 4, 6]}}}}
 candidate_item: {{
-  "scenario": "The user has an evening routine sometime this week.",
+  "scenario": "It is 18:50. The evening is quiet and nothing has been started.",
   "task_instruction": "Write the short reminder message the assistant should send right now.",
   "reference_answer": "Send a reminder that this is one of the user's regular evening walk windows and that it normally starts at 19:00."
 }}
@@ -1698,11 +1877,11 @@ candidate_item: {{
   "criteria": [
     {{
       "criterion": "answerability",
-      "analysis": "The current moment is not anchored well enough because the item does not say whether it is a scheduled walk day or close to the send time now.",
+      "analysis": "The scenario gives only a clock time; because the state has scheduled weekdays, it does not establish whether today is one of the scheduled days.",
       "pass": false
     }},
     {{
-      "criterion": "service_completion_quality",
+      "criterion": "service_realism",
       "analysis": "The task is still framed as writing one concrete assistant reminder message rather than doing recall.",
       "pass": true
     }},
@@ -1713,54 +1892,12 @@ candidate_item: {{
     }},
     {{
       "criterion": "low_leakage",
-      "analysis": "The scenario stays local and does not restate the actual walk schedule details from the state.",
+      "analysis": "The scenario stays local and does not restate the actual walk identity, scheduled weekdays, cadence, or stored start time from the state.",
       "pass": true
     }},
     {{
       "criterion": "output_groundedness",
       "analysis": "The reference answer is short and grounded in the provided state without adding unsupported user facts.",
-      "pass": true
-    }}
-  ]
-}}
-
-[Example 2]
-[Example Input]
-state_key: "preferences_state:learning_modality"
-state_value: {{"statement": "prefers self-paced webinars"}}
-candidate_item: {{
-  "scenario": "A training-related workflow may run later.",
-  "task_instruction": "Fill the structured request payload for the next product step.",
-  "output_template": {{"request_profile": {{"preferred_format": "<fill>"}}}},
-  "reference_output": {{"request_profile": {{"preferred_format": "self-paced webinars"}}}}
-}}
-
-[Example Output]
-{{
-  "criteria": [
-    {{
-      "criterion": "answerability",
-      "analysis": "The item does not anchor a clear enough current workflow moment or specify which concrete step is being completed now.",
-      "pass": false
-    }},
-    {{
-      "criterion": "service_completion_quality",
-      "analysis": "It is still framed as completing one structured service object rather than answering a free-form recall question.",
-      "pass": true
-    }},
-    {{
-      "criterion": "full_field_dependency",
-      "analysis": "The only state field is still needed to fill the preferred format in the payload.",
-      "pass": true
-    }},
-    {{
-      "criterion": "low_leakage",
-      "analysis": "The scenario stays abstract and does not restate the user's actual learning preference.",
-      "pass": true
-    }},
-    {{
-      "criterion": "output_groundedness",
-      "analysis": "The structured output is task-appropriate and the filled value is grounded in the preference statement.",
       "pass": true
     }}
   ]
@@ -1791,142 +1928,149 @@ Output JSON ONLY:
             scenario=json.dumps(str(scenario or ""), ensure_ascii=False),
             task_instruction=json.dumps(str(task_instruction or ""), ensure_ascii=False),
             reference_answer=json.dumps(str(reference_answer or ""), ensure_ascii=False),
+            schedule_date_encoding_bullets=SCHEDULE_DATE_ENCODING_BULLETS,
         )
-    criteria_template = [
-        {
-            "criterion": "answerability",
-            "analysis": "<whether scenario plus task_instruction define one clear current-moment structured completion task that can be answered from the provided state>",
-            "pass": "<bool>",
-        },
-        {
-            "criterion": "service_completion_quality",
-            "analysis": "<whether the scenario and task instruction define a real structured service-completion task>",
-            "pass": "<bool>",
-        },
-        {
-            "criterion": "full_field_dependency",
-            "analysis": "<whether the item requires all non-derived fields in the provided state>",
-            "pass": "<bool>",
-        },
-        {
-            "criterion": "low_leakage",
-            "analysis": "<whether scenario and task_instruction avoid restating the key user-state facts that should come from state_value>",
-            "pass": "<bool>",
-        },
-        {
-            "criterion": "output_groundedness",
-            "analysis": "<whether each required part of reference_output is grounded by the relevant fields in the provided state and forms a task-appropriate service object>",
-            "pass": "<bool>",
-        },
-    ]
+    if normalized_family == "information_request_construction":
+        task_label = "preference-conditioned search-filter completion task"
+        service_definition = "The item should describe a realistic assistant-mediated service action that a user could naturally be doing now. It should not feel like a backend placeholder, arbitrary workflow, contrived form, or a task invented only to expose the state. For preferences, the browsing/search/filtering moment should feel natural for the user's option space."
+        output_definition = "`output_template` plus `reference_output` must define one task-appropriate search/filter object with one or two filled leaves grounded in `state_value`. Fail if the item merely copies the raw preference statement, mirrors the raw state schema, produces a final recommendation, invents unsupported content, has zero or more than two filled leaves, or lacks one `reference_anchors` object per filled output leaf. `reference_anchors` should identify the state basis and role (`core` or `detail`) for each filled output leaf."
+        answerability_fail = "Mark `answerability` as failed if the user browsing/search/comparison moment is vague, backend-like, underspecified, or unclear about which search/filter object should be completed now."
+        service_fail = "Mark `service_realism` as failed if the item feels like a backend placeholder, arbitrary workflow, contrived form, task invented only to expose the state, free-form recommendation, raw preference recall, or unexplained shortlist operation."
+        output_fail = "Mark `output_groundedness` as failed if the item simply copies the preference statement, mirrors the raw state schema, fails to produce a top-level search/filter object, writes a final recommendation, or invents unsupported preference content."
+        positive_example = """[Example]
+[Example Input]
+state_key: "preferences_state:learning_modality"
+state_value: {"statement": "Prefers in-depth, self-paced technical white papers and webinars over large live conferences"}
+candidate_item: {
+  "scenario": "The user is browsing professional-development resources in a learning portal. The assistant is setting search filters before showing matching options.",
+  "task_instruction": "Fill the search filters the assistant should apply now. Use the user's preference statement to set the filters, and do not write the final recommendation.",
+  "output_template": {"content_search_filters": {"resource_formats": "<fill>", "avoid_setting": "<fill>"}},
+  "reference_output": {"content_search_filters": {"resource_formats": "in-depth, self-paced technical white papers or webinars", "avoid_setting": "large live conferences"}},
+  "reference_anchors": [
+    {"target_path": "content_search_filters.resource_formats", "role": "core", "state_reference": "in-depth, self-paced technical white papers and webinars", "anchor_note": "field-local core preference used as the main format filter"},
+    {"target_path": "content_search_filters.avoid_setting", "role": "detail", "state_reference": "over large live conferences", "anchor_note": "grounded exclusion used as a service-useful detail filter"}
+  ]
+}
+
+[Example Output]
+{
+  "criteria": [
+    {"criterion": "answerability", "analysis": "The user browsing moment and the assistant's search-filter action are clear enough that one bounded object can be completed now.", "pass": true},
+    {"criterion": "service_realism", "analysis": "The item is framed as filling search filters rather than recommending content or recalling the preference.", "pass": true},
+    {"criterion": "full_field_dependency", "analysis": "Both filled leaves are necessary for the search-filter task, the core leaf captures the main preference, and the detail leaf adds a grounded exclusion.", "pass": true},
+    {"criterion": "low_leakage", "analysis": "The scenario describes the local product moment without restating the user's actual learning preferences.", "pass": true},
+    {"criterion": "output_groundedness", "analysis": "The structured output is a synthesized search-filter object rather than a raw state copy, and the filled value is grounded in the preference statement.", "pass": true}
+  ]
+}"""
+        negative_example = """[Bad Example]
+[Example Input]
+state_key: "preferences_state:coffee_shop_style"
+state_value: {"statement": "Prefers quiet neighborhood coffee shops with table seating over loud chain cafes"}
+candidate_item: {
+  "scenario": "The user prefers quiet neighborhood coffee shops over loud chain cafes, and a shortlist is being prepared.",
+  "task_instruction": "Fill the search filters the assistant should apply now. Use the user's preference statement to set the filters, and do not write the final recommendation.",
+  "output_template": {"filtering_params": {"preference_statement": "<fill>"}},
+  "reference_output": {"filtering_params": {"preference_statement": "Prefers quiet neighborhood coffee shops with table seating over loud chain cafes"}},
+  "reference_anchors": [{"target_path": "filtering_params.preference_statement", "role": "core", "state_reference": "full statement", "anchor_note": "copied raw statement"}]
+}
+
+[Example Output]
+{
+  "criteria": [
+    {"criterion": "answerability", "analysis": "The scenario mentions a shortlist, but it is less natural than a clear user browsing/search moment.", "pass": false},
+    {"criterion": "service_realism", "analysis": "The item is structured, but it collapses toward raw preference transfer rather than meaningful search-filter dimensions.", "pass": false},
+    {"criterion": "full_field_dependency", "analysis": "The output has one state-dependent leaf, but it is a raw statement copy rather than a meaningful service fill.", "pass": false},
+    {"criterion": "low_leakage", "analysis": "The scenario restates the user's actual coffee-shop preference.", "pass": false},
+    {"criterion": "output_groundedness", "analysis": "The object mirrors the raw state statement instead of forming a task-appropriate search-filter object.", "pass": false}
+  ]
+}"""
+    elif normalized_family == "action_configuration":
+        task_label = "attribute-conditioned action-configuration task"
+        service_definition = "The item should describe a realistic assistant-mediated service action that a user could naturally be doing now. It should not feel like a backend placeholder, arbitrary workflow, contrived form, or a task invented only to expose the state. For attributes, the setup/form/configuration moment should feel natural for the known attribute."
+        output_definition = "`output_template` plus `reference_output` must define one task-appropriate action-configuration object with one or two filled leaves grounded in `state_value`. Fail if the item merely copies raw attribute strings, mirrors the raw state schema, behaves like filtering/retrieval, invents unsupported content, has zero or more than two filled leaves, lacks one `reference_anchors` object per filled output leaf, or fills values that require an extra user choice not determined by state_value. `reference_anchors` should identify the state basis and role (`core` or `detail`) for each filled output leaf."
+        answerability_fail = "Mark `answerability` as failed if the user setup/form/configuration moment is vague, backend-like, underspecified, unclear about which configuration fields should be completed now, or depends on an extra user choice not determined by state_value."
+        service_fail = "Mark `service_realism` as failed if the item feels like a backend placeholder, arbitrary workflow, contrived form, task invented only to expose the state, free-form recommendation, raw attribute recall, or coordinator workflow."
+        output_fail = "Mark `output_groundedness` as failed if the item simply copies raw attribute strings, mirrors the raw state schema, fails to produce a top-level executable/configuration object, behaves like retrieval/filtering, invents unsupported attribute content, or makes the correct output depend on an extra user choice such as subset, quantity, recipient, priority, destination, or commitment."
+        positive_example = """[Example]
+[Example Input]
+state_key: "user_attributes_state:fitness_technology"
+state_value: ["Apple Watch Series 9 (Midnight aluminum, used for daily heart rate and step tracking)", "Oura Ring Gen3 (Stealth finish, primarily for sleep staging and recovery metrics)"]
+candidate_item: {
+  "scenario": "The user is setting up a wellness app. The assistant is filling the connected-device sync settings before health data syncing starts.",
+  "task_instruction": "Use the user's known attributes to fill the setup or form fields that should be applied now to complete the configuration.",
+  "output_template": {"wearable_sync_setup": {"connected_devices": "<fill>", "sync_metrics": "<fill>"}},
+  "reference_output": {"wearable_sync_setup": {"connected_devices": "Apple Watch Series 9; Oura Ring Gen3", "sync_metrics": "daily heart rate and step tracking; sleep staging and recovery metrics"}},
+  "reference_anchors": [
+    {"target_path": "wearable_sync_setup.connected_devices", "role": "core", "state_reference": "Apple Watch Series 9; Oura Ring Gen3", "anchor_note": "field-local core devices used for sync setup"},
+    {"target_path": "wearable_sync_setup.sync_metrics", "role": "detail", "state_reference": "daily heart rate and step tracking; sleep staging and recovery metrics", "anchor_note": "grounded metric details needed for the sync configuration"}
+  ]
+}
+
+[Example Output]
+{
+  "criteria": [
+    {"criterion": "answerability", "analysis": "The user setup moment and wearable-sync fields are clear enough that one bounded configuration can be completed now.", "pass": true},
+    {"criterion": "service_realism", "analysis": "The item is framed as completing an executable sync configuration rather than making a recommendation or recalling devices.", "pass": true},
+    {"criterion": "full_field_dependency", "analysis": "Both filled leaves are necessary for the sync setup, the core leaf captures the devices, and the detail leaf captures supported metrics.", "pass": true},
+    {"criterion": "low_leakage", "analysis": "The scenario describes the setup moment without naming the actual devices or metrics.", "pass": true},
+    {"criterion": "output_groundedness", "analysis": "The structured output converts the attribute value into an action-configuration field, and the filled value is grounded in state_value.", "pass": true}
+  ]
+}"""
+        negative_example = """[Bad Example]
+[Example Input]
+state_key: "user_attributes_state:family_sports_gear"
+state_value: "Set of 10 practice soccer balls and cones"
+candidate_item: {
+  "scenario": "The user is registering gear for a local youth league's equipment drive. The assistant is filling the donation details before the form is submitted.",
+  "task_instruction": "Use the user's known attributes to fill the setup or form fields that should be applied now to complete the configuration.",
+  "output_template": {"equipment_donation": {"quantity_to_donate": "<fill>", "items": ["<fill>", "<fill>"]}},
+  "reference_output": {"equipment_donation": {"quantity_to_donate": 10, "items": ["practice soccer balls", "cones"]}},
+  "reference_anchors": [{"target_path": "equipment_donation.quantity_to_donate", "role": "core", "state_reference": "Set of 10 practice soccer balls and cones", "anchor_note": "incorrectly treats available quantity as donation intent"}]
+}
+
+[Example Output]
+{
+  "criteria": [
+    {"criterion": "answerability", "analysis": "The donation form requires choosing what quantity or subset to donate, which is not determined by the state.", "pass": false},
+    {"criterion": "service_realism", "analysis": "The item asks the assistant to fill donation choices rather than only auto-fill known setup/profile fields.", "pass": false},
+    {"criterion": "full_field_dependency", "analysis": "The output has three filled leaves and includes a donation quantity that requires an extra user choice.", "pass": false},
+    {"criterion": "low_leakage", "analysis": "The scenario does not restate the exact gear details.", "pass": true},
+    {"criterion": "output_groundedness", "analysis": "The state says what gear exists, but not that all 10 balls and cones should be donated.", "pass": false}
+  ]
+}"""
+    else:
+        raise ValueError(f"Unsupported Task C v2 service_family: {normalized_family}")
+
     return """[Task Instruction]
-Validate whether this item is a strong structured completion task.
+Validate whether this item is a strong {task_label}.
 Judge it using the five required criteria and give one short analysis for each.
 Do not output an overall verdict; only return the per-criterion judgments.
 
 [Definitions]
-- answerability: `scenario` plus `task_instruction` must define one clear structured completion task for the current moment. Judge this by checking whether the current product moment is clear enough and whether the assistant can tell what object should be completed now.
-- service_completion_quality: the item must define a real structured service-completion task, not a free-form recall question or a raw state dump. Judge this by checking whether the task really asks for a service object to be completed.
-- full_field_dependency: the item must require all non-derived fields in `state_value`; dropping any required field path should make the service object incomplete or materially worse. Judge this by checking which field paths in `state_value` are actually needed by the ideal `reference_output`.
+- answerability: `scenario` plus `task_instruction` must define one clear structured completion task for the current moment. Judge this by checking whether the current user product/service moment is clear and whether the assistant can tell what object should be completed now.
+- service_realism: {service_definition}
+- full_field_dependency: the item should have one or two filled `reference_output` leaves. Every filled leaf should be necessary for the service task and dependent on `state_value`, not answerable from the scenario alone. At least one filled leaf should be a field-local `core` leaf; a `detail` leaf is valid only when it adds grounded service-relevant precision.
 - low_leakage: `scenario` and `task_instruction` should describe only the local product/service situation and current completion task; they must not restate or strongly imply the key user-state facts that should come from `state_value`. Judge this by comparing `scenario` and `task_instruction` against the field paths in `state_value`.
-- output_groundedness: `output_template` plus `reference_output` must define one task-appropriate structured service object grounded in `state_value`. Judge this by checking which required parts of `reference_output` are supported by which state fields, and fail if the item merely copies the raw state schema or invents unsupported content.
+- output_groundedness: {output_definition}
+{schedule_date_encoding_bullets}
 
 [Constraints]
-1. Evaluate exactly the five required criteria in this fixed order: answerability, service_completion_quality, full_field_dependency, low_leakage, output_groundedness.
+1. Evaluate exactly the five required criteria in this fixed order: answerability, service_realism, full_field_dependency, low_leakage, output_groundedness.
 2. Output exactly one object for each required criterion.
 3. Use the criterion names exactly as given; do not rename, reorder, omit, or add criteria.
 4. Set `pass` to true only when the criterion is clearly satisfied.
 5. Keep each `analysis` concise but specific.
-6. Mark `answerability` as failed if the current-moment task is vague, underspecified, or unclear about what structured object should be completed now.
-7. Mark `service_completion_quality` as failed if the item mainly behaves like a free-form QA question rather than a structured completion task.
-8. Mark `full_field_dependency` as failed if some required part of `state_value` is unused, optionalized, or collapsed away.
-9. Mark `low_leakage` as failed if `scenario` or `task_instruction` restates or paraphrases the key preference or attribute facts that should come from `state_value`.
-10. Mark `output_groundedness` as failed if the item simply mirrors the raw state schema, fails to produce a top-level service object, or invents unsupported state content in `reference_output`.
-11. Output JSON ONLY with no markdown and no extra keys.
+6. {answerability_fail}
+7. {service_fail}
+8. Mark `full_field_dependency` as failed if `reference_output` has zero or more than two filled leaves, lacks a field-local core leaf, has missing or extra anchors for its filled leaves, or includes any filled leaf that is optional, scenario-only, unsupported, or not tied to `state_value`.
+9. Mark `low_leakage` as failed if `scenario` or `task_instruction` restates or paraphrases the key user-state facts that should come from `state_value`.
+10. If state_value contains schedule-like weekday/month fields, apply the schedule date encodings when checking answerability and output groundedness.
+11. {output_fail}
+12. Output JSON ONLY with no markdown and no extra keys.
 
-[Example]
-[Example Input]
-state_key: "preferences_state:learning_modality"
-state_value: {{"statement": "Prefers in-depth, self-paced technical white papers and webinars over large live conferences"}}
-candidate_item: {{
-  "scenario": "The user is reviewing learning options for the next professional-development block. A shortlist is being prepared before results are shown.",
-  "task_instruction": "Fill the structured request payload before the search is sent.",
-  "output_template": {{"content_acquisition_filters": {{"preferred_modalities": ["<fill>", "<fill>"], "content_characteristics": ["<fill>", "<fill>", "<fill>"], "deprioritized_formats": ["<fill>"]}}}},
-  "reference_output": {{"content_acquisition_filters": {{"preferred_modalities": ["technical white papers", "webinars"], "content_characteristics": ["in-depth", "self-paced", "technical"], "deprioritized_formats": ["large live conferences"]}}}}
-}}
+{positive_example}
 
-[Example Output]
-{{
-  "criteria": [
-    {{
-      "criterion": "answerability",
-      "analysis": "The current workflow moment and the structured filtering step are clear enough that one bounded payload can be completed now.",
-      "pass": true
-    }},
-    {{
-      "criterion": "service_completion_quality",
-      "analysis": "The item is framed as completing one structured filtering object rather than answering a free-form recall question.",
-      "pass": true
-    }},
-    {{
-      "criterion": "full_field_dependency",
-      "analysis": "The preference statement is needed to derive the preferred modalities, desired content characteristics, and deprioritized formats.",
-      "pass": true
-    }},
-    {{
-      "criterion": "low_leakage",
-      "analysis": "The scenario describes the local product moment without restating the user's actual learning preferences.",
-      "pass": true
-    }},
-    {{
-      "criterion": "output_groundedness",
-      "analysis": "The structured output is a synthesized filtering object rather than a raw state copy, and each filled value is grounded in the preference statement.",
-      "pass": true
-    }}
-  ]
-}}
-
-[Example 2]
-[Example Input]
-state_key: "preferences_state:learning_modality"
-state_value: {{"statement": "prefers self-paced webinars"}}
-candidate_item: {{
-  "scenario": "A training-related workflow may run later.",
-  "task_instruction": "Fill the structured request payload for the next product step.",
-  "output_template": {{"request_profile": {{"preferred_format": "<fill>"}}}},
-  "reference_output": {{"request_profile": {{"preferred_format": "self-paced webinars"}}}}
-}}
-
-[Example Output]
-{{
-  "criteria": [
-    {{
-      "criterion": "answerability",
-      "analysis": "The item does not anchor a clear enough current workflow moment or specify which concrete step is being completed now.",
-      "pass": false
-    }},
-    {{
-      "criterion": "service_completion_quality",
-      "analysis": "It is still framed as completing one structured service object rather than answering a free-form recall question.",
-      "pass": true
-    }},
-    {{
-      "criterion": "full_field_dependency",
-      "analysis": "The only state field is still needed to fill the preferred format in the payload.",
-      "pass": true
-    }},
-    {{
-      "criterion": "low_leakage",
-      "analysis": "The scenario stays abstract and does not restate the user's actual learning preference.",
-      "pass": true
-    }},
-    {{
-      "criterion": "output_groundedness",
-      "analysis": "The structured output is task-appropriate and the filled value is grounded in the preference statement.",
-      "pass": true
-    }}
-  ]
-}}
+{negative_example}
 
 Input Payload:
 - state_key: {state_key}
@@ -1935,7 +2079,8 @@ Input Payload:
     "scenario": {scenario},
     "task_instruction": {task_instruction},
     "output_template": {output_template},
-    "reference_output": {reference_output}
+    "reference_output": {reference_output},
+    "reference_anchors": {reference_anchors}
   }}
 
 Output JSON ONLY:
@@ -1949,12 +2094,22 @@ Output JSON ONLY:
   ]
 }}
 """.format(
+        task_label=task_label,
+        service_definition=service_definition,
+        output_definition=output_definition,
+        answerability_fail=answerability_fail,
+        service_fail=service_fail,
+        output_fail=output_fail,
+        positive_example=positive_example,
+        negative_example=negative_example,
+        schedule_date_encoding_bullets=SCHEDULE_DATE_ENCODING_BULLETS,
         state_key=json.dumps(str(state_key or ""), ensure_ascii=False),
         state_value=json.dumps(state_value, ensure_ascii=False, indent=2),
         scenario=json.dumps(str(scenario or ""), ensure_ascii=False),
         task_instruction=json.dumps(str(task_instruction or ""), ensure_ascii=False),
         output_template=json.dumps(output_template, ensure_ascii=False, indent=2),
         reference_output=json.dumps(reference_output, ensure_ascii=False, indent=2),
+        reference_anchors=json.dumps(reference_anchors if reference_anchors is not None else [], ensure_ascii=False, indent=2),
     )
 
 
@@ -1973,7 +2128,7 @@ def build_state_questionability_validation_prompt(
     output_template = {
         "field_verdicts": {
             path: {
-                "reason_analysis": "<why this exact field value is or is not inferable from evidence>",
+                "reason_analysis": "<why this field's semantic value is or is not inferable from evidence>",
                 "is_valid": "<bool>",
             }
             for path in normalized_fields
@@ -1982,7 +2137,7 @@ def build_state_questionability_validation_prompt(
     return """[Task Instruction]
 Validate whether this state is inferable from evidence.
 Evaluate field-level inferability.
-Success means each candidate field is marked valid only when the target value for that field is supported by evidence.
+Success means each candidate field is marked valid when the semantic value represented by that field is supported by evidence.
 
 [Definitions]
 - state_key: the state item being validated.
@@ -1990,15 +2145,26 @@ Success means each candidate field is marked valid only when the target value fo
 - candidate_field_paths: field paths to evaluate for inferability. The target value for each path is found inside state_value.
 - evidence_logs: related app logs up to checkpoint time; these are the primary evidence.
 - field_verdicts: an object keyed exactly by candidate field path. Each value is one field-level decision with `{{reason_analysis, is_valid}}`.
+- semantic alignment: the evidence supports the same user-specific meaning as the candidate field value. Exact wording, exact labels, or verbatim phrasing are not required.
+- structured field: a schedule, date, time, numeric, enum-like, object, or list field. Validate the normalized meaning of the value, not the literal surface form. For example, evidence saying "every Sunday at 9 AM" semantically supports `days_of_week=[6]` and `start_time="09:00"`.
+- statement/text field: a preference, attribute, or other natural-language field. Validate whether the core user-specific claims, comparisons, and important qualifiers are explicitly supported or implicitly supported by the evidence. Do not require the target statement to appear verbatim.
+- implicit behavioral support: evidence can support a state through the user's behavior, choices, repeated use, complex operations, professional context, or demonstrated expertise even when the user never states the state directly. For example, updating a Microsoft Project timeline, adjusting resource leveling, and revising a critical path can implicitly support advanced Microsoft Project skill for timeline/resource management.
+- unsupported central qualifier: a meaning-changing detail in the target value that the evidence does not explicitly or implicitly support, such as ownership, primary/main status, exact purpose/use, or a comparative preference.
+{schedule_date_encoding_bullets}
 
 [Constraints]
 1. Evaluate each path in `candidate_field_paths` independently.
 2. Output exactly one `field_verdicts` entry per candidate field path.
 3. Use exactly the field keys shown in the output template; do not add, remove, or rename field keys.
 4. For each candidate field, compare the target value in `state_value` against the evidence logs.
-5. Set `is_valid=true` only if evidence logs support inferring that exact field value with high confidence.
-6. If evidence is missing, ambiguous, contradicted, or supports only a weaker/generalized value, set `is_valid=false` and explain why in `reason_analysis`.
-7. Output JSON ONLY with no markdown and no extra keys.
+5. Set `is_valid=true` when evidence logs explicitly or implicitly support the semantic value of the candidate field.
+6. Do not require exact wording, exact labels, repeated evidence, or verbatim target phrasing when one or more clear evidence logs support the field's core user-specific meaning.
+7. For structured schedule/date/time/list fields, validate semantic equivalence after interpreting date encodings and normalized forms. Do not fail merely because evidence uses natural language, calendar words, or paraphrased item names.
+8. For statement/text fields, allow reasonable summarization and general wording when the core personalized claims are supported explicitly or implicitly.
+9. For skill, expertise, preference, or stable-attribute claims, treat demonstrated complex behavior or repeated choices as valid implicit support when the behavior would be unlikely without that state.
+10. Fail only when an unsupported central qualifier, comparison, scope, or concrete detail materially changes the field meaning. Weak signals such as viewing a feed item, receiving a newsletter, or a single generic search do not by themselves establish ownership, membership, primary/main status, or strong preference.
+11. If evidence is missing, ambiguous, contradicted, or supports only a materially weaker/different claim, set `is_valid=false` and explain the gap in `reason_analysis`.
+12. Output JSON ONLY with no markdown and no extra keys.
 
 [Example]
 [Example Input]
@@ -2025,16 +2191,68 @@ evidence_logs: [
 {{
   "field_verdicts": {{
     "schedule.days_of_week": {{
-      "reason_analysis": "The evidence explicitly says the budget review reminder is recurring on Sunday, matching days_of_week=[6].",
+      "reason_analysis": "The evidence says the budget review reminder is recurring on Sunday, which semantically matches days_of_week=[6] under the weekday encoding.",
       "is_valid": true
     }},
     "timing.start_time": {{
-      "reason_analysis": "The evidence explicitly gives the reminder time as 09:00, matching the target start_time.",
+      "reason_analysis": "The evidence gives the reminder time as 09:00, matching the semantic time value of start_time.",
       "is_valid": true
     }},
     "timing.end_time": {{
       "reason_analysis": "The evidence does not provide a duration or explicit end time, so 10:00 is not supported.",
       "is_valid": false
+    }}
+  }}
+}}
+
+[Example 2]
+[Example Input]
+state_key: "preferences_state:community_involvement_type"
+state_value: {{
+  "statement": "Prefers outcome-oriented civic activities like infrastructure projects over social-only community mixers"
+}}
+candidate_field_paths: ["statement"]
+evidence_logs: [
+  {{
+    "app_log_id": "log_0201",
+    "api_name": "ReplyEmail",
+    "request": {{
+      "body": "I'm going to pass on the social-only neighborhood mixer. I am very interested in contributing to the drainage and sidewalk infrastructure improvement committee, and I prefer to focus my volunteer time where I can provide technical value to the community."
+    }}
+  }}
+]
+
+[Example Output]
+{{
+  "field_verdicts": {{
+    "statement": {{
+      "reason_analysis": "The evidence does not use the exact target wording, but it clearly supports the core preference: practical infrastructure-oriented community work over a social-only mixer.",
+      "is_valid": true
+    }}
+  }}
+}}
+
+[Example 3]
+[Example Input]
+state_key: "user_attributes_state:industry_software_skills"
+state_value: "Microsoft Project (advanced level for timeline and resource management)"
+candidate_field_paths: ["current_value"]
+evidence_logs: [
+  {{
+    "app_log_id": "log_0301",
+    "api_name": "ReplyEmail",
+    "request": {{
+      "body": "I've updated the Microsoft Project timeline for the 2024 spring bridge coating cycle, adjusted the resource leveling for the Monongahela and Liberty Bridge phases, and revised the critical path to account for crew availability."
+    }}
+  }}
+]
+
+[Example Output]
+{{
+  "field_verdicts": {{
+    "current_value": {{
+      "reason_analysis": "The evidence does not say 'advanced level' verbatim, but the user performs complex Microsoft Project operations including timeline updates, resource leveling, and critical-path revision, which implicitly supports advanced use for timeline and resource management.",
+      "is_valid": true
     }}
   }}
 }}
@@ -2055,6 +2273,7 @@ evidence_logs: [
         askable_fields=json.dumps(normalized_fields, ensure_ascii=False),
         evidence_logs=json.dumps(list(evidence_logs or []), ensure_ascii=False),
         output_template=json.dumps(output_template, ensure_ascii=False, indent=2),
+        schedule_date_encoding_bullets=SCHEDULE_DATE_ENCODING_BULLETS,
     )
 
 
@@ -2229,13 +2448,49 @@ def build_task_c_v2_rewrite_prompt(
     task_instruction: str,
     output_template: Any,
     reference_output: Any,
+    reference_anchors: Any = None,
     failed_rules: List[str],
     semantic_criteria: List[Dict[str, Any]],
     reference_answer: str = "",
 ) -> str:
     normalized_family = str(service_family or "").strip()
+    criterion_names = {
+        "answerability",
+        "service_realism",
+        "full_field_dependency",
+        "low_leakage",
+        "output_groundedness",
+    }
+    structural_issue_labels = {
+        "llm_invalid": "The validator response was malformed or incomplete; rewrite conservatively using all available feedback.",
+        "missing_scenario": "The item is missing a usable scenario.",
+        "missing_task_instruction": "The item is missing a usable task instruction.",
+        "missing_reference_answer": "The item is missing a usable reference answer.",
+        "missing_output_template": "The item is missing a usable output template.",
+        "missing_reference_output": "The item is missing a usable reference output.",
+        "output_template_mismatch": "The output template and reference output do not have matching shapes.",
+        "not_structured_service_object": "The structured fields are not valid top-level service objects.",
+        "raw_state_mirror": "The structured output mirrors the raw state too directly.",
+    }
+    cleaned_failed_rules: List[str] = []
+    structural_issues: List[str] = []
+    for raw_rule in list(failed_rules or []):
+        rule = str(raw_rule or "").strip()
+        if not rule:
+            continue
+        if rule in criterion_names:
+            if rule not in cleaned_failed_rules:
+                cleaned_failed_rules.append(rule)
+            continue
+        issue = structural_issue_labels.get(
+            rule,
+            "The builder reported an additional structural issue with the item.",
+        )
+        if issue not in structural_issues:
+            structural_issues.append(issue)
     validation_feedback = {
-        "failed_rules": list(failed_rules or []),
+        "failed_rules": cleaned_failed_rules,
+        "structural_issues": structural_issues,
         "criteria": list(semantic_criteria or []),
     }
     if normalized_family == "user_communication":
@@ -2245,20 +2500,22 @@ Return a JSON delta patch over mutable fields only.
 
 [Definitions]
 - validation_feedback: validator feedback containing `failed_rules` and per-criterion `criteria`.
-- failed_rules: the names of the checks that failed and must be fixed.
+- failed_rules: the names of semantic checks that failed and must be fixed.
+- structural_issues: natural-language descriptions of malformed or missing item fields that must also be repaired.
 - criteria: feedback for each criterion explaining what passed, what failed, and why.
 - answerability: `scenario` plus the fixed `task_instruction` define one clear current-moment communication task.
-- service_completion_quality: the item asks for one concrete assistant communication rather than a recall question, a raw state restatement, or a generic check-in.
+- service_realism: the item describes a realistic assistant-mediated service action that a user could naturally be doing now. It should not feel like a backend placeholder, arbitrary workflow, contrived form, or a task invented only to expose the state.
 - full_field_dependency: a good answer depends on all important non-derived field paths in `state_value`.
-- low leakage: `scenario` does not restate, paraphrase, or strongly imply the habit facts that should come from `state_value`.
+- low leakage: `scenario` does not restate, paraphrase, or strongly imply personalized habit facts that should come from `state_value`. Current weekday/date/time are allowed as world-background anchors.
 - output_groundedness: a short natural-language assistant response whose key personalized content is supported by `state_value`.
+{schedule_date_encoding_bullets}
 
 [Repair Instructions]
-- If `answerability` failed: rewrite `scenario` so the current moment is clear enough and it is clear what communication should be sent now.
-- If `service_completion_quality` failed: rewrite the item so it asks for one concrete assistant communication rather than a recall question, raw state restatement, or generic check-in.
+- If `answerability` failed: rewrite `scenario` so the current moment is clear enough and it is clear what communication should be sent now. For day/date-specific routines, add the current weekday or calendar anchor plus current clock time, using the schedule date encodings.
+- If `service_realism` failed: rewrite the item so it becomes a realistic assistant-mediated service action that would feel natural now, not a backend placeholder, arbitrary workflow, contrived form, or task invented only to expose the state.
 - If `full_field_dependency` failed: rewrite `scenario` and/or `reference_answer` so a good answer depends on all important state fields.
-- If `low_leakage` failed: remove any restatement of the habit action, cadence, scheduled day, timing, location, or priority from `scenario`.
-- If `output_groundedness` failed: rewrite `reference_answer` so its personalized content is grounded in `state_value` without adding unsupported user-specific facts.
+- If `low_leakage` failed: remove habit identity/action, cadence, stored start/end time, location, modality, or priority from `scenario`; keep current weekday/date/time when they are only world-background anchors.
+- If `output_groundedness` failed: rewrite `reference_answer` so its personalized content is grounded in `state_value` without adding unsupported user-specific facts, and fix any weekday/date claim that conflicts with encoded schedule fields.
 
 [Constraints]
 1. Rewrite only the mutable item fields:
@@ -2266,7 +2523,7 @@ Return a JSON delta patch over mutable fields only.
    - `reference_answer`
 2. Keep the item in natural-language assistant-response form; do not rewrite it into a structured payload.
 3. Fix every failed rule and every failed semantic criterion.
-4. Apply the repair instruction for each failed rule shown in validation_feedback.
+4. Apply the repair instruction for each failed rule shown in validation_feedback, and repair every listed structural issue.
 5. Include only the fields you actually changed; omit unchanged fields.
 6. Do not add any keys other than:
    - `scenario`
@@ -2276,7 +2533,7 @@ Return a JSON delta patch over mutable fields only.
 [Example]
 [Example Input]
 state_key: "habits_state:family_dinner"
-state_value: {{"schedule": {{"days_of_week": [0]}}, "timing": {{"start_time": "17:30"}}}}
+state_value: {{"schedule": {{"days_of_week": [6]}}, "timing": {{"start_time": "17:30"}}}}
 invalid_item: {{
   "scenario": "It is 16:45. This is the user's Sunday family dinner, and nothing has been prepared yet.",
   "task_instruction": "Write the short reminder message the assistant should send right now.",
@@ -2284,9 +2541,10 @@ invalid_item: {{
 }}
 validation_feedback: {{
   "failed_rules": ["answerability", "low_leakage"],
+  "structural_issues": [],
   "criteria": [
     {{"criterion": "answerability", "analysis": "The item never makes clear what should be sent right now.", "pass": false}},
-    {{"criterion": "service_completion_quality", "analysis": "The item asks for one communication action.", "pass": true}},
+    {{"criterion": "service_realism", "analysis": "The item asks for one communication action.", "pass": true}},
     {{"criterion": "full_field_dependency", "analysis": "The state fields are mostly used.", "pass": true}},
     {{"criterion": "low_leakage", "analysis": "The scenario repeats that this is the user's Sunday family dinner.", "pass": false}},
     {{"criterion": "output_groundedness", "analysis": "The answer stays grounded once the setup is clarified.", "pass": true}}
@@ -2295,7 +2553,7 @@ validation_feedback: {{
 
 [Example Output]
 {{
-  "scenario": "It is 16:45. Everyone is home, and nothing has been prepared yet."
+  "scenario": "It is Sunday at 16:45. Everyone is home, and nothing has been prepared yet."
 }}
 
 Input Payload:
@@ -2319,69 +2577,129 @@ Output JSON ONLY:
             task_instruction=json.dumps(str(task_instruction or ""), ensure_ascii=False),
             reference_answer=json.dumps(str(reference_answer or ""), ensure_ascii=False),
             validation_feedback=json.dumps(validation_feedback, ensure_ascii=False, indent=2),
+            schedule_date_encoding_bullets=SCHEDULE_DATE_ENCODING_BULLETS,
         )
+    if normalized_family == "information_request_construction":
+        task_label = "preference-conditioned search-filter completion item"
+        completion_definition = "the item describes a realistic assistant-mediated service action that a user could naturally be doing now. It should not feel like a backend placeholder, arbitrary workflow, contrived form, or a task invented only to expose the state."
+        service_repair = "rewrite `scenario`, `output_template`, and/or `reference_output` so the search/filter task feels like a natural user browsing, search, comparison, or planning moment."
+        field_repair = "rewrite the search/filter object so it has one or two state-dependent fill leaves. At least one fill leaf must be the field-local core fill for the preference task; a second detail fill is allowed only when grounded and service-useful."
+        leakage_repair = "remove any restatement of key preference facts from `scenario`."
+        groundedness_repair = "repair `output_template`, `reference_output`, and `reference_anchors` so they form a synthesized search/filter object rather than a raw preference copy, with every output value grounded in `state_value`, exactly one anchor per fill leaf, and anchor roles set to `core` or `detail`."
+        object_constraint = "`output_template` and `reference_output` must remain top-level search/filter objects, not final recommendations, ranked lists, backend payloads, or raw preference mirrors."
+        example = """[Example]
+[Example Input]
+state_key: "preferences_state:learning_modality"
+state_value: {"statement": "prefers self-paced webinars"}
+invalid_item: {
+  "scenario": "A training-resource search request is about to run.",
+  "task_instruction": "Fill the search filters the assistant should apply now. Use the user's preference statement to set the filters, and do not write the final recommendation.",
+  "output_template": {"request_profile": {"preference_statement": "<fill>"}},
+  "reference_output": {"request_profile": {"preference_statement": "prefers self-paced webinars"}},
+  "reference_anchors": [{"target_path": "request_profile.preference_statement", "role": "core", "state_reference": "prefers self-paced webinars", "anchor_note": "raw statement copy"}]
+}
+validation_feedback: {
+  "failed_rules": ["answerability", "output_groundedness"],
+  "structural_issues": [],
+  "criteria": [
+    {"criterion": "answerability", "analysis": "The item does not make clear what search/filter object should be completed now.", "pass": false},
+    {"criterion": "service_realism", "analysis": "The item is structured, but it collapses toward raw preference transfer.", "pass": false},
+    {"criterion": "full_field_dependency", "analysis": "The only state field is required.", "pass": true},
+    {"criterion": "low_leakage", "analysis": "The scenario does not restate the preference.", "pass": true},
+    {"criterion": "output_groundedness", "analysis": "The current object still behaves too much like a raw state copy.", "pass": false}
+  ]
+}
+
+[Example Output]
+{
+  "scenario": "The user is browsing training resources for an upcoming professional-development block. The assistant is setting search filters before showing matching options.",
+  "output_template": {"content_search_filters": {"preferred_format": "<fill>"}},
+  "reference_output": {"content_search_filters": {"preferred_format": "self-paced webinars"}},
+  "reference_anchors": [{"target_path": "content_search_filters.preferred_format", "role": "core", "state_reference": "prefers self-paced webinars", "anchor_note": "field-local core training format"}]
+}"""
+    elif normalized_family == "action_configuration":
+        task_label = "attribute-conditioned action-configuration item"
+        completion_definition = "the item describes a realistic assistant-mediated service action that a user could naturally be doing now. It should not feel like a backend placeholder, arbitrary workflow, contrived form, or a task invented only to expose the state."
+        service_repair = "rewrite `scenario`, `output_template`, and/or `reference_output` so the setup/form/configuration task feels like a natural user product moment."
+        field_repair = "rewrite the action object so it has one or two state-dependent fill leaves. At least one fill leaf must be the field-local core fill for the attribute task; a second detail fill is allowed only when grounded, service-useful, and not dependent on an extra user choice."
+        leakage_repair = "remove any restatement of key attribute facts from `scenario`."
+        groundedness_repair = "repair `output_template`, `reference_output`, and `reference_anchors` so they form an execution-ready configuration object rather than a raw attribute copy, with every output value grounded in `state_value`, exactly one anchor per fill leaf, anchor roles set to `core` or `detail`, and no extra user choice."
+        object_constraint = "`output_template` and `reference_output` must remain top-level setup/form/configuration objects, not filtering requests, recommendations, backend dispatches, or raw attribute mirrors."
+        example = """[Example]
+[Example Input]
+state_key: "user_attributes_state:family_sports_gear"
+state_value: "Set of 10 practice soccer balls and cones"
+invalid_item: {
+  "scenario": "The user is registering gear for a local youth league's equipment drive. The assistant is filling the donation details before the form is submitted.",
+  "task_instruction": "Use the user's known attributes to fill the setup or form fields that should be applied now to complete the configuration.",
+  "output_template": {"equipment_donation": {"quantity_to_donate": "<fill>", "items": ["<fill>", "<fill>"]}},
+  "reference_output": {"equipment_donation": {"quantity_to_donate": 10, "items": ["practice soccer balls", "cones"]}},
+  "reference_anchors": [{"target_path": "equipment_donation.quantity_to_donate", "role": "core", "state_reference": "Set of 10 practice soccer balls and cones", "anchor_note": "incorrectly treats owned quantity as donation quantity"}]
+}
+validation_feedback: {
+  "failed_rules": ["answerability", "output_groundedness"],
+  "structural_issues": [],
+  "criteria": [
+    {"criterion": "answerability", "analysis": "The donation form requires choosing what quantity or subset to donate, which is not determined by the state.", "pass": false},
+    {"criterion": "service_realism", "analysis": "A deterministic inventory/profile setup would be a better action-configuration task.", "pass": false},
+    {"criterion": "full_field_dependency", "analysis": "The gear details are relevant, but the donation quantity is an extra choice.", "pass": false},
+    {"criterion": "low_leakage", "analysis": "The scenario does not restate the exact gear details.", "pass": true},
+    {"criterion": "output_groundedness", "analysis": "The state says what gear exists, but not what should be donated.", "pass": false}
+  ]
+}
+
+[Example Output]
+{
+  "scenario": "The user is setting up a family sports equipment inventory. The assistant is filling the gear details before the equipment profile is saved.",
+  "output_template": {"sports_equipment_profile": {"equipment_inventory": "<fill>"}},
+  "reference_output": {"sports_equipment_profile": {"equipment_inventory": "set of 10 practice soccer balls and cones"}},
+  "reference_anchors": [{"target_path": "sports_equipment_profile.equipment_inventory", "role": "core", "state_reference": "Set of 10 practice soccer balls and cones", "anchor_note": "field-local core inventory configuration"}]
+}"""
+    else:
+        raise ValueError(f"Unsupported Task C v2 service_family: {normalized_family}")
+
     return """[Task Instruction]
-Rewrite the invalid item using the validation_feedback.
+Rewrite the invalid {task_label} using the validation_feedback.
 Return a JSON delta patch over mutable fields only.
 
 [Definitions]
 - validation_feedback: validator feedback containing `failed_rules` and per-criterion `criteria`.
-- failed_rules: the names of the checks that failed and must be fixed.
+- failed_rules: the names of semantic checks that failed and must be fixed.
+- structural_issues: natural-language descriptions of malformed or missing item fields that must also be repaired.
 - criteria: feedback for each criterion explaining what passed, what failed, and why.
 - answerability: `scenario` plus the fixed `task_instruction` define one clear current-moment structured completion task.
-- service_completion_quality: the item defines a real structured service-completion task rather than a free-form QA question or raw state dump.
-- full_field_dependency: every required non-derived field path in `state_value` is needed by the ideal structured completion.
+- service_realism: {completion_definition}
+- full_field_dependency: the structured completion has one or two state-dependent fill leaves. Every fill leaf is necessary for the service task and grounded in `state_value`; at least one fill leaf is the field-local core fill, and any detail fill adds grounded service-relevant precision.
 - low leakage: `scenario` does not restate, paraphrase, or strongly imply the user-state facts that should come from `state_value`.
 - output_groundedness: `output_template` plus `reference_output` define a task-appropriate service object grounded in `state_value`.
+{schedule_date_encoding_bullets}
 
 [Repair Instructions]
-- If `answerability` failed: rewrite `scenario` so it is clear what structured object should be completed now.
-- If `service_completion_quality` failed: rewrite `scenario`, `output_template`, and/or `reference_output` so the item becomes a real structured service-completion task.
-- If `full_field_dependency` failed: rewrite the service object so every required part of `state_value` is needed by the ideal structured completion.
-- If `low_leakage` failed: remove any restatement of key preference or attribute facts from `scenario`.
-- If `output_groundedness` failed: repair `output_template` and `reference_output` so they form a task-appropriate service object rather than a raw state copy, with every required output value grounded in `state_value`.
+- If `answerability` failed: rewrite `scenario` so it is clear what structured object should be completed now; if state_value contains schedule-like weekday/month fields, use the schedule date encodings.
+- If `service_realism` failed: {service_repair}
+- If `full_field_dependency` failed: {field_repair}
+- If `low_leakage` failed: {leakage_repair}
+- If `output_groundedness` failed: {groundedness_repair}
+- If the item depends on an extra user choice, rewrite it as a deterministic auto-fill task using neutral setup, profile, inventory, connection, or form fields.
 
 [Constraints]
 1. Rewrite only the mutable item fields:
    - `scenario`
    - `output_template`
    - `reference_output`
-2. `output_template` and `reference_output` must remain top-level structured service objects appropriate for this task type.
+   - `reference_anchors`
+2. {object_constraint}
 3. Fix every failed rule and every failed semantic criterion.
-4. Apply the repair instruction for each failed rule shown in validation_feedback.
+4. Apply the repair instruction for each failed rule shown in validation_feedback, and repair every listed structural issue.
 5. Include only the fields you actually changed; omit unchanged fields.
 6. Do not add any keys other than:
    - `scenario`
    - `output_template`
    - `reference_output`
+   - `reference_anchors`
 7. Return JSON only.
 
-[Example]
-[Example Input]
-state_key: "preferences_state:learning_modality"
-state_value: {{"statement": "prefers self-paced webinars"}}
-invalid_item: {{
-  "scenario": "A training-resource search request is about to run.",
-  "task_instruction": "Fill the structured request payload before the search is sent.",
-  "output_template": {{"request_profile": {{"preference_statement": "<fill>"}}}},
-  "reference_output": {{"request_profile": {{"preference_statement": "prefers self-paced webinars"}}}}
-}}
-validation_feedback: {{
-  "failed_rules": ["answerability", "output_groundedness"],
-  "criteria": [
-    {{"criterion": "answerability", "analysis": "The item does not make clear what payload should be completed now.", "pass": false}},
-    {{"criterion": "service_completion_quality", "analysis": "The item is already framed as a structured completion task.", "pass": true}},
-    {{"criterion": "full_field_dependency", "analysis": "The only state field is required.", "pass": true}},
-    {{"criterion": "low_leakage", "analysis": "The scenario does not restate the preference.", "pass": true}},
-    {{"criterion": "output_groundedness", "analysis": "The current payload still behaves too much like a raw state copy.", "pass": false}}
-  ]
-}}
-
-[Example Output]
-{{
-  "output_template": {{"request_profile": {{"preferred_format": "<fill>"}}}},
-  "reference_output": {{"request_profile": {{"preferred_format": "self-paced webinars"}}}}
-}}
+{example}
 
 Input Payload:
 - state_key: {state_key}
@@ -2390,7 +2708,8 @@ Input Payload:
     "scenario": {scenario},
     "task_instruction": {task_instruction},
     "output_template": {output_template},
-    "reference_output": {reference_output}
+    "reference_output": {reference_output},
+    "reference_anchors": {reference_anchors}
   }}
 - validation_feedback: {validation_feedback}
 
@@ -2399,12 +2718,22 @@ Output JSON ONLY:
   "<changed_mutable_field>": "..."
 }}
     """.format(
+        task_label=task_label,
+        completion_definition=completion_definition,
+        service_repair=service_repair,
+        field_repair=field_repair,
+        leakage_repair=leakage_repair,
+        groundedness_repair=groundedness_repair,
+        object_constraint=object_constraint,
+        example=example,
+        schedule_date_encoding_bullets=SCHEDULE_DATE_ENCODING_BULLETS,
         state_key=json.dumps(str(state_key or ""), ensure_ascii=False),
         state_value=json.dumps(state_value, ensure_ascii=False, indent=2),
         scenario=json.dumps(str(scenario or ""), ensure_ascii=False),
         task_instruction=json.dumps(str(task_instruction or ""), ensure_ascii=False),
         output_template=json.dumps(output_template, ensure_ascii=False, indent=2),
         reference_output=json.dumps(reference_output, ensure_ascii=False, indent=2),
+        reference_anchors=json.dumps(reference_anchors if reference_anchors is not None else [], ensure_ascii=False, indent=2),
         validation_feedback=json.dumps(validation_feedback, ensure_ascii=False, indent=2),
     )
 

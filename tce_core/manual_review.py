@@ -38,12 +38,10 @@ def build_stage1_pool(validated_payload: Dict[str, Any]) -> List[Dict[str, Any]]
             category, state_name = state_key.split(":", 1)
             if not bool(qmeta.get("l1_is_questionable")):
                 bucket = "l1_fail"
-            elif not bool(qmeta.get("l2_is_questionable")):
-                bucket = "l2_fail"
-            elif bool(qmeta.get("is_questionable")):
+            elif list(qmeta.get("validated_field_paths") or []):
                 bucket = "pass"
             else:
-                continue
+                bucket = "field_fail"
             row = {
                 "sample_unit_id": f"stage1::{checkpoint_id}::{state_key}",
                 "stage": "stage1",

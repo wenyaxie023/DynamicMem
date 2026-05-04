@@ -86,6 +86,24 @@ def drop_task_a_excluded_fields_v2(value: Any) -> Any:
     return value
 
 
+def _prune_empty_containers(value: Any) -> Any:
+    if isinstance(value, dict):
+        out: Dict[str, Any] = {}
+        for key, child in value.items():
+            cleaned_child = _prune_empty_containers(child)
+            if has_materialized_value(cleaned_child):
+                out[key] = cleaned_child
+        return out
+    if isinstance(value, list):
+        out = []
+        for child in value:
+            cleaned_child = _prune_empty_containers(child)
+            if has_materialized_value(cleaned_child):
+                out.append(cleaned_child)
+        return out
+    return value
+
+
 def field_path_tail(path: Any) -> str:
     parts = [part.strip().lower() for part in str(path or "").split(".") if part.strip()]
     return parts[-1] if parts else ""
@@ -109,6 +127,7 @@ def normalize_task_a_current_value(
         return None
     if task_contract_is_v2(task_contract_version):
         candidate = drop_task_a_excluded_fields_v2(candidate)
+        candidate = _prune_empty_containers(candidate)
         if not has_materialized_value(candidate):
             return None
     return candidate

@@ -13,6 +13,7 @@ from .prompts import (
     TASK_C_V2_ACTION_CONFIGURATION_TASK_INSTRUCTION,
     TASK_C_V2_INFORMATION_REQUEST_TASK_INSTRUCTION,
     TASK_C_V2_USER_COMMUNICATION_TASK_INSTRUCTION,
+    SCHEDULE_DATE_ENCODING_TEXT,
     build_task_c_task_body,
     build_rq3_apply_question_pack_prompt,
     build_rq3_apply_rewrite_prompt,
@@ -45,12 +46,12 @@ from tce_contracts import (
     task_contract_is_v2,
 )
 
-STATE_COMPLETION_PACK_VERSION = "v5"
+STATE_COMPLETION_PACK_VERSION = "v6"
 CHANGE_TRACKING_PACK_VERSION = "v6"
 APPLY_PACK_VERSION_V1 = "v6"
 APPLY_PACK_VERSION_V2 = "v9"
 APPLY_PACK_PROMPT_VERSION_V1 = "apply_pack_prompt_v13"
-APPLY_PACK_PROMPT_VERSION_V2 = "apply_pack_prompt_v20_taskc_rewrite_feedback"
+APPLY_PACK_PROMPT_VERSION_V2 = "apply_pack_prompt_v31_taskc_leaf_core_anchors"
 CHANGE_REASON_TEMPLATE = "<fill the blank>"
 EVIDENCE_TEMPLATE = [{"app_log_id": "<app_log_id>", "evidence_content": "<supporting snippet>"}]
 APPLY_VALIDATION_SEMANTIC_CRITERIA_V1 = [
@@ -60,7 +61,7 @@ APPLY_VALIDATION_SEMANTIC_CRITERIA_V1 = [
 ]
 APPLY_VALIDATION_SEMANTIC_CRITERIA_V2 = [
     "answerability",
-    "service_completion_quality",
+    "service_realism",
     "full_field_dependency",
     "low_leakage",
     "output_groundedness",
@@ -375,10 +376,13 @@ def _state_completion_question_text(
 ) -> str:
     key_label = humanize_key(state_key)
     template_block = json.dumps({state_key: answer_template}, ensure_ascii=False, sort_keys=True)
-    return (
+    text = (
         f"Infer the user's current state for {key_label} "
         f"({state_key}) using this template: {template_block}."
     )
+    if str(state_key or "").strip().startswith("habits_state:"):
+        text += f" Schedule date encoding: {SCHEDULE_DATE_ENCODING_TEXT}"
+    return text
 
 
 def _change_tracking_question_text(
@@ -761,6 +765,9 @@ def _normalize_generated_items(
                     expected_family,
                     item.get("task_instruction"),
                 ),
+                "reference_anchors": copy.deepcopy(item.get("reference_anchors"))
+                if isinstance(item.get("reference_anchors"), list)
+                else [],
                 "retrieval_query": "",
             }
             if _task_c_v2_uses_structured_output(expected_family):
@@ -939,6 +946,7 @@ def _validate_apply_item(
             task_instruction=str(item.get("task_instruction") or ""),
             output_template=item.get("output_template"),
             reference_output=item.get("reference_output"),
+            reference_anchors=item.get("reference_anchors"),
             reference_answer=str(item.get("reference_answer") or ""),
         )
     else:
@@ -1011,6 +1019,7 @@ def _rewrite_apply_item(
             task_instruction=str(item.get("task_instruction") or ""),
             output_template=item.get("output_template"),
             reference_output=item.get("reference_output"),
+            reference_anchors=item.get("reference_anchors"),
             failed_rules=list(validation_payload.get("failed_rules") or []),
             semantic_criteria=list(validation_payload.get("semantic_criteria") or []),
             reference_answer=str(item.get("reference_answer") or ""),
@@ -1049,6 +1058,13 @@ def _rewrite_apply_item(
             "task_instruction": _task_c_v2_task_instruction(
                 str(item.get("service_family") or _infer_task_c_v2_service_family(state_key)),
                 _rewrite_string_delta("task_instruction"),
+            ),
+            "reference_anchors": copy.deepcopy(raw.get("reference_anchors"))
+            if isinstance(raw.get("reference_anchors"), list)
+            else (
+                copy.deepcopy(item.get("reference_anchors"))
+                if isinstance(item.get("reference_anchors"), list)
+                else []
             ),
             "retrieval_query": "",
         }
@@ -1160,6 +1176,9 @@ def _build_apply_key_node(
                         "service_family": str(candidate.get("service_family") or ""),
                         "scenario": str(candidate.get("scenario") or ""),
                         "task_instruction": str(candidate.get("task_instruction") or ""),
+                        "reference_anchors": copy.deepcopy(candidate.get("reference_anchors"))
+                        if isinstance(candidate.get("reference_anchors"), list)
+                        else [],
                         "reference_answer": str(candidate.get("reference_answer") or ""),
                         "output_template": candidate.get("output_template") if structured_v2 else None,
                         "reference_output": candidate.get("reference_output") if structured_v2 else None,
@@ -1232,6 +1251,9 @@ def _build_apply_key_node(
                 "task_instruction": str(candidate.get("task_instruction") or ""),
                 "retrieval_query": str(candidate.get("retrieval_query") or ""),
                 "answer_scoring_points": answer_scoring_points,
+                "reference_anchors": copy.deepcopy(candidate.get("reference_anchors"))
+                if isinstance(candidate.get("reference_anchors"), list)
+                else [],
                 "gold_memory_evidence_app_log_ids": list(gold_memory_evidence_app_log_ids),
                 "item_validation": {**final_qa_validation, "manual_review_required": False},
                 "scoring_validation": {

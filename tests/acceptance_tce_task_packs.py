@@ -11,7 +11,11 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from tce_core.prompts import TASK_C_V2_USER_COMMUNICATION_TASK_INSTRUCTION
+from tce_core.prompts import (
+    TASK_C_V2_INFORMATION_REQUEST_TASK_INSTRUCTION,
+    TASK_C_V2_USER_COMMUNICATION_TASK_INSTRUCTION,
+    build_task_c_v2_question_pack_prompt,
+)
 from tce_core.task_packs import _rewrite_apply_item, _validate_apply_item, build_task_packs
 from tce_contracts import (
     CANONICAL_RESEARCH_DOC_V2,
@@ -37,6 +41,22 @@ class TceTaskPackAcceptance(unittest.TestCase):
         for term in forbidden_terms:
             self.assertNotIn(term, lowered_prompt)
 
+    def test_v2_structured_generation_prompt_uses_leaf_local_core_and_anchors(self):
+        prompt = build_task_c_v2_question_pack_prompt(
+            checkpoint_timestamp="2025-01-01 08:00:00",
+            state_key="preferences_state:learning_modality",
+            state_value={"statement": "prefers self-paced webinars"},
+            service_family="information_request_construction",
+        )
+
+        self.assertNotIn("[User Behavior Context]", prompt)
+        self.assertNotIn("user_behavior", prompt)
+        self.assertIn("output_template must contain one or two fill leaves total", prompt)
+        self.assertIn("Core is leaf/field-level, not state-level", prompt)
+        self.assertIn('"role": "core"', prompt)
+        self.assertIn('"role": "detail"', prompt)
+        self.assertIn('"reference_anchors"', prompt)
+
     def test_v2_validation_and_rewrite_prompts_do_not_receive_scoring_fields(self):
         item = {
             "qa_id": "q1",
@@ -58,7 +78,7 @@ class TceTaskPackAcceptance(unittest.TestCase):
                 return {
                     "criteria": [
                         {"criterion": "answerability", "pass": True, "analysis": "ok"},
-                        {"criterion": "service_completion_quality", "pass": True, "analysis": "ok"},
+                        {"criterion": "service_realism", "pass": True, "analysis": "ok"},
                         {"criterion": "full_field_dependency", "pass": True, "analysis": "ok"},
                         {"criterion": "low_leakage", "pass": True, "analysis": "ok"},
                         {"criterion": "output_groundedness", "pass": True, "analysis": "ok"},
@@ -126,7 +146,7 @@ class TceTaskPackAcceptance(unittest.TestCase):
                 "failed_rules": ["low_leakage"],
                 "semantic_criteria": [
                     {"criterion": "answerability", "pass": True, "analysis": "ok"},
-                    {"criterion": "service_completion_quality", "pass": True, "analysis": "ok"},
+                    {"criterion": "service_realism", "pass": True, "analysis": "ok"},
                     {"criterion": "full_field_dependency", "pass": True, "analysis": "ok"},
                     {"criterion": "low_leakage", "pass": False, "analysis": "scenario leaks"},
                     {"criterion": "output_groundedness", "pass": True, "analysis": "ok"},
@@ -166,7 +186,7 @@ class TceTaskPackAcceptance(unittest.TestCase):
                 "failed_rules": ["output_groundedness"],
                 "semantic_criteria": [
                     {"criterion": "answerability", "pass": True, "analysis": "ok"},
-                    {"criterion": "service_completion_quality", "pass": True, "analysis": "ok"},
+                    {"criterion": "service_realism", "pass": True, "analysis": "ok"},
                     {"criterion": "full_field_dependency", "pass": True, "analysis": "ok"},
                     {"criterion": "low_leakage", "pass": True, "analysis": "ok"},
                     {"criterion": "output_groundedness", "pass": False, "analysis": "output needs a more task-appropriate fill."},
@@ -231,7 +251,7 @@ class TceTaskPackAcceptance(unittest.TestCase):
 
         class _FakeApplyGeneratorClient:
             def ask(self, prompt: str, response_type: str = "json"):
-                if "Generate exactly one preference-conditioned filtering task" in prompt:
+                if "Generate exactly one preference-conditioned search-filter task" in prompt:
                     return {
                         "items": [
                             {
@@ -246,11 +266,11 @@ class TceTaskPackAcceptance(unittest.TestCase):
 
         class _FakeApplyValidatorClient:
             def ask(self, prompt: str, response_type: str = "json"):
-                if "Validate whether this item is a strong structured completion task." in prompt:
+                if "Validate whether this item is a strong preference-conditioned search-filter completion task." in prompt:
                     return {
                         "criteria": [
                             {"criterion": "answerability", "pass": True, "analysis": "ok"},
-                            {"criterion": "service_completion_quality", "pass": True, "analysis": "ok"},
+                            {"criterion": "service_realism", "pass": True, "analysis": "ok"},
                             {"criterion": "full_field_dependency", "pass": True, "analysis": "ok"},
                             {"criterion": "low_leakage", "pass": True, "analysis": "ok"},
                             {"criterion": "output_groundedness", "pass": True, "analysis": "ok"},
@@ -346,7 +366,7 @@ class TceTaskPackAcceptance(unittest.TestCase):
                     return {
                         "criteria": [
                             {"criterion": "answerability", "pass": True, "analysis": "ok"},
-                            {"criterion": "service_completion_quality", "pass": True, "analysis": "ok"},
+                            {"criterion": "service_realism", "pass": True, "analysis": "ok"},
                             {"criterion": "full_field_dependency", "pass": True, "analysis": "ok"},
                             {"criterion": "low_leakage", "pass": True, "analysis": "ok"},
                             {"criterion": "output_groundedness", "pass": True, "analysis": "ok"},
@@ -461,7 +481,7 @@ class TceTaskPackAcceptance(unittest.TestCase):
                     return {
                         "criteria": [
                             {"criterion": "answerability", "pass": False, "analysis": "not anchored to the scheduled day"},
-                            {"criterion": "service_completion_quality", "pass": True, "analysis": "ok"},
+                            {"criterion": "service_realism", "pass": True, "analysis": "ok"},
                             {"criterion": "full_field_dependency", "pass": True, "analysis": "ok"},
                             {"criterion": "low_leakage", "pass": True, "analysis": "ok"},
                             {"criterion": "output_groundedness", "pass": False, "analysis": "adds unsupported evening timing"},
@@ -544,7 +564,7 @@ class TceTaskPackAcceptance(unittest.TestCase):
                 return {
                     "criteria": [
                         {"criterion": "answerability", "pass": True, "analysis": "ok"},
-                        {"criterion": "service_completion_quality", "pass": True, "analysis": "ok"},
+                        {"criterion": "service_realism", "pass": True, "analysis": "ok"},
                         {"criterion": "full_field_dependency", "pass": True, "analysis": "ok"},
                         {"criterion": "low_leakage", "pass": True, "analysis": "ok"},
                         {"criterion": "output_groundedness", "pass": True, "analysis": "ok"},
@@ -632,7 +652,7 @@ class TceTaskPackAcceptance(unittest.TestCase):
                 return {
                     "criteria": [
                         {"criterion": "answerability", "pass": True, "analysis": "ok"},
-                        {"criterion": "service_completion_quality", "pass": True, "analysis": "ok"},
+                        {"criterion": "service_realism", "pass": True, "analysis": "ok"},
                         {"criterion": "full_field_dependency", "pass": True, "analysis": "ok"},
                         {"criterion": "low_leakage", "pass": True, "analysis": "ok"},
                         {"criterion": "output_groundedness", "pass": True, "analysis": "ok"},
@@ -745,7 +765,7 @@ class TceTaskPackAcceptance(unittest.TestCase):
                     return {
                         "criteria": [
                             {"criterion": "answerability", "pass": True, "analysis": "ok"},
-                            {"criterion": "service_completion_quality", "pass": True, "analysis": "ok"},
+                            {"criterion": "service_realism", "pass": True, "analysis": "ok"},
                             {"criterion": "full_field_dependency", "pass": True, "analysis": "ok"},
                             {"criterion": "low_leakage", "pass": True, "analysis": "ok"},
                             {"criterion": "output_groundedness", "pass": True, "analysis": "ok"},
@@ -837,7 +857,7 @@ class TceTaskPackAcceptance(unittest.TestCase):
                 return {
                     "criteria": [
                         {"criterion": "answerability", "pass": True, "analysis": "ok"},
-                        {"criterion": "service_completion_quality", "pass": True, "analysis": "ok"},
+                        {"criterion": "service_realism", "pass": True, "analysis": "ok"},
                         {"criterion": "full_field_dependency", "pass": True, "analysis": "ok"},
                         {"criterion": "low_leakage", "pass": True, "analysis": "ok"},
                         {"criterion": "output_groundedness", "pass": True, "analysis": "ok"},
@@ -892,12 +912,12 @@ class TceTaskPackAcceptance(unittest.TestCase):
         class _FakeApplyGeneratorClient:
             def ask(self, prompt: str, response_type: str = "json"):
                 del response_type
-                if "Generate exactly one preference-conditioned filtering task" not in prompt:
+                if "Generate exactly one preference-conditioned search-filter task" not in prompt:
                     return {}
                 return {
                     "item": {
                         "scenario": "A coffee-order shortlist is being prepared before the menu is shown.",
-                        "task_instruction": "As the assistant, complete the filtering parameters that should be sent right now. Use the user's preference statement to shape the filters, and do not write the final recommendation.",
+                        "task_instruction": TASK_C_V2_INFORMATION_REQUEST_TASK_INSTRUCTION,
                         "output_template": {
                             "drink_filters": {
                                 "preferred_drink": "<fill>"
@@ -917,7 +937,7 @@ class TceTaskPackAcceptance(unittest.TestCase):
                 return {
                     "criteria": [
                         {"criterion": "answerability", "pass": True, "analysis": "ok"},
-                        {"criterion": "service_completion_quality", "pass": True, "analysis": "ok"},
+                        {"criterion": "service_realism", "pass": True, "analysis": "ok"},
                         {"criterion": "full_field_dependency", "pass": True, "analysis": "ok"},
                         {"criterion": "low_leakage", "pass": True, "analysis": "ok"},
                         {"criterion": "output_groundedness", "pass": True, "analysis": "ok"},
@@ -943,7 +963,7 @@ class TceTaskPackAcceptance(unittest.TestCase):
         self.assertEqual(item["scenario"], "A coffee-order shortlist is being prepared before the menu is shown.")
         self.assertEqual(
             item["task_instruction"],
-            "As the assistant, complete the filtering parameters that should be sent right now. Use the user's preference statement to shape the filters, and do not write the final recommendation.",
+            TASK_C_V2_INFORMATION_REQUEST_TASK_INSTRUCTION,
         )
         self.assertEqual(
             item["output_template"],

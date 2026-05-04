@@ -58,16 +58,40 @@ class TcePromptContractAcceptance(unittest.TestCase):
             target_value_templates={"habits_state:morning_walk": {"timing": {"start_time": "<fill the blank>"}}},
             log_to_text=lambda x: str(x),
         )
-        self.assertTrue(prompt.startswith("As of 2025-01-01 08:00:00"))
+        self.assertTrue(prompt.startswith("[Instructions]"))
+        self.assertLess(prompt.index("[Instructions]"), prompt.index("As of 2025-01-01 08:00:00"))
+        self.assertLess(prompt.index("As of 2025-01-01 08:00:00"), prompt.rindex("[Memory]"))
         self.assertIn("[Memory]", prompt)
         self.assertIn("[Instructions]", prompt)
         self.assertIn("[Output format]", prompt)
+        self.assertIn("system memory about the user's trajectory", prompt)
+        self.assertIn('"user_state"', prompt)
+        self.assertNotIn('"snapshot_state"', prompt)
+        self.assertIn("Make each answer value as detailed and accurate", prompt)
+        self.assertIn("Habit schedule format vocabulary", prompt)
+        self.assertIn("every month on specific calendar date", prompt)
+        self.assertIn("every month on an ordinal weekday", prompt)
+        self.assertIn('"frequency_type": "monthly_nth_weekday"', prompt)
         self.assertIn('"evidence_content"', prompt)
+        self.assertIn("0=Monday", prompt)
+        self.assertIn("1=Tuesday", prompt)
         self.assertNotIn("[Task]", prompt)
         self.assertNotIn("Instruction:", prompt)
         self.assertNotIn("Query:", prompt)
         self.assertNotIn("Checkpoint time:", prompt)
         self.assertNotIn("[Rules]", prompt)
+
+    def test_state_completion_prompt_omits_schedule_supplement_for_non_habits(self) -> None:
+        prompt = build_state_completion_prompt_with_inline_memory(
+            context_logs=[{"app_log_id": "log_0001"}],
+            task_query="Infer the user's current state for preferences learning modality.",
+            target_keys=["preferences_state:learning_modality"],
+            target_value_templates={"preferences_state:learning_modality": {"statement": "<fill the blank>"}},
+            log_to_text=lambda x: str(x),
+        )
+        self.assertIn('"user_state"', prompt)
+        self.assertNotIn("Schedule date encoding:", prompt)
+        self.assertNotIn("Habit schedule format vocabulary", prompt)
 
     def test_change_prompt_uses_evidence_objects(self) -> None:
         prompt = build_change_reasoning_prompt_with_inline_memory(
@@ -120,8 +144,9 @@ class TcePromptContractAcceptance(unittest.TestCase):
         for prompt in (state_prompt, change_prompt):
             self.assertIn("[Memory]", prompt)
             self.assertNotIn("[User memory]\n{'app_log_id':", prompt)
-        self.assertTrue(state_prompt.startswith("As of 2025-01-01 08:00:00"))
+        self.assertTrue(state_prompt.startswith("[Instructions]"))
         self.assertTrue(change_prompt.startswith("As of 2025-02-01 08:00:00"))
+        self.assertIn("system's stored checkpoint-bounded memory about the user's trajectory", state_prompt)
         self.assertNotIn("[Task]", state_prompt)
         self.assertNotIn("Instruction:", state_prompt)
         self.assertNotIn("Query:", state_prompt)
@@ -249,19 +274,24 @@ class TcePromptContractAcceptance(unittest.TestCase):
         self.assertIn("Each item contains:", generation_prompt)
         self.assertIn("`task_instruction`: copy the fixed string exactly.", generation_prompt)
         self.assertIn("leakage", generation_prompt)
+        self.assertIn("current-world anchor", generation_prompt)
+        self.assertIn("0=Monday", generation_prompt)
+        self.assertIn("days_of_week: [1] means Tuesday, not Monday", generation_prompt)
+        self.assertIn("a clock time alone is not enough", generation_prompt)
+        self.assertIn("Bad Example 2", generation_prompt)
         self.assertIn("free-form natural language", generation_prompt)
         self.assertNotIn('[Required Rubric Skeleton]', generation_prompt)
         self.assertNotIn('"id": "timing.start_time"', generation_prompt)
         self.assertIn("silently confirm the item would later pass the same five semantic validation criteria", generation_prompt)
         self.assertIn("answerability", generation_prompt)
         self.assertNotIn("checkpoint_timestamp", generation_prompt)
-        self.assertIn("service_completion_quality", generation_prompt)
+        self.assertIn("service_realism", generation_prompt)
         self.assertIn("full_field_dependency", generation_prompt)
         self.assertIn("low_leakage", generation_prompt)
         self.assertIn("output_groundedness", generation_prompt)
         self.assertIn("[Good Example B Input]", generation_prompt)
         self.assertIn("It is Monday at 09:20. Nothing has been started yet this morning.", generation_prompt)
-        self.assertIn("As the assistant, what single message should be sent to the user right now?", generation_prompt)
+        self.assertIn("Draft a concise but complete reminder text for the user in this scenario.", generation_prompt)
         self.assertIn("[Bad Example", generation_prompt)
         self.assertNoTaskCV2ScoringAuthoringLanguage(generation_prompt)
 
@@ -273,15 +303,16 @@ class TcePromptContractAcceptance(unittest.TestCase):
         )
         self.assertNotIn("state_type", info_prompt)
         self.assertNotIn('"service_family":', info_prompt)
-        self.assertIn("downstream retrieval, screening, or recommendation system", info_prompt)
-        self.assertIn("As the assistant, complete the filtering parameters that should be sent right now.", info_prompt)
-        self.assertIn("Generate exactly one preference-conditioned filtering task", info_prompt)
-        self.assertIn("Candidate strategies are being narrowed before anything is surfaced.", info_prompt)
-        self.assertIn("The user is deciding how to spend the next professional-development block.", info_prompt)
+        self.assertIn("structured search/filter object for the assistant to apply before showing matching options", info_prompt)
+        self.assertIn("Fill the search filters the assistant should apply now.", info_prompt)
+        self.assertIn("Generate exactly one preference-conditioned search-filter task", info_prompt)
+        self.assertIn("0=Monday", info_prompt)
+        self.assertIn("The user is reviewing investment options for an upcoming planning session.", info_prompt)
+        self.assertIn("The assistant is setting strategy filters before showing matching options.", info_prompt)
         self.assertNotIn("checkpoint_timestamp", info_prompt)
         self.assertIn("[Good Example B Input]", info_prompt)
         self.assertIn("silently confirm the item would later pass the same five semantic validation criteria", info_prompt)
-        self.assertIn("service_completion_quality", info_prompt)
+        self.assertIn("service_realism", info_prompt)
         self.assertIn("full_field_dependency", info_prompt)
         self.assertIn("output_groundedness", info_prompt)
         self.assertNotIn("user-facing communication action", info_prompt)
@@ -299,14 +330,15 @@ class TcePromptContractAcceptance(unittest.TestCase):
         self.assertNotIn("state_type", action_prompt)
         self.assertNotIn('"service_family":', action_prompt)
         self.assertIn("Generate exactly one attribute-conditioned action-configuration task", action_prompt)
-        self.assertIn("downstream tool, workflow, form, or executable service", action_prompt)
-        self.assertIn("complete the action configuration that should be sent right now", action_prompt.lower())
+        self.assertIn("0=Monday", action_prompt)
+        self.assertIn("structured action-configuration object for a user-facing tool", action_prompt)
+        self.assertIn("Use the user's known attributes to fill the setup or form fields", action_prompt)
         self.assertNotIn("checkpoint_timestamp", action_prompt)
-        self.assertIn("a device or account connection is being configured", action_prompt)
-        self.assertIn("a profile or form is being prepared before submission", action_prompt)
+        self.assertIn("the user is connecting a device or account", action_prompt)
+        self.assertIn("the user is preparing a profile or form before submission", action_prompt)
         self.assertIn("top-level JSON objects", action_prompt)
         self.assertIn("silently confirm the item would later pass the same five semantic validation criteria", action_prompt)
-        self.assertIn("service_completion_quality", action_prompt)
+        self.assertIn("service_realism", action_prompt)
         self.assertIn("full_field_dependency", action_prompt)
         self.assertIn("output_groundedness", action_prompt)
         self.assertNotIn("resource-search system", action_prompt)
@@ -324,16 +356,23 @@ class TcePromptContractAcceptance(unittest.TestCase):
             reference_answer="Send a reminder that the walk starts at 06:30.",
         )
         self.assertIn('"criterion": "answerability"', validation_prompt)
-        self.assertIn('"criterion": "service_completion_quality"', validation_prompt)
+        self.assertIn('"criterion": "service_realism"', validation_prompt)
         self.assertIn('"criterion": "full_field_dependency"', validation_prompt)
         self.assertIn('"criterion": "low_leakage"', validation_prompt)
         self.assertIn('"criterion": "output_groundedness"', validation_prompt)
         self.assertIn("short natural-language assistant response", validation_prompt)
         self.assertIn("field paths in `state_value`", validation_prompt)
-        self.assertIn("restates or paraphrases the habit action", validation_prompt)
+        self.assertIn("a clock time alone is not enough", validation_prompt)
+        self.assertIn("0=Monday", validation_prompt)
+        self.assertIn("1=Tuesday", validation_prompt)
+        self.assertIn("conflicts with encoded schedule fields", validation_prompt)
+        self.assertIn("Current weekday/date/time are allowed", validation_prompt)
+        self.assertIn("restates or paraphrases the habit action/identity", validation_prompt)
         self.assertIn('state_key: "habits_state:evening_walk"', validation_prompt)
+        self.assertIn("It is 18:50. The evening is quiet and nothing has been started.", validation_prompt)
         self.assertIn('"pass": false', validation_prompt)
-        self.assertIn("The current moment is not anchored well enough", validation_prompt)
+        self.assertIn("The scenario gives only a clock time", validation_prompt)
+        self.assertNotIn("preferences_state:learning_modality", validation_prompt)
         self.assertNotIn("Task C v2", validation_prompt)
         self.assertNotIn("service_family", validation_prompt)
         self.assertNoTaskCV2ScoringAuthoringLanguage(validation_prompt)
@@ -355,9 +394,9 @@ class TcePromptContractAcceptance(unittest.TestCase):
         )
 
         for prompt in (inline_prompt, agent_prompt):
-            self.assertIn('"output": {', prompt)
+            self.assertIn('"answer": {', prompt)
             self.assertIn('"evidence": [', prompt)
-            self.assertNotIn('"answer":', prompt)
+            self.assertNotIn('"output": {', prompt)
             self.assertIn("[Required Output Object]", prompt)
             self.assertNotIn("[Task Type]", prompt)
             self.assertNotIn("information_request_construction", prompt)
@@ -372,7 +411,14 @@ class TcePromptContractAcceptance(unittest.TestCase):
         )
         self.assertIn('"answer":', user_comm_inline)
         self.assertNotIn('"output": {', user_comm_inline)
-        self.assertIn("one short natural-language assistant response", user_comm_inline)
+        self.assertIn("Put the completed task result in `answer`.", user_comm_inline)
+        self.assertIn("concise but complete assistant message", user_comm_inline)
+        self.assertIn('"answer": "<concise but complete assistant message>"', user_comm_inline)
+        self.assertNotIn("one short natural-language assistant response", user_comm_inline)
+        task_body_idx = user_comm_inline.index("\n\n[Assistant Task]\n")
+        memory_idx = user_comm_inline.index("\n\n[Memory]\n", task_body_idx)
+        self.assertLess(user_comm_inline.index("[Instructions]"), task_body_idx)
+        self.assertLess(task_body_idx, memory_idx)
 
     def test_generic_task_c_runtime_prompt_builder_supports_text_and_structured_modes(self) -> None:
         text_prompt = build_task_c_prompt_with_inline_memory(
@@ -399,12 +445,23 @@ class TcePromptContractAcceptance(unittest.TestCase):
         self.assertIn("[Scenario]", text_prompt)
         self.assertIn("[Task Instruction]", text_prompt)
         self.assertIn('"answer":', text_prompt)
+        self.assertIn("Return JSON only; do not write any text outside the JSON object.", text_prompt)
+        self.assertIn("Put the completed task result in `answer`.", text_prompt)
         self.assertNotIn('"output": {', text_prompt)
+        text_task_body_idx = text_prompt.index("\n\n[Assistant Task]\n")
+        text_memory_idx = text_prompt.index("\n\n[Memory]\n", text_task_body_idx)
+        self.assertLess(text_prompt.index("[Instructions]"), text_task_body_idx)
+        self.assertLess(text_task_body_idx, text_memory_idx)
 
         self.assertIn("[Required Output Object]", structured_prompt)
         self.assertNotIn("[Task Type]", structured_prompt)
-        self.assertIn('"output": {', structured_prompt)
+        self.assertIn('"answer": {', structured_prompt)
+        self.assertNotIn('"output": {', structured_prompt)
         self.assertNotIn('"answer": "<one short assistant response>"', structured_prompt)
+        structured_task_body_idx = structured_prompt.index("\n\n[Assistant Task]\n")
+        structured_memory_idx = structured_prompt.index("\n\n[Memory]\n", structured_task_body_idx)
+        self.assertLess(structured_prompt.index("[Instructions]"), structured_task_body_idx)
+        self.assertLess(structured_task_body_idx, structured_memory_idx)
 
     def test_task_c_v2_rewrite_prompt_preserves_structured_contract(self) -> None:
         rewrite_prompt = build_task_c_v2_rewrite_prompt(
@@ -418,7 +475,7 @@ class TcePromptContractAcceptance(unittest.TestCase):
             failed_rules=["full_field_dependency", "llm_invalid"],
             semantic_criteria=[
                 {"criterion": "answerability", "pass": True, "analysis": "ok"},
-                {"criterion": "service_completion_quality", "pass": True, "analysis": "ok"},
+                {"criterion": "service_realism", "pass": True, "analysis": "ok"},
                 {"criterion": "full_field_dependency", "pass": False, "analysis": "The state field was treated as optional."},
                 {"criterion": "low_leakage", "pass": True, "analysis": "ok"},
                 {"criterion": "output_groundedness", "pass": True, "analysis": "ok"},
@@ -437,10 +494,52 @@ class TcePromptContractAcceptance(unittest.TestCase):
         self.assertIn("delta patch over mutable fields only", rewrite_prompt)
         self.assertIn("Include only the fields you actually changed", rewrite_prompt)
         self.assertIn("validation_feedback", rewrite_prompt)
+        self.assertIn("structural_issues", rewrite_prompt)
         self.assertIn("[Repair Instructions]", rewrite_prompt)
+        self.assertIn("preference-conditioned search-filter completion", rewrite_prompt)
+        self.assertIn("0=Monday", rewrite_prompt)
+        self.assertIn("content_search_filters", rewrite_prompt)
+        self.assertIn("preference_statement", rewrite_prompt)
+        self.assertNotIn("llm_invalid", rewrite_prompt)
+        self.assertNotIn("wearable_sync_setup", rewrite_prompt)
         self.assertNotIn("service_family", rewrite_prompt)
         self.assertNotIn('"service_family": "information_request_construction"', rewrite_prompt)
         self.assertNoTaskCV2ScoringAuthoringLanguage(rewrite_prompt)
+
+        action_rewrite_prompt = build_task_c_v2_rewrite_prompt(
+            state_key="user_attributes_state:fitness_technology",
+            state_value=[
+                "Apple Watch Series 9 (Midnight aluminum, used for daily heart rate and step tracking)",
+                "Oura Ring Gen3 (Stealth finish, primarily for sleep staging and recovery metrics)",
+            ],
+            service_family="action_configuration",
+            scenario="The user has an Apple Watch Series 9 and an Oura Ring Gen3, so connected devices are being configured.",
+            task_instruction="Fill the structured action configuration before the sync setup is saved.",
+            output_template={"devices": ["<fill>", "<fill>"]},
+            reference_output={
+                "devices": [
+                    "Apple Watch Series 9 (Midnight aluminum, used for daily heart rate and step tracking)",
+                    "Oura Ring Gen3 (Stealth finish, primarily for sleep staging and recovery metrics)",
+                ]
+            },
+            failed_rules=["service_realism", "low_leakage", "output_groundedness"],
+            semantic_criteria=[
+                {"criterion": "answerability", "pass": True, "analysis": "ok"},
+                {"criterion": "service_realism", "pass": False, "analysis": "raw list"},
+                {"criterion": "full_field_dependency", "pass": False, "analysis": "collapsed fields"},
+                {"criterion": "low_leakage", "pass": False, "analysis": "leaks devices"},
+                {"criterion": "output_groundedness", "pass": False, "analysis": "raw mirror"},
+            ],
+        )
+        self.assertIn("attribute-conditioned action-configuration", action_rewrite_prompt)
+        self.assertIn("0=Monday", action_rewrite_prompt)
+        self.assertIn("sports_equipment_profile", action_rewrite_prompt)
+        self.assertIn("family sports equipment inventory", action_rewrite_prompt)
+        self.assertIn("execution-ready configuration object", action_rewrite_prompt)
+        self.assertNotIn("preferences_state:learning_modality", action_rewrite_prompt)
+        self.assertNotIn("content_search_filters", action_rewrite_prompt)
+        self.assertNotIn("service_family", action_rewrite_prompt)
+        self.assertNoTaskCV2ScoringAuthoringLanguage(action_rewrite_prompt)
 
         user_comm_rewrite_prompt = build_task_c_v2_rewrite_prompt(
             state_key="habits_state:morning_walk",
@@ -454,7 +553,7 @@ class TcePromptContractAcceptance(unittest.TestCase):
             failed_rules=["low_leakage"],
             semantic_criteria=[
                 {"criterion": "answerability", "pass": True, "analysis": "ok"},
-                {"criterion": "service_completion_quality", "pass": True, "analysis": "ok"},
+                {"criterion": "service_realism", "pass": True, "analysis": "ok"},
                 {"criterion": "full_field_dependency", "pass": True, "analysis": "ok"},
                 {"criterion": "low_leakage", "pass": False, "analysis": "The scenario restates the routine."},
                 {"criterion": "output_groundedness", "pass": True, "analysis": "ok"},
@@ -471,6 +570,10 @@ class TcePromptContractAcceptance(unittest.TestCase):
         self.assertIn("Include only the fields you actually changed", user_comm_rewrite_prompt)
         self.assertIn("validation_feedback", user_comm_rewrite_prompt)
         self.assertIn("[Repair Instructions]", user_comm_rewrite_prompt)
+        self.assertIn("keep current weekday/date/time", user_comm_rewrite_prompt)
+        self.assertIn("0=Monday", user_comm_rewrite_prompt)
+        self.assertIn("conflicts with encoded schedule fields", user_comm_rewrite_prompt)
+        self.assertIn("It is Sunday at 16:45", user_comm_rewrite_prompt)
         self.assertNotIn("service_family", user_comm_rewrite_prompt)
         self.assertNotIn('"service_family": "user_communication"', user_comm_rewrite_prompt)
         self.assertNoTaskCV2ScoringAuthoringLanguage(user_comm_rewrite_prompt)
@@ -488,17 +591,46 @@ class TcePromptContractAcceptance(unittest.TestCase):
         self.assertIn('"criterion": "answerability"', structured_validation_prompt)
         self.assertIn('"criterion": "low_leakage"', structured_validation_prompt)
         self.assertIn('"criterion": "output_groundedness"', structured_validation_prompt)
-        self.assertIn("A training-related workflow may run later.", structured_validation_prompt)
-        self.assertIn("The item does not anchor a clear enough current workflow moment", structured_validation_prompt)
+        self.assertIn("preference-conditioned search-filter completion task", structured_validation_prompt)
+        self.assertIn("0=Monday", structured_validation_prompt)
+        self.assertIn("content_search_filters", structured_validation_prompt)
+        self.assertIn("preference_statement", structured_validation_prompt)
+        self.assertIn("The scenario restates the user's actual coffee-shop preference.", structured_validation_prompt)
         self.assertIn('"pass": false', structured_validation_prompt)
         self.assertNotIn('"scoring_rubric": {', structured_validation_prompt)
         self.assertNotIn("preserve every source leaf", structured_validation_prompt)
         self.assertNotIn("source-leaf order", structured_validation_prompt)
-        self.assertIn("task-appropriate structured service object", structured_validation_prompt)
+        self.assertIn("task-appropriate search/filter object", structured_validation_prompt)
         self.assertIn("field paths in `state_value`", structured_validation_prompt)
+        self.assertNotIn("wearable_sync_setup", structured_validation_prompt)
         self.assertNotIn("Task C v2", structured_validation_prompt)
         self.assertNotIn("service_family", structured_validation_prompt)
         self.assertNoTaskCV2ScoringAuthoringLanguage(structured_validation_prompt)
+
+        action_validation_prompt = build_task_c_v2_validation_prompt(
+            state_key="user_attributes_state:fitness_technology",
+            state_value=[
+                "Apple Watch Series 9 (Midnight aluminum, used for daily heart rate and step tracking)",
+                "Oura Ring Gen3 (Stealth finish, primarily for sleep staging and recovery metrics)",
+            ],
+            service_family="action_configuration",
+            scenario="A wellness app setup is being finalized. Connected-device sources are being configured before health data syncing starts.",
+            task_instruction="Fill the structured action configuration before the sync setup is saved.",
+            output_template={"wearable_sync_setup": {"connected_sources": []}},
+            reference_output={"wearable_sync_setup": {"connected_sources": []}},
+            reference_answer="",
+        )
+        self.assertIn("attribute-conditioned action-configuration task", action_validation_prompt)
+        self.assertIn("0=Monday", action_validation_prompt)
+        self.assertIn("wearable_sync_setup", action_validation_prompt)
+        self.assertIn("Connected-device sources", action_validation_prompt)
+        self.assertIn("executable sync configuration", action_validation_prompt)
+        self.assertIn("not that all 10 balls and cones should be donated", action_validation_prompt)
+        self.assertNotIn("preferences_state:learning_modality", action_validation_prompt)
+        self.assertNotIn("content_search_filters", action_validation_prompt)
+        self.assertNotIn("Task C v2", action_validation_prompt)
+        self.assertNotIn("service_family", action_validation_prompt)
+        self.assertNoTaskCV2ScoringAuthoringLanguage(action_validation_prompt)
 
 
 if __name__ == "__main__":

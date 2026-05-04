@@ -17,7 +17,7 @@ from .questionability import evaluate_state_questionability
 from .task_spec import flatten_snapshot
 
 STATE_VALIDATOR_VERSION = "qv3_l1_l2_preexclude_derived"
-STATE_VALIDATE_PROMPT_VERSION = "state_validate_prompt_v4_field_keyed"
+STATE_VALIDATE_PROMPT_VERSION = "state_validate_prompt_v8_field_keyed_implicit_semantic_alignment"
 CHANGE_REASON_VALIDATE_PROMPT_VERSION = "change_reason_validate_prompt_v2_verdict_only"
 
 
