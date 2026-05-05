@@ -2,7 +2,7 @@
 
 Status: active
 Owner: DynamicMem team
-Last Updated: 2026-04-24
+Last Updated: 2026-05-04
 
 Legacy archive:
 - `docs/protocols/archive/temporal_checkpoint_evaluation_developer_manual_legacy.md`
@@ -201,6 +201,9 @@ Stage 2 authoring requirements:
   - `answer_template`
   - `retrieval_query`
   - `scoring_points`
+- `scoring_points` is retained as a compatibility field but active formal Stage 2
+  builds may leave it as `[]` unless legacy Task A slot-level scoring is
+  explicitly enabled
 - filtered-out keys should appear under `filtered_keys`
 
 Generation contract:
@@ -223,14 +226,14 @@ Output contract:
   that model-facing key into the persisted prediction artifact field `snapshot_state`
 - Task A answer prompts should place runtime answering instructions and output format before the direct question and `[Memory]`; `[Memory]...[/Memory]` is the system's checkpoint-bounded memory about the user's trajectory.
 
-Primary scoring:
-- `scoring_points[]` is the canonical semantic scoring source
-- field-like leaves use field points
-- complex text uses `micro` points
-- `atomic fact` is legacy shorthand for one `micro` point; the active evaluation unit is always the scoring point
-- generated `micro` points must pass validation; otherwise rewrite or safe fallback is required
-- slot-level LLM judge prompts should mark a point correct when the prediction satisfies the checklist item's core idea / practical value, even if wording, formatting, field names, or detail organization differ
-- slot-level LLM judge prompts should still mark points incorrect when the core idea is omitted, contradicted, unrelated, too vague to establish, or conflicts with other prediction content
+Legacy slot-level scoring:
+- Task A `scoring_points[]` materialization is explicit opt-in only
+- when enabled, field-like leaves use field points and complex text uses `micro`
+  points
+- generated `micro` points must pass validation; otherwise rewrite or safe
+  fallback is required
+- active formal LLM-judge Task A evaluation uses the holistic judge and must not
+  consume task-pack `scoring_points`
 
 ## 9. Task C Active Contract
 Objective:
@@ -240,6 +243,11 @@ Active v2 family mapping:
 - `habits -> user_communication`
 - `preferences -> information_request_construction`
 - `attributes -> action_configuration`
+
+Active v2 fixed task instructions:
+- `user_communication`: `Draft a specific reminder message for the user in this scenario.`
+- `information_request_construction`: `Help the user set the search filters in this scenario.`
+- `action_configuration`: `Help the user complete the setup or form fields in this scenario.`
 
 Stage 2 authoring requirements:
 - author gold answers / outputs only from `validated_snapshot_state`
@@ -317,7 +325,7 @@ Validation contract:
   - `low_leakage` should compare `scenario` / `task_instruction` against the field paths in `state_value`
   - `output_groundedness` should check which parts of `reference_answer` or `reference_output` are grounded by which parts of `state_value`
 - for `user_communication`, the validator may treat the human-readable `state_key` suffix as grounding for the routine identity / label, because habit state values often store schedule/timing/location fields without repeating the label
-- for `user_communication`, fixed generic task-instruction wording that says the assistant should use the user's routine details is not itself a low-leakage failure; leakage should focus on item-specific scenario wording or item-specific task text that reveals state-derived facts
+- for `user_communication`, fixed generic task-instruction wording is not itself a low-leakage failure; leakage should focus on item-specific scenario wording or item-specific task text that reveals state-derived facts. Runtime answer instructions, not the pack-authored task instruction, should tell the answering model to use relevant routine details from memory.
 - scoring-point materialization runs only after item-semantic validation passes
 - scoring-point materialization is deterministic code-only behavior
 - `user_communication` semantic rewrite may update `reference_answer`
@@ -330,13 +338,13 @@ Validation contract:
 
 Primary scoring:
 - `answer_scoring_points[]` is the canonical scoring source
-- Task A and Task C both use point-specific evaluation rather than holistic answer similarity
+- Task A active LLM-judge scoring uses holistic Core + Detail field evaluation
+- Task C active LLM-judge scoring uses holistic Core + Detail service-field evaluation
 - slot-level LLM judge prompts may use short prompt-local `point_id` values such as `"1"` / `"2"` for copy reliability; the evaluator must map them back to canonical scoring-point ids before writing scoring artifacts
 - slot-level LLM judge prompts should credit semantic correctness at the core-idea / practical-value level rather than requiring exact wording, while still rejecting omitted, contradicted, unrelated, or too-vague content
 - Task A slot-level LLM judge scoring is opt-in and disabled by default; active LLM-judge Task A runs should use the holistic judge unless `enable_snapshot_slot_judge` is explicitly enabled for legacy comparison
 - Task C slot-level LLM judge scoring is opt-in and disabled by default; active LLM-judge Task C runs should use the holistic judge unless `enable_apply_slot_judge` is explicitly enabled for legacy comparison
-- Task A may additionally run an eval-only holistic judge as an auxiliary metric while the point-based metric remains unchanged
-  - this judge must not consume task-pack `scoring_points`
+- Task A holistic judge must not consume task-pack `scoring_points`
   - this judge uses a Core + Detail field evaluation method
   - inputs are the state key, golden user-state value, predicted user-state value, and deterministic evaluator-derived fields to judge
   - fields are derived from the golden value: dict values are judged at leaf-field level, scalar/list values are judged as one `value` field
@@ -356,6 +364,7 @@ Primary scoring:
   - the judge treats core as the service output field's central practical value for the service moment, not as raw state reconstruction
   - the judge treats details as service-useful precision such as time, date, place, cadence, qualifiers, exclusions, constraints, encoding, tier/version, branch/address, examples, or scope
   - evaluator code aggregates field scores within each item and writes `rq3_apply_holistic_score_mean`
+  - for `user_communication` holistic scoring, `identity_gate` is hard-gated: if any identity-gate field is judged core-incorrect or is missing from judge output, the whole item score is `0`; only when the identity gate passes may the evaluator average the remaining non-gate field scores
 - `user_communication` first evaluates whether the predicted message is about the targeted state / routine itself; if this gate fails, the whole item score is `0`
 - after the gate passes, `user_communication` uses one deterministic micro answer point per retained state field
 - `user_communication` leaf point text must be generated by code from the field id and validated state value, not by the authoring LLM
@@ -408,19 +417,20 @@ Evaluation resume rule:
 Evaluation config rule:
 - `eval/eval_tce.py` may be run from a YAML config via `--config`
 - config files are execution records for benchmark, prediction, output, LLM judge, and resume settings; they must not alter metric semantics or task contracts
+- `runtime.task_selection` may restrict execution scope; active values are `all` and `task_c_only`, where `task_c_only` skips Task A snapshot and legacy change evaluation and reports the selected scope in eval artifacts
 - explicit CLI arguments override config values for the same field
 - unknown config fields should fail closed rather than being silently ignored
 
 ## 11. Metrics & Acceptance
 Primary public metrics:
 - Task A:
-  - `snapshot_point_score_mean_on_expected`
+  - `snapshot_holistic_score_mean_on_expected`
 - Task C:
   - point-based answer score family derived from `answer_scoring_points`
 
-Auxiliary metrics:
-- experimental Task A holistic judge score:
-  - `snapshot_holistic_score_mean_on_expected`
+Legacy / auxiliary metrics:
+- Task A point-based score, when legacy slot-level scoring is explicitly enabled:
+  - `snapshot_point_score_mean_on_expected`
 - value continuity diagnostics
 - evidence id/content quality diagnostics
 

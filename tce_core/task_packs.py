@@ -416,6 +416,7 @@ def build_state_completion_pack_inplace(
     generator_client: Optional[Any] = None,
     validator_client: Optional[Any] = None,
     show_progress: bool = False,
+    enable_scoring_points: bool = True,
 ) -> Dict[str, Any]:
     _require_validated_benchmark(benchmark)
     task_contract_version = infer_task_contract_version(benchmark)
@@ -466,6 +467,17 @@ def build_state_completion_pack_inplace(
                         "validated_state_value_signature": validated_sig,
                         "pack_version": STATE_COMPLETION_PACK_VERSION,
                     }
+                    scoring_points = (
+                        build_value_scoring_points(
+                            state_key=state_key,
+                            value=validated_value,
+                            generator_client=generator_client,
+                            validator_client=validator_client,
+                            prefix=f"scp_{state_key.replace(':', '_')}",
+                        )
+                        if enable_scoring_points
+                        else []
+                    )
                     item = {
                         "item_id": _stable_item_id("scp", identity),
                         "state_key": state_key,
@@ -478,13 +490,7 @@ def build_state_completion_pack_inplace(
                             state_key=state_key,
                             answer_template=answer_template,
                         ),
-                        "scoring_points": build_value_scoring_points(
-                            state_key=state_key,
-                            value=validated_value,
-                            generator_client=generator_client,
-                            validator_client=validator_client,
-                            prefix=f"scp_{state_key.replace(':', '_')}",
-                        ),
+                        "scoring_points": scoring_points,
                         "pack_source": "computed",
                         "pack_identity": identity,
                     }
@@ -1565,6 +1571,7 @@ def build_task_packs(
     save_every_apply_keys: int = 0,
     save_callback: Optional[Callable[[Dict[str, Any]], None]] = None,
     show_progress: bool = False,
+    enable_state_completion_scoring_points: bool = True,
     task_contract_version: str = CURRENT_TASK_CONTRACT_VERSION,
     research_frame_version: str = RESEARCH_FRAME_VERSION_V2,
     canonical_research_doc: str = CANONICAL_RESEARCH_DOC_V2,
@@ -1629,9 +1636,10 @@ def build_task_packs(
     if "state_completion" in normalized:
         build_state_completion_pack_inplace(
             benchmark=benchmark,
-            generator_client=generator_client,
-            validator_client=validator_client,
+            generator_client=generator_client if enable_state_completion_scoring_points else None,
+            validator_client=validator_client if enable_state_completion_scoring_points else None,
             show_progress=show_progress,
+            enable_scoring_points=enable_state_completion_scoring_points,
         )
     if "change_tracking" in normalized:
         build_change_tracking_pack_inplace(

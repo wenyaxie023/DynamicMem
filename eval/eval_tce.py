@@ -60,6 +60,7 @@ _EVAL_CONFIG_KEYS = {
     "judge_experiment_name",
     "user_id",
     "experiment_name",
+    "task_selection",
 }
 
 _EVAL_CONFIG_DEFAULTS: Dict[str, Any] = {
@@ -75,6 +76,7 @@ _EVAL_CONFIG_DEFAULTS: Dict[str, Any] = {
     "judge_experiment_name": None,
     "user_id": None,
     "experiment_name": None,
+    "task_selection": "all",
 }
 
 _EVAL_CONFIG_PATH_KEYS = {
@@ -128,6 +130,7 @@ def _load_eval_config(path: Path) -> Dict[str, Any]:
                 "judge_experiment_name": runtime.get("judge_experiment_name"),
                 "user_id": runtime.get("user_id"),
                 "experiment_name": runtime.get("experiment_name"),
+                "task_selection": runtime.get("task_selection"),
                 "benchmark": data.get("benchmark"),
                 "prediction": data.get("prediction"),
                 "output": output.get("eval_path", output.get("output")),
@@ -212,6 +215,34 @@ def _resolve_eval_args(args: argparse.Namespace, parser: argparse.ArgumentParser
             + ". Provide them on the CLI or in --config."
         )
     return args
+
+
+def _normalize_eval_task_selection(value: Any) -> str:
+    raw = str(value or "all").strip().lower() or "all"
+    if raw in {"all", "task_c_only"}:
+        return raw
+    raise ValueError(
+        "Unsupported eval task_selection: {}. Use 'all' or 'task_c_only'.".format(value)
+    )
+
+
+def _strip_task_a_eval_fields(row: Dict[str, Any]) -> None:
+    for key in list(row.keys()):
+        if str(key).startswith("snapshot_"):
+            row.pop(key, None)
+    for key in (
+        "_expected_snapshot",
+        "_pred_snapshot",
+        "_expected_evidence",
+        "_pred_evidence",
+        "_pred_evidence_records",
+        "_snapshot_slots_by_key",
+        "groundtruth_snapshot",
+        "prediction_snapshot",
+        "groundtruth_evidence",
+        "prediction_evidence",
+    ):
+        row.pop(key, None)
 
 
 def _validate_llm_judge_env(provider: str) -> None:
@@ -677,6 +708,42 @@ def _snapshot_holistic_eval_matches(fields: Sequence[Dict[str, Any]], payload: A
     return seen == set(expected_paths)
 
 
+def _apply_holistic_score_from_judgments(
+    item: Dict[str, Any],
+    field_judgments: Sequence[Dict[str, Any]],
+) -> float:
+    service_family = str((item or {}).get("service_family") or "")
+    if service_family == "user_communication":
+        identity_gate_judgments: List[Dict[str, Any]] = []
+        regular_scores: List[float] = []
+        for judgment in field_judgments:
+            if not isinstance(judgment, dict):
+                continue
+            field_path = str(judgment.get("field_path") or "").strip().lower()
+            if field_path == POINT_ROLE_IDENTITY_GATE:
+                identity_gate_judgments.append(judgment)
+            else:
+                regular_scores.append(float(judgment.get("score_0_1") or 0.0))
+        if identity_gate_judgments:
+            gate_pass = all(bool(judgment.get("core_correct")) for judgment in identity_gate_judgments)
+            if not gate_pass:
+                return 0.0
+            return _mean(regular_scores) if regular_scores else 1.0
+    return _mean([float(judgment.get("score_0_1") or 0.0) for judgment in field_judgments])
+
+
+def _apply_holistic_eval_matches(item: Dict[str, Any], fields: Sequence[Dict[str, Any]], payload: Any) -> bool:
+    if not _snapshot_holistic_eval_matches(fields, payload):
+        return False
+    judgments = list((payload or {}).get("field_judgments") or [])
+    try:
+        existing_score = float((payload or {}).get("score_0_1"))
+    except Exception:
+        return False
+    expected_score = _apply_holistic_score_from_judgments(item, judgments)
+    return abs(existing_score - expected_score) < 1e-9
+
+
 def _completed_snapshot_keys(row: Dict[str, Any]) -> Set[str]:
     slots_by_key = row.get("_snapshot_slots_by_key", {}) or {}
     existing = row.get("snapshot_slot_eval_by_key", {}) or {}
@@ -781,7 +848,7 @@ def _completed_apply_holistic_items(row: Dict[str, Any]) -> Set[str]:
     for item_id in sorted(items_by_id.keys()):
         item = items_by_id.get(item_id) or {}
         fields = _apply_holistic_fields(item)
-        if fields and _snapshot_holistic_eval_matches(fields, existing.get(item_id)):
+        if fields and _apply_holistic_eval_matches(item, fields, existing.get(item_id)):
             completed.add(str(item_id))
     return completed
 
@@ -980,9 +1047,8 @@ def _apply_holistic_eval_record(
     judgments_by_field_path: Dict[str, Dict[str, Any]],
 ) -> Dict[str, Any]:
     field_judgments = _snapshot_holistic_ordered_judgments(fields, judgments_by_field_path)
-    field_scores = [float(judgment.get("score_0_1") or 0.0) for judgment in field_judgments]
     return {
-        "score_0_1": _mean(field_scores),
+        "score_0_1": _apply_holistic_score_from_judgments(item, field_judgments),
         "field_count": len(fields),
         "service_family": str((item or {}).get("service_family") or ""),
         "scenario": str((item or {}).get("scenario") or ""),
@@ -1955,7 +2021,9 @@ def evaluate(
     return_audit: bool = False,
     on_progress: Optional[Callable[[List[Dict[str, Any]], int], None]] = None,
     existing_result: Optional[Dict[str, Any]] = None,
+    task_selection: str = "all",
 ) -> Any:
+    task_selection = _normalize_eval_task_selection(task_selection)
     checkpoint_rows, evaluated, align_report = evaluate_tce_rows(
         benchmark,
         raw_prediction,
@@ -1963,6 +2031,9 @@ def evaluate(
         include_internal_payload=(enable_llm_judge or save_eyeball),
     )
     _merge_existing_progress(checkpoint_rows, existing_result)
+    if task_selection == "task_c_only":
+        for row in checkpoint_rows:
+            _strip_task_a_eval_fields(row)
     if not enable_snapshot_slot_judge:
         for row in checkpoint_rows:
             for key in _SNAPSHOT_SLOT_OUTPUT_FIELDS:
@@ -1989,7 +2060,7 @@ def evaluate(
         if on_progress is not None:
             def on_row_done() -> None:
                 on_progress(checkpoint_rows, evaluated)
-        if enable_snapshot_slot_judge:
+        if task_selection != "task_c_only" and enable_snapshot_slot_judge:
             snapshot_slot_judge_inputs, slot_judge_audit["snapshot"] = _run_snapshot_slot_judge(
                 checkpoint_rows,
                 llm_provider=llm_provider,
@@ -1997,20 +2068,22 @@ def evaluate(
                 llm_max_workers=llm_max_workers,
                 on_row_done=on_row_done,
             )
-        snapshot_holistic_judge_inputs, slot_judge_audit["snapshot_holistic"] = _run_snapshot_holistic_judge(
-            checkpoint_rows,
-            llm_provider=llm_provider,
-            llm_model=llm_model,
-            llm_max_workers=llm_max_workers,
-            on_row_done=on_row_done,
-        )
-        change_slot_judge_inputs, slot_judge_audit["change"] = _run_change_slot_judge(
-            checkpoint_rows,
-            llm_provider=llm_provider,
-            llm_model=llm_model,
-            llm_max_workers=llm_max_workers,
-            on_row_done=on_row_done,
-        )
+        if task_selection != "task_c_only":
+            snapshot_holistic_judge_inputs, slot_judge_audit["snapshot_holistic"] = _run_snapshot_holistic_judge(
+                checkpoint_rows,
+                llm_provider=llm_provider,
+                llm_model=llm_model,
+                llm_max_workers=llm_max_workers,
+                on_row_done=on_row_done,
+            )
+        if task_selection != "task_c_only":
+            change_slot_judge_inputs, slot_judge_audit["change"] = _run_change_slot_judge(
+                checkpoint_rows,
+                llm_provider=llm_provider,
+                llm_model=llm_model,
+                llm_max_workers=llm_max_workers,
+                on_row_done=on_row_done,
+            )
         apply_holistic_judge_inputs, slot_judge_audit["apply_holistic"] = _run_apply_holistic_judge(
             checkpoint_rows,
             llm_provider=llm_provider,
@@ -2033,6 +2106,11 @@ def evaluate(
         save_eyeball=save_eyeball,
         strip_internal_payload=True,
     )
+    result["task_selection"] = task_selection
+    if task_selection == "task_c_only":
+        for row in result.get("checkpoints", []) or []:
+            if isinstance(row, dict):
+                _strip_task_a_eval_fields(row)
     _attach_judge_experiment_name(result, judge_experiment_name)
     if return_audit:
         _attach_judge_experiment_name(slot_judge_audit, judge_experiment_name)
@@ -2182,11 +2260,19 @@ def main() -> None:
         default=None,
         help="Experiment/run name used to render {experiment_name} path templates in eval configs.",
     )
+    parser.add_argument(
+        "--task-selection",
+        type=str,
+        default=None,
+        choices=["all", "task_c_only"],
+        help="Eval task subset. Use task_c_only to skip Task A snapshot evaluation.",
+    )
     args = parser.parse_args()
     try:
         args = _resolve_eval_args(args, parser)
     except (RuntimeError, ValueError) as exc:
         parser.error(str(exc))
+    args.task_selection = _normalize_eval_task_selection(args.task_selection)
 
     benchmark = json.loads(args.benchmark.read_text(encoding="utf-8"))
     raw_pred = json.loads(args.prediction.read_text(encoding="utf-8"))
@@ -2231,11 +2317,14 @@ def main() -> None:
                 out_row["prediction_change_evidence"] = _json_safe(row.get("_pred_change_evidence", {}))
                 out_row["groundtruth_rq3_apply"] = _json_safe(row.get("_expected_rq3", {}))
                 out_row["prediction_rq3_apply"] = _json_safe(row.get("_pred_rq3", {}))
+            if args.task_selection == "task_c_only":
+                _strip_task_a_eval_fields(out_row)
             output_rows.append(out_row)
         payload = {
             "user_id": benchmark.get("user_id"),
             "benchmark_path": str(args.benchmark),
             "prediction_path": str(args.prediction),
+            "task_selection": args.task_selection,
             "total_checkpoints": benchmark.get("total_checkpoints", len(output_rows)),
             "evaluated_checkpoints": evaluated,
             "skipped_checkpoints": max(benchmark.get("total_checkpoints", 0) - evaluated, 0),
@@ -2265,6 +2354,7 @@ def main() -> None:
             return_audit=True,
             on_progress=_write_progress if args.enable_llm_judge else None,
             existing_result=existing_result,
+            task_selection=args.task_selection,
         )
     else:
         result, align_report = evaluate(
@@ -2280,6 +2370,7 @@ def main() -> None:
             judge_experiment_name=args.judge_experiment_name,
             on_progress=_write_progress if args.enable_llm_judge else None,
             existing_result=existing_result,
+            task_selection=args.task_selection,
         )
     result["prediction_alignment"] = align_report
     result["benchmark_path"] = str(args.benchmark)

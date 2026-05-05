@@ -20,7 +20,9 @@ from eval.prompts_tce import (
 )
 from eval.eval_tce import (
     _apply_eval_config,
+    _apply_holistic_eval_record,
     _apply_holistic_fields,
+    _completed_apply_holistic_items,
     _load_eval_config,
     _normalize_snapshot_holistic_judgments,
     _normalize_slot_judgments,
@@ -125,10 +127,13 @@ class TceSlotLlmJudgeSchemaAcceptance(unittest.TestCase):
         self.assertIn("For `timing.*` fields", prompt)
         self.assertIn("core meaning", prompt)
         self.assertIn("supporting precision beyond the core", prompt)
+        self.assertIn("[Evaluation Method]", prompt)
+        self.assertIn("Judge only the requested `fields_to_judge`", prompt)
         self.assertIn("habit core_correct examples", prompt)
         self.assertIn("habit detail_quality examples", prompt)
         self.assertIn("weekday names versus weekday indexes", prompt)
-        self.assertIn("field path `value` means the entire profile entry", prompt)
+        self.assertNotIn("field path `value` means the entire profile entry", prompt)
+        self.assertNotIn("Do not use task-pack point criteria", prompt)
         self.assertNotIn("golden_state_value", prompt)
         self.assertNotIn("predicted_state_value", prompt)
         self.assertNotIn("golden_field_value", prompt)
@@ -185,7 +190,9 @@ class TceSlotLlmJudgeSchemaAcceptance(unittest.TestCase):
         )
         self.assertIn("Core + Detail field evaluation method", prompt)
         self.assertIn("predicted assistant response matches the reference response", prompt)
-        self.assertIn("core belongs to the service output field being judged", prompt)
+        self.assertIn("Core belongs to the service output field being judged", prompt)
+        self.assertIn("[Evaluation Method]", prompt)
+        self.assertIn("Judge only the requested `fields_to_judge`", prompt)
         self.assertIn("Do not penalize the prediction for not restating source records", prompt)
         self.assertNotIn("service_topic", prompt)
         self.assertNotIn("user memory", prompt)
@@ -203,9 +210,10 @@ class TceSlotLlmJudgeSchemaAcceptance(unittest.TestCase):
         self.assertIn('"preferred_environment": "climate-controlled indoor exercise environments"', prompt)
         self.assertNotIn("preferred_formats", prompt)
         self.assertNotIn("[\"self-paced webinars\"", prompt)
-        self.assertIn("Do not use scoring points", prompt)
+        self.assertNotIn("Do not use scoring points", prompt)
         self.assertNotIn("answer_scoring_points", prompt)
         self.assertNotIn("point_id", prompt)
+        self.assertNotIn("`value` means the entire response", prompt)
         self.assertLess(prompt.index('"analysis"'), prompt.index('"core_correct"'))
 
     def test_apply_holistic_user_communication_uses_checklist_fields(self):
@@ -259,6 +267,161 @@ class TceSlotLlmJudgeSchemaAcceptance(unittest.TestCase):
         self.assertNotIn('"field_path": "answer"', prompt)
         self.assertNotIn("service_topic", prompt)
         self.assertNotIn("user memory", prompt)
+
+    def test_apply_holistic_user_communication_identity_gate_failure_zeroes_item_score(self):
+        item = {
+            "service_family": "user_communication",
+            "reference_answer": "Your morning walk starts at 06:30 on the lakefront trail.",
+            "predicted_answer": "Your budget review starts at 06:30.",
+            "slots": [
+                {
+                    "point_id": "identity",
+                    "point_type": "micro",
+                    "point_role": "identity_gate",
+                    "point_text": "The message is clearly about the morning walk routine itself.",
+                },
+                {
+                    "point_id": "start",
+                    "point_type": "micro",
+                    "source_field_path": "timing.start_time",
+                    "point_text": "The message correctly uses timing.start_time with value 06:30.",
+                    "reference_value": "06:30",
+                },
+            ],
+        }
+        fields = _apply_holistic_fields(item)
+        record = _apply_holistic_eval_record(
+            item=item,
+            fields=fields,
+            reference_value=item["reference_answer"],
+            predicted_value=item["predicted_answer"],
+            judgments_by_field_path={
+                "identity_gate": {
+                    "analysis": "The message is about budget review, not the morning walk.",
+                    "core_correct": False,
+                    "detail_quality": 0,
+                    "score_0_1": 0.0,
+                },
+                "timing.start_time": {
+                    "analysis": "The time is present.",
+                    "core_correct": True,
+                    "detail_quality": 2,
+                    "score_0_1": 1.0,
+                },
+            },
+        )
+
+        self.assertEqual(record["score_0_1"], 0.0)
+        self.assertEqual(len(record["field_judgments"]), 2)
+
+    def test_apply_holistic_user_communication_identity_gate_pass_averages_non_gate_fields(self):
+        item = {
+            "service_family": "user_communication",
+            "reference_answer": "Your morning walk starts at 06:30 on the lakefront trail.",
+            "predicted_answer": "Your morning walk starts at 06:30.",
+            "slots": [
+                {
+                    "point_id": "identity",
+                    "point_type": "micro",
+                    "point_role": "identity_gate",
+                    "point_text": "The message is clearly about the morning walk routine itself.",
+                },
+                {
+                    "point_id": "start",
+                    "point_type": "micro",
+                    "source_field_path": "timing.start_time",
+                    "point_text": "The message correctly uses timing.start_time with value 06:30.",
+                    "reference_value": "06:30",
+                },
+                {
+                    "point_id": "place",
+                    "point_type": "micro",
+                    "source_field_path": "location",
+                    "point_text": "The message correctly uses location with value lakefront trail.",
+                    "reference_value": "lakefront trail",
+                },
+            ],
+        }
+        fields = _apply_holistic_fields(item)
+        record = _apply_holistic_eval_record(
+            item=item,
+            fields=fields,
+            reference_value=item["reference_answer"],
+            predicted_value=item["predicted_answer"],
+            judgments_by_field_path={
+                "identity_gate": {
+                    "analysis": "The message is about the morning walk.",
+                    "core_correct": True,
+                    "detail_quality": 2,
+                    "score_0_1": 1.0,
+                },
+                "timing.start_time": {
+                    "analysis": "The start time is complete.",
+                    "core_correct": True,
+                    "detail_quality": 2,
+                    "score_0_1": 1.0,
+                },
+                "location": {
+                    "analysis": "The location is missing.",
+                    "core_correct": False,
+                    "detail_quality": 0,
+                    "score_0_1": 0.0,
+                },
+            },
+        )
+
+        self.assertEqual(record["score_0_1"], 0.5)
+
+    def test_apply_holistic_resume_recomputes_cached_identity_gate_failure_score(self):
+        item = {
+            "service_family": "user_communication",
+            "reference_answer": "Your morning walk starts at 06:30.",
+            "predicted_answer": "Your budget review starts at 06:30.",
+            "slots": [
+                {
+                    "point_id": "identity",
+                    "point_type": "micro",
+                    "point_role": "identity_gate",
+                    "point_text": "The message is clearly about the morning walk routine itself.",
+                },
+                {
+                    "point_id": "start",
+                    "point_type": "micro",
+                    "source_field_path": "timing.start_time",
+                    "point_text": "The message correctly uses timing.start_time with value 06:30.",
+                    "reference_value": "06:30",
+                },
+            ],
+        }
+        rows = [
+            {
+                "_rq3_apply_slots_by_item": {"habits_state:morning_walk::q1": item},
+                "rq3_apply_holistic_eval_by_item": {
+                    "habits_state:morning_walk::q1": {
+                        "score_0_1": 0.5,
+                        "field_count": 2,
+                        "field_judgments": [
+                            {
+                                "field_path": "identity_gate",
+                                "analysis": "wrong routine",
+                                "core_correct": False,
+                                "detail_quality": 0,
+                                "score_0_1": 0.0,
+                            },
+                            {
+                                "field_path": "timing.start_time",
+                                "analysis": "time present",
+                                "core_correct": True,
+                                "detail_quality": 2,
+                                "score_0_1": 1.0,
+                            },
+                        ],
+                    }
+                },
+            }
+        ]
+
+        self.assertEqual(_completed_apply_holistic_items(rows[0]), set())
 
     def test_apply_slot_prompt_uses_user_communication_v2_context(self):
         slots = [
@@ -1594,6 +1757,7 @@ class TceSlotLlmJudgeSchemaAcceptance(unittest.TestCase):
                 "llm_model": "config-model",
                 "llm_max_workers": 1,
                 "judge_experiment_name": "config-tag",
+                "task_selection": "task_c_only",
             },
         )
         self.assertEqual(resolved.benchmark, Path("benchmark.json"))
@@ -1604,6 +1768,7 @@ class TceSlotLlmJudgeSchemaAcceptance(unittest.TestCase):
         self.assertEqual(resolved.llm_model, "override-model")
         self.assertEqual(resolved.llm_max_workers, 1)
         self.assertEqual(resolved.judge_experiment_name, "cli-tag")
+        self.assertEqual(resolved.task_selection, "task_c_only")
 
 
 if __name__ == "__main__":

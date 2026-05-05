@@ -5,15 +5,13 @@ from tce_contracts import CURRENT_TASK_CONTRACT_VERSION
 
 
 TASK_C_V2_USER_COMMUNICATION_TASK_INSTRUCTION = (
-    "Draft a concise but complete reminder text for the user in this scenario. "
-    "Use the relevant routine details from memory so the message is specific rather than generic."
+    "Draft a specific reminder message for the user in this scenario."
 )
 TASK_C_V2_INFORMATION_REQUEST_TASK_INSTRUCTION = (
-    "Fill the search filters the assistant should apply now. "
-    "Use the user's preference statement to set the filters, and do not write the final recommendation."
+    "Help the user set the search filters in this scenario."
 )
 TASK_C_V2_ACTION_CONFIGURATION_TASK_INSTRUCTION = (
-    "Use the user's known attributes to fill the setup or form fields that should be applied now to complete the configuration."
+    "Help the user complete the setup or form fields in this scenario."
 )
 SCHEDULE_DATE_ENCODING_TEXT = (
     "`day_of_week` and `days_of_week` use zero-based weekday indexes: "
@@ -111,7 +109,7 @@ def _build_state_completion_prompt(
     schedule_instruction = _state_completion_schedule_instruction(target_keys)
 
     return f"""[Instructions]
-- Answer the user-state question below using only the system memory about the user's trajectory provided in [Memory]...[/Memory].
+- Answer the question below using only the system memory about the user's trajectory provided in [Memory]...[/Memory].
 - **Make each answer value as detailed and accurate as the memory supports.** Preserve specific names, times, dates, places, labels, and constraints instead of giving vague summaries.
 - Follow the template exactly, and fill every requested field with the most precise supported value.
 {schedule_instruction}- `evidence` for each key must be a list of objects with:
@@ -138,12 +136,14 @@ def _build_state_completion_prompt(
   }}
 }}
 
-Template:
-{fill_template_block}
-
+[Question]
 {task_query}
+[/Question]
 
 {memory_section}
+
+Concrete JSON skeleton to fill:
+{fill_template_block}
 """
 
 
@@ -1419,7 +1419,7 @@ Output JSON ONLY:
 [Output format]
 Output JSON ONLY:
 {{
-  "answer": "<concise but complete assistant message>",
+  "answer": "<specific and complete assistant message>",
   "evidence": [
     {{
       "app_log_id": "<app_log_id>",
@@ -1427,7 +1427,7 @@ Output JSON ONLY:
     }}
   ]
 }}"""
-    return "{instructions}\n\n[Assistant Task]\n{task_body}[/Assistant Task]\n\n{memory_section}\n".format(
+    return "{instructions}\n\n[Assistant Task]\n{task_body}\n[/Assistant Task]\n\n{memory_section}\n".format(
         instructions=instructions,
         task_body=task_body,
         memory_section=memory_section,
@@ -1754,7 +1754,9 @@ def build_task_c_v2_validation_prompt(
             },
         ]
         return """[Task Instruction]
-Validate whether this item is a strong current-moment assistant message task.
+Validate whether this item defines a realistic reminder-message task:
+the assistant should draft a reminder message for the user in the given scenario,
+and the correct message should depend on the provided routine information rather than on the scenario alone.
 Judge it using the five required criteria and give one short analysis for each.
 Do not output an overall verdict; only return the per-criterion judgments.
 
@@ -1786,7 +1788,7 @@ state_key: "habits_state:client_technical_briefing"
 state_value: {{"schedule": {{"frequency_type": "weekly", "days_of_week": [0]}}, "timing": {{"start_time": "10:00"}}, "location": "regional corporate headquarters"}}
 candidate_item: {{
   "scenario": "It is Monday at 09:20. Nothing has been started yet this morning.",
-  "task_instruction": "Write the short reminder message the assistant should send right now.",
+  "task_instruction": "Draft a specific reminder message for the user in this scenario.",
   "reference_answer": "Your weekly client technical briefing is at 10:00 today at the regional corporate headquarters. Since Monday is the scheduled day, it is almost time to get ready."
 }}
 
@@ -1827,8 +1829,8 @@ state_key: "habits_state:family_movie_night"
 state_value: {{"schedule": {{"frequency_type": "weekly", "days_of_week": [5]}}, "timing": {{"start_time": "19:30"}}}}
 candidate_item: {{
   "scenario": "It is Saturday at 19:15. The living room is currently empty and the television is off.",
-  "task_instruction": "Draft a neutral, specific reminder text for the user in this scenario based on the routine details, rather than a generic one.",
-  "reference_answer": "It's 19:15 on Saturday, so your weekly family movie night is starting at 19:30. Since the television is still off, would you like to get started?"
+  "task_instruction": "Draft a specific reminder message for the user in this scenario.",
+  "reference_answer": "It's 19:15 on Saturday, and your weekly family movie night is starting at 19:30. Since the television is still off, would you like to get started?"
 }}
 
 [Example Output]
@@ -1868,8 +1870,8 @@ state_key: "habits_state:evening_walk"
 state_value: {{"timing": {{"start_time": "19:00"}}, "schedule": {{"days_of_week": [2, 4, 6]}}}}
 candidate_item: {{
   "scenario": "It is 18:50. The evening is quiet and nothing has been started.",
-  "task_instruction": "Write the short reminder message the assistant should send right now.",
-  "reference_answer": "Send a reminder that this is one of the user's regular evening walk windows and that it normally starts at 19:00."
+  "task_instruction": "Draft a specific reminder message for the user in this scenario.",
+  "reference_answer": "Your regular evening walk normally starts at 19:00, so this may be a good time to get ready."
 }}
 
 [Example Output]
@@ -1931,7 +1933,7 @@ Output JSON ONLY:
             schedule_date_encoding_bullets=SCHEDULE_DATE_ENCODING_BULLETS,
         )
     if normalized_family == "information_request_construction":
-        task_label = "preference-conditioned search-filter completion task"
+        validation_task_definition = "Validate whether this item defines a realistic search-filter task:\nthe assistant should help set search filters for the user in the given scenario,\nand the correct filled filters should depend on the provided user information rather than on the scenario alone."
         service_definition = "The item should describe a realistic assistant-mediated service action that a user could naturally be doing now. It should not feel like a backend placeholder, arbitrary workflow, contrived form, or a task invented only to expose the state. For preferences, the browsing/search/filtering moment should feel natural for the user's option space."
         output_definition = "`output_template` plus `reference_output` must define one task-appropriate search/filter object with one or two filled leaves grounded in `state_value`. Fail if the item merely copies the raw preference statement, mirrors the raw state schema, produces a final recommendation, invents unsupported content, has zero or more than two filled leaves, or lacks one `reference_anchors` object per filled output leaf. `reference_anchors` should identify the state basis and role (`core` or `detail`) for each filled output leaf."
         answerability_fail = "Mark `answerability` as failed if the user browsing/search/comparison moment is vague, backend-like, underspecified, or unclear about which search/filter object should be completed now."
@@ -1943,7 +1945,7 @@ state_key: "preferences_state:learning_modality"
 state_value: {"statement": "Prefers in-depth, self-paced technical white papers and webinars over large live conferences"}
 candidate_item: {
   "scenario": "The user is browsing professional-development resources in a learning portal. The assistant is setting search filters before showing matching options.",
-  "task_instruction": "Fill the search filters the assistant should apply now. Use the user's preference statement to set the filters, and do not write the final recommendation.",
+  "task_instruction": "Help the user set the search filters in this scenario.",
   "output_template": {"content_search_filters": {"resource_formats": "<fill>", "avoid_setting": "<fill>"}},
   "reference_output": {"content_search_filters": {"resource_formats": "in-depth, self-paced technical white papers or webinars", "avoid_setting": "large live conferences"}},
   "reference_anchors": [
@@ -1968,7 +1970,7 @@ state_key: "preferences_state:coffee_shop_style"
 state_value: {"statement": "Prefers quiet neighborhood coffee shops with table seating over loud chain cafes"}
 candidate_item: {
   "scenario": "The user prefers quiet neighborhood coffee shops over loud chain cafes, and a shortlist is being prepared.",
-  "task_instruction": "Fill the search filters the assistant should apply now. Use the user's preference statement to set the filters, and do not write the final recommendation.",
+  "task_instruction": "Help the user set the search filters in this scenario.",
   "output_template": {"filtering_params": {"preference_statement": "<fill>"}},
   "reference_output": {"filtering_params": {"preference_statement": "Prefers quiet neighborhood coffee shops with table seating over loud chain cafes"}},
   "reference_anchors": [{"target_path": "filtering_params.preference_statement", "role": "core", "state_reference": "full statement", "anchor_note": "copied raw statement"}]
@@ -1985,7 +1987,7 @@ candidate_item: {
   ]
 }"""
     elif normalized_family == "action_configuration":
-        task_label = "attribute-conditioned action-configuration task"
+        validation_task_definition = "Validate whether this item defines a realistic setup-or-form completion task:\nthe assistant should help complete setup or form fields for the user in the given scenario,\nand the correct filled fields should depend on the provided user information rather than on the scenario alone."
         service_definition = "The item should describe a realistic assistant-mediated service action that a user could naturally be doing now. It should not feel like a backend placeholder, arbitrary workflow, contrived form, or a task invented only to expose the state. For attributes, the setup/form/configuration moment should feel natural for the known attribute."
         output_definition = "`output_template` plus `reference_output` must define one task-appropriate action-configuration object with one or two filled leaves grounded in `state_value`. Fail if the item merely copies raw attribute strings, mirrors the raw state schema, behaves like filtering/retrieval, invents unsupported content, has zero or more than two filled leaves, lacks one `reference_anchors` object per filled output leaf, or fills values that require an extra user choice not determined by state_value. `reference_anchors` should identify the state basis and role (`core` or `detail`) for each filled output leaf."
         answerability_fail = "Mark `answerability` as failed if the user setup/form/configuration moment is vague, backend-like, underspecified, unclear about which configuration fields should be completed now, or depends on an extra user choice not determined by state_value."
@@ -1997,7 +1999,7 @@ state_key: "user_attributes_state:fitness_technology"
 state_value: ["Apple Watch Series 9 (Midnight aluminum, used for daily heart rate and step tracking)", "Oura Ring Gen3 (Stealth finish, primarily for sleep staging and recovery metrics)"]
 candidate_item: {
   "scenario": "The user is setting up a wellness app. The assistant is filling the connected-device sync settings before health data syncing starts.",
-  "task_instruction": "Use the user's known attributes to fill the setup or form fields that should be applied now to complete the configuration.",
+  "task_instruction": "Help the user complete the setup or form fields in this scenario.",
   "output_template": {"wearable_sync_setup": {"connected_devices": "<fill>", "sync_metrics": "<fill>"}},
   "reference_output": {"wearable_sync_setup": {"connected_devices": "Apple Watch Series 9; Oura Ring Gen3", "sync_metrics": "daily heart rate and step tracking; sleep staging and recovery metrics"}},
   "reference_anchors": [
@@ -2022,7 +2024,7 @@ state_key: "user_attributes_state:family_sports_gear"
 state_value: "Set of 10 practice soccer balls and cones"
 candidate_item: {
   "scenario": "The user is registering gear for a local youth league's equipment drive. The assistant is filling the donation details before the form is submitted.",
-  "task_instruction": "Use the user's known attributes to fill the setup or form fields that should be applied now to complete the configuration.",
+  "task_instruction": "Help the user complete the setup or form fields in this scenario.",
   "output_template": {"equipment_donation": {"quantity_to_donate": "<fill>", "items": ["<fill>", "<fill>"]}},
   "reference_output": {"equipment_donation": {"quantity_to_donate": 10, "items": ["practice soccer balls", "cones"]}},
   "reference_anchors": [{"target_path": "equipment_donation.quantity_to_donate", "role": "core", "state_reference": "Set of 10 practice soccer balls and cones", "anchor_note": "incorrectly treats available quantity as donation intent"}]
@@ -2042,7 +2044,7 @@ candidate_item: {
         raise ValueError(f"Unsupported Task C v2 service_family: {normalized_family}")
 
     return """[Task Instruction]
-Validate whether this item is a strong {task_label}.
+{validation_task_definition}
 Judge it using the five required criteria and give one short analysis for each.
 Do not output an overall verdict; only return the per-criterion judgments.
 
@@ -2094,7 +2096,7 @@ Output JSON ONLY:
   ]
 }}
 """.format(
-        task_label=task_label,
+        validation_task_definition=validation_task_definition,
         service_definition=service_definition,
         output_definition=output_definition,
         answerability_fail=answerability_fail,
@@ -2495,7 +2497,8 @@ def build_task_c_v2_rewrite_prompt(
     }
     if normalized_family == "user_communication":
         return """[Task Instruction]
-Rewrite the invalid item using the validation_feedback.
+Rewrite the invalid item so it becomes a realistic reminder-message task.
+Use the validation_feedback to decide what to change.
 Return a JSON delta patch over mutable fields only.
 
 [Definitions]
@@ -2536,7 +2539,7 @@ state_key: "habits_state:family_dinner"
 state_value: {{"schedule": {{"days_of_week": [6]}}, "timing": {{"start_time": "17:30"}}}}
 invalid_item: {{
   "scenario": "It is 16:45. This is the user's Sunday family dinner, and nothing has been prepared yet.",
-  "task_instruction": "Write the short reminder message the assistant should send right now.",
+  "task_instruction": "Draft a specific reminder message for the user in this scenario.",
   "reference_answer": "Your Sunday family dinner starts soon, so it is a good time to begin getting things ready."
 }}
 validation_feedback: {{
@@ -2580,7 +2583,7 @@ Output JSON ONLY:
             schedule_date_encoding_bullets=SCHEDULE_DATE_ENCODING_BULLETS,
         )
     if normalized_family == "information_request_construction":
-        task_label = "preference-conditioned search-filter completion item"
+        rewrite_task_instruction = "Rewrite the invalid item so it becomes a realistic search-filter task.\nUse the validation_feedback to decide what to change."
         completion_definition = "the item describes a realistic assistant-mediated service action that a user could naturally be doing now. It should not feel like a backend placeholder, arbitrary workflow, contrived form, or a task invented only to expose the state."
         service_repair = "rewrite `scenario`, `output_template`, and/or `reference_output` so the search/filter task feels like a natural user browsing, search, comparison, or planning moment."
         field_repair = "rewrite the search/filter object so it has one or two state-dependent fill leaves. At least one fill leaf must be the field-local core fill for the preference task; a second detail fill is allowed only when grounded and service-useful."
@@ -2593,7 +2596,7 @@ state_key: "preferences_state:learning_modality"
 state_value: {"statement": "prefers self-paced webinars"}
 invalid_item: {
   "scenario": "A training-resource search request is about to run.",
-  "task_instruction": "Fill the search filters the assistant should apply now. Use the user's preference statement to set the filters, and do not write the final recommendation.",
+  "task_instruction": "Help the user set the search filters in this scenario.",
   "output_template": {"request_profile": {"preference_statement": "<fill>"}},
   "reference_output": {"request_profile": {"preference_statement": "prefers self-paced webinars"}},
   "reference_anchors": [{"target_path": "request_profile.preference_statement", "role": "core", "state_reference": "prefers self-paced webinars", "anchor_note": "raw statement copy"}]
@@ -2618,7 +2621,7 @@ validation_feedback: {
   "reference_anchors": [{"target_path": "content_search_filters.preferred_format", "role": "core", "state_reference": "prefers self-paced webinars", "anchor_note": "field-local core training format"}]
 }"""
     elif normalized_family == "action_configuration":
-        task_label = "attribute-conditioned action-configuration item"
+        rewrite_task_instruction = "Rewrite the invalid item so it becomes a realistic setup-or-form completion task.\nUse the validation_feedback to decide what to change."
         completion_definition = "the item describes a realistic assistant-mediated service action that a user could naturally be doing now. It should not feel like a backend placeholder, arbitrary workflow, contrived form, or a task invented only to expose the state."
         service_repair = "rewrite `scenario`, `output_template`, and/or `reference_output` so the setup/form/configuration task feels like a natural user product moment."
         field_repair = "rewrite the action object so it has one or two state-dependent fill leaves. At least one fill leaf must be the field-local core fill for the attribute task; a second detail fill is allowed only when grounded, service-useful, and not dependent on an extra user choice."
@@ -2631,7 +2634,7 @@ state_key: "user_attributes_state:family_sports_gear"
 state_value: "Set of 10 practice soccer balls and cones"
 invalid_item: {
   "scenario": "The user is registering gear for a local youth league's equipment drive. The assistant is filling the donation details before the form is submitted.",
-  "task_instruction": "Use the user's known attributes to fill the setup or form fields that should be applied now to complete the configuration.",
+  "task_instruction": "Help the user complete the setup or form fields in this scenario.",
   "output_template": {"equipment_donation": {"quantity_to_donate": "<fill>", "items": ["<fill>", "<fill>"]}},
   "reference_output": {"equipment_donation": {"quantity_to_donate": 10, "items": ["practice soccer balls", "cones"]}},
   "reference_anchors": [{"target_path": "equipment_donation.quantity_to_donate", "role": "core", "state_reference": "Set of 10 practice soccer balls and cones", "anchor_note": "incorrectly treats owned quantity as donation quantity"}]
@@ -2659,7 +2662,7 @@ validation_feedback: {
         raise ValueError(f"Unsupported Task C v2 service_family: {normalized_family}")
 
     return """[Task Instruction]
-Rewrite the invalid {task_label} using the validation_feedback.
+{rewrite_task_instruction}
 Return a JSON delta patch over mutable fields only.
 
 [Definitions]
@@ -2718,7 +2721,7 @@ Output JSON ONLY:
   "<changed_mutable_field>": "..."
 }}
     """.format(
-        task_label=task_label,
+        rewrite_task_instruction=rewrite_task_instruction,
         completion_definition=completion_definition,
         service_repair=service_repair,
         field_repair=field_repair,

@@ -44,6 +44,7 @@ def build_benchmark_task_packs(
     max_rewrites: int,
     save_every_apply_keys: int = 5,
     show_progress: bool = True,
+    enable_state_completion_scoring_points: bool = False,
     task_contract_version: str = CURRENT_TASK_CONTRACT_VERSION,
     research_frame_version: str = RESEARCH_FRAME_VERSION_V2,
     canonical_research_doc: str = CANONICAL_RESEARCH_DOC_V2,
@@ -57,8 +58,11 @@ def build_benchmark_task_packs(
         tasks,
         task_contract_version=effective_contract_version,
     )
-    needs_generator = bool(normalized & {"state_completion", "change_tracking", "apply"})
-    needs_validator = bool(normalized & {"state_completion", "change_tracking", "apply"})
+    needs_state_completion_scoring = (
+        "state_completion" in normalized and bool(enable_state_completion_scoring_points)
+    )
+    needs_generator = bool(normalized & {"change_tracking", "apply"}) or needs_state_completion_scoring
+    needs_validator = bool(normalized & {"change_tracking", "apply"}) or needs_state_completion_scoring
 
     generator_client = None
     validator_client = None
@@ -98,6 +102,7 @@ def build_benchmark_task_packs(
             save_every_apply_keys=save_every_apply_keys,
             save_callback=_save_snapshot,
             show_progress=show_progress,
+            enable_state_completion_scoring_points=enable_state_completion_scoring_points,
             task_contract_version=task_contract_version,
             research_frame_version=research_frame_version,
             canonical_research_doc=canonical_research_doc,
@@ -157,6 +162,14 @@ def main() -> None:
         help="Disable Stage 2 progress bars and summary logs.",
     )
     parser.add_argument(
+        "--enable-state-completion-scoring-points",
+        action="store_true",
+        help=(
+            "Opt in to legacy Task A scoring_points generation and validation. "
+            "Disabled by default for holistic LLM-judge Task A evaluation."
+        ),
+    )
+    parser.add_argument(
         "--task-contract-version",
         type=str,
         default=CURRENT_TASK_CONTRACT_VERSION,
@@ -192,6 +205,7 @@ def main() -> None:
         max_rewrites=args.max_rewrites,
         save_every_apply_keys=args.save_every_apply_keys,
         show_progress=(not args.no_progress),
+        enable_state_completion_scoring_points=args.enable_state_completion_scoring_points,
         task_contract_version=args.task_contract_version,
         research_frame_version=args.research_frame_version,
         canonical_research_doc=args.canonical_research_doc,

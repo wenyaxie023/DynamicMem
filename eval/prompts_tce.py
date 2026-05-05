@@ -421,37 +421,37 @@ For every field, first identify the field's core meaning and supporting details,
   - the model's predicted profile entry
 - fields_to_judge
   - the exact field paths to judge; return one judgment for each field path
-  - if `golden` is a scalar or list instead of an object, the field path `value` means the entire profile entry
 - field_path
   - the requested field identifier; copy it exactly into the output
-  - `value` is a special field path for judging the whole scalar or list entry
-- core meaning
-  - the requested field's central meaning after considering `state_key`, `field_path`, and `golden`
-  - core is the part that must be present for the field to be practically the same profile information
-- detail
-  - supporting precision beyond the core, such as exact wording, exact time, exact encoding, qualifiers, constraints, tier/version, branch/address, examples, or scope
 - core_correct
-  - the score for whether `predicted` captures the requested field's core meaning
+  - boolean judgment for whether `predicted` captures the requested field's core meaning
 - detail_quality
-  - the score for how completely and accurately `predicted` captures the field's details
-  - `2`: key details are complete and accurate
-  - `1`: important details are missing, vague, or slightly imprecise
-  - `0`: details are mostly missing, wrong, contradictory, or unsupported
+  - integer detail judgment: `2` complete/accurate, `1` partially complete or slightly imprecise, `0` mostly missing/wrong/contradictory
 - semantic equivalent
   - the same practical meaning despite harmless wording or formatting differences, such as weekday names versus weekday indexes where 0=Monday and 6=Sunday
 {category_guidance}
 
+[Evaluation Method]
+For each requested field, use a two-part Core + Detail judgment:
+1. Identify the requested field's core meaning from `state_key`, `field_path`, and `golden`.
+   - Core is the central value, relationship, direction, routine component, or attribute that must be present for the prediction to be practically the same profile information.
+2. Decide `core_correct`.
+   - Set `core_correct=true` when the predicted entry captures that core meaning, even if details are incomplete.
+   - Set `core_correct=false` when the prediction omits the field, contradicts it, gives a different core value, or is too vague to identify the same field meaning.
+3. Decide `detail_quality`.
+   - Detail means supporting precision beyond the core, such as exact wording, exact time, exact encoding, qualifiers, constraints, tier/version, branch/address, examples, or scope.
+   - Use `detail_quality=2` when key details are complete and accurate.
+   - Use `detail_quality=1` when important details are missing, vague, or slightly imprecise.
+   - Use `detail_quality=0` when details are mostly missing, wrong, contradictory, or unsupported.
+   - If `core_correct=false`, `detail_quality` should normally be `0` unless the prediction contains accurate but non-core details.
+
 [Constraints]
-1. Do not use task-pack point criteria, point ids, or per-field point accounting.
-2. For each field, first identify its core meaning from `state_key`, `field_path`, and `golden`; then score `predicted`.
-3. Judge every requested `field_path` independently, but use the full predicted profile entry as context.
-4. Return every requested `field_path` exactly once.
-5. Set `core_correct` to `true` when the requested field's core meaning is correct even if details are incomplete.
-6. Set `core_correct` to `false` when the prediction omits the field, contradicts the field, gives a different core value, or is too vague to identify the same field meaning.
-7. Use `detail_quality` only for detail completeness and precision; do not use it to override `core_correct`.
-8. Do not require exact wording, JSON field names, key order, or identical formatting when the meaning is semantically equivalent.
-9. If `core_correct` is `false`, `detail_quality` should normally be `0` unless the prediction contains some accurate but non-core details.
-10. In every field judgment, write `analysis` before `core_correct` and `detail_quality`.
+1. Judge only the requested `fields_to_judge`.
+2. Return every requested `field_path` exactly once.
+3. Judge each requested `field_path` independently, while using the full predicted profile entry as context.
+4. Use `detail_quality` only for detail completeness and precision; do not use it to override `core_correct`.
+5. Do not require exact wording, JSON field names, key order, or identical formatting when the meaning is semantically equivalent.
+6. In every field judgment, write `analysis` before `core_correct` and `detail_quality`.
 
 [Example]
 [Example Input]
@@ -833,7 +833,7 @@ def _apply_holistic_prompt_parts(service_type: str) -> tuple[str, Dict[str, Any]
   - `detail_quality=0`: field details are missing, unusable, contradictory, or unsupported"""
         example_input = {
             "scenario": "The user is updating a property management dashboard. The assistant is filling the insurance section of the asset profile before saving the changes.",
-            "task_instruction": "Fill the setup or form fields that should be applied now to complete the configuration.",
+            "task_instruction": "Help the user complete the setup or form fields in this scenario.",
             "reference": {
                 "property_insurance_config": {
                     "policy_provider": "Premium home insurance policy from Tawuniya",
@@ -881,7 +881,7 @@ def _apply_holistic_prompt_parts(service_type: str) -> tuple[str, Dict[str, Any]
   - `detail_quality=0`: field details are missing, unusable, contradictory, or unsupported"""
     example_input = {
         "scenario": "The user is exploring local fitness facilities and workout classes. The assistant is configuring search parameters to narrow down the available options.",
-        "task_instruction": "Fill the search filters the assistant should apply now before showing matches.",
+        "task_instruction": "Help the user set the search filters in this scenario.",
         "reference": {
             "fitness_search_criteria": {
                 "preferred_environment": "climate-controlled indoor exercise environments",
@@ -977,38 +977,39 @@ For every field, first identify the field's core service value and supporting se
   - the model's predicted assistant message or structured service output
 - fields_to_judge
   - the exact field paths to judge; return one judgment for each field path
-  - if `reference` is a scalar instead of an object, `value` means the entire response
 - field_path
   - the requested field identifier; copy it exactly into the output
-- core service value
-  - the requested field's central service meaning after considering `scenario`, `task_instruction`, `field_path`, `fields_to_judge`, and `reference`
-  - core is the part that must be present for the predicted response to be practically useful for the same personalized service moment
-  - core belongs to the service output field being judged, not to a raw source record
-- detail
-  - supporting precision beyond the core, such as exact time, date, place, cadence, exact encoding, qualifiers, exclusions, constraints, tier/version, branch/address, examples, or scope
 - core_correct
-  - the score for whether `predicted` captures the requested field's core service value
+  - boolean judgment for whether `predicted` captures the requested field's core service value
 - detail_quality
-  - the score for how completely and accurately `predicted` captures the field's details
-  - `2`: key details are complete and accurate
-  - `1`: important details are missing, vague, or slightly imprecise
-  - `0`: details are mostly missing, wrong, contradictory, or unsupported
+  - integer detail judgment: `2` complete/accurate, `1` partially complete or slightly imprecise, `0` mostly missing/wrong/contradictory
 - semantic equivalent
   - the same practical service meaning despite harmless wording, formatting, key naming, or ordering differences
 {guidance}
 
+[Evaluation Method]
+For each requested field, use a two-part Core + Detail judgment:
+1. Identify the requested field's core service value from `scenario`, `task_instruction`, `field_path`, `fields_to_judge`, and `reference`.
+   - Core is the central service meaning that must be present for the predicted response to be practically useful for the same personalized service moment.
+   - Core belongs to the service output field being judged, not to a raw source record.
+2. Decide `core_correct`.
+   - Set `core_correct=true` when the predicted response captures that core service value, even if details are incomplete.
+   - Set `core_correct=false` when the prediction omits the field, contradicts it, gives a different core value, targets a different service moment, or is too vague to identify the same field meaning.
+3. Decide `detail_quality`.
+   - Detail means service-useful precision beyond the core, such as exact time, date, place, cadence, exact encoding, qualifiers, exclusions, constraints, tier/version, branch/address, examples, or scope.
+   - Use `detail_quality=2` when key details are complete and accurate.
+   - Use `detail_quality=1` when important details are missing, vague, or slightly imprecise.
+   - Use `detail_quality=0` when details are mostly missing, wrong, contradictory, or unsupported.
+   - If `core_correct=false`, `detail_quality` should normally be `0` unless the prediction contains accurate but non-core details.
+
 [Constraints]
-1. Do not use scoring points, point ids, rubrics, or per-point accounting.
-2. For each field, first identify its core service value from `scenario`, `task_instruction`, `field_path`, `fields_to_judge`, and `reference`; then score `predicted`.
-3. Judge every requested `field_path` independently, but use the full predicted response as context.
-4. Return every requested `field_path` exactly once.
-5. Set `core_correct` to `true` when the requested field's core service value is correct even if details are incomplete.
-6. Set `core_correct` to `false` when the prediction omits the field, contradicts the field, gives a different core value, targets a different service moment, or is too vague to identify the same field meaning.
-7. Use `detail_quality` only for detail completeness and precision; do not use it to override `core_correct`.
-8. Do not require exact wording, JSON field names, key order, or identical formatting when the meaning is semantically equivalent.
-9. Do not penalize the prediction for not restating source records when the service output is correct, but do penalize missing details needed for the service response to be specific and actionable.
-10. If `core_correct` is `false`, `detail_quality` should normally be `0` unless the prediction contains some accurate but non-core details.
-11. In every field judgment, write `analysis` before `core_correct` and `detail_quality`.
+1. Judge only the requested `fields_to_judge`.
+2. Return every requested `field_path` exactly once.
+3. Judge each requested `field_path` independently, while using the full predicted response and service context.
+4. Use `detail_quality` only for detail completeness and precision; do not use it to override `core_correct`.
+5. Do not require exact wording, JSON field names, key order, or identical formatting when the meaning is semantically equivalent.
+6. Do not penalize the prediction for not restating source records when the service output is correct, but do penalize missing details needed for the service response to be specific and actionable.
+7. In every field judgment, write `analysis` before `core_correct` and `detail_quality`.
 
 [Example]
 [Example Input]

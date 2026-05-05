@@ -877,10 +877,17 @@ def _is_checkpoint_prediction_reusable_for_resume(
     *,
     task_contract_version: str,
     enable_rq3_apply_service_qa: bool,
+    task_selection: str,
 ) -> bool:
     if not _is_checkpoint_prediction_complete(prediction_item):
         return False
     if not isinstance(prediction_item, dict):
+        return False
+    metadata = prediction_item.get("metadata")
+    existing_task_selection = "all"
+    if isinstance(metadata, dict):
+        existing_task_selection = str(metadata.get("task_selection") or "all").strip().lower() or "all"
+    if existing_task_selection != _normalize_task_selection(task_selection):
         return False
     if enable_rq3_apply_service_qa and not _has_complete_rq3_apply_answers(
         checkpoint,
@@ -1898,6 +1905,7 @@ def run_pipeline(
                 existing_item,
                 task_contract_version=benchmark_contract_version,
                 enable_rq3_apply_service_qa=enable_rq3_apply_service_qa,
+                task_selection=task_selection,
             ):
                 predictions_by_cid[cid] = copy.deepcopy(existing[cid])
                 progress.update(1)

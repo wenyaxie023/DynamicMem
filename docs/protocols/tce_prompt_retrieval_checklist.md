@@ -147,7 +147,7 @@ Apply validation / rewrite prompt templates:
 - rewrite prompt must include validator feedback:
   - `failed_rules`
   - `criteria`
-- `user_communication` validation should not mark the fixed generic task instruction as leakage merely because it mentions using routine details
+- `user_communication` validation should not mark the fixed generic task instruction as leakage; instructions to use relevant routine details belong in the runtime answer prompt, not in the pack-authored task instruction
 - `user_communication` validation may use the `state_key` suffix as grounding for the routine label when `state_value` stores only schedule/timing/location fields
 - `user_communication` rewrite may update `reference_answer`
 - rewrite prompts must not include, generate, or rewrite `answer_scoring_points`, `scoring_rubric`, scoring criteria, scoring descriptions, or scoring-point coverage hints
@@ -200,6 +200,7 @@ Task A holistic evaluation judge prompt template:
 - Required section order:
   - `[Task Instruction]`
   - `[Definitions]`
+  - `[Evaluation Method]`
   - `[Constraints]`
   - `[Example]`
   - `[Input/Output Format]`
@@ -221,6 +222,7 @@ Task C holistic evaluation judge prompt template:
 - Required section order:
   - `[Task Instruction]`
   - `[Definitions]`
+  - `[Evaluation Method]`
   - `[Constraints]`
   - `[Example]`
   - `[Input/Output Format]`
@@ -235,6 +237,7 @@ Task C holistic evaluation judge prompt template:
   - return one `field_judgments[]` item for every requested field
   - in each field judgment, write `analysis` before boolean `core_correct` and integer `detail_quality`
   - compute each field's 0-1 score in evaluator code as `0.8 * core_correct + 0.2 * (detail_quality / 2)`, then aggregate item scores as `rq3_apply_holistic_score_mean`
+  - for `user_communication`, if any `identity_gate` field is core-incorrect or missing from judge output, the whole item score is `0`; if the identity gate passes, average the remaining non-gate field scores
 
 ## 3) Prompt Assembly + LLM Call: where happens
 
