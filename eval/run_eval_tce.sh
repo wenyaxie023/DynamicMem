@@ -2,7 +2,7 @@
 set -euo pipefail
 
 PYTHON_BIN="${PYTHON_BIN:-python3}"
-PROJECT_ROOT="/users/4/xie00470/mem_bench/dynamicmem"
+PROJECT_ROOT="xxx/mem_bench/dynamicmem" # Replace with the actual path to the DynamicMem project root
 BENCHMARK_ROOT="${BENCHMARK_ROOT:-$PROJECT_ROOT/data_construction/generated_outputs/gemini_3_flash_preview}"
 BASELINE="${BASELINE:-rag}"
 USER_DIR="${USER_DIR:-001_user_001}"

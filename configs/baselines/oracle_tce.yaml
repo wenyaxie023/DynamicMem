@@ -1,0 +1,15 @@
+# Oracle TCE config (upper-bound baseline).
+# Inherits shared defaults from configs/tce.default.yaml.
+
+runtime:
+  baseline: oracle
+
+users:
+  - "001_user_001"
+
+data:
+  benchmark: data_construction/generated_outputs/gemini_3_flash_preview/{user_id}/tce_benchmark.json
+  app_logs_path: data_construction/generated_outputs/gemini_3_flash_preview/{user_id}/app_log_large.json
+
+output:
+  prediction_path: generation/oracle/results/{user_id}/prediction/tce_results.json

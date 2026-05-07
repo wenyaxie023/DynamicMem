@@ -1,0 +1,25 @@
+# A-Mem TCE config.
+# Inherits shared defaults from configs/tce.default.yaml.
+
+runtime:
+  baseline: amem
+
+users:
+  - "001_user_001"
+
+data:
+  benchmark: data_construction/generated_outputs/gemini_3_flash_preview/{user_id}/tce_benchmark.json
+  app_logs_path: data_construction/generated_outputs/gemini_3_flash_preview/{user_id}/app_log_large.json
+
+output:
+  prediction_path: generation/Amem/results/{user_id}/prediction/tce_results.json
+
+retrieval:
+  top_k: 5
+
+baseline_params:
+  snapshot_dir: generation/Amem/snapshots/{user_id}
+  data_storage_path: generation/Amem/runtime_data/{user_id}
+  size: large
+  memory_action: build_then_predict
+  save_every: "50"

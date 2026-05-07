@@ -1,0 +1,21 @@
+# Vanilla RAG TCE config.
+# Inherits shared defaults from configs/tce.default.yaml.
+
+runtime:
+  baseline: rag
+
+users:
+  - "001_user_001"
+
+data:
+  benchmark: data_construction/generated_outputs/gemini_3_flash_preview/{user_id}/tce_benchmark.json
+  app_logs_path: data_construction/generated_outputs/gemini_3_flash_preview/{user_id}/app_log_large.json
+
+output:
+  prediction_path: generation/rag/results/{user_id}/prediction/tce_results.json
+
+retrieval:
+  top_k: 5
+
+baseline_params:
+  predict_per_key: "true"

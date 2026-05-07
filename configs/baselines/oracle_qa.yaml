@@ -1,0 +1,5 @@
+# Oracle QA config.
+# Inherits shared defaults from configs/qa.default.yaml.
+
+runtime:
+  baseline: oracle

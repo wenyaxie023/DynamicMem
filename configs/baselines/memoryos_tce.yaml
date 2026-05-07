@@ -1,0 +1,24 @@
+# MemoryOS TCE config.
+# Inherits shared defaults from configs/tce.default.yaml.
+
+runtime:
+  baseline: memoryos
+
+users:
+  - "001_user_001"
+
+data:
+  benchmark: data_construction/generated_outputs/gemini_3_flash_preview/{user_id}/tce_benchmark.json
+  app_logs_path: data_construction/generated_outputs/gemini_3_flash_preview/{user_id}/app_log_large.json
+
+output:
+  prediction_path: generation/MemoryOS/results/{user_id}/prediction/tce_results.json
+
+retrieval:
+  top_k: 5
+
+baseline_params:
+  snapshot_dir: generation/MemoryOS/snapshots/{user_id}
+  data_storage_path: generation/MemoryOS/runtime_data/{user_id}
+  size: large
+  memory_action: build_then_predict

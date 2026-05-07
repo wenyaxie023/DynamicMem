@@ -1,0 +1,24 @@
+# HippoRAG2 TCE config.
+# Inherits shared defaults from configs/tce.default.yaml.
+
+runtime:
+  baseline: hipporag2
+
+users:
+  - "001_user_001"
+
+data:
+  benchmark: data_construction/generated_outputs/gemini_3_flash_preview/{user_id}/tce_benchmark.json
+  app_logs_path: data_construction/generated_outputs/gemini_3_flash_preview/{user_id}/app_log_large.json
+
+output:
+  prediction_path: generation/HippoRAG2/results/{user_id}/prediction/tce_results.json
+
+retrieval:
+  top_k: 5
+
+baseline_params:
+  snapshot_dir: generation/HippoRAG2/snapshots/{user_id}
+  data_storage_path: generation/HippoRAG2/runtime_data/{user_id}
+  memory_action: build_then_predict
+  builder_save_every_logs: "5"

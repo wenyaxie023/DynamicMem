@@ -1,2 +1,0 @@
-pip install mem0ai
-pip install google-genai

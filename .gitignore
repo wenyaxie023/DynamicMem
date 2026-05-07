@@ -80,3 +80,9 @@ user_data/tce/*.md
 user_data/tce/*_test.yaml
 user_data/tce/*_report*
 user_data/tce/minimal_test*.yaml
+
+latex/
+
+# Claude Code workspace metadata (do not commit)
+.claude/
+CLAUDE.md

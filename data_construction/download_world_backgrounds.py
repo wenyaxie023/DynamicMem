@@ -27,7 +27,7 @@ except ImportError:
 
 
 DEFAULT_PERSONA_SAMPLE_SIZE = 10
-DEFAULT_REPO_ID = "xiewenya/user-world-backgrounds"
+DEFAULT_REPO_ID = "xxx/xxx"  # Replace with actual repo id containing the world_backgrounds.json files
 DEFAULT_MODEL = "gemini_3_flash_preview"
 
 

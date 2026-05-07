@@ -2,5 +2,5 @@
 set -euo pipefail
 
 python3 -m generation.run_tce_batch \
-  --config configs/experiments/tce/amem.yaml \
+  --config configs/baselines/amem_tce.yaml \
   "$@"

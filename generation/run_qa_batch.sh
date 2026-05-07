@@ -4,7 +4,7 @@ set -euo pipefail
 # Batch wrapper around generation.run_qa.
 # Edit CONFIG + USERS below, or pass --config/--defaults/--dry-run and extra args.
 
-CONFIG="configs/experiments/qa/default.yaml"
+CONFIG="configs/baselines/oracle_qa.yaml"
 DEFAULTS="configs/qa.default.yaml"
 USERS=(
   "001_user_001"

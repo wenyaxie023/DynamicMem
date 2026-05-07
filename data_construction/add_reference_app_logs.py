@@ -103,7 +103,7 @@ def process_all_users(
 if __name__ == "__main__":
     # Default root is the gemini_3_flash_preview outputs.
     default_root = Path(
-        "/users/4/xie00470/mem_bench/dynamicmem/"
+        "/xxx/mem_bench/dynamicmem/"
         "data_construction/generated_outputs/gemini_3_flash_preview"
     )
     process_all_users(root_dir=default_root)

@@ -1717,19 +1717,6 @@ class TceSlotLlmJudgeSchemaAcceptance(unittest.TestCase):
         self.assertIn("prompt", audit["snapshot_holistic"][0])
         self.assertIn("raw_output", audit["snapshot_holistic"][0])
 
-    def test_eval_config_loads_nested_runtime_shape(self):
-        config = _load_eval_config(ROOT / "configs/experiments/tce/amem_eval_user001_predict_0430.yaml")
-        self.assertEqual(config["benchmark"], "data_construction/generated_outputs/gemini_3_flash_preview/001_user_001/tce_benchmark_vnext_20260429_formal_task_packs.json")
-        self.assertEqual(config["prediction"], "results/Amem/results/001_user_001/prediction/predict_0430/tce_results.json")
-        self.assertEqual(config["output"], "results/Amem/results/001_user_001/eval/predict_0430/tce_eval.json")
-        self.assertTrue(config["enable_llm_judge"])
-        self.assertNotIn("enable_apply_slot_judge", config)
-        self.assertTrue(config["save_eyeball"])
-        self.assertTrue(config["resume"])
-        self.assertEqual(config["llm_provider"], "azure")
-        self.assertEqual(config["llm_model"], "gpt-5.4")
-        self.assertEqual(config["llm_max_workers"], 4)
-
     def test_eval_config_cli_values_override_config(self):
         args = argparse.Namespace(
             config=None,

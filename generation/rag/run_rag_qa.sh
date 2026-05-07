@@ -2,5 +2,5 @@
 set -euo pipefail
 
 bash generation/run_qa_batch.sh \
-  --config configs/experiments/qa/rag.yaml \
+  --config configs/baselines/rag_qa.yaml \
   "$@"

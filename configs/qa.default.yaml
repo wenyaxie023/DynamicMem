@@ -7,9 +7,9 @@ runtime:
   fix_links_inplace: false
 
 data:
-  input_root_dir: /users/4/xie00470/mem_bench/dynamicmem/data_construction/generated_outputs/gemini_3_flash_preview
-  output_root_dir: /users/4/xie00470/mem_bench/dynamicmem/generation/{baseline}/results
-  qa_dir: /users/4/xie00470/mem_bench/dynamicmem/generation/qa
+  input_root_dir: data_construction/generated_outputs/gemini_3_flash_preview
+  output_root_dir: generation/{baseline}/results
+  qa_dir: generation/qa
 
 llm:
   provider: gemini
