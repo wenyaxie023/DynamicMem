@@ -9,7 +9,7 @@ from dotenv import load_dotenv
 from tqdm import tqdm
 
 # Assuming the class above is saved in generation/letta/agent_loop.py
-from generation.letta.agent_loop import LettaAgentLoop
+from baseline_prediction.letta.agent_loop import LettaAgentLoop
 
 load_dotenv()
 

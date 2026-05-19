@@ -4,7 +4,7 @@ from .base import TceAdapterArgs
 
 
 def run(args: TceAdapterArgs) -> Dict[str, Any]:
-    from generation.zep.generation_tce.tce import run_generation
+    from baseline_prediction.zep.generation_tce.tce import run_generation
 
     max_coroutines = int(args.extras.get("max_coroutines", "5"))
     graphiti_llm_provider = str(args.extras.get("graphiti_llm_provider") or args.llm_provider).strip()
@@ -36,6 +36,10 @@ def run(args: TceAdapterArgs) -> Dict[str, Any]:
         graphiti_llm_provider=graphiti_llm_provider,
         graphiti_llm_model=graphiti_llm_model,
         graphiti_max_tokens=graphiti_max_tokens,
+        allow_destructive_rebuild=(
+            bool(args.allow_destructive_rebuild)
+            or str(args.extras.get("allow_destructive_rebuild", "false")).strip().lower() in {"1", "true", "yes", "y", "on"}
+        ),
         enable_change_reasoning=args.enable_change_reasoning,
         enable_rq3_apply_service_qa=args.enable_rq3_apply_service_qa,
         rq3_apply_save_prompt_and_raw=args.rq3_apply_save_prompt_and_raw,

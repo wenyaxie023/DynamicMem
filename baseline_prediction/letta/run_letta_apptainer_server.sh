@@ -7,7 +7,7 @@ set -euo pipefail
 #   export AZURE_API_KEY="..."
 #   export AZURE_BASE_URL="https://...openai.azure.com"
 #   export AZURE_API_VERSION="2024-10-21"
-#   bash generation/letta/run_letta_apptainer_server.sh
+#   bash baseline_prediction/letta/run_letta_apptainer_server.sh
 #
 # Optional:
 #   LETTA_APPTAINER_SOURCE=docker://letta/letta:latest
@@ -25,10 +25,7 @@ if ! command -v apptainer >/dev/null 2>&1; then
 fi
 
 LETTA_APPTAINER_SOURCE="${LETTA_APPTAINER_SOURCE:-docker://letta/letta:latest}"
-default_storage_root="/projects/standard/zrliu/shared/wenya/letta"
-if [[ ! -d "$default_storage_root" || ! -w "$default_storage_root" ]]; then
-  default_storage_root="$HOME/.letta"
-fi
+default_storage_root="$HOME/.letta"
 LETTA_STORAGE_ROOT="${LETTA_STORAGE_ROOT:-$default_storage_root}"
 LETTA_APPTAINER_IMAGE="${LETTA_APPTAINER_IMAGE:-$LETTA_STORAGE_ROOT/apptainer/letta_latest.sif}"
 LETTA_PORT="${LETTA_PORT:-8283}"

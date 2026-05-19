@@ -8,7 +8,7 @@ from typing import Any, Dict, List, Optional, Set, Tuple
 
 from tqdm import tqdm
 
-from generation.letta.agent_loop import LettaAgentLoop
+from baseline_prediction.letta.agent_loop import LettaAgentLoop
 
 
 def _repo_root() -> Path:

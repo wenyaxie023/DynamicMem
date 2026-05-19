@@ -7,7 +7,7 @@ def run(args: TceAdapterArgs):
             "ICL TCE baseline currently supports only the main Task A/B/C flow; final_qa is not supported."
         )
 
-    from generation.icl.tce import run_generation
+    from baseline_prediction.icl.tce import run_generation
 
     return run_generation(
         benchmark_path=args.benchmark,

@@ -2,9 +2,9 @@
 set -euo pipefail
 
 PYTHON_BIN="python3"
-PROJECT_ROOT="/users/4/xie00470/mem_bench/dynamicmem"
-BENCHMARK_ROOT="$PROJECT_ROOT/data_construction/generated_outputs/gemini_3_flash_preview"
-PREDICTION_ROOT="$PROJECT_ROOT/generation/icl/results"
+PROJECT_ROOT="${PROJECT_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)}"
+BENCHMARK_ROOT="$PROJECT_ROOT/outputs/gemini_3_flash_preview"
+PREDICTION_ROOT="$PROJECT_ROOT/baseline_prediction/icl/results"
 
 # Accept either numeric IDs (1,2,3) or full user dirs (001_user_001)
 USERS=("001_user_001")

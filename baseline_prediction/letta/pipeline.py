@@ -5,10 +5,10 @@ import argparse
 from pathlib import Path
 from typing import List, Optional
 
-from generation.letta.checkpoint_agent_builder import build_checkpoint_agents
-from generation.letta.dynamic_state_prediction import run_generation as run_dsp_generation
-from generation.letta.agent_loop import LettaAgentLoop
-from generation.letta.letta import run_qa
+from baseline_prediction.letta.checkpoint_agent_builder import build_checkpoint_agents
+from baseline_prediction.letta.dynamic_state_prediction import run_generation as run_dsp_generation
+from baseline_prediction.letta.agent_loop import LettaAgentLoop
+from baseline_prediction.letta.letta import run_qa
 
 
 def _repo_root() -> Path:

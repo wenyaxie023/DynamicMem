@@ -11,7 +11,8 @@ from typing import Any, Dict, List, Optional, Set
 from urllib import error as urllib_error
 from urllib import request as urllib_request
 
-from generation.common.llm_client import LLMClient
+from baseline_prediction.common.llm_client import LLMClient
+from baseline_prediction.tce_safety import ensure_destructive_rebuild_allowed
 from tce_core.orchestrator_protocol import CheckpointHandle, RetrievalOptions, RetrievalResult
 from tce_core.pipeline import normalize_app_logs, run_pipeline, to_log_text
 
@@ -487,6 +488,7 @@ def _clone_qdrant_collection(
     port: int,
     source_collection_name: str,
     target_collection_name: str,
+    allow_destructive_rebuild: bool = False,
 ) -> None:
     source_name = str(source_collection_name or "").strip()
     target_name = str(target_collection_name or "").strip()
@@ -518,6 +520,11 @@ def _clone_qdrant_collection(
     )
     collections = ((exists_payload.get("result") or {}).get("collections") or []) if isinstance(exists_payload, dict) else []
     if any(str(item.get("name", "")).strip() == target_name for item in collections if isinstance(item, dict)):
+        ensure_destructive_rebuild_allowed(
+            allow_destructive_rebuild=allow_destructive_rebuild,
+            operation="replace an existing mem0 snapshot collection",
+            details=["existing qdrant collection: {}".format(target_name)],
+        )
         _qdrant_request(
             host=host,
             port=port,
@@ -575,6 +582,8 @@ def _materialize_checkpoint_collection_from_logs(
     llm_azure_api_version: Optional[str],
     embedder_model: Optional[str],
     llm_model: Optional[str],
+    allow_destructive_rebuild: bool = False,
+    existing_collection_details: Optional[List[str]] = None,
 ) -> None:
     Memory = _load_mem0_class()
     snapshot_memory = Memory.from_config(
@@ -596,6 +605,11 @@ def _materialize_checkpoint_collection_from_logs(
             embedder_model=embedder_model,
             llm_model=llm_model,
         )
+    )
+    ensure_destructive_rebuild_allowed(
+        allow_destructive_rebuild=allow_destructive_rebuild,
+        operation="clear an existing mem0 snapshot collection",
+        details=existing_collection_details,
     )
     try:
         snapshot_memory.delete_all_memories()
@@ -630,6 +644,7 @@ def _materialize_checkpoint_snapshots(
     resume: bool,
     max_checkpoints: Optional[int],
     reset_collections: bool,
+    allow_destructive_rebuild: bool = False,
 ) -> Path:
     benchmark = json.loads(benchmark_path.read_text(encoding="utf-8"))
     checkpoints = [cp for cp in benchmark.get("checkpoints", []) if isinstance(cp, dict)]
@@ -683,6 +698,12 @@ def _materialize_checkpoint_snapshots(
         )
     )
     if reset_collections:
+        ensure_destructive_rebuild_allowed(
+            allow_destructive_rebuild=allow_destructive_rebuild,
+            operation="clear an existing mem0 builder collection",
+            paths=[root],
+            details=["builder qdrant collection: {}".format(collection_name)],
+        )
         try:
             builder.delete_all_memories()
         except Exception:
@@ -704,6 +725,12 @@ def _materialize_checkpoint_snapshots(
     if not reset_collections and resume and not has_progress:
         latest_entry = _latest_manifest_entry(root)
         if latest_entry is not None:
+            ensure_destructive_rebuild_allowed(
+                allow_destructive_rebuild=allow_destructive_rebuild,
+                operation="clear an existing mem0 builder collection before restoring from snapshot",
+                paths=[root],
+                details=["builder qdrant collection: {}".format(collection_name)],
+            )
             try:
                 builder.delete_all_memories()
             except Exception:
@@ -728,6 +755,12 @@ def _materialize_checkpoint_snapshots(
                 status="restored_from_snapshot",
             )
     elif not reset_collections and not resume:
+        ensure_destructive_rebuild_allowed(
+            allow_destructive_rebuild=allow_destructive_rebuild,
+            operation="clear an existing mem0 builder collection for a fresh run",
+            paths=[root],
+            details=["builder qdrant collection: {}".format(collection_name)],
+        )
         try:
             builder.delete_all_memories()
         except Exception:
@@ -785,6 +818,10 @@ def _materialize_checkpoint_snapshots(
                 llm_azure_api_version=llm_azure_api_version,
                 embedder_model=embedder_model,
                 llm_model=answer_llm_model,
+                allow_destructive_rebuild=allow_destructive_rebuild,
+                existing_collection_details=[
+                    "mem0 snapshot collection: {}".format(checkpoint_collection_name),
+                ],
             )
             updated_entry = dict(existing_entry)
             updated_entry["snapshot_collection_name"] = checkpoint_collection_name
@@ -812,6 +849,7 @@ def _materialize_checkpoint_snapshots(
                 port=qdrant_port,
                 source_collection_name=collection_name,
                 target_collection_name=checkpoint_collection_name,
+                allow_destructive_rebuild=allow_destructive_rebuild,
             )
         except Exception:
             _materialize_checkpoint_collection_from_logs(
@@ -833,6 +871,12 @@ def _materialize_checkpoint_snapshots(
                 llm_azure_api_version=llm_azure_api_version,
                 embedder_model=embedder_model,
                 llm_model=answer_llm_model,
+                allow_destructive_rebuild=allow_destructive_rebuild,
+                existing_collection_details=(
+                    ["mem0 snapshot collection: {}".format(checkpoint_collection_name)]
+                    if existing_entry is not None or snapshot_path.exists()
+                    else None
+                ),
             )
         _atomic_write_json(
             snapshot_path,
@@ -991,6 +1035,7 @@ def run_generation(
     final_qa_output_path: Optional[str] = None,
     final_qa_retrieval_top_k: Optional[int] = None,
     final_qa_save_prompt_and_raw: bool = False,
+    allow_destructive_rebuild: bool = False,
 ) -> Dict[str, Any]:
     _patch_mem0_openai_llm_for_gpt5()
     _patch_mem0_qdrant_client()
@@ -1021,6 +1066,7 @@ def run_generation(
         resume=resume,
         max_checkpoints=max_checkpoints,
         reset_collections=reset_collections,
+        allow_destructive_rebuild=allow_destructive_rebuild,
     )
 
     client = LLMClient(

@@ -1,11 +1,12 @@
 from typing import Callable, Dict
 
 from .base import TceAdapterArgs
-from . import amem, hipporag2, icl, letta, mem0, memoryos, oracle, rag, simplemem, stubs, zep
+from . import amem, hipporag2, icl, letta, mem0, memoryos, oracle, oracle_state, rag, simplemem, stubs, zep
 
 
 _ADAPTERS: Dict[str, Callable[[TceAdapterArgs], object]] = {
     "oracle": oracle.run,
+    "oracle_state": oracle_state.run,
     "icl": icl.run,
     "rag": rag.run,
     "hipporag2": hipporag2.run,

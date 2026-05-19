@@ -28,7 +28,7 @@ from tce_core.pipeline import (
     build_state_completion_prompt,
     run_pipeline,
 )
-from generation.letta.agent_loop import LettaAgentLoop, estimate_usage_cost_usd, sort_logs
+from baseline_prediction.letta.agent_loop import LettaAgentLoop, estimate_usage_cost_usd, sort_logs
 
 load_dotenv()
 

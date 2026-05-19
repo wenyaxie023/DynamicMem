@@ -5,7 +5,7 @@ from typing import Any, Dict, List, Optional
 
 from dotenv import load_dotenv
 
-from generation.icl.client import LLMClient
+from baseline_prediction.icl.client import LLMClient
 from tce_core.orchestrator_protocol import CheckpointHandle, RetrievalOptions, RetrievalResult
 from tce_core.pipeline import run_pipeline, to_log_text
 

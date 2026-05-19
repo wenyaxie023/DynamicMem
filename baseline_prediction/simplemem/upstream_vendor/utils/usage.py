@@ -5,7 +5,7 @@ from typing import Any, Dict, List, Optional
 
 from openai import OpenAI
 
-from generation.common.provider_config import resolve_openai_compatible_credentials
+from baseline_prediction.common.provider_config import resolve_openai_compatible_credentials
 
 
 def _usage_to_dict(raw_usage: Any) -> Dict[str, Any]:

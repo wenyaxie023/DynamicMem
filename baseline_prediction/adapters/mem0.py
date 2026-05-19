@@ -2,7 +2,7 @@ from .base import TceAdapterArgs
 
 
 def run(args: TceAdapterArgs):
-    from generation.mem0.tce import run_generation
+    from baseline_prediction.mem0.tce import run_generation
 
     user_id = args.user_id
     if not user_id:
@@ -40,6 +40,10 @@ def run(args: TceAdapterArgs):
         llm_azure_api_version=args.extras.get("llm_azure_api_version"),
         reset_collections=str(args.extras.get("reset_collections", "false")).strip().lower()
         in {"1", "true", "yes", "y", "on"},
+        allow_destructive_rebuild=(
+            bool(args.allow_destructive_rebuild)
+            or str(args.extras.get("allow_destructive_rebuild", "false")).strip().lower() in {"1", "true", "yes", "y", "on"}
+        ),
         resume=args.resume,
         max_checkpoints=args.max_checkpoints,
         debug=args.debug,

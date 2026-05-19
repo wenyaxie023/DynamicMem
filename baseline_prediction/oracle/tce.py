@@ -6,9 +6,10 @@ from typing import Any, Dict, List, Optional
 
 from dotenv import load_dotenv
 
-from generation.oracle.client import LLMClient
+from baseline_prediction.oracle.client import LLMClient
 from tce_core.orchestrator_protocol import CheckpointHandle, RetrievalOptions, RetrievalResult
-from tce_core.pipeline import run_pipeline, to_log_text
+from tce_contracts import has_materialized_value, infer_task_contract_version, normalize_task_a_current_value
+from tce_core.pipeline import flatten_snapshot, run_pipeline, to_log_text
 
 load_dotenv()
 
@@ -41,6 +42,61 @@ def _extract_ids(raw_ids: Any) -> List[str]:
     return out
 
 
+def _current_validated_state_by_key(
+    checkpoint: Dict[str, Any],
+    *,
+    task_contract_version: Any,
+) -> Dict[str, Any]:
+    raw_state = checkpoint.get("validated_snapshot_state")
+    if not isinstance(raw_state, dict):
+        raise ValueError(
+            "oracle_state requires checkpoint {} to contain validated_snapshot_state.".format(
+                checkpoint.get("checkpoint_id") or "<unknown>"
+            )
+        )
+
+    out: Dict[str, Any] = {}
+    for key, value in flatten_snapshot(raw_state).items():
+        normalized = normalize_task_a_current_value(
+            value,
+            task_contract_version=task_contract_version,
+        )
+        if has_materialized_value(normalized):
+            out[str(key)] = normalized
+    return out
+
+
+def _evidence_ids_for_key(checkpoint: Dict[str, Any], state_key: str) -> List[str]:
+    obs = _flatten_observability(checkpoint.get("state_observability") or {}).get(state_key)
+    if not isinstance(obs, dict):
+        return []
+    ids = _extract_ids(obs.get("evidence_app_log_ids"))
+    if ids:
+        return ids
+    last_id = obs.get("last_app_log_id")
+    if last_id is None or not str(last_id).strip():
+        return []
+    return [str(last_id)]
+
+
+def _format_current_state_memory_block(
+    *,
+    state_key: str,
+    state_value: Any,
+    evidence_app_log_ids: List[str],
+) -> str:
+    payload = {
+        "state_key": state_key,
+        "current_validated_state": state_value,
+        "supporting_app_log_ids": evidence_app_log_ids,
+    }
+    return (
+        "[Validated Current User State]\n"
+        + json.dumps(payload, ensure_ascii=False, indent=2)
+        + "\n[/Validated Current User State]"
+    )
+
+
 def run_generation(
     benchmark_path: Path,
     app_logs_path: Path,
@@ -64,7 +120,21 @@ def run_generation(
     checkpoint_workers: int = 1,
     within_checkpoint_workers: int = 1,
     save_every_generation_keys: int = 1,
+    oracle_context_mode: str = "evidence_logs",
+    baseline_name: str = "oracle",
+    task_selection: str = "all",
 ) -> Dict[str, Any]:
+    oracle_context_mode = str(oracle_context_mode or "").strip().lower()
+    if oracle_context_mode not in {"evidence_logs", "golden_state"}:
+        raise ValueError(
+            "Unsupported oracle_context_mode: {}. Use 'evidence_logs' or 'golden_state'.".format(
+                oracle_context_mode
+            )
+        )
+    benchmark_contract_version = infer_task_contract_version(
+        json.loads(benchmark_path.read_text(encoding="utf-8"))
+    )
+
     client = LLMClient(
         provider=llm_provider,
         model_name=llm_model,
@@ -95,12 +165,17 @@ def run_generation(
     def prepare_checkpoint_state(cp: Dict[str, Any], memory_pool: List[Dict[str, Any]]) -> CheckpointHandle:
         return CheckpointHandle(
             checkpoint_id=str(cp.get("checkpoint_id") or ""),
-            state_kind="oracle_observability",
+            state_kind=(
+                "oracle_validated_current_state"
+                if oracle_context_mode == "golden_state"
+                else "oracle_observability"
+            ),
             state_ref=cp,
             metadata={
                 "checkpoint_timestamp": str((cp.get("as_of") or {}).get("timestamp", "")),
                 "checkpoint_app_log_id": str((cp.get("as_of") or {}).get("app_log_id") or ""),
                 "memory_pool_size": len(memory_pool),
+                "oracle_context_mode": oracle_context_mode,
             },
         )
 
@@ -112,6 +187,52 @@ def run_generation(
     ) -> RetrievalResult:
         del retrieval_options
         cp = checkpoint_handle.state_ref if isinstance(checkpoint_handle.state_ref, dict) else {}
+
+        if oracle_context_mode == "golden_state":
+            current_state = _current_validated_state_by_key(
+                cp,
+                task_contract_version=benchmark_contract_version,
+            )
+            missing = [key for key in query_spec.target_keys if key not in current_state]
+            if missing:
+                raise ValueError(
+                    "oracle_state could not find validated current state for checkpoint {} keys: {}".format(
+                        checkpoint_handle.checkpoint_id or "<unknown>",
+                        ", ".join(missing),
+                    )
+                )
+
+            blocks: List[str] = []
+            evidence_ids_by_key: Dict[str, List[str]] = {}
+            for key in query_spec.target_keys:
+                evidence_ids = _evidence_ids_for_key(cp, key)
+                evidence_ids_by_key[key] = evidence_ids
+                blocks.append(
+                    _format_current_state_memory_block(
+                        state_key=key,
+                        state_value=current_state[key],
+                        evidence_app_log_ids=evidence_ids,
+                    )
+                )
+
+            retrieved_ids: List[str] = []
+            for ids in evidence_ids_by_key.values():
+                for sid in ids:
+                    if sid not in retrieved_ids:
+                        retrieved_ids.append(sid)
+            return RetrievalResult(
+                mode="inline_memory",
+                inline_memory_blocks=blocks,
+                debug_metadata={
+                    "num_retrieved_logs": 0,
+                    "retrieved_app_log_ids": retrieved_ids,
+                    "evidence_app_log_ids_by_key": evidence_ids_by_key,
+                    "retrieval_mode": "oracle_validated_current_state",
+                    "oracle_context_mode": oracle_context_mode,
+                    "retrieval_query": query_spec.retrieval_query_text,
+                },
+            )
+
         obs_flat = _flatten_observability(cp.get("state_observability") or {})
 
         target_ids: List[str] = []
@@ -168,7 +289,7 @@ def run_generation(
         close=close,
         prepare_checkpoint_state=prepare_checkpoint_state,
         retrieve_context_for_query=retrieve_context_for_query,
-        baseline_name="oracle",
+        baseline_name=baseline_name,
         memory_prompt_mode="inline_memory",
         resume=resume,
         max_checkpoints=max_checkpoints,
@@ -183,6 +304,7 @@ def run_generation(
         within_checkpoint_workers=within_checkpoint_workers,
         save_every_generation_keys=save_every_generation_keys,
         retrieval_options_backend={},
+        task_selection=task_selection,
     )
 
 

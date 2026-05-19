@@ -1,8 +1,16 @@
 from .base import TceAdapterArgs
 
 
+def _is_true(value) -> bool:
+    if isinstance(value, bool):
+        return value
+    if value is None:
+        return False
+    return str(value).strip().lower() in {"1", "true", "yes", "y", "on"}
+
+
 def run(args: TceAdapterArgs):
-    from generation.rag.rag_tce import run_generation
+    from baseline_prediction.rag.rag_tce import run_generation
     predict_per_key = args.extras.get("predict_per_key", "true").strip().lower() in {
         "1",
         "true",
@@ -23,6 +31,7 @@ def run(args: TceAdapterArgs):
     ]
     calendar_anchor_freq = str(args.extras.get("calendar_anchor_freq", "")).strip()
     exposure_tokenizer_model = str(args.extras.get("exposure_tokenizer_model", "gpt-4o-mini")).strip()
+    task_selection = str(args.extras.get("__task_selection__", "all")).strip().lower() or "all"
 
     return run_generation(
         benchmark_path=args.benchmark,
@@ -60,4 +69,6 @@ def run(args: TceAdapterArgs):
         final_qa_output_path=args.final_qa_output_path,
         final_qa_retrieval_top_k=args.final_qa_retrieval_top_k,
         final_qa_save_prompt_and_raw=args.final_qa_save_prompt_and_raw,
+        build_only=_is_true(args.extras.get("build_only")),
+        task_selection=task_selection,
     )

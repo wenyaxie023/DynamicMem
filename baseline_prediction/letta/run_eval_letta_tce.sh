@@ -2,9 +2,9 @@
 set -euo pipefail
 
 PYTHON_BIN="python"
-PROJECT_ROOT="/users/4/xie00470/mem_bench/dynamicmem"
-BENCHMARK_ROOT="$PROJECT_ROOT/data_construction/generated_outputs/gemini_3_flash_preview"
-PREDICTION_ROOT="$PROJECT_ROOT/generation/letta/results"
+PROJECT_ROOT="${PROJECT_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)}"
+BENCHMARK_ROOT="$PROJECT_ROOT/outputs/gemini_3_flash_preview"
+PREDICTION_ROOT="$PROJECT_ROOT/baseline_prediction/letta/results"
 
 USERS=("001_user_001")
 ENABLE_LLM_JUDGE="${ENABLE_LLM_JUDGE:-true}"

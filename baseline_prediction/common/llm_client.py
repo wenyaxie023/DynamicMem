@@ -140,6 +140,8 @@ class LLMClient:
             try:
                 return func(*args, **kwargs)
             except Exception as exc:
+                if "content_filter" in str(exc):
+                    raise
                 if attempt < max_attempts - 1:
                     print(f"[LLM] Attempt {attempt + 1} failed: {exc}. Retrying in 2s...")
                     time.sleep(2)

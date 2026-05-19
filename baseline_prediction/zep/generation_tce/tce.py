@@ -36,8 +36,9 @@ from graphiti_core.nodes import EpisodeType
 from graphiti_core.utils.bulk_utils import RawEpisode
 from openai import APIStatusError, AsyncOpenAI, RateLimitError
 
-from generation.common.llm_client import LLMClient
-from generation.common.provider_config import load_repo_dotenv, resolve_openai_compatible_credentials
+from baseline_prediction.common.llm_client import LLMClient
+from baseline_prediction.common.provider_config import load_repo_dotenv, resolve_openai_compatible_credentials
+from baseline_prediction.tce_safety import ensure_destructive_rebuild_allowed
 from tce_core.orchestrator_protocol import CheckpointHandle, RetrievalOptions, RetrievalResult
 from tce_core.pipeline import normalize_app_logs, observed_logs_for_checkpoint, run_pipeline, to_log_text
 
@@ -1096,6 +1097,7 @@ def run_generation(
     graphiti_llm_provider: Optional[str] = None,
     graphiti_llm_model: Optional[str] = None,
     graphiti_max_tokens: int = 16384,
+    allow_destructive_rebuild: bool = False,
     enable_change_reasoning: bool = False,
     enable_rq3_apply_service_qa: bool = False,
     rq3_apply_save_prompt_and_raw: bool = True,
@@ -1182,6 +1184,11 @@ def run_generation(
                 print(
                     "[Zep] Resume DB state is inconsistent with confirmed progress; rebuilding Graphiti index from scratch"
                 )
+                ensure_destructive_rebuild_allowed(
+                    allow_destructive_rebuild=allow_destructive_rebuild,
+                    operation="reset existing Zep Graphiti artifacts",
+                    paths=[Path(db_path), progress_path, snapshot_root],
+                )
                 index.initialize(reset_db=True, indexed_log_ids=set())
             else:
                 index.initialize(reset_db=False, indexed_log_ids=indexed_log_ids)
@@ -1215,8 +1222,18 @@ def run_generation(
         else:
             if candidate_progress or os.path.exists(db_path):
                 print("[Zep] Resume state invalid or incomplete; rebuilding Graphiti index from scratch")
+            ensure_destructive_rebuild_allowed(
+                allow_destructive_rebuild=allow_destructive_rebuild,
+                operation="reset existing Zep Graphiti artifacts",
+                paths=[Path(db_path), progress_path, snapshot_root],
+            )
             index.initialize(reset_db=True, indexed_log_ids=set())
     else:
+        ensure_destructive_rebuild_allowed(
+            allow_destructive_rebuild=allow_destructive_rebuild,
+            operation="reset existing Zep Graphiti artifacts",
+            paths=[Path(db_path), progress_path, snapshot_root],
+        )
         index.initialize(reset_db=True, indexed_log_ids=set())
 
     builder_lock = threading.RLock()

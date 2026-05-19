@@ -23,6 +23,7 @@ _DEFAULT_CONCURRENCY_POLICY = BaselineConcurrencyPolicy(
 SHARED_PIPELINE_SNAPSHOT_BASELINES = {
     "rag",
     "oracle",
+    "oracle_state",
     "icl",
     "hipporag",
     "hipporag2",
@@ -42,6 +43,7 @@ AGENT_LOOP_BASELINES = {
 BASELINE_CONCURRENCY_POLICIES: Dict[str, BaselineConcurrencyPolicy] = {
     "rag": BaselineConcurrencyPolicy("allowed", "allowed"),
     "oracle": BaselineConcurrencyPolicy("allowed", "allowed"),
+    "oracle_state": BaselineConcurrencyPolicy("allowed", "allowed"),
     "icl": BaselineConcurrencyPolicy("allowed", "allowed"),
     "hipporag": BaselineConcurrencyPolicy("allowed", "allowed"),
     "hipporag2": BaselineConcurrencyPolicy("allowed", "allowed"),
@@ -85,6 +87,7 @@ class TceAdapterArgs:
     llm_top_p: Optional[float] = 1.0
     llm_top_k: Optional[int] = None
     resume: bool = False
+    allow_destructive_rebuild: bool = False
     max_checkpoints: Optional[int] = None
     debug: bool = False
     debug_dir: Optional[Path] = None

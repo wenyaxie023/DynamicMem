@@ -6,7 +6,8 @@ from typing import Any, Dict
 
 import yaml
 
-from generation.adapters.base import TceAdapterArgs
+from baseline_prediction.adapters.base import TceAdapterArgs
+from baseline_prediction.common.path_roots import resolve_repo_path
 
 
 def derive_run_name(experiment_name: Any, run_id: Any) -> str:
@@ -70,6 +71,15 @@ def coerce_optional_int(value: Any) -> Any:
     if isinstance(value, str) and not value.strip():
         return None
     return int(value)
+
+
+def normalize_task_selection(value: Any) -> str:
+    raw = str(value or "all").strip().lower() or "all"
+    if raw in {"all", "task_c_only"}:
+        return raw
+    raise ValueError(
+        "Unsupported runtime.task_selection: {}. Use 'all' or 'task_c_only'.".format(value)
+    )
 
 
 def build_from_config(cfg: Dict[str, Any]) -> TceAdapterArgs:
@@ -137,24 +147,42 @@ def build_from_config(cfg: Dict[str, Any]) -> TceAdapterArgs:
     if not benchmark or not app_logs_path or not prediction_output:
         raise ValueError("Config requires data.benchmark, data.app_logs_path, output.prediction_path")
 
-    extras = {str(k): str(v) for k, v in baseline_params.items()}
+    path_like_baseline_params = {
+        "snapshot_dir",
+        "data_storage_path",
+        "save_dir",
+        "checkpoint_agents_dir",
+        "checkpoint_dir",
+    }
+    extras = {}
+    for k, v in baseline_params.items():
+        key = str(k)
+        if key in path_like_baseline_params and str(v).strip():
+            extras[key] = str(resolve_repo_path(v))
+        else:
+            extras[key] = str(v)
     experiment_name = str(_get(runtime, "experiment_name", "") or "").strip()
     run_id = str(_get(runtime, "run_id", "") or "").strip() or "main"
     run_name = derive_run_name(experiment_name, run_id)
+    task_selection = normalize_task_selection(_get(runtime, "task_selection", "all"))
     user_id = _get(runtime, "user_id", None)
     if user_id is not None:
         user_id = str(user_id)
+    allow_destructive_rebuild = coerce_bool(
+        runtime.get("allow_destructive_rebuild", baseline_params.get("allow_destructive_rebuild", False))
+    )
     if experiment_name:
         extras["__experiment_name__"] = experiment_name
     extras["__run_id__"] = run_id
     extras["__run_name__"] = run_name
+    extras["__task_selection__"] = task_selection
 
     return TceAdapterArgs(
         baseline=str(baseline),
         user_id=user_id,
-        benchmark=Path(str(benchmark)),
-        app_logs_path=Path(str(app_logs_path)),
-        output=Path(str(prediction_output)),
+        benchmark=resolve_repo_path(benchmark),
+        app_logs_path=resolve_repo_path(app_logs_path),
+        output=resolve_repo_path(prediction_output),
         max_visible_logs=_get(runtime, "max_visible_logs", None),
         llm_provider=str(_get(llm, "provider", "openai")),
         llm_model=str(_get(llm, "model", "gpt-5-mini")),
@@ -163,9 +191,10 @@ def build_from_config(cfg: Dict[str, Any]) -> TceAdapterArgs:
         llm_top_p=coerce_optional_float(llm.get("top_p", 1.0)),
         llm_top_k=coerce_optional_int(llm.get("top_k", None)),
         resume=coerce_bool(_get(runtime, "resume", False)),
+        allow_destructive_rebuild=allow_destructive_rebuild,
         max_checkpoints=_get(runtime, "max_checkpoints", None),
         debug=coerce_bool(_get(runtime, "debug", False)),
-        debug_dir=Path(str(runtime["debug_dir"])) if _get(runtime, "debug_dir", None) else None,
+        debug_dir=resolve_repo_path(runtime["debug_dir"]) if _get(runtime, "debug_dir", None) else None,
         save_prompt_and_raw=coerce_bool(_get(runtime, "save_prompt_and_raw", False)),
         enable_change_reasoning=coerce_bool(_get(runtime, "enable_change_reasoning", False)),
         enable_rq3_apply_service_qa=coerce_bool(_get(runtime, "enable_rq3_apply_service_qa", False)),
@@ -180,12 +209,12 @@ def build_from_config(cfg: Dict[str, Any]) -> TceAdapterArgs:
         rq3_apply_retrieval_top_k=coerce_optional_int(retrieval.get("rq3_apply_top_k", None)),
         enable_final_qa=coerce_bool(_get(final_qa, "enabled", False)),
         final_qa_path=(
-            str(_get(final_qa, "path"))
+            str(resolve_repo_path(_get(final_qa, "path")))
             if _get(final_qa, "path", None) is not None
             else None
         ),
         final_qa_output_path=(
-            str(_get(final_qa, "output_path"))
+            str(resolve_repo_path(_get(final_qa, "output_path")))
             if _get(final_qa, "output_path", None) is not None
             else None
         ),
@@ -203,8 +232,10 @@ def resolved_payload(adapter_args: TceAdapterArgs, config_path: Path = None) -> 
             "experiment_name": adapter_args.extras.get("__experiment_name__"),
             "run_id": adapter_args.extras.get("__run_id__"),
             "run_name": adapter_args.extras.get("__run_name__"),
+            "task_selection": adapter_args.extras.get("__task_selection__", "all"),
             "max_visible_logs": adapter_args.max_visible_logs,
             "resume": adapter_args.resume,
+            "allow_destructive_rebuild": adapter_args.allow_destructive_rebuild,
             "debug": adapter_args.debug,
             "debug_dir": str(adapter_args.debug_dir) if adapter_args.debug_dir else None,
             "save_prompt_and_raw": adapter_args.save_prompt_and_raw,
@@ -250,7 +281,7 @@ def resolved_payload(adapter_args: TceAdapterArgs, config_path: Path = None) -> 
         "baseline_params": {
             k: v
             for k, v in adapter_args.extras.items()
-            if k not in {"__experiment_name__", "__run_id__", "__run_name__"}
+            if k not in {"__experiment_name__", "__run_id__", "__run_name__", "__task_selection__"}
         },
     }
     if config_path is not None:

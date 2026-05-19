@@ -35,7 +35,7 @@ echo "Running HippoRAG TCE for $USER_ID using index at $HIPPORAG_DIR"
 python3 -u generation_tce/tce.py \
     --benchmark "$(resolve_benchmark_path)" \
     --app-logs-path "user_data/${USER_ID}/app_log_large.json" \
-    --output "generation/HippoRAG2/results/${USER_ID}/prediction/tce_results_v14_taskabc.json" \
+    --output "results/HippoRAG2/results/${USER_ID}/prediction/tce_results_v14_taskabc.json" \
     --hipporag-dir "$HIPPORAG_DIR" \
     --llm-provider "openai" \
     --llm-model "$LLM" \

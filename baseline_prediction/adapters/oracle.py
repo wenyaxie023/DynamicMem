@@ -2,7 +2,9 @@ from .base import TceAdapterArgs
 
 
 def run(args: TceAdapterArgs):
-    from generation.oracle.tce import run_generation
+    from baseline_prediction.oracle.tce import run_generation
+
+    task_selection = str(args.extras.get("__task_selection__", "all")).strip().lower() or "all"
 
     return run_generation(
         benchmark_path=args.benchmark,
@@ -27,4 +29,5 @@ def run(args: TceAdapterArgs):
         checkpoint_workers=args.checkpoint_workers,
         within_checkpoint_workers=args.within_checkpoint_workers,
         save_every_generation_keys=args.save_every_generation_keys,
+        task_selection=task_selection,
     )

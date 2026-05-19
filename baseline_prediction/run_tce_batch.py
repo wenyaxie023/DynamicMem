@@ -13,8 +13,8 @@ if __package__ is None or __package__ == "":
     if repo_root_str not in sys.path:
         sys.path.insert(0, repo_root_str)
 
-from generation.adapters.registry import run_adapter
-from generation.tce_config import (
+from baseline_prediction.adapters.registry import run_adapter
+from baseline_prediction.tce_config import (
     build_from_config,
     deep_merge,
     load_yaml,

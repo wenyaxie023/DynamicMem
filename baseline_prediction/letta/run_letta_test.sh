@@ -22,7 +22,7 @@ fi
 
 cd "$PROJECT_ROOT"
 
-"$PYTHON_BIN" -m generation.letta.letta \
+"$PYTHON_BIN" -m baseline_prediction.letta.letta \
   --input-user-dir "$USER_DIR" \
   --qa-user-dir "$USER_DIR" \
   --prediction-dir "$USER_DIR" \

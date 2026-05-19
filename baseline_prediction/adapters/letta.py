@@ -4,7 +4,7 @@ from .base import TceAdapterArgs
 
 
 def run(args: TceAdapterArgs):
-    from generation.letta.tce import run_generation
+    from baseline_prediction.letta.tce import run_generation
 
     allow_local_fallback = args.extras.get("allow_local_fallback", "true").strip().lower() in {
         "1", "true", "yes", "y", "on"

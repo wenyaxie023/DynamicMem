@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 
-from generation.HippoRAG2.generation_tce.online_tce import (
+from baseline_prediction.HippoRAG2.generation_tce.online_tce import (
     HippoRAG2Runner,
     main,
     run_generation,

@@ -7,7 +7,7 @@ from typing import Any, Dict, List, Optional
 
 from openai import OpenAI
 
-from generation.common.provider_config import resolve_openai_compatible_credentials
+from baseline_prediction.common.provider_config import resolve_openai_compatible_credentials
 
 from .. import config
 

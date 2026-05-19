@@ -12,8 +12,8 @@ HOT_RESUME_LATEST="${HOT_RESUME_LATEST:-true}"
 KEEP_IMPORTED_AGENTS="${KEEP_IMPORTED_AGENTS:-false}"
 
 DATA_ROOT="${DATA_ROOT:-$PROJECT_ROOT/data}"
-RESULT_ROOT="${RESULT_ROOT:-$PROJECT_ROOT/generation/letta/results}"
-AGENTS_DIR="${AGENTS_DIR:-$PROJECT_ROOT/generation/letta/agents}"
+RESULT_ROOT="${RESULT_ROOT:-$PROJECT_ROOT/baseline_prediction/letta/results}"
+AGENTS_DIR="${AGENTS_DIR:-$PROJECT_ROOT/baseline_prediction/letta/agents}"
 
 APP_LOGS_FILENAME="${APP_LOGS_FILENAME:-app_log_large.json}"
 QA_FILENAME="${QA_FILENAME:-qa.json}"
@@ -22,7 +22,7 @@ BENCHMARK_FILENAME="${BENCHMARK_FILENAME:-dynamic_state_prediction_benchmark.jso
 cd "$PROJECT_ROOT"
 
 cmd=(
-  "$PYTHON_BIN" -m generation.letta.pipeline
+  "$PYTHON_BIN" -m baseline_prediction.letta.pipeline
   --action "$ACTION"
   --user "$USER_ID"
   --data-root "$DATA_ROOT"

@@ -3,8 +3,8 @@ import argparse
 import json
 from pathlib import Path
 
-from generation.adapters.registry import list_adapters, run_adapter
-from generation.tce_config import (
+from baseline_prediction.adapters.registry import list_adapters, run_adapter
+from baseline_prediction.tce_config import (
     build_from_config,
     derive_run_name,
     load_yaml,
@@ -14,7 +14,7 @@ from generation.tce_config import (
     write_run_settings,
     normalize_users,
 )
-from generation.adapters.base import TceAdapterArgs
+from baseline_prediction.adapters.base import TceAdapterArgs
 
 
 def _build_from_legacy_args(args: argparse.Namespace) -> TceAdapterArgs:

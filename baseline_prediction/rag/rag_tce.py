@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 import argparse
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -9,7 +10,7 @@ import numpy as np
 from openai import OpenAI
 from dotenv import load_dotenv
 
-from generation.rag.client import LLMClient
+from baseline_prediction.rag.client import LLMClient
 from tce_core.orchestrator_protocol import CheckpointHandle, RetrievalOptions, RetrievalResult
 from tce_core.pipeline import run_pipeline, to_log_text
 
@@ -54,14 +55,168 @@ def _embed_texts(
 ) -> np.ndarray:
     if not texts:
         return np.empty((0, 0), dtype="float32")
+    effective_batch_size = max(1, int(batch_size))
     chunks: List[np.ndarray] = []
-    for i in range(0, len(texts), batch_size):
-        batch = texts[i : i + batch_size]
+    total_batches = max(1, (len(texts) + effective_batch_size - 1) // effective_batch_size)
+    for i in range(0, len(texts), effective_batch_size):
+        batch_idx = (i // effective_batch_size) + 1
+        if total_batches > 1:
+            end = min(i + effective_batch_size, len(texts))
+            print(
+                "[RAG-TCE] Embedding batch {}/{} (items {}-{} of {})".format(
+                    batch_idx,
+                    total_batches,
+                    i + 1,
+                    end,
+                    len(texts),
+                )
+            )
+        batch = texts[i : i + effective_batch_size]
         resp = client.embeddings.create(model=model, input=batch)
         arr = np.array([d.embedding for d in resp.data], dtype="float32")
         chunks.append(arr)
     emb = np.vstack(chunks)
     return _normalize_rows(emb)
+
+
+def _resolve_embedding_cache_dir(output_path: Path) -> Path:
+    output_path = output_path.expanduser().resolve()
+    parent = output_path.parent
+    if parent.name == "prediction":
+        return parent.parent / "memory"
+    if parent.parent.name == "prediction":
+        return parent.parent.parent / "memory"
+    return parent / "memory"
+
+
+def _embedding_cache_paths(
+    app_logs_path: Path,
+    output_path: Path,
+    retriever_provider: str,
+    retriever_model: str,
+) -> tuple[Path, Path]:
+    resolved_logs = app_logs_path.expanduser().resolve()
+    stat = resolved_logs.stat()
+    cache_key_payload = {
+        "version": 1,
+        "app_logs_path": str(resolved_logs),
+        "app_logs_size": int(stat.st_size),
+        "app_logs_mtime_ns": int(stat.st_mtime_ns),
+        "retriever_provider": str(retriever_provider or ""),
+        "retriever_model": str(retriever_model or ""),
+    }
+    cache_key = hashlib.sha256(
+        json.dumps(cache_key_payload, sort_keys=True, ensure_ascii=False).encode("utf-8")
+    ).hexdigest()[:16]
+    cache_dir = _resolve_embedding_cache_dir(output_path)
+    stem = "rag_tce_applog_embeddings_{}".format(cache_key)
+    return cache_dir / "{}.npz".format(stem), cache_dir / "{}.meta.json".format(stem)
+
+
+def _load_embedding_cache(cache_path: Path, expected_rows: int) -> Optional[np.ndarray]:
+    if not cache_path.exists():
+        return None
+    try:
+        with np.load(cache_path, allow_pickle=False) as payload:
+            embeddings = np.asarray(payload["embeddings"], dtype="float32")
+    except Exception as exc:
+        print("[RAG-TCE] Failed to load embedding cache {}: {}".format(cache_path, exc))
+        return None
+    if embeddings.ndim != 2 or embeddings.shape[0] != expected_rows:
+        print(
+            "[RAG-TCE] Embedding cache shape mismatch at {}: expected {} rows, got {}".format(
+                cache_path,
+                expected_rows,
+                tuple(embeddings.shape),
+            )
+        )
+        return None
+    return _normalize_rows(embeddings)
+
+
+def _write_embedding_cache(
+    cache_path: Path,
+    meta_path: Path,
+    embeddings: np.ndarray,
+    metadata: Dict[str, Any],
+) -> None:
+    cache_path.parent.mkdir(parents=True, exist_ok=True)
+    tmp_cache = cache_path.with_suffix(cache_path.suffix + ".tmp")
+    tmp_meta = meta_path.with_suffix(meta_path.suffix + ".tmp")
+    with tmp_cache.open("wb") as fh:
+        np.savez_compressed(fh, embeddings=np.asarray(embeddings, dtype="float32"))
+    tmp_cache.replace(cache_path)
+    tmp_meta.write_text(json.dumps(metadata, ensure_ascii=False, indent=2), encoding="utf-8")
+    tmp_meta.replace(meta_path)
+
+
+def _load_or_build_app_log_embeddings(
+    *,
+    embed_client: OpenAI,
+    retriever_provider: str,
+    retriever_model: str,
+    retriever_batch_size: int,
+    app_logs_path: Path,
+    output_path: Path,
+    all_logs: List[Dict[str, Any]],
+) -> np.ndarray:
+    cache_path, meta_path = _embedding_cache_paths(
+        app_logs_path=app_logs_path,
+        output_path=output_path,
+        retriever_provider=retriever_provider,
+        retriever_model=retriever_model,
+    )
+    cached = _load_embedding_cache(cache_path, expected_rows=len(all_logs))
+    if cached is not None:
+        print("[RAG-TCE] Embedding cache hit: {}".format(cache_path))
+        return cached
+
+    print("[RAG-TCE] Embedding cache miss: {}".format(cache_path))
+    print(
+        "[RAG-TCE] Building {} app-log embeddings with {}/{}...".format(
+            len(all_logs),
+            retriever_provider,
+            retriever_model,
+        )
+    )
+    all_texts = [_log_search_text(log) for log in all_logs]
+    embeddings = _embed_texts(
+        embed_client,
+        retriever_model,
+        all_texts,
+        batch_size=retriever_batch_size,
+    )
+    stat = app_logs_path.expanduser().resolve().stat()
+    _write_embedding_cache(
+        cache_path=cache_path,
+        meta_path=meta_path,
+        embeddings=embeddings,
+        metadata={
+            "app_logs_path": str(app_logs_path.expanduser().resolve()),
+            "app_logs_size": int(stat.st_size),
+            "app_logs_mtime_ns": int(stat.st_mtime_ns),
+            "retriever_provider": retriever_provider,
+            "retriever_model": retriever_model,
+            "num_logs": len(all_logs),
+            "embedding_dim": int(embeddings.shape[1]) if embeddings.ndim == 2 and embeddings.size else 0,
+            "cache_path": str(cache_path),
+        },
+    )
+    print("[RAG-TCE] Saved embedding cache: {}".format(cache_path))
+    return embeddings
+
+
+def _requested_checkpoint_ids(benchmark_path: Path, max_checkpoints: Optional[int]) -> List[str]:
+    benchmark_payload = json.loads(benchmark_path.read_text(encoding="utf-8"))
+    checkpoints = benchmark_payload.get("checkpoints", []) if isinstance(benchmark_payload, dict) else []
+    checkpoints = [cp for cp in checkpoints if isinstance(cp, dict)]
+    if max_checkpoints is not None:
+        checkpoints = checkpoints[: max(0, int(max_checkpoints))]
+    return [
+        str(cp.get("checkpoint_id", "")).strip()
+        for cp in checkpoints
+        if str(cp.get("checkpoint_id", "")).strip()
+    ]
 
 
 def run_generation(
@@ -100,17 +255,13 @@ def run_generation(
     final_qa_output_path: Optional[str] = None,
     final_qa_retrieval_top_k: Optional[int] = None,
     final_qa_save_prompt_and_raw: bool = False,
+    build_only: bool = False,
+    task_selection: str = "all",
 ) -> Dict[str, Any]:
-    client = LLMClient(
-        provider=llm_provider,
-        model_name=llm_model,
-        max_workers=llm_max_workers,
-        temperature=answer_temperature,
-        top_p=answer_top_p,
-        top_k=answer_top_k,
-    )
-
+    output_path = output_path.expanduser().resolve()
+    output_path.parent.mkdir(parents=True, exist_ok=True)
     embed_client = _build_openai_client(retriever_provider)
+    print("[RAG-TCE] Loading app logs from {}".format(app_logs_path))
     all_logs_payload = json.loads(app_logs_path.read_text(encoding="utf-8"))
     if isinstance(all_logs_payload, dict):
         all_logs = all_logs_payload.get("app_logs", [])
@@ -119,20 +270,57 @@ def run_generation(
     else:
         all_logs = []
     all_logs = [x for x in all_logs if isinstance(x, dict)]
+    print("[RAG-TCE] Loaded {} app logs.".format(len(all_logs)))
 
     # Build embeddings for all logs once; pipeline passes prefix/tail slices preserving order.
-    all_texts = [_log_search_text(log) for log in all_logs]
-    all_embeddings = _embed_texts(
-        embed_client,
-        retriever_model,
-        all_texts,
-        batch_size=retriever_batch_size,
+    all_embeddings = _load_or_build_app_log_embeddings(
+        embed_client=embed_client,
+        retriever_provider=retriever_provider,
+        retriever_model=retriever_model,
+        retriever_batch_size=retriever_batch_size,
+        app_logs_path=app_logs_path,
+        output_path=output_path,
+        all_logs=all_logs,
     )
+    cache_path, meta_path = _embedding_cache_paths(
+        app_logs_path=app_logs_path,
+        output_path=output_path,
+        retriever_provider=retriever_provider,
+        retriever_model=retriever_model,
+    )
+
+    if build_only:
+        requested_checkpoint_ids = _requested_checkpoint_ids(benchmark_path, max_checkpoints)
+        print(
+            "[RAG-TCE] Build-only complete. Prepared {} cached embeddings for {} checkpoints.".format(
+                len(all_logs),
+                len(requested_checkpoint_ids),
+            )
+        )
+        return {
+            "predictions": [],
+            "build_only": {
+                "enabled": True,
+                "embedding_cache_path": str(cache_path),
+                "embedding_cache_meta_path": str(meta_path),
+                "num_logs": len(all_logs),
+                "requested_checkpoint_ids": requested_checkpoint_ids,
+            },
+        }
 
     # Map app_log_id -> embedding row for O(1) lookup when pipeline gives memory_pool logs.
     emb_by_log_id = {}
     for idx, log in enumerate(all_logs):
         emb_by_log_id[str(log.get("app_log_id", f"idx_{idx}"))] = idx
+
+    client = LLMClient(
+        provider=llm_provider,
+        model_name=llm_model,
+        max_workers=llm_max_workers,
+        temperature=answer_temperature,
+        top_p=answer_top_p,
+        top_k=answer_top_k,
+    )
 
     def ask_json(prompt: str) -> Any:
         return client.ask(prompt, response_type="json")
@@ -248,9 +436,16 @@ def run_generation(
                 "retrieved_app_log_ids": [x.get("app_log_id") for x in retrieved],
                 "top20_similarity": top20_similarity,
                 "retrieval_query": retrieval_query,
-            },
-        )
+                },
+            )
 
+    print(
+        "[RAG-TCE] Starting checkpoint pipeline with retrieval_top_k={} max_checkpoints={} task_selection={}.".format(
+            retrieval_top_k,
+            max_checkpoints if max_checkpoints is not None else "all",
+            task_selection,
+        )
+    )
     return run_pipeline(
         benchmark_path=benchmark_path,
         app_logs_path=app_logs_path,
@@ -290,6 +485,7 @@ def run_generation(
         final_qa_output_path=final_qa_output_path,
         final_qa_retrieval_top_k=final_qa_retrieval_top_k,
         final_qa_save_prompt_and_raw=final_qa_save_prompt_and_raw,
+        task_selection=task_selection,
     )
 
 
@@ -397,6 +593,7 @@ def main() -> None:
     )
     parser.set_defaults(rq3_apply_save_prompt_and_raw=True)
     parser.add_argument("--rq3-apply-retrieval-top-k", type=int, default=None)
+    parser.add_argument("--build-only", action="store_true", help="Build and cache app-log embeddings only, then exit.")
     args = parser.parse_args()
     exposure_anchors = [
         int(x.strip())
@@ -429,10 +626,15 @@ def main() -> None:
         enable_rq3_apply_service_qa=args.enable_rq3_apply_service_qa,
         rq3_apply_save_prompt_and_raw=args.rq3_apply_save_prompt_and_raw,
         rq3_apply_retrieval_top_k=args.rq3_apply_retrieval_top_k,
+        build_only=args.build_only,
     )
 
-    print("Saved:", args.output)
-    print("Total checkpoints:", len(result.get("predictions", [])))
+    if args.build_only:
+        print("Build-only cache:", result.get("build_only", {}).get("embedding_cache_path"))
+        print("Requested checkpoints:", len(result.get("build_only", {}).get("requested_checkpoint_ids", [])))
+    else:
+        print("Saved:", args.output)
+        print("Total checkpoints:", len(result.get("predictions", [])))
 
 
 if __name__ == "__main__":
