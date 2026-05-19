@@ -124,11 +124,32 @@ STEP DONE — imports + configs + outputs root:
   `.gitignore` + canonical writers (batch_generation_runner.py,
   download_world_backgrounds.py, add_reference_app_logs.py) rewritten.
 
+STEP DONE — shell-script parameterization:
+- All 35 tracked .sh: `-m generation.*` → `-m baseline_prediction.*`;
+  `$PROJECT_ROOT/generation/` → `/baseline_prediction/`;
+  `data_construction/generated_outputs/` → `outputs/`;
+  build script python target → `benchmark_construction/`.
+- 6 hardcoded `PROJECT_ROOT=/abs/path` → env-overridable script-relative
+  derivation; verified resolve to repo root for all depths.
+- `run_letta_apptainer_server.sh` storage default → `$HOME/.letta`.
+- CUT `baseline_prediction/rag/run_rag.sh` (QA RAG runner pointing at a
+  foreign `behavior_and_conversation` repo + `--qa-dir`; TCE rag uses
+  `run_rag_tce.sh`).
+- `run_build_tce_benchmark.sh` no longer hardcodes the (untracked,
+  analysis_tools/) research doc; defers to Python built-in default unless
+  `CANONICAL_RESEARCH_DOC` env is set.
+- Validated: 35/35 `bash -n` pass; 0 residual `data_construction/` or
+  absolute machine paths in scripts.
+
+OPEN CONTENT GAP (needs user decision — surfaced):
+- `tce_contracts.CANONICAL_RESEARCH_DOC_V2` →
+  `analysis_tools/tce_research_questions/001_user_001/new_research_question.md`,
+  which is UNTRACKED and lives under the cut `analysis_tools/`. Part 2
+  benchmark construction needs this doc. analysis_tools/ cut was correct (only
+  6 web-viewer assets were tracked; this md was never tracked), but the doc
+  itself must be given a tracked home or documented as required input.
+
 REMAINING path/string surface (later dedicated passes, NOT this step):
-- Shell scripts still reference `data_construction/generated_outputs/...` and
-  some hardcoded absolute machine paths: `baseline_prediction/*/run_*.sh`,
-  `benchmark_construction/run_build_tce_benchmark.sh`,
-  `evaluation/run_eval_tce.sh` — parameterize + repoint to `outputs/`.
 - `trajectory_synthesis/generation_pipeline.py` debug_v* / _v2 / _elite_sample
   scratch entrypoints (15+) — prune or repoint during scratch-cleanup pass.
 - Docs (`docs/runbooks/*`, top READMEs, evaluation/README.md) + tests +

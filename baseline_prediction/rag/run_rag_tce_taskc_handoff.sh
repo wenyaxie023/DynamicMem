@@ -20,4 +20,4 @@ if [[ ! -f "$APP_LOGS_PATH" ]]; then
 fi
 
 cd "$REPO_ROOT"
-python3 -m generation.run_tce --config "$CONFIG_PATH" "$@"
+python3 -m baseline_prediction.run_tce --config "$CONFIG_PATH" "$@"

@@ -2,8 +2,8 @@
 set -euo pipefail
 
 PYTHON_BIN="${PYTHON_BIN:-python3}"
-PROJECT_ROOT="/users/4/xie00470/mem_bench/dynamicmem"
-BENCHMARK_ROOT="${BENCHMARK_ROOT:-$PROJECT_ROOT/data_construction/generated_outputs/gemini_3_flash_preview}"
+PROJECT_ROOT="${PROJECT_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
+BENCHMARK_ROOT="${BENCHMARK_ROOT:-$PROJECT_ROOT/outputs/gemini_3_flash_preview}"
 BASELINE="${BASELINE:-rag}"
 USER_DIR="${USER_DIR:-001_user_001}"
 EXPERIMENT_NAME="${EXPERIMENT_NAME:-}"
@@ -18,7 +18,7 @@ else
 fi
 LLM_MAX_WORKERS="${LLM_MAX_WORKERS:-4}"
 
-RESULT_ROOT="$PROJECT_ROOT/generation/$BASELINE/results/$USER_DIR"
+RESULT_ROOT="$PROJECT_ROOT/baseline_prediction/$BASELINE/results/$USER_DIR"
 if [[ -n "$EXPERIMENT_NAME" ]]; then
   PREDICTION_DIR="$RESULT_ROOT/prediction/$EXPERIMENT_NAME"
   EVAL_DIR="$RESULT_ROOT/eval/$EXPERIMENT_NAME"
