@@ -141,6 +141,15 @@ STEP DONE — shell-script parameterization:
 - Validated: 35/35 `bash -n` pass; 0 residual `data_construction/` or
   absolute machine paths in scripts.
 
+INCIDENT (found + fixed): `git mv --sparse` (used to work around the
+uninitialized-submodule block) set SKIP_WORKTREE on 188 files. `git add -u`
+silently ignored working-tree edits to skip-worktree files, so commits
+4edfe8c / 62ca5ad were incomplete (48 files: 29 .py, 18 .sh, 1 .md).
+Fixed: cleared skip-worktree repo-wide, corrective commit, re-validated
+on the committed tree (0 old imports, 12/12 import smoke, 35/35 bash -n,
+dry-run OK). RULE: after any `git mv --sparse`, immediately run
+`git ls-files -v | grep ^S` and clear skip-worktree before further edits.
+
 OPEN CONTENT GAP (needs user decision — surfaced):
 - `tce_contracts.CANONICAL_RESEARCH_DOC_V2` →
   `analysis_tools/tce_research_questions/001_user_001/new_research_question.md`,
