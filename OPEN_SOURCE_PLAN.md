@@ -150,13 +150,13 @@ on the committed tree (0 old imports, 12/12 import smoke, 35/35 bash -n,
 dry-run OK). RULE: after any `git mv --sparse`, immediately run
 `git ls-files -v | grep ^S` and clear skip-worktree before further edits.
 
-OPEN CONTENT GAP (needs user decision — surfaced):
-- `tce_contracts.CANONICAL_RESEARCH_DOC_V2` →
-  `analysis_tools/tce_research_questions/001_user_001/new_research_question.md`,
-  which is UNTRACKED and lives under the cut `analysis_tools/`. Part 2
-  benchmark construction needs this doc. analysis_tools/ cut was correct (only
-  6 web-viewer assets were tracked; this md was never tracked), but the doc
-  itself must be given a tracked home or documented as required input.
+RESOLVED — research-questions doc:
+- Vendored `new_research_question.md` into repo at
+  `benchmark_construction/research_questions.md`; updated
+  `tce_contracts.CANONICAL_RESEARCH_DOC_V2` to point there. (Confirmed: the doc
+  is provenance metadata recorded into benchmark payloads, NOT a file the code
+  opens — so the cut never broke a runtime read, only made the metadata point
+  at a path that wouldn't exist in a clone. Now resolvable.)
 
 REMAINING path/string surface (later dedicated passes, NOT this step):
 - `trajectory_synthesis/generation_pipeline.py` debug_v* / _v2 / _elite_sample
