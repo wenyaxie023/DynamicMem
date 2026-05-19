@@ -3,7 +3,7 @@ users:
 
 runtime:
   baseline: memoryos
-  experiment_name: predict_0430
+  experiment_name: predict0504v2_formal
   run_id: main
   resume: true
   within_checkpoint_workers: 4
@@ -13,8 +13,8 @@ runtime:
   rq3_apply_save_prompt_and_raw: true
 
 data:
-  benchmark: data_construction/generated_outputs/gemini_3_flash_preview/{user_id}/tce_benchmark_vnext_20260429_formal_task_packs.json
-  app_logs_path: data_construction/generated_outputs/gemini_3_flash_preview/{user_id}/app_log_large.json
+  benchmark: outputs/gemini_3_flash_preview/{user_id}/tce_benchmark_vnext_20260504v2_formal_task_packs_human_revised.json
+  app_logs_path: outputs/gemini_3_flash_preview/{user_id}/app_log_large.json
 
 output:
   prediction_path: results/MemoryOS/results/{user_id}/prediction/{run_name}/tce_results.json
@@ -34,6 +34,7 @@ retrieval:
 
 final_qa:
   enabled: false
+
 
 baseline_params:
   memory_action: predict_from_prebuilt

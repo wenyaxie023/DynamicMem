@@ -8,7 +8,7 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from eval.eval_tce import _apply_eval_record, evaluate
+from evaluation.eval_tce import _apply_eval_record, evaluate
 from bench_core.tce_evaluator import evaluate_tce_rows
 from tce_contracts import CURRENT_TASK_CONTRACT_VERSION, RESEARCH_FRAME_VERSION_V2
 

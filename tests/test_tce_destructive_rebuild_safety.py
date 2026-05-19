@@ -19,9 +19,9 @@ sys.modules.setdefault("openai", fake_openai)
 sys.modules.setdefault("google", types.ModuleType("google"))
 sys.modules.setdefault("google.genai", types.ModuleType("google.genai"))
 
-from generation.mem0 import tce as mem0_tce
-from generation.tce_config import build_from_config
-from generation.tce_safety import ensure_destructive_rebuild_allowed
+from baseline_prediction.mem0 import tce as mem0_tce
+from baseline_prediction.tce_config import build_from_config
+from baseline_prediction.tce_safety import ensure_destructive_rebuild_allowed
 
 
 class TceDestructiveRebuildSafetyTest(unittest.TestCase):

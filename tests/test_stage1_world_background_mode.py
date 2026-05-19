@@ -35,7 +35,7 @@ class _FakeTemplate:
 jinja2_module.Template = _FakeTemplate
 sys.modules.setdefault("jinja2", jinja2_module)
 
-from data_construction.stages.stage1_dynamic_profile import Domain, DynamicProfileStage
+from trajectory_synthesis.stages.stage1_dynamic_profile import Domain, DynamicProfileStage
 
 
 class Stage1WorldBackgroundModeTest(unittest.TestCase):

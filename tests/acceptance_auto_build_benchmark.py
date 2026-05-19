@@ -9,7 +9,7 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from generation.run_tce_batch import _ensure_benchmark_exists
+from baseline_prediction.run_tce_batch import _ensure_benchmark_exists
 
 
 class AutoBuildBenchmarkAcceptance(unittest.TestCase):

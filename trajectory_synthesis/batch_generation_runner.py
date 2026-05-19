@@ -167,7 +167,7 @@ def _prepare_persona_users(
 class RunConfig:
     """Configuration for a single run."""
     # Basic settings
-    output_dir: Path = Path("./generated_outputs")
+    output_dir: Path = Path("./outputs")
     model_name: str = "gemini-3-flash-preview"
 
     # LLM provider settings
@@ -657,13 +657,13 @@ def main():
 
     args = parser.parse_args()
 
-    # Setup paths
-    base_dir = Path(__file__).resolve().parent
+    # Setup paths (artifacts live at the repo-root outputs/ dir)
+    base_dir = Path(__file__).resolve().parent.parent
 
     if args.output_dir:
         output_dir = Path(args.output_dir)
     else:
-        output_dir = base_dir / "generated_outputs" / _slugify(args.model)
+        output_dir = base_dir / "outputs" / _slugify(args.model)
 
     _ensure_dir(output_dir)
 

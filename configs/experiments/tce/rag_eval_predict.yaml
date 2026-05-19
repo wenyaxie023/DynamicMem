@@ -1,12 +1,12 @@
 runtime:
   user_id: 004_user_004
-  experiment_name: predict0502_formal
+  experiment_name: predict0504v2_formal_20
   enable_llm_judge: true
   save_eyeball: true
   resume: true
 
 data:
-  benchmark: data_construction/generated_outputs/gemini_3_flash_preview/{user_id}/tce_benchmark_vnext_20260502v1_formal_task_packs_human_revised.json
+  benchmark: outputs/gemini_3_flash_preview/{user_id}/tce_benchmark_vnext_20260504v2_formal_task_packs_human_revised.json
   prediction: results/rag/results/{user_id}/prediction/{experiment_name}/tce_results.json
 
 output:

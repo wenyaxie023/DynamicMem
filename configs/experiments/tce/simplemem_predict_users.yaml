@@ -1,6 +1,6 @@
 runtime:
   baseline: simplemem
-  experiment_name: predict0502_formal
+  experiment_name: predict0504v2_formal
   run_id: main
   resume: true
   checkpoint_workers: 1
@@ -11,8 +11,8 @@ runtime:
   rq3_apply_save_prompt_and_raw: true
 
 data:
-  benchmark: data_construction/generated_outputs/gemini_3_flash_preview/{user_id}/tce_benchmark_vnext_20260502v1_formal_task_packs_human_revised.json
-  app_logs_path: data_construction/generated_outputs/gemini_3_flash_preview/{user_id}/app_log_large.json
+  benchmark: outputs/gemini_3_flash_preview/{user_id}/tce_benchmark_vnext_20260504v2_formal_task_packs_human_revised.json
+  app_logs_path: outputs/gemini_3_flash_preview/{user_id}/app_log_large.json
 
 output:
   prediction_path: results/simplemem/results/{user_id}/prediction/{run_name}/tce_results.json
@@ -46,5 +46,5 @@ baseline_params:
   enable_planning: true
   enable_reflection: true
   max_reflection_rounds: 2
-  enable_parallel_retrieval: false
-  max_retrieval_workers: 1
+  enable_parallel_retrieval: true
+  max_retrieval_workers: 4

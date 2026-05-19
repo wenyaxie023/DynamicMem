@@ -34,10 +34,10 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from generation.adapters import simplemem as simplemem_adapter
-from generation.adapters.base import TceAdapterArgs
-from generation.simplemem.generation_tce import tce as simplemem_tce
-from generation.simplemem.upstream_vendor.models.memory_entry import Dialogue, MemoryEntry
+from baseline_prediction.adapters import simplemem as simplemem_adapter
+from baseline_prediction.adapters.base import TceAdapterArgs
+from baseline_prediction.simplemem.generation_tce import tce as simplemem_tce
+from baseline_prediction.simplemem.upstream_vendor.models.memory_entry import Dialogue, MemoryEntry
 from tce_core.orchestrator_protocol import RetrievalOptions
 from tce_core.pipeline import build_state_completion_prompt
 

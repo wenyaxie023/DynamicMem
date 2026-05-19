@@ -4,7 +4,7 @@ runtime:
   resume: true
 
 data:
-  benchmark: data_construction/generated_outputs/gemini_3_flash_preview/001_user_001/tce_benchmark_vnext_20260429_formal_task_packs.json
+  benchmark: outputs/gemini_3_flash_preview/001_user_001/tce_benchmark_vnext_20260429_formal_task_packs.json
   prediction: results/MemoryOS/results/001_user_001/prediction/predict_0430/tce_results.json
 
 output:

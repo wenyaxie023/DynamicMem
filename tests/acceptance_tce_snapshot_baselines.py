@@ -16,11 +16,11 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from generation.Amem import amem as amem_builder
-from generation.Amem import tce as amem_tce
-from generation.MemoryOS import tce_adapter as memoryos_tce
-from generation.mem0 import tce as mem0_tce
-from generation.rag import rag_tce
+from baseline_prediction.Amem import amem as amem_builder
+from baseline_prediction.Amem import tce as amem_tce
+from baseline_prediction.MemoryOS import tce_adapter as memoryos_tce
+from baseline_prediction.mem0 import tce as mem0_tce
+from baseline_prediction.rag import rag_tce
 
 
 class _FakeLLMClient:

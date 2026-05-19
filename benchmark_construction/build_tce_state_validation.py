@@ -11,7 +11,7 @@ try:
 except Exception:  # pragma: no cover
     load_dotenv = None  # type: ignore[assignment]
 
-from generation.common.llm_client import LLMClient
+from baseline_prediction.common.llm_client import LLMClient
 from tce_core.state_validation import build_state_validation, write_state_validation_reports
 
 

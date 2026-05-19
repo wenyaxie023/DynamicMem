@@ -11,14 +11,14 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from eval.prompts_tce import (
+from evaluation.prompts_tce import (
     build_apply_holistic_judge_prompt,
     build_apply_slot_judge_prompt,
     build_change_slot_judge_prompt,
     build_snapshot_holistic_judge_prompt,
     build_snapshot_slot_judge_prompt,
 )
-from eval.eval_tce import (
+from evaluation.eval_tce import (
     _apply_eval_config,
     _apply_holistic_eval_record,
     _apply_holistic_fields,

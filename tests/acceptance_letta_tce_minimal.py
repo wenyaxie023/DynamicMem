@@ -15,16 +15,16 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from generation.letta.agent_loop import LettaAgentLoop, estimate_usage_cost_usd, sort_logs
-from generation.letta import tce as letta_tce
-from generation.adapters.base import (
+from baseline_prediction.letta.agent_loop import LettaAgentLoop, estimate_usage_cost_usd, sort_logs
+from baseline_prediction.letta import tce as letta_tce
+from baseline_prediction.adapters.base import (
     AGENT_LOOP_ROUTE,
     SHARED_PIPELINE_SNAPSHOT_ROUTE,
     TceAdapterArgs,
     get_baseline_route_class,
 )
-from generation.adapters import letta as letta_adapter
-from generation.tce_config import build_from_config
+from baseline_prediction.adapters import letta as letta_adapter
+from baseline_prediction.tce_config import build_from_config
 from tce_core.orchestrator_protocol import AnswerExecutionResult, CheckpointHandle, RetrievalResult
 from tce_core.pipeline import run_pipeline
 

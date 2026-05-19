@@ -8,7 +8,7 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from data_construction.build_tce_benchmark import (
+from benchmark_construction.build_tce_benchmark import (
     build_chain_change_reasons,
     build_chain_state_validity,
     build_checkpoints,

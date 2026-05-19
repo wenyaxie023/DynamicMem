@@ -14,9 +14,9 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple
 
-from generation.common.llm_client import LLMClient as SharedLLMClient
-from generation.common.provider_config import load_repo_dotenv
-from generation.simplemem.upstream_vendor import (
+from baseline_prediction.common.llm_client import LLMClient as SharedLLMClient
+from baseline_prediction.common.provider_config import load_repo_dotenv
+from baseline_prediction.simplemem.upstream_vendor import (
     Dialogue,
     MemoryEntry,
     SimpleMemSystem,

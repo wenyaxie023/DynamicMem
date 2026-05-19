@@ -17,13 +17,13 @@ except Exception:  # pragma: no cover - optional runtime dependency
 
 from tce_core.orchestrator_protocol import CheckpointHandle, RetrievalOptions, RetrievalResult
 from tce_core.pipeline import run_pipeline
-from generation.Amem.amem import (
+from baseline_prediction.Amem.amem import (
     _ensure_nltk,
     _load_manifest,
     _snapshot_root,
     setup_logger,
 )
-from generation.Amem.client import LLMClient
+from baseline_prediction.Amem.client import LLMClient
 
 load_dotenv(Path(__file__).resolve().parent / ".env")
 
@@ -343,7 +343,7 @@ def run_generation(
     def _get_retriever(bundle: Dict[str, Any]) -> Any:
         cache_key = (str(bundle["chroma_dir"]), str(bundle.get("collection_name") or "memories"))
         if cache_key not in retriever_cache:
-            from generation.Amem.agentic_memory.retrievers import SimpleEmbeddingRetriever
+            from baseline_prediction.Amem.agentic_memory.retrievers import SimpleEmbeddingRetriever
 
             retriever_cache[cache_key] = SimpleEmbeddingRetriever(
                 directory=cache_key[0],
@@ -368,7 +368,7 @@ def run_generation(
     def _get_native_memory_system(bundle: Dict[str, Any]) -> Any:
         cache_key = str(bundle.get("state_path") or "")
         if cache_key not in native_memory_system_cache:
-            from generation.Amem.agentic_memory.memory_system import AgenticMemorySystem
+            from baseline_prediction.Amem.agentic_memory.memory_system import AgenticMemorySystem
 
             ordered_ids, ordered_memories = _get_snapshot_memories(bundle)
             memory_system = AgenticMemorySystem.__new__(AgenticMemorySystem)

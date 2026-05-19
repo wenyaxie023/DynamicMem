@@ -4,7 +4,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from data_construction.download_world_backgrounds import resolve_target_user_dirs
+from trajectory_synthesis.download_world_backgrounds import resolve_target_user_dirs
 
 
 class DownloadWorldBackgroundsTest(unittest.TestCase):

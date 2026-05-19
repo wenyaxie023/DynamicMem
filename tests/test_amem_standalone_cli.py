@@ -7,8 +7,8 @@ from unittest import mock
 
 sys.modules.setdefault("dotenv", types.SimpleNamespace(load_dotenv=lambda *args, **kwargs: False))
 
-from generation.Amem import amem as amem_builder
-from generation.Amem import tce as amem_tce
+from baseline_prediction.Amem import amem as amem_builder
+from baseline_prediction.Amem import tce as amem_tce
 
 
 class AmemStandaloneCliTest(unittest.TestCase):

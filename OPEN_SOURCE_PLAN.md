@@ -97,6 +97,46 @@ DONE (step 1–2, branch `opensource-prep`, uncommitted — review then commit):
 - Top level now: trajectory_synthesis, benchmark_construction,
   baseline_prediction, evaluation, tce_core, bench_core, configs + leftovers.
 
+CORRECTION (load_dataset.py was misclassified):
+- `load_dataset.py` is NOT QA-only. It is a shared benchmark dataset loader
+  (`load_membench_dataset`, `build_membench_memory_from_event`, `MemBenchSample`)
+  used by 3 kept TCE baselines (Amem, MemoryOS, mem0). Restored in place as
+  `baseline_prediction/load_dataset.py`. (`eval.py`, `eval/prompts.py`,
+  `prepare_test_data.py` re-verified as correctly cut — no kept importers.)
+- `letta` internal `run_qa` is a local function, not the cut `run_qa.py` — no
+  dependency; letta's internal QA codepath is a later deep-prune item.
+- `tce_contracts.py` was ALSO misclassified (was in "root one-off scripts" cut
+  list). It is a core shared contracts module imported by 15+ kept files across
+  ALL parts (tce_core x5, bench_core, benchmark_construction x3, evaluation x2,
+  baseline_prediction/oracle). Restored in place at repo root `tce_contracts.py`.
+
+VALIDATED (env mem0311, python 3.11):
+- All tracked .py rewritten: 0 unresolved old-module imports.
+- Import smoke: 11 key modules across 4 parts + shared core import 0-fail.
+- `python -m baseline_prediction.run_tce --config <single-user> --dry-run` OK.
+
+STEP DONE — imports + configs + outputs root:
+- Python imports rewritten (74 files / 128 lines): data_construction split →
+  trajectory_synthesis / benchmark_construction; eval → evaluation;
+  generation → baseline_prediction.
+- 12 TCE configs: `generation/` → `baseline_prediction/`.
+- Artifact root decided **top-level `outputs/`**: 43 TCE configs +
+  `.gitignore` + canonical writers (batch_generation_runner.py,
+  download_world_backgrounds.py, add_reference_app_logs.py) rewritten.
+
+REMAINING path/string surface (later dedicated passes, NOT this step):
+- Shell scripts still reference `data_construction/generated_outputs/...` and
+  some hardcoded absolute machine paths: `baseline_prediction/*/run_*.sh`,
+  `benchmark_construction/run_build_tce_benchmark.sh`,
+  `evaluation/run_eval_tce.sh` — parameterize + repoint to `outputs/`.
+- `trajectory_synthesis/generation_pipeline.py` debug_v* / _v2 / _elite_sample
+  scratch entrypoints (15+) — prune or repoint during scratch-cleanup pass.
+- Docs (`docs/runbooks/*`, top READMEs, evaluation/README.md) + tests +
+  `evaluation/statistics.ipynb` + `user_data/rebuild_checkpoint.py`: handled in
+  docs-prune / tests-QA / notebook passes.
+- Error-message strings still say "generation.run_tce" (cosmetic) —
+  string-cleanup pass.
+
 NOT YET DONE (repo will not run until imports/configs rewritten):
 - Rewrite imports (`data_construction.*` / `eval.*` / `generation.*` → new pkgs)
 - Rewrite `configs/experiments/tce/*.yaml` module paths; cut `configs/qa.*`,

@@ -11,7 +11,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from bench_core.tce_evaluator import build_tce_result_payload, evaluate_tce_rows
-from eval.eval_tce import (
+from evaluation.eval_tce import (
     _EVAL_CONFIG_KEYS,
     _apply_eval_config,
     _apply_user_id_templates,

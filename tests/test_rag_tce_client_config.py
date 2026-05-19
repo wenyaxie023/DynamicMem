@@ -8,9 +8,9 @@ from unittest import mock
 
 import numpy as np
 
-from generation.adapters import rag as rag_adapter
-from generation.adapters.base import TceAdapterArgs
-from generation.rag import rag_tce
+from baseline_prediction.adapters import rag as rag_adapter
+from baseline_prediction.adapters.base import TceAdapterArgs
+from baseline_prediction.rag import rag_tce
 
 
 class RagTceClientConfigTest(unittest.TestCase):

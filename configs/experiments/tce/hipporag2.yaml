@@ -15,8 +15,8 @@ runtime:
   save_every_generation_keys: 5
 
 data:
-  benchmark: data_construction/generated_outputs/gemini_3_flash_preview/001_user_001/tce_benchmark_vnext_20260319_formal_crv_task_packs_v14.json
-  app_logs_path: data_construction/generated_outputs/gemini_3_flash_preview/{user_id}/app_log_large.json
+  benchmark: outputs/gemini_3_flash_preview/001_user_001/tce_benchmark_vnext_20260319_formal_crv_task_packs_v14.json
+  app_logs_path: outputs/gemini_3_flash_preview/{user_id}/app_log_large.json
 
 output:
   prediction_path: results/HippoRAG2/results/{user_id}/prediction/{experiment_name}/tce_results_v14_taskabc.json

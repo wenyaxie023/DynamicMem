@@ -282,12 +282,12 @@ def run(args: TceAdapterArgs):
     if not snapshot_dir:
         raise ValueError("amem adapter requires baseline_params.snapshot_dir")
 
-    from generation.Amem.agentic_memory.llm_controller import (
+    from baseline_prediction.Amem.agentic_memory.llm_controller import (
         get_usage_summary as amem_usage_summary,
         reset_usage_tracker as reset_amem_usage_tracker,
     )
-    from generation.Amem.tce import run_generation
-    from generation.common.provider_config import (
+    from baseline_prediction.Amem.tce import run_generation
+    from baseline_prediction.common.provider_config import (
         load_repo_dotenv,
         resolve_openai_compatible_credentials,
     )
@@ -309,7 +309,7 @@ def run(args: TceAdapterArgs):
     llm_controller_api_key = None
     llm_controller_api_base_url = None
     if runs_builder:
-        from generation.Amem.amem import evaluate_membench
+        from baseline_prediction.Amem.amem import evaluate_membench
 
         llm_controller_api_key, llm_controller_api_base_url = resolve_openai_compatible_credentials(
             args.llm_provider,

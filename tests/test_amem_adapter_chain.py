@@ -7,9 +7,9 @@ from pathlib import Path
 from types import ModuleType
 from unittest import mock
 
-import generation.common.provider_config as provider_config
-from generation.adapters import amem as amem_adapter
-from generation.adapters.base import TceAdapterArgs
+import baseline_prediction.common.provider_config as provider_config
+from baseline_prediction.adapters import amem as amem_adapter
+from baseline_prediction.adapters.base import TceAdapterArgs
 
 
 class AmemAdapterChainTest(unittest.TestCase):

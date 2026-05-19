@@ -1,7 +1,7 @@
 import json
 import unittest
 
-from generation.load_dataset import MemBenchEvent, build_membench_memory_from_event
+from baseline_prediction.load_dataset import MemBenchEvent, build_membench_memory_from_event
 
 
 class LoadDatasetPayloadTest(unittest.TestCase):

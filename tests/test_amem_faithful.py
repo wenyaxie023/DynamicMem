@@ -17,7 +17,7 @@ if "numpy" not in sys.modules:
         linalg=types.SimpleNamespace(norm=lambda *args, **kwargs: 1.0),
     )
 
-from generation.Amem.agentic_memory.memory_system import AgenticMemorySystem, MemoryNote
+from baseline_prediction.Amem.agentic_memory.memory_system import AgenticMemorySystem, MemoryNote
 
 
 class _FakeRetriever:
@@ -66,7 +66,7 @@ class _FakeOpenAIChatCompletions:
 
 class AmemFaithfulTest(unittest.TestCase):
     def test_openai_controller_omits_temperature_for_gpt5_models(self):
-        from generation.Amem.agentic_memory.llm_controller import OpenAIController
+        from baseline_prediction.Amem.agentic_memory.llm_controller import OpenAIController
 
         completions = _FakeOpenAIChatCompletions()
         controller = object.__new__(OpenAIController)
@@ -80,7 +80,7 @@ class AmemFaithfulTest(unittest.TestCase):
         self.assertNotIn("temperature", completions.calls[0])
 
     def test_openai_controller_keeps_temperature_for_non_gpt5_models(self):
-        from generation.Amem.agentic_memory.llm_controller import OpenAIController
+        from baseline_prediction.Amem.agentic_memory.llm_controller import OpenAIController
 
         completions = _FakeOpenAIChatCompletions()
         controller = object.__new__(OpenAIController)

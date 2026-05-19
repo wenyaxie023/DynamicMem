@@ -16,8 +16,8 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from generation.adapters import hipporag2 as hipporag2_adapter
-from generation.adapters.base import TceAdapterArgs
+from baseline_prediction.adapters import hipporag2 as hipporag2_adapter
+from baseline_prediction.adapters.base import TceAdapterArgs
 
 
 def _install_import_stubs():

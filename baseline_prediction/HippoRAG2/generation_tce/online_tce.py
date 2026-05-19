@@ -47,13 +47,13 @@ _patch_transformers_torch_safety()
 from hipporag import HippoRAG
 from hipporag.utils.config_utils import BaseConfig
 
-from generation.common.provider_config import (
+from baseline_prediction.common.provider_config import (
     apply_openai_compat_env,
     load_repo_dotenv,
     resolve_openai_compatible_credentials,
 )
-from generation.tce_safety import ensure_destructive_rebuild_allowed
-from generation.rag.client import LLMClient
+from baseline_prediction.tce_safety import ensure_destructive_rebuild_allowed
+from baseline_prediction.rag.client import LLMClient
 from tce_core.orchestrator_protocol import CheckpointHandle, RetrievalOptions, RetrievalResult
 from tce_core.pipeline import normalize_app_logs, run_pipeline, to_log_text
 

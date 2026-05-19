@@ -248,7 +248,7 @@ def _strip_task_a_eval_fields(row: Dict[str, Any]) -> None:
 def _validate_llm_judge_env(provider: str) -> None:
     p = str(provider or "").strip().lower()
     try:
-        from generation.common.provider_config import setup_provider_env
+        from baseline_prediction.common.provider_config import setup_provider_env
         from pathlib import Path as _Path
         setup_provider_env(
             provider=p if p in {"openai", "azure"} else "openai",

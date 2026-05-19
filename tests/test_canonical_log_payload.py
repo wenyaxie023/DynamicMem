@@ -1,7 +1,7 @@
 import json
 import unittest
 
-from generation.rag.rag_tce import _log_search_text
+from baseline_prediction.rag.rag_tce import _log_search_text
 from tce_core.pipeline import to_log_text
 
 

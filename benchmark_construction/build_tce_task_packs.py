@@ -11,7 +11,7 @@ try:
 except Exception:  # pragma: no cover
     load_dotenv = None  # type: ignore[assignment]
 
-from generation.common.llm_client import LLMClient
+from baseline_prediction.common.llm_client import LLMClient
 from tce_core.task_packs import build_task_packs
 from tce_contracts import (
     CANONICAL_RESEARCH_DOC_V2,

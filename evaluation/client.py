@@ -1,10 +1,10 @@
 from pathlib import Path
 from typing import Any
 
-from generation.common.provider_config import load_repo_dotenv, setup_provider_env
+from baseline_prediction.common.provider_config import load_repo_dotenv, setup_provider_env
 
 try:
-    from generation.common.llm_client import LLMClient as _SharedLLMClient
+    from baseline_prediction.common.llm_client import LLMClient as _SharedLLMClient
     _LLM_IMPORT_ERROR = None
 except Exception as exc:  # pragma: no cover - allows tests to patch eval.client.LLMClient without provider deps
     _SharedLLMClient = object  # type: ignore[assignment]

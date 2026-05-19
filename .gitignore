@@ -41,7 +41,7 @@ generation/MemAgent/benchmark_main.log
 *.bak
 
 # Project-generated artifacts (do not commit)
-data_construction/generated_outputs/
+outputs/
 results
 results/
 generation/*/results

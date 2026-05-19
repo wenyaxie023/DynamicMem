@@ -32,7 +32,7 @@ data:
   app_logs_path: handoff_inputs/app_log_large.json
 
 output:
-  prediction_path: generation/rag/results/001_user_001/prediction/{experiment_name}/tce_results_taskc_only_5ckpt.json
+  prediction_path: baseline_prediction/rag/results/001_user_001/prediction/{experiment_name}/tce_results_taskc_only_5ckpt.json
 
 llm:
   provider: openai

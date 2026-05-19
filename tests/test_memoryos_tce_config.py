@@ -11,7 +11,7 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from generation.MemoryOS import tce_adapter as memoryos_tce
+from baseline_prediction.MemoryOS import tce_adapter as memoryos_tce
 
 
 class _FakeLLMClient:

@@ -8,9 +8,9 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from generation.qa_adapters.base import QaAdapterArgs
-from generation.qa_adapters.registry import list_adapters, run_adapter
-from generation.qa_config import resolved_payload, write_run_settings
+from baseline_prediction.qa_adapters.base import QaAdapterArgs
+from baseline_prediction.qa_adapters.registry import list_adapters, run_adapter
+from baseline_prediction.qa_config import resolved_payload, write_run_settings
 
 
 class QaRunnerRegistryAcceptance(unittest.TestCase):

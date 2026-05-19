@@ -179,8 +179,8 @@ def main() -> None:
     parser.add_argument(
         "--output-root",
         type=str,
-        default=str(Path(__file__).resolve().parent / "generated_outputs"),
-        help="Local generated_outputs root",
+        default=str(Path(__file__).resolve().parent.parent / "outputs"),
+        help="Local repo-root outputs/ root",
     )
     parser.add_argument(
         "--users",

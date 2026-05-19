@@ -16,20 +16,20 @@ except Exception:  # pragma: no cover - optional in stripped test environments
 from dotenv import load_dotenv
 
 try:
-    from generation.Amem.agentic_memory.memory_system import AgenticMemorySystem
+    from baseline_prediction.Amem.agentic_memory.memory_system import AgenticMemorySystem
 except Exception:  # pragma: no cover - optional in test environments without chromadb
     AgenticMemorySystem = None  # type: ignore[assignment]
-from generation.Amem.usage_sidecar import (
+from baseline_prediction.Amem.usage_sidecar import (
     build_usage_sidecar_paths,
     empty_usage_summary,
     load_usage_sidecar,
     merge_usage_summary,
     write_build_usage_sidecar,
 )
-from generation.tce_safety import ensure_destructive_rebuild_allowed
+from baseline_prediction.tce_safety import ensure_destructive_rebuild_allowed
 
 try:
-    from generation.Amem.agentic_memory.llm_controller import (
+    from baseline_prediction.Amem.agentic_memory.llm_controller import (
         get_usage_summary as amem_usage_summary,
         reset_usage_tracker as reset_amem_usage_tracker,
     )
@@ -47,7 +47,7 @@ DATA_DIR = GENERATION_DIR / "data"
 if str(GENERATION_DIR) not in sys.path:
     sys.path.append(str(GENERATION_DIR))
 
-from generation.load_dataset import build_membench_memory_from_event, load_membench_dataset
+from baseline_prediction.load_dataset import build_membench_memory_from_event, load_membench_dataset
 
 
 def _env_value(*keys: str) -> Optional[str]:

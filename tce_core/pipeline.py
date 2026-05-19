@@ -18,7 +18,7 @@ except Exception:  # pragma: no cover
     create_model = None  # type: ignore[assignment]
 
 from tqdm import tqdm
-from generation.adapters.base import get_baseline_concurrency_policy
+from baseline_prediction.adapters.base import get_baseline_concurrency_policy
 from .orchestrator_protocol import (
     AnswerExecutionResult,
     CheckpointHandle,

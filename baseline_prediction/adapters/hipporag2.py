@@ -76,7 +76,7 @@ def _resolve_memory_action(extras) -> str:
 
 
 def run(args: TceAdapterArgs):
-    from generation.HippoRAG2.generation_tce.online_tce import run_generation
+    from baseline_prediction.HippoRAG2.generation_tce.online_tce import run_generation
 
     snapshot_dir = args.extras.get("snapshot_dir")
     if not snapshot_dir:

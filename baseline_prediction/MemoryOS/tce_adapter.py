@@ -17,9 +17,9 @@ except Exception:  # pragma: no cover - optional runtime dependency
     def load_dotenv(*args, **kwargs):
         return False
 
-from generation.common.llm_client import LLMClient
-from generation.common.provider_config import resolve_openai_compatible_credentials
-from generation.tce_safety import ensure_destructive_rebuild_allowed
+from baseline_prediction.common.llm_client import LLMClient
+from baseline_prediction.common.provider_config import resolve_openai_compatible_credentials
+from baseline_prediction.tce_safety import ensure_destructive_rebuild_allowed
 from tce_core.orchestrator_protocol import (
     CheckpointHandle,
     RetrievalOptions,

@@ -11,8 +11,8 @@ try:
 except Exception:  # pragma: no cover
     load_dotenv = None  # type: ignore[assignment]
 
-from data_construction.build_tce_state_validation import build_validated_benchmark
-from data_construction.build_tce_task_packs import build_benchmark_task_packs
+from benchmark_construction.build_tce_state_validation import build_validated_benchmark
+from benchmark_construction.build_tce_task_packs import build_benchmark_task_packs
 from tce_core.state_validation import write_state_validation_reports
 from tce_contracts import (
     infer_canonical_research_doc,

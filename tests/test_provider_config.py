@@ -3,7 +3,7 @@ import os
 import unittest
 from unittest import mock
 
-from generation.common.provider_config import (
+from baseline_prediction.common.provider_config import (
     apply_openai_compat_env,
     resolve_openai_compatible_credentials,
 )

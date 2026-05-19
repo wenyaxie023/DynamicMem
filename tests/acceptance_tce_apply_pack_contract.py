@@ -12,7 +12,7 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from data_construction.build_tce_rq3_apply_pack import build_apply_pack
+from benchmark_construction.build_tce_rq3_apply_pack import build_apply_pack
 from tce_core.prompts import (
     build_apply_answer_scoring_points_prompt,
     build_rq3_apply_question_pack_prompt,

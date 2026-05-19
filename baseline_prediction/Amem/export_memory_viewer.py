@@ -9,7 +9,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional
 
-from generation.common.path_roots import artifact_root
+from baseline_prediction.common.path_roots import artifact_root
 
 
 @dataclass

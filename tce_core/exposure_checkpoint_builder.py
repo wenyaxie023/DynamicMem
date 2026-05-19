@@ -19,7 +19,7 @@ try:
 except Exception:  # pragma: no cover
     tiktoken = None  # type: ignore[assignment]
 
-from data_construction.build_tce_benchmark import (
+from benchmark_construction.build_tce_benchmark import (
     _expand_observability,
     _expand_snapshot,
     _normalize_evidence_field,

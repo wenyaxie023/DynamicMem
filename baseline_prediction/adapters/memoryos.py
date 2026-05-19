@@ -54,8 +54,8 @@ def run(args: TceAdapterArgs):
     import os
     from pathlib import Path
 
-    from generation.MemoryOS.tce_adapter import run_generation
-    from generation.common.provider_config import (
+    from baseline_prediction.MemoryOS.tce_adapter import run_generation
+    from baseline_prediction.common.provider_config import (
         load_repo_dotenv,
         resolve_openai_compatible_credentials,
     )

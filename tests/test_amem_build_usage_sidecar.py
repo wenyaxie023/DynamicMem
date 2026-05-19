@@ -5,8 +5,8 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from generation.Amem import export_memory_viewer
-from generation.Amem import usage_sidecar
+from baseline_prediction.Amem import export_memory_viewer
+from baseline_prediction.Amem import usage_sidecar
 
 
 class AmemBuildUsageSidecarTest(unittest.TestCase):
