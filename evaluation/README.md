@@ -1,71 +1,39 @@
 # Evaluation Usage
 
-Canonical QA contract:
-`docs/protocols/qa_generation_and_eval_contract.md`
+This directory evaluates baseline predictions against TCE benchmark task packs.
 
-This directory provides evaluation scripts for single-file or batch evaluation across baselines/users.
+Canonical TCE protocol:
+- [`docs/protocols/temporal_checkpoint_evaluation_developer_manual.md`](../docs/protocols/temporal_checkpoint_evaluation_developer_manual.md)
+- [`docs/protocols/tce_generation_and_adapter_contract.md`](../docs/protocols/tce_generation_and_adapter_contract.md)
 
-## Quick Start (Recommended)
+If this README conflicts with a protocol document, follow the protocol.
 
-1. Edit `eval/run_eval.sh` and set `BASELINES`, `USERS`, and `METRICS`.
-2. Run:
+## Quick Start
 
+Batch wrapper (recommended):
+```bash
+bash evaluation/run_eval_tce.sh
 ```
-bash eval/run_eval.sh
-```
+Override the defaults via env: `PROJECT_ROOT`, `BENCHMARK_ROOT`, `BASELINE`,
+`USER_DIR`, `EXPERIMENT_NAME`, `LLM_PROVIDER`, `LLM_MODEL`, `LLM_MAX_WORKERS`.
 
-The script runs batch evaluation and prints summaries.
-
-## CLI Usage
-
-### Single File
-
-```
-python -m eval.eval \
-  --mode single \
-  --input generation/<baseline>/results/<user_id>/prediction/<file>.json \
-  --metrics exact_match rouge bert_score llm_judge evidence_recall
-```
-
-### Batch
-
-```
-python -m eval.eval \
-  --mode batch \
-  --baselines MemAgent rag \
-  --users 003_user_003 004_user_004 \
-  --metrics exact_match rouge bert_score llm_judge evidence_recall \
-  --output-dir <optional_output_dir>
+Direct CLI (single file):
+```bash
+python -m evaluation.eval_tce \
+  --benchmark outputs/gemini_3_flash_preview/<user_id>/<benchmark_task_packs>.json \
+  --prediction baseline_prediction/<baseline>/results/<user_id>/prediction/<run_name>/tce_results.json \
+  --output baseline_prediction/<baseline>/results/<user_id>/evaluation/<run_name>/tce_eval.json \
+  --save-eyeball
 ```
 
 ## Output Locations
 
-- Default: results are written to `eval/` next to each prediction file, e.g.
-  `generation/<baseline>/results/<user_id>/eval/`
-- File names:
-  - `*_eval.json`: detailed results
-  - `*_eval.csv`: per-sample scores
-- In batch mode, if `--output-dir` is provided, a `batch_summary.csv` is also created.
+Evaluation outputs are written next to each prediction:
+- `baseline_prediction/<baseline>/results/<user_id>/evaluation/<run_name>/tce_eval.json`
+  — main eval payload
+- optional eyeball / audit artifacts in the same directory
 
-## Notes
-
-- If `--metrics` is omitted, defaults are:
-  `exact_match`, `rouge`, `bert_score`, `llm_judge`, `evidence_recall`.
-- Batch mode scans `generation/<baseline>/results/<user_id>/prediction/*.json`.
-
-
-## TCE Evaluation
-
-You can evaluate behavior-style TCE (not QA) with:
-
-```bash
-python -m eval.eval_tce \
-  --benchmark data_construction/generated_outputs/gemini_3_flash_preview/<user_id>/<benchmark_task_packs>.json \
-  --prediction generation/<baseline>/results/<user_id>/prediction/<run_name>/tce_results.json \
-  --output generation/<baseline>/results/<user_id>/eval/<run_name>/tce_eval.json \
-  --save-eyeball
-```
-
+## TCE Evaluation Details
 
 Prediction format:
 
@@ -158,10 +126,10 @@ Canonical main-eval row payloads:
 For changed-vs-unchanged and per-key temporal trends, run:
 
 ```bash
-python -m eval.analyze_tce_item_trends \
-  --benchmark data_construction/generated_outputs/gemini_3_flash_preview/<user_id>/<benchmark_task_packs>.json \
-  --prediction generation/rag/results/001_user_001/prediction/<run_name>/tce_results.json \
-  --output-dir generation/rag/results/<user_id>/analysis/perkey_trends \
+python -m evaluation.analyze_tce_item_trends \
+  --benchmark outputs/gemini_3_flash_preview/<user_id>/<benchmark_task_packs>.json \
+  --prediction baseline_prediction/rag/results/001_user_001/prediction/<run_name>/tce_results.json \
+  --output-dir baseline_prediction/rag/results/<user_id>/analysis/perkey_trends \
   --group-change-mode first_seen \
   --metrics exact,f1 \
   --rolling-days 7 \
@@ -180,11 +148,11 @@ Outputs:
 For checkpoint-level RQ1/RQ2/RQ3 analysis on frozen TCE artifacts, run:
 
 ```bash
-python -m eval.build_tce_analysis_pack \
-  --benchmark data_construction/generated_outputs/gemini_3_flash_preview/<user_id>/tce_benchmark_vnext_*.json \
-  --prediction generation/rag/results/<user_id>/prediction/tce_results_*.json \
-  --eval generation/rag/results/<user_id>/eval/tce_eval_*.json \
-  --output-dir generation/rag/results/<user_id>/analysis/milestone1_<tag>
+python -m evaluation.build_tce_analysis_pack \
+  --benchmark outputs/gemini_3_flash_preview/<user_id>/tce_benchmark_vnext_*.json \
+  --prediction baseline_prediction/rag/results/<user_id>/prediction/tce_results_*.json \
+  --eval baseline_prediction/rag/results/<user_id>/evaluation/tce_eval_*.json \
+  --output-dir baseline_prediction/rag/results/<user_id>/analysis/milestone1_<tag>
 ```
 
 This analysis pack:

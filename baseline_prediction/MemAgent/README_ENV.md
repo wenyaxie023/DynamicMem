@@ -17,11 +17,11 @@ This project is separated into a **Server Environment** (vLLM) and a **Client En
     *   **Quirks**: Used to run all Python scripts that *talk* to the server.
 
 ### 2. Directory Structure Clarity
-*   **Outer Directory** (`.../generation/MemAgent/`) **[WE WORK HERE]**
+*   **Outer Directory** (`.../baseline_prediction/MemAgent/`) **[WE WORK HERE]**
     *   Contains our custom scripts: `run_memagent_benchmark.sh`, `benchmark_single.py`.
     *   Contains the environments: `venv-vllm/`, `venv-memagent/`.
     *   Contains the frozen requirements: `requirements-*-stable.txt`.
-*   **Inner Directory** (`.../generation/MemAgent/MemAgent/`) **[REFERENCE ONLY]**
+*   **Inner Directory** (`.../baseline_prediction/MemAgent/MemAgent/`) **[REFERENCE ONLY]**
     *   Contains the original author's source code (`recurrent/*`, `verl/*`).
     *   **Do not edit these files** unless strictly necessary. We implement our own logic in the outer directory using the inner code as a logic reference (not a dependency).
 
@@ -50,7 +50,7 @@ This project is separated into a **Server Environment** (vLLM) and a **Client En
 Use the consolidated orchestrator script. It handles server startup/shutdown automatically.
 
 ```bash
-# In .../generation/MemAgent/
+# In .../baseline_prediction/MemAgent/
 ./run_memagent_benchmark.sh
 ```
 

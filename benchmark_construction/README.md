@@ -1,0 +1,71 @@
+# Benchmark Construction (Part 2)
+
+This directory contains the entrypoints that turn Part 1's synthetic user
+trajectories into the Temporal Checkpoint Evaluation (TCE) benchmark task packs
+consumed by Part 3 (baseline prediction) and Part 4 (evaluation).
+
+Most of the construction logic lives in the shared
+[`tce_core/`](../tce_core/) package (`task_packs`, `task_spec`,
+`exposure_checkpoint_builder`, `questionability`, `scoring_points`,
+`state_validation`, `pipeline`). Scripts here are the user-facing build
+entrypoints that wire those pieces together for one user at a time.
+
+For the normative protocol and field semantics, see
+[`docs/protocols/temporal_checkpoint_evaluation_developer_manual.md`](../docs/protocols/temporal_checkpoint_evaluation_developer_manual.md).
+
+## Inputs (produced by Part 1)
+
+For each user under `outputs/<model>/<user_id>/`:
+
+- `app_logs_final.json`: final app-log sequence
+- `app_log_large.json`: large app-log view
+- `all_events_chains.json`: aggregated event chains
+
+## Outputs
+
+Written back under the same `outputs/<model>/<user_id>/` directory, in
+several stages (see [`docs/runbooks/tce_execution_runbook.md`](../docs/runbooks/tce_execution_runbook.md)
+for the executable flow):
+
+- `tce_benchmark_vnext_raw.json` (raw benchmark)
+- `tce_benchmark_state_validated.json` (after state-validation pass)
+- `tce_benchmark_task_packs.json` (final task packs consumed by baselines / eval)
+
+## Entrypoints
+
+- `build_tce_benchmark.py` — raw benchmark from Part 1 artifacts
+- `build_tce_state_validation.py` — state-validation pass
+- `build_tce_task_packs.py` — task-pack assembly for Tasks A / B / C
+- `build_tce_rq3_apply_pack.py`, `build_tce_rq3_know_apply_pack.py` — RQ3 (Task C) packs
+- `verify_tce_groundtruth.py` — sanity / contract checks on a built benchmark
+- `run_build_tce_benchmark.sh` — convenience wrapper that drives the steps above
+
+## Quick Start
+
+End-to-end benchmark build for one user (with sensible defaults; relies on the
+Python module's built-in `CANONICAL_RESEARCH_DOC_V2` default unless overridden):
+
+```bash
+bash benchmark_construction/run_build_tce_benchmark.sh
+```
+
+Override defaults via env vars: `PROJECT_ROOT`, `PYTHON_BIN`,
+`TASK_CONTRACT_VERSION`, `RESEARCH_FRAME_VERSION`, `CANONICAL_RESEARCH_DOC`.
+Set `USERS=(...)` inside the script (or fork it) to target a different list.
+
+Direct module invocation for one stage:
+
+```bash
+python -m benchmark_construction.build_tce_benchmark \
+  --app-logs-final outputs/<model>/<user_id>/app_logs_final.json \
+  --task-contract-version taskabc_v2 \
+  --research-frame-version rq_20260413
+```
+
+## Canonical Research Questions
+
+[`research_questions.md`](research_questions.md) carries the canonical
+RQ1 / RQ2 / RQ3 definitions, hypotheses, and the baseline reference table that
+benchmark payloads record as provenance (`canonical_research_doc` field, default
+from `tce_contracts.CANONICAL_RESEARCH_DOC_V2`). Edit that file when the
+research frame moves.

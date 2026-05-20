@@ -15,7 +15,7 @@ This module is responsible for:
 - user and profile generation across multiple domains
 - event-chain generation across time windows
 - app-log generation from those events
-- preparation of the main artifacts consumed by QA and TCE workflows
+- preparation of the main artifacts consumed by the TCE benchmark
 
 The recommended external entrypoint is `batch_generation_runner.py`.
 
@@ -110,7 +110,7 @@ least these artifacts:
 - `dynamic_profiles_final.json`: resolved multi-domain dynamic state
 - `all_events_chains.json`: aggregated event chains produced from the resolved state
 - `app_logs_final.json`: final app-log sequence used by downstream pipelines
-- `app_log_large.json`: large app-log view used by QA and TCE consumers
+- `app_log_large.json`: large app-log view used by the TCE benchmark
 - `golden_evidence_index.json`: evidence mapping artifact for downstream inspection
 
 These files form the handoff boundary for most downstream generation and evaluation
@@ -118,7 +118,7 @@ work in the repo.
 
 ## Handoff to TCE
 
-`data_construction` is also the source of the artifacts used to build TCE benchmarks.
+`trajectory_synthesis` is also the source of the artifacts used to build TCE benchmarks.
 In practice, TCE build workflows start from outputs such as:
 
 - `all_events_chains.json`
@@ -136,10 +136,9 @@ Use the following documents instead:
 ## Where To Go Next
 
 - [stages/README.md](stages/README.md): internal Stage 1/2/3 responsibilities and outputs
-- [generation/README.md](../generation/README.md): baseline generation entrypoints
-- [eval/README.md](../eval/README.md): evaluator entrypoints
-- [docs/protocols/qa_generation_and_eval_contract.md](../docs/protocols/qa_generation_and_eval_contract.md):
-  QA generation/evaluation contract
+- [../benchmark_construction/README.md](../benchmark_construction/README.md): TCE benchmark task-pack construction
+- [../baseline_prediction/README.md](../baseline_prediction/README.md): baseline generation entrypoints
+- [../evaluation/README.md](../evaluation/README.md): evaluator entrypoints
 
 Documentation boundary:
 

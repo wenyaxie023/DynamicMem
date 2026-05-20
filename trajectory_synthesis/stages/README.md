@@ -1,7 +1,7 @@
 # Data Construction Stages
 
 This directory contains the Stage 1/2/3 implementation that powers
-`data_construction/batch_generation_runner.py`.
+`trajectory_synthesis/batch_generation_runner.py`.
 
 Use this README when you need the internal organization of the pipeline. For the
 module-level overview and recommended entrypoint, start with

@@ -2,11 +2,11 @@
 
 This directory contains Letta-based baselines for:
 
-- Unified Python pipeline: `generation.letta.pipeline`
-- QA generation: `generation.letta.letta`
-- Dynamic state prediction: `generation.letta.dynamic_state_prediction`
-- Checkpoint agent snapshot builder: `generation.letta.checkpoint_agent_builder`
-- TCE: `generation.letta.tce`
+- Unified Python pipeline: `baseline_prediction.letta.pipeline`
+- QA generation: `baseline_prediction.letta.letta`
+- Dynamic state prediction: `baseline_prediction.letta.dynamic_state_prediction`
+- Checkpoint agent snapshot builder: `baseline_prediction.letta.checkpoint_agent_builder`
+- TCE: `baseline_prediction.letta.tce`
 
 Current implementation uses **agent-loop ingestion**:
 - each app log is sent to Letta agent as one message in chronological order.
@@ -16,38 +16,38 @@ Current implementation uses **agent-loop ingestion**:
 ## Output Layout
 
 - QA:
-  - `generation/letta/results/<user_id>/prediction/letta_results.json`
+  - `baseline_prediction/letta/results/<user_id>/prediction/letta_results.json`
 - Dynamic state prediction:
-  - `generation/letta/results/<user_id>/prediction/dynamic_state_prediction_results.json`
+  - `baseline_prediction/letta/results/<user_id>/prediction/tce_results.json`
 - TCE:
-  - `generation/letta/results/<user_id>/prediction/<run_name>/tce_results_v14_taskabc.json`
+  - `baseline_prediction/letta/results/<user_id>/prediction/<run_name>/tce_results_v14_taskabc.json`
   - v14 minimal Task A smoke:
-    - `generation/letta/results/<user_id>/prediction/tce_results_v14_taska.json`
+    - `baseline_prediction/letta/results/<user_id>/prediction/tce_results_v14_taska.json`
 - Agent artifacts:
-  - checkpoint state: `generation/letta/agents/<user_id>_checkpoint_state.json`
-  - lease registry: `generation/letta/agents/<user_id>_leased_agent_ids.json`
-  - checkpoint snapshots: `generation/letta/agents/<checkpoint_id>.af`
-  - final snapshot: `generation/letta/agents/final_<total_logs>.af`
+  - checkpoint state: `baseline_prediction/letta/agents/<user_id>_checkpoint_state.json`
+  - lease registry: `baseline_prediction/letta/agents/<user_id>_leased_agent_ids.json`
+  - checkpoint snapshots: `baseline_prediction/letta/agents/<checkpoint_id>.af`
+  - final snapshot: `baseline_prediction/letta/agents/final_<total_logs>.af`
 
 ## Run
 
 - Unified pipeline (recommended):
-  - `python3 -m generation.letta.pipeline --action all --user user1 --resume`
+  - `python3 -m baseline_prediction.letta.pipeline --action all --user user1 --resume`
   - optional pre-run strong cleanup: add `--gc-leased-agents`
   - optional hot resume from latest on-disk snapshot: add `--hot-resume-latest`
-  - checkpoint only: `python3 -m generation.letta.pipeline --action checkpoint --user user1 --resume`
-  - QA only: `python3 -m generation.letta.pipeline --action qa --user user1 --resume`
-  - DSP only: `python3 -m generation.letta.pipeline --action dsp --user user1 --resume`
+  - checkpoint only: `python3 -m baseline_prediction.letta.pipeline --action checkpoint --user user1 --resume`
+  - QA only: `python3 -m baseline_prediction.letta.pipeline --action qa --user user1 --resume`
+  - TCE only: `python3 -m baseline_prediction.letta.pipeline --action tce --user user1 --resume`
 - Smoke test script (kept):
-  - `bash generation/letta/run_letta_test.sh`
+  - `bash baseline_prediction/letta/run_letta_test.sh`
 - End-to-end test pipeline script:
-  - `bash generation/letta/run_letta_pipeline_test.sh`
+  - `bash baseline_prediction/letta/run_letta_pipeline_test.sh`
 - Build checkpoint snapshots directly:
-  - `python3 -m generation.letta.checkpoint_agent_builder --logs-path <app_log_large.json> --benchmark-path <dynamic_state_prediction_benchmark.json> --resume`
+  - `python3 -m baseline_prediction.letta.checkpoint_agent_builder --logs-path <app_log_large.json> --benchmark-path <tce_benchmark.json> --resume`
 - QA:
-  - `bash generation/letta/run_letta.sh`
+  - `bash baseline_prediction/letta/run_letta.sh`
 - TCE:
-  - `bash generation/letta/run_letta_tce.sh`
+  - `bash baseline_prediction/letta/run_letta_tce.sh`
   - current default entrypoint uses:
     - `configs/experiments/tce/letta_v14_user1.yaml`
   - current default experiment support is:
@@ -60,9 +60,9 @@ Current implementation uses **agent-loop ingestion**:
       - temp agent is deleted after each key
       - builder advancement is separate from query-time answering; formal TCE no longer uses a mutating `retrieve_context` callback to drive ingest
     - checkpoint snapshots and resume state are stored under:
-      - `generation/letta/agents/tce/<user_id>/`
+      - `baseline_prediction/letta/agents/tce/<user_id>/`
     - builder ingestion progress is also stored under:
-      - `generation/letta/agents/tce/<user_id>/builder_progress.json`
+      - `baseline_prediction/letta/agents/tce/<user_id>/builder_progress.json`
       - confirmed ingest progress is monotonic
       - ambiguous ingest failures are recorded as `ingest_uncertain` instead of rewinding confirmed progress
     - a builder lock file is created under the same directory; concurrent builder reuse is rejected
@@ -74,7 +74,7 @@ Current implementation uses **agent-loop ingestion**:
       - `allow_local_fallback: false`
       - use `shared_agent` + fallback only for debugging
 - TCE eval:
-  - `bash generation/letta/run_eval_letta_tce.sh`
+  - `bash baseline_prediction/letta/run_eval_letta_tce.sh`
 
 ## Docker Server (OpenAI only)
 
@@ -82,7 +82,7 @@ One-click script:
 
 ```bash
 export OPENAI_API_KEY="your_openai_api_key"
-bash generation/letta/run_letta_docker_server.sh
+bash baseline_prediction/letta/run_letta_docker_server.sh
 ```
 
 Default server URL:
@@ -102,7 +102,7 @@ One-click script:
 export AZURE_API_KEY="..."
 export AZURE_BASE_URL="https://...openai.azure.com"
 export AZURE_API_VERSION="2024-10-21"
-bash generation/letta/run_letta_apptainer_server.sh
+bash baseline_prediction/letta/run_letta_apptainer_server.sh
 ```
 
 Notes:
@@ -128,7 +128,7 @@ export LETTA_STORAGE_ROOT="/projects/standard/zrliu/shared/wenya/letta"
 export LETTA_PORT=8384
 export LETTA_BACKGROUND=true
 
-bash generation/letta/run_letta_apptainer_server.sh
+bash baseline_prediction/letta/run_letta_apptainer_server.sh
 
 export LETTA_BASE_URL="http://127.0.0.1:8384"
 unset LETTA_API_KEY
@@ -150,13 +150,13 @@ curl http://127.0.0.1:8384/v1/models/
   - configure `LETTA_BASE_URL`
   - `LETTA_API_KEY` is only needed if the local server has auth enabled
 
-Checkpoint-based QA/DSP:
+Checkpoint-based QA/TCE:
 - QA supports `--checkpoint-state-path` or `--agentfile-path`.
-- DSP supports `--checkpoint-state-path` to load per-checkpoint `.af` snapshots.
+- TCE supports `--checkpoint-state-path` to load per-checkpoint `.af` snapshots.
 - Temporary imported agent ids can be tracked via `--lease-registry-path`.
 
 Runtime behavior:
-- QA/DSP snapshot mode uses temporary imported agents and deletes them immediately after each query (`import -> ask -> delete`).
+- QA/TCE snapshot mode uses temporary imported agents and deletes them immediately after each query (`import -> ask -> delete`).
 - `--gc-leased-agents` only controls startup cleanup of leaked temporary agents from lease registry.
 - Checkpoint `.af` files are saved when each checkpoint is reached.
 - `final_<total_logs>.af` is saved once at the end of a successful builder run (not continuously updated).

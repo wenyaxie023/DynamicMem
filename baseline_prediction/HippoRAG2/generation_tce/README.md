@@ -4,10 +4,10 @@ This directory contains the protocol-aligned TCE runtime for `hipporag2`.
 
 ## Canonical Entry
 
-- Runtime: `generation/HippoRAG2/generation_tce/online_tce.py`
-- Compatibility wrapper: `generation/HippoRAG2/generation_tce/tce.py`
-- Adapter: `generation/adapters/hipporag2.py`
-- Preferred runner: `python -m generation.run_tce --config configs/experiments/tce/hipporag2.yaml`
+- Runtime: `baseline_prediction/HippoRAG2/generation_tce/online_tce.py`
+- Compatibility wrapper: `baseline_prediction/HippoRAG2/generation_tce/tce.py`
+- Adapter: `baseline_prediction/adapters/hipporag2.py`
+- Preferred runner: `python -m baseline_prediction.run_tce --config configs/experiments/tce/hipporag2.yaml`
 
 ## Current Design
 
@@ -28,4 +28,4 @@ This directory contains the protocol-aligned TCE runtime for `hipporag2`.
 ## Benchmarks
 
 - Formal config currently targets the available pack-first user1 benchmark artifact.
-- Smoke config targets `generation/HippoRAG2/smoke3/{user_id}/tce_benchmark_3cp_task_packs_vnext_20260310.json`.
+- Smoke config targets `baseline_prediction/HippoRAG2/smoke3/{user_id}/tce_benchmark_3cp_task_packs_vnext_20260310.json`.

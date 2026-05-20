@@ -1,6 +1,6 @@
 # MemBench Legacy Generation Scripts
 
-These are the original generation scripts moved from the `generation/` root. They use the legacy logic (HippoRAG directly + `generation_prompt.py`).
+These are the original generation scripts moved from the `baseline_prediction/` root. They use the legacy logic (HippoRAG directly + `generation_prompt.py`).
 
 ## Key Files
 

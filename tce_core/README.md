@@ -1,6 +1,6 @@
 # tce_core
 
-Shared generation/evaluation utilities for TCE:
+Shared baseline_prediction/evaluation utilities for TCE:
 - value prediction (`snapshot_state`)
 - evidence prediction (`evidence` with `app_log_id` + `evidence_content` per state key)
 
