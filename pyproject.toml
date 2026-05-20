@@ -1,0 +1,55 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "dynamicmem"
+version = "0.1.0"
+description = "DynamicMem: a benchmark for long-horizon memory systems via Temporal Checkpoint Evaluation (TCE)"
+readme = "README.md"
+requires-python = ">=3.11"
+license = {text = "MIT"}
+authors = [{name = "DynamicMem Authors"}]
+keywords = ["memory", "benchmark", "long-horizon", "TCE", "LLM", "evaluation"]
+classifiers = [
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Operating System :: OS Independent",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
+
+# Runtime dependencies are managed via conda environment specs under
+# environment/ (default.yml, memoryos.yml, hipporag2.yml). Keeping
+# dependencies = [] here lets `pip install -e .` give an editable install
+# of the core packages on top of an already-provisioned conda env.
+dependencies = []
+
+[project.optional-dependencies]
+dev = ["pytest>=7", "ruff>=0.4"]
+
+[project.urls]
+# Homepage = "https://github.com/<org>/dynamicmem"
+
+[tool.setuptools]
+py-modules = ["tce_contracts"]
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = [
+    "tce_core*",
+    "bench_core*",
+    "trajectory_synthesis*",
+    "benchmark_construction*",
+    "baseline_prediction*",
+    "evaluation*",
+]
+exclude = [
+    "tests*",
+    "docs*",
+    "configs*",
+    "outputs*",
+    "user_data*",
+    "debug_utils*",
+    "environment*",
+]
