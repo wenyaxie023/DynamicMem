@@ -24,17 +24,17 @@ from typing import Any, Dict, List, Optional, Sequence, Tuple
 import dotenv
 dotenv.load_dotenv()
 
-from elite_persona_sampler import (
+from trajectory_synthesis.elite_persona_sampler import (
     DEFAULT_SAMPLE_PATH,
     DEFAULT_SEED,
     load_sampled_personas,
     sample_elite_personas,
 )
-from llm_client import GeminiJSONClient, OpenAICompatibleClient, create_client, LLMProvider
-from logging_utils import setup_logger, get_logger
-from stages import DynamicProfileStage, EventsChainStage, AppLogsStage
-from stages.stage1_dynamic_profile import Domain, TimelineConfig
-from domains import DOMAINS
+from trajectory_synthesis.llm_client import GeminiJSONClient, OpenAICompatibleClient, create_client, LLMProvider
+from trajectory_synthesis.logging_utils import setup_logger, get_logger
+from trajectory_synthesis.stages import DynamicProfileStage, EventsChainStage, AppLogsStage
+from trajectory_synthesis.stages.stage1_dynamic_profile import Domain, TimelineConfig
+from trajectory_synthesis.domains import DOMAINS
 DEFAULT_PERSONA_SAMPLE_SIZE = 10
 DEFAULT_USER_COUNT = 10
 
@@ -392,7 +392,7 @@ class BatchGenerationRunner:
             ]
 
             # Use simple Domain objects
-            from stages.stage2_events_chain import Domain as Stage2Domain
+            from trajectory_synthesis.stages.stage2_events_chain import Domain as Stage2Domain
             stage2_domains = [
                 Stage2Domain(
                     domain_name=d.domain_name,

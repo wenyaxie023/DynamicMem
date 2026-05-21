@@ -25,14 +25,14 @@ from typing import Any, Dict, List, Optional, Sequence, Tuple
 import sys
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from llm_client import GeminiJSONClient, LLMResult
-from dynamic_profile_generator import (
+from trajectory_synthesis.llm_client import GeminiJSONClient, LLMResult
+from trajectory_synthesis.dynamic_profile_generator import (
     DynamicProfileRequest,
     generate_dynamic_profile,
     WorldBackgroundRequest,
     generate_world_background,
 )
-from prompt_templates import (
+from trajectory_synthesis.prompt_templates import (
     ATTRIBUTE_CONFLICT_RESOLUTION_PROMPT,
     BASIC_PROFILE_PROMPT,
     DYNAMIC_PROFILE_TEMPLATE_EXCERPT,
@@ -44,7 +44,7 @@ from prompt_templates import (
     rule4_short_term_followup_prompt,
     rule5_time_conflict_prompt,
 )
-from stages.stage1_utils import (
+from trajectory_synthesis.stages.stage1_utils import (
     _apply_conflict_resolution_to_profiles,
     _apply_key_alignment,
     _apply_profile_revision,
@@ -338,7 +338,7 @@ class DynamicProfileStage:
         missing_required: List[str] = []
 
         # Import for rendering prompt in dry_run mode
-        from dynamic_profile_generator import render_world_background_prompt
+        from trajectory_synthesis.dynamic_profile_generator import render_world_background_prompt
 
         for domain in domains:
             slug = _slugify(domain.domain_name)

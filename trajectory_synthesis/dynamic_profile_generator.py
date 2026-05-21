@@ -3,11 +3,11 @@ from typing import List, Dict, Any
 
 from jinja2 import Template
 
-from llm_client import (
+from trajectory_synthesis.llm_client import (
     GeminiJSONClient,
     LLMResult,
 )
-from prompt_templates import WORLD_BACKGROUND_GENERATION_PROMPT
+from trajectory_synthesis.prompt_templates import WORLD_BACKGROUND_GENERATION_PROMPT
 
 dynamic_profile_template = Template("""You are an expert simulator of long-horizon dynamic user profile trajectories.
 

@@ -28,9 +28,9 @@ from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 import sys
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from llm_client import GeminiJSONClient, LLMResult
-from app_system import APP_API_SCHEMAS, AppRegistry, get_api_input_output_models
-from prompt_templates import app_log_prompt
+from trajectory_synthesis.llm_client import GeminiJSONClient, LLMResult
+from trajectory_synthesis.app_system import APP_API_SCHEMAS, AppRegistry, get_api_input_output_models
+from trajectory_synthesis.prompt_templates import app_log_prompt
 
 
 def _slugify(value: str) -> str:

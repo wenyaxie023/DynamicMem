@@ -3,8 +3,8 @@ from dataclasses import dataclass
 
 from jinja2 import Template
 
-from app_catalog import APP_CATALOG
-from llm_client import (
+from trajectory_synthesis.app_catalog import APP_CATALOG
+from trajectory_synthesis.llm_client import (
     GeminiJSONClient,
     LLMResult,
 )

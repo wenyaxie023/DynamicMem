@@ -18,7 +18,7 @@ try:
         sample_elite_personas,
     )
 except ImportError:
-    from elite_persona_sampler import (
+    from trajectory_synthesis.elite_persona_sampler import (
         DEFAULT_SAMPLE_PATH,
         DEFAULT_SEED,
         load_sampled_personas,

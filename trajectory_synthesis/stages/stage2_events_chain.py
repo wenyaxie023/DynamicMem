@@ -24,8 +24,8 @@ from typing import Any, Dict, List, Optional, Sequence, Tuple
 import sys
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from llm_client import GeminiJSONClient, LLMResult
-from events_chain_generator import EventsChainRequest, generate_events_chain
+from trajectory_synthesis.llm_client import GeminiJSONClient, LLMResult
+from trajectory_synthesis.events_chain_generator import EventsChainRequest, generate_events_chain
 
 
 def _slugify(value: str) -> str:
@@ -480,7 +480,7 @@ class EventsChainStage:
     ) -> Dict[str, Dict]:
         """Build cross-domain state summaries per window."""
         try:
-            from generation_pipeline import _build_user_full_state_summaries
+            from trajectory_synthesis.generation_pipeline import _build_user_full_state_summaries
             return _build_user_full_state_summaries(dynamic_profiles)
         except ImportError:
             # Fallback implementation
@@ -512,7 +512,7 @@ class EventsChainStage:
     def _resolve_window_states(self, domain_profile: Dict) -> List[Dict]:
         """Resolve window states from domain profile."""
         try:
-            from generation_pipeline import _resolve_window_states
+            from trajectory_synthesis.generation_pipeline import _resolve_window_states
             return _resolve_window_states(domain_profile)
         except ImportError:
             # Fallback: return time_windows directly
@@ -583,7 +583,7 @@ class EventsChainStage:
     ) -> Dict[str, str]:
         """Map world background to windows."""
         try:
-            from generation_pipeline import _map_world_background_to_windows
+            from trajectory_synthesis.generation_pipeline import _map_world_background_to_windows
             return _map_world_background_to_windows(world_background, window_ids)
         except ImportError:
             # Fallback: use same background for all windows
@@ -914,7 +914,7 @@ class EventsChainStage:
     ) -> Any:
         """Expand habit schedule dates within time range."""
         try:
-            from generation_pipeline import _expand_habit_schedule_dates
+            from trajectory_synthesis.generation_pipeline import _expand_habit_schedule_dates
             return _expand_habit_schedule_dates(habit_value, time_range)
         except ImportError:
             return habit_value

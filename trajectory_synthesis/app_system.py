@@ -11,8 +11,7 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from typing import Any, Dict, Tuple
-
-import app_models
+from trajectory_synthesis import app_models
 
 
 MAX_API_CALL_HISTORY = 20
