@@ -196,7 +196,7 @@ Legacy note:
 Build apply QA pack:
 
 ```bash
-python -m data_construction.build_tce_rq3_apply_pack \
+python -m benchmark_construction.build_tce_rq3_apply_pack \
   --benchmark <benchmark.json> \
   --output <benchmark_with_rq3_apply.json> \
   --provider openai \
@@ -217,7 +217,7 @@ Formal reuse policy:
 Run TCE generation:
 
 ```bash
-python -m generation.run_tce --config <config.yaml>
+python -m baseline_prediction.run_tce --config <config.yaml>
 ```
 
 Key runtime config:

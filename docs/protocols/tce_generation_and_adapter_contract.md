@@ -48,13 +48,13 @@ Shared generation config contract:
 Recommended single-run entrypoint:
 
 ```bash
-python -m generation.run_tce --config configs/experiments/tce/<baseline>.yaml
+python -m baseline_prediction.run_tce --config configs/experiments/tce/<baseline>.yaml
 ```
 
 Recommended batch entrypoint:
 
 ```bash
-python -m generation.run_tce_batch --config configs/experiments/tce/<baseline>.yaml
+python -m baseline_prediction.run_tce_batch --config configs/experiments/tce/<baseline>.yaml
 ```
 
 Batch config templating supports:
@@ -79,9 +79,9 @@ Both entrypoints support:
 
 Shared user identity contract:
 - `user_id` is a shared runtime / adapter field, not a baseline-specific extra
-- `generation.run_tce_batch` must inject the selected batch user into shared `runtime.user_id`
+- `baseline_prediction.run_tce_batch` must inject the selected batch user into shared `runtime.user_id`
 - direct single-run configs may set `runtime.user_id` explicitly
-- when a config used with `generation.run_tce` has exactly one top-level `users` entry, the runner may resolve shared `runtime.user_id` from that single user
+- when a config used with `baseline_prediction.run_tce` has exactly one top-level `users` entry, the runner may resolve shared `runtime.user_id` from that single user
 - `baseline_params.user_id` is not part of the current contract
 
 ## 3. Directory Contract
@@ -89,13 +89,13 @@ Shared user identity contract:
 Required prediction discovery layout:
 
 ```text
-generation/<baseline>/results/<user_id>/prediction/*.json
+baseline_prediction/<baseline>/results/<user_id>/prediction/*.json
 ```
 
 Evaluator outputs are written to:
 
 ```text
-generation/<baseline>/results/<user_id>/eval/
+baseline_prediction/<baseline>/results/<user_id>/evaluation/
 ```
 
 Rules:
@@ -191,7 +191,7 @@ All stateful TCE baselines must satisfy these invariants:
   - source/build fingerprint:
     - app-log stream plus checkpoint materialization boundaries
   - evaluation-pack fingerprint:
-    - authored Task A / Task C packs used only during generation/evaluation
+    - authored Task A / Task C packs used only during baseline_prediction/evaluation
 - changing only the evaluation-pack fingerprint must not force rebuilding persisted memory artifacts
 - if a builder decides it cannot safely reuse or resume existing persisted memory artifacts, it must fail closed by default
 - destructive rebuilds that clear existing builder state, databases, collections, or checkpoint artifacts require explicit opt-in via shared `runtime.allow_destructive_rebuild=true`
@@ -242,7 +242,7 @@ Safety rule:
 Adapter file:
 
 ```text
-generation/adapters/<baseline>.py
+baseline_prediction/adapters/<baseline>.py
 ```
 
 Required interface:
@@ -378,7 +378,7 @@ Minimum prediction fields:
 Recommended when available:
 - top-level `canonical_research_doc`
 
-Prediction metadata must remain compatible with `eval/eval_tce.py`.
+Prediction metadata must remain compatible with `evaluation/eval_tce.py`.
 Contributors must not introduce baseline-local top-level fields that the evaluator depends on.
 
 Current default contract family:
@@ -406,8 +406,7 @@ Contract:
   - `answer_query`
 - final QA retrieval must remain checkpoint-isolated and query non-polluting
 - final QA output must be written as a separate QA artifact, not embedded into the main TCE prediction JSON
-- the QA artifact must follow `docs/protocols/qa_generation_and_eval_contract.md`
-- the legacy `generation.run_qa` runner and QA adapter registry remain unchanged
+- the legacy `baseline_prediction.run_qa` runner and QA adapter registry remain unchanged
 
 Recommended shared config for baselines that implement this hook:
 - `final_qa.enabled`
@@ -424,18 +423,18 @@ Agent-memory baseline note:
 Canonical evaluator:
 
 ```bash
-python -m eval.eval_tce
+python -m evaluation.eval_tce
 ```
 
 Contributor validation should confirm:
-- prediction artifact is discoverable under `generation/<baseline>/results/<user_id>/prediction/`
+- prediction artifact is discoverable under `baseline_prediction/<baseline>/results/<user_id>/prediction/`
 - evaluator can load the artifact without schema drift
-- output lands in the corresponding `eval/` directory
+- output lands in the corresponding `evaluation/` directory
 
 ## 14. Onboarding Checklist For A New TCE Baseline
 
-1. Add `generation/adapters/<baseline>.py`
-2. Register the baseline in `generation/adapters/registry.py`
+1. Add `baseline_prediction/adapters/<baseline>.py`
+2. Register the baseline in `baseline_prediction/adapters/registry.py`
 3. Add `configs/experiments/tce/<baseline>.yaml`
 4. Ensure the baseline consumes a pack-first benchmark by default
 5. Add at least one minimal acceptance test covering:
@@ -445,16 +444,8 @@ Contributor validation should confirm:
 - concurrency metadata presence
 6. Add or update stateful snapshot semantics coverage if the baseline maintains persistent memory state
 7. Validate with:
-- `python -m generation.run_tce --config ... --dry-run`
-- `python -m generation.run_tce_batch --config ... --dry-run`
+- `python -m baseline_prediction.run_tce --config ... --dry-run`
+- `python -m baseline_prediction.run_tce_batch --config ... --dry-run`
 - a minimal executable prediction run
-- `python -m eval.eval_tce ...` on the produced artifact
+- `python -m evaluation.eval_tce ...` on the produced artifact
 
-## 15. Source of Enforced Truth
-
-This contract is enforced by:
-- `tests/acceptance_tce_contracts.py`
-- `tests/acceptance_adapters_and_cli.py`
-- `tests/acceptance_tce_batch.py`
-- baseline-specific minimal acceptance tests
-- stateful snapshot acceptance tests

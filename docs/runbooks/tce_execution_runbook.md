@@ -14,7 +14,6 @@ Contributor-facing generation and adapter obligations are maintained in:
 
 Current execution note:
 - This runbook is the broad execution reference for TCE.
-- For a single place to copy generation / eval / viewer commands, use `docs/runbooks/tce_v2_command_index.md`.
 - For the current TCE v2 pre-batch build validation pass across baselines, use `docs/plans/tce_v2_build_progress_master_sheet.md` as the active command sheet and status tracker.
 - Current workflow policy: `final_qa` is disabled unless explicitly re-enabled for a specific purpose.
 
@@ -30,7 +29,7 @@ conda activate mem0311
 
 Environment / credentials:
 - Commands in this runbook assume the repo root `.env` is present when Azure-backed configs are used.
-- `generation.run_tce_batch` adapters such as `memoryos` load the repo-root `.env` automatically.
+- `baseline_prediction.run_tce_batch` adapters such as `memoryos` load the repo-root `.env` automatically.
 - Required Azure credential vars for Azure-backed runs:
   - `AZURE_OPENAI_API_KEY`
   - `AZURE_OPENAI_BASE_URL`
@@ -58,11 +57,11 @@ Use the narrowest entrypoint that matches the job:
 - Current TCE v2 cross-baseline pre-batch validation:
   - use `docs/plans/tce_v2_build_progress_master_sheet.md`
 - Single-user generation smoke or bounded rerun:
-  - use `python3 -m generation.run_tce --config ...`
+  - use `python3 -m baseline_prediction.run_tce --config ...`
 - Multi-user batch generation:
-  - use `python3 -m generation.run_tce_batch --config ...`
+  - use `python3 -m baseline_prediction.run_tce_batch --config ...`
 - Prediction evaluation:
-  - use `python3 -m eval.eval_tce ...`
+  - use `python3 -m evaluation.eval_tce ...`
 
 Operational rule:
 - Keep this runbook as the general TCE reference.
@@ -73,17 +72,17 @@ Operational rule:
 Raw benchmark path for build-only workflows:
 - For memory-building baselines that need checkpoint boundaries before task definitions are finalized, first build a raw benchmark and use that for `build_only` runs.
 - Recommended raw benchmark filename:
-  - `data_construction/generated_outputs/gemini_3_flash_preview/<user_id>/tce_benchmark_vnext_raw.json`
+  - `outputs/gemini_3_flash_preview/<user_id>/tce_benchmark_vnext_raw.json`
 
 ### 1.0 Build benchmark (pre-sampled checkpoints)
 ```bash
-python3 -m data_construction.build_tce_benchmark \
-  --app-logs-final data_construction/generated_outputs/gemini_3_flash_preview/<user_id>/app_logs_final.json \
-  --all-events-chains data_construction/generated_outputs/gemini_3_flash_preview/<user_id>/all_events_chains.json \
-  --output data_construction/generated_outputs/gemini_3_flash_preview/<user_id>/tce_benchmark_vnext_raw.json \
+python3 -m benchmark_construction.build_tce_benchmark \
+  --app-logs-final outputs/gemini_3_flash_preview/<user_id>/app_logs_final.json \
+  --all-events-chains outputs/gemini_3_flash_preview/<user_id>/all_events_chains.json \
+  --output outputs/gemini_3_flash_preview/<user_id>/tce_benchmark_vnext_raw.json \
   --sampling-mode calendar \
   --calendar-anchor-freq quarterly \
-  --app-logs-large data_construction/generated_outputs/gemini_3_flash_preview/<user_id>/app_log_large.json \
+  --app-logs-large outputs/gemini_3_flash_preview/<user_id>/app_log_large.json \
   --sampling-tokenizer-model gpt-4o-mini \
   --task-contract-version taskabc_v2 \
   --research-frame-version rq_20260413 \
@@ -96,16 +95,16 @@ Build-only note:
 
 Example raw-benchmark build-only run for `memoryos`:
 ```bash
-python3 -m generation.run_tce_batch \
+python3 -m baseline_prediction.run_tce_batch \
   --config configs/experiments/tce/memoryos_build_only_raw.yaml \
   --users <user_id>
 ```
 
 ### 1.1 Run standalone state validation
 ```bash
-python3 -m data_construction.build_tce_state_validation \
-  --benchmark data_construction/generated_outputs/gemini_3_flash_preview/<user_id>/<benchmark_base>.json \
-  --output data_construction/generated_outputs/gemini_3_flash_preview/<user_id>/<benchmark_state_validated>.json \
+python3 -m benchmark_construction.build_tce_state_validation \
+  --benchmark outputs/gemini_3_flash_preview/<user_id>/<benchmark_base>.json \
+  --output outputs/gemini_3_flash_preview/<user_id>/<benchmark_state_validated>.json \
   --validator-provider gemini \
   --validator-model gemini-3-flash-preview \
   --l2-evidence-top-k 0 \
@@ -115,9 +114,9 @@ python3 -m data_construction.build_tce_state_validation \
 
 ### 1.2 Build precomputed task packs
 ```bash
-python3 -m data_construction.build_tce_task_packs \
-  --benchmark data_construction/generated_outputs/gemini_3_flash_preview/<user_id>/<benchmark_state_validated>.json \
-  --output data_construction/generated_outputs/gemini_3_flash_preview/<user_id>/<benchmark_task_packs>.json \
+python3 -m benchmark_construction.build_tce_task_packs \
+  --benchmark outputs/gemini_3_flash_preview/<user_id>/<benchmark_state_validated>.json \
+  --output outputs/gemini_3_flash_preview/<user_id>/<benchmark_task_packs>.json \
   --tasks all \
   --provider gemini \
   --model gemini-3-flash-preview \
@@ -145,9 +144,9 @@ Task C apply-only rerun:
 - If an `all` task-pack build completed Task A but stopped during Task C, do not use any review-only shortcut.
 - Re-run the existing task-pack benchmark in `apply-only` mode so completed Task A artifacts are preserved and `rq3_apply_service_qa` is rebuilt formally:
 ```bash
-python3 -m data_construction.build_tce_task_packs \
-  --benchmark data_construction/generated_outputs/gemini_3_flash_preview/<user_id>/tce_benchmark_task_packs_partial.json \
-  --output data_construction/generated_outputs/gemini_3_flash_preview/<user_id>/tce_benchmark_task_packs_final.json \
+python3 -m benchmark_construction.build_tce_task_packs \
+  --benchmark outputs/gemini_3_flash_preview/<user_id>/tce_benchmark_task_packs_partial.json \
+  --output outputs/gemini_3_flash_preview/<user_id>/tce_benchmark_task_packs_final.json \
   --tasks apply \
   --provider gemini \
   --model gemini-3-flash-preview \
@@ -162,9 +161,9 @@ python3 -m data_construction.build_tce_task_packs \
 
 Apply-only compatibility wrapper:
 ```bash
-python3 -m data_construction.build_tce_rq3_apply_pack \
-  --benchmark data_construction/generated_outputs/gemini_3_flash_preview/<user_id>/tce_benchmark_state_validated.json \
-  --output data_construction/generated_outputs/gemini_3_flash_preview/<user_id>/tce_benchmark_task_packs_apply_only.json \
+python3 -m benchmark_construction.build_tce_rq3_apply_pack \
+  --benchmark outputs/gemini_3_flash_preview/<user_id>/tce_benchmark_state_validated.json \
+  --output outputs/gemini_3_flash_preview/<user_id>/tce_benchmark_task_packs_apply_only.json \
   --provider gemini \
   --model gemini-3-flash-preview \
   --validator-provider gemini \
@@ -182,8 +181,8 @@ python3 - <<'PY'
 import json
 from pathlib import Path
 
-p = Path("data_construction/generated_outputs/gemini_3_flash_preview/<user_id>/<benchmark_task_packs>.json")
-out = Path("generation/rag/results/<user_id>/analysis/rq3_manual_review/rq3_question_preview10.csv")
+p = Path("outputs/gemini_3_flash_preview/<user_id>/<benchmark_task_packs>.json")
+out = Path("baseline_prediction/rag/results/<user_id>/analysis/rq3_manual_review/rq3_question_preview10.csv")
 out.parent.mkdir(parents=True, exist_ok=True)
 
 payload = json.loads(p.read_text(encoding="utf-8"))
@@ -217,9 +216,9 @@ For deeper manual review of Stage 1 and Stage 2, prefer a purpose-specific revie
 
 ```bash
 python3 debug_utils/build_tce_manual_review_samples.py \
-  --validated data_construction/generated_outputs/gemini_3_flash_preview/<user_id>/tce_benchmark_state_validated.json \
-  --task-packs data_construction/generated_outputs/gemini_3_flash_preview/<user_id>/tce_benchmark_task_packs.json \
-  --output-dir generation/rag/results/<user_id>/analysis/tce_manual_review
+  --validated outputs/gemini_3_flash_preview/<user_id>/tce_benchmark_state_validated.json \
+  --task-packs outputs/gemini_3_flash_preview/<user_id>/tce_benchmark_task_packs.json \
+  --output-dir baseline_prediction/rag/results/<user_id>/analysis/tce_manual_review
 ```
 
 Expected outputs:
@@ -262,7 +261,7 @@ Expected outputs:
 - Check `discard_rate <= 30%`.
 - Check each `questionable state` has at least one valid item.
 - Perform manual eyeball on 10 states.
-- For deeper review, prefer the stratified manual-review pack under `generation/rag/results/<user_id>/analysis/tce_manual_review/` over one mixed JSON.
+- For deeper review, prefer the stratified manual-review pack under `baseline_prediction/rag/results/<user_id>/analysis/tce_manual_review/` over one mixed JSON.
 - Note:
   - Stage 2 requires a Stage 1 artifact on disk.
   - If Stage 1 stops mid-run, resume from the persisted partial output with `--resume`.
@@ -270,8 +269,8 @@ Expected outputs:
 ## 2. Part II - Generation Execution
 
 Generation mode selection:
-- Use `generation.run_tce` for single-user smoke runs, bounded reruns, and `--max-checkpoints` cases.
-- Use `generation.run_tce_batch` for multi-user execution from templated YAML configs.
+- Use `baseline_prediction.run_tce` for single-user smoke runs, bounded reruns, and `--max-checkpoints` cases.
+- Use `baseline_prediction.run_tce_batch` for multi-user execution from templated YAML configs.
 - For the current TCE v2 pre-batch baseline validation pass, prefer the master sheet over the generic examples below.
 
 ### 2.1 Retrieval query audit (manual)
@@ -295,7 +294,7 @@ Generation mode selection:
 
 ### 2.3 RAG single-checkpoint smoke
 ```bash
-python3 -m generation.run_tce \
+python3 -m baseline_prediction.run_tce \
   --config configs/experiments/tce/rag_user1_v14_top20_c4.yaml \
   --max-checkpoints 1
 ```
@@ -328,23 +327,23 @@ python3 -m generation.run_tce \
 
 ### 2.4 Letta/MemGPT expansion run
 ```bash
-python3 -m generation.run_tce \
+python3 -m baseline_prediction.run_tce \
   --config configs/experiments/tce/memgpt_v14.yaml \
   --max-checkpoints 1
 ```
 
 Expected output:
-- `generation/<baseline>/results/<user_id>/prediction/tce_results*.json`
+- `baseline_prediction/<baseline>/results/<user_id>/prediction/tce_results*.json`
 - sibling `*_run_settings.yaml`
 
 ## 3. Part III - Evaluation Execution
 
 ### 3.1 Evaluate prediction
 ```bash
-python3 -m eval.eval_tce \
-  --benchmark data_construction/generated_outputs/gemini_3_flash_preview/<user_id>/<benchmark_task_packs>.json \
-  --prediction generation/<baseline>/results/<user_id>/prediction/<run_name>/tce_results.json \
-  --output generation/<baseline>/results/<user_id>/eval/<run_name>/tce_eval.json \
+python3 -m evaluation.eval_tce \
+  --benchmark outputs/gemini_3_flash_preview/<user_id>/<benchmark_task_packs>.json \
+  --prediction baseline_prediction/<baseline>/results/<user_id>/prediction/<run_name>/tce_results.json \
+  --output baseline_prediction/<baseline>/results/<user_id>/evaluation/<run_name>/tce_eval.json \
   --enable-llm-judge \
   --llm-provider azure \
   --llm-model gpt-5-mini \
@@ -366,10 +365,10 @@ When auditing LLM judge strictness or rubric consistency across Task A/B/C, pref
 
 ```bash
 python3 debug_utils/build_tce_eval_manual_review_pack.py \
-  --benchmark data_construction/generated_outputs/gemini_3_flash_preview/<user_id>/<benchmark_task_packs>.json \
-  --prediction generation/<baseline>/results/<user_id>/prediction/<run_name>/tce_results.json \
-  --eval generation/<baseline>/results/<user_id>/eval/<run_name>/tce_eval.json \
-  --output-dir generation/<baseline>/results/<user_id>/analysis/tce_eval_manual_review \
+  --benchmark outputs/gemini_3_flash_preview/<user_id>/<benchmark_task_packs>.json \
+  --prediction baseline_prediction/<baseline>/results/<user_id>/prediction/<run_name>/tce_results.json \
+  --eval baseline_prediction/<baseline>/results/<user_id>/evaluation/<run_name>/tce_eval.json \
+  --output-dir baseline_prediction/<baseline>/results/<user_id>/analysis/tce_eval_manual_review \
   --top-n 20
 ```
 
@@ -389,22 +388,22 @@ When auditing a user's full timeline from the perspective of a single `state`, p
 
 ```bash
 python3.11 debug_utils/build_tce_state_timeline_viewer.py \
-  --benchmark data_construction/generated_outputs/gemini_3_flash_preview/<user_id>/<benchmark_task_packs>.json \
-  --prediction generation/<baseline>/results/<user_id>/prediction/<run_name>/tce_results.json \
-  --eval generation/<baseline>/results/<user_id>/eval/<run_name>/tce_eval.json \
-  --app-logs data_construction/generated_outputs/gemini_3_flash_preview/<user_id>/app_log_large.json \
-  --output generation/<baseline>/results/<user_id>/analysis/state_timeline_viewer/state_timeline_viewer_data.json
+  --benchmark outputs/gemini_3_flash_preview/<user_id>/<benchmark_task_packs>.json \
+  --prediction baseline_prediction/<baseline>/results/<user_id>/prediction/<run_name>/tce_results.json \
+  --eval baseline_prediction/<baseline>/results/<user_id>/evaluation/<run_name>/tce_eval.json \
+  --app-logs outputs/gemini_3_flash_preview/<user_id>/app_log_large.json \
+  --output baseline_prediction/<baseline>/results/<user_id>/analysis/state_timeline_viewer/state_timeline_viewer_data.json
 ```
 
 For visualization-focused review, prefer `--compact` to avoid very large JSON artifacts:
 
 ```bash
 python3.11 debug_utils/build_tce_state_timeline_viewer.py \
-  --benchmark data_construction/generated_outputs/gemini_3_flash_preview/<user_id>/<benchmark_task_packs>.json \
-  --prediction generation/<baseline>/results/<user_id>/prediction/<run_name>/tce_results.json \
-  --eval generation/<baseline>/results/<user_id>/eval/<run_name>/tce_eval.json \
-  --app-logs data_construction/generated_outputs/gemini_3_flash_preview/<user_id>/app_log_large.json \
-  --output generation/<baseline>/results/<user_id>/analysis/state_timeline_viewer/state_timeline_viewer_data_compact.json \
+  --benchmark outputs/gemini_3_flash_preview/<user_id>/<benchmark_task_packs>.json \
+  --prediction baseline_prediction/<baseline>/results/<user_id>/prediction/<run_name>/tce_results.json \
+  --eval baseline_prediction/<baseline>/results/<user_id>/evaluation/<run_name>/tce_eval.json \
+  --app-logs outputs/gemini_3_flash_preview/<user_id>/app_log_large.json \
+  --output baseline_prediction/<baseline>/results/<user_id>/analysis/state_timeline_viewer/state_timeline_viewer_data_compact.json \
   --compact
 ```
 
@@ -421,7 +420,7 @@ python3.11 -m http.server 8000
 
 Then open in the browser:
 ```text
-http://127.0.0.1:8000/index.html?data=../../generation/<baseline>/results/<user_id>/analysis/state_timeline_viewer/state_timeline_viewer_data.json
+http://127.0.0.1:8000/index.html?data=../../baseline_prediction/<baseline>/results/<user_id>/analysis/state_timeline_viewer/state_timeline_viewer_data.json
 ```
 
 Viewer display rules:
@@ -467,16 +466,16 @@ Action:
 ## 5. Artifact Paths & Command Checklist
 
 ### 5.1 Canonical paths
-- Benchmark: `data_construction/generated_outputs/.../tce_benchmark*.json`
-- Prediction: `generation/<baseline>/results/<user_id>/prediction/tce_results*.json`
-- Eval: `generation/<baseline>/results/<user_id>/eval/tce_eval*.json`
-- Manual review: `generation/rag/results/<user_id>/analysis/rq3_manual_review/`
-- Stratified manual review: `generation/rag/results/<user_id>/analysis/tce_manual_review/`
+- Benchmark: `outputs/.../tce_benchmark*.json`
+- Prediction: `baseline_prediction/<baseline>/results/<user_id>/prediction/tce_results*.json`
+- Eval: `baseline_prediction/<baseline>/results/<user_id>/evaluation/tce_eval*.json`
+- Manual review: `baseline_prediction/rag/results/<user_id>/analysis/rq3_manual_review/`
+- Stratified manual review: `baseline_prediction/rag/results/<user_id>/analysis/tce_manual_review/`
 
 Storage note:
 - To avoid filling the home directory, these large artifact trees may live in project storage and be symlinked back to the repo paths:
-  - `data_construction/generated_outputs/...`
-  - `generation/<baseline>/results/...`
+  - `outputs/...`
+  - `baseline_prediction/<baseline>/results/...`
 - Recommended project storage root:
   - `/projects/standard/zrliu/shared/wenya/xie00470/dynamicmem/`
 - If the repo path is already a symlink, keep using the repo-local path in scripts and commands.
@@ -485,10 +484,10 @@ Storage note:
 ```bash
 rg -n "DRAFT_MARKER" docs/protocols/temporal_checkpoint_evaluation_developer_manual.md
 
-python3 -m generation.run_tce --help
-python3 -m generation.run_tce_batch --help
-python3 -m eval.eval_tce --help
-python3 data_construction/build_tce_benchmark.py --help
+python3 -m baseline_prediction.run_tce --help
+python3 -m baseline_prediction.run_tce_batch --help
+python3 -m evaluation.eval_tce --help
+python3 benchmark_construction/build_tce_benchmark.py --help
 ```
 
 Historical artifact note:

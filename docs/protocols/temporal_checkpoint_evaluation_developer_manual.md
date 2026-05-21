@@ -4,8 +4,6 @@ Status: active
 Owner: DynamicMem team
 Last Updated: 2026-05-04
 
-Legacy archive:
-- `docs/protocols/archive/temporal_checkpoint_evaluation_developer_manual_legacy.md`
 
 This file is the only active developer manual for TCE.
 Anything marked legacy in code, old artifacts, or older docs is not part of the active contract unless this file explicitly says otherwise.
@@ -26,10 +24,7 @@ Out of scope:
 
 Related active docs:
 - execution runbook: `docs/runbooks/tce_execution_runbook.md`
-- generation/adapter contract: `docs/protocols/tce_generation_and_adapter_contract.md`
-- prompt/retrieval checklist: `docs/protocols/tce_prompt_retrieval_checklist.md`
-- QA contract: `docs/protocols/qa_generation_and_eval_contract.md`
-- developer code map: `docs/tce_developer_code_map.md`
+- baseline_prediction/adapter contract: `docs/protocols/tce_generation_and_adapter_contract.md`
 
 ## 2. Active vs Archived
 Active protocol:
@@ -81,7 +76,7 @@ Archive-only pack name:
 
 ## 4. Active Execution Stages
 Stage 0. Raw benchmark build
-- entrypoint: `data_construction/build_tce_benchmark.py`
+- entrypoint: `benchmark_construction/build_tce_benchmark.py`
 - outputs:
   - sampled checkpoints
   - `expected_snapshot_state`
@@ -90,14 +85,14 @@ Stage 0. Raw benchmark build
 - does not author task packs
 
 Stage 1. Independent state validation
-- entrypoint: `data_construction/build_tce_state_validation.py`
+- entrypoint: `benchmark_construction/build_tce_state_validation.py`
 - outputs:
   - `state_questionability`
   - `validated_snapshot_state`
   - `state_validation_summary`
 
 Stage 2. Prebuilt task packs
-- entrypoint: `data_construction/build_tce_task_packs.py`
+- entrypoint: `benchmark_construction/build_tce_task_packs.py`
 - outputs:
   - `state_completion_pack`
   - `rq3_apply_service_qa`
@@ -109,7 +104,7 @@ Stage 3. Generation / evaluation
 - for stateful baselines with persisted checkpoint memory artifacts:
   - build/reuse validity is determined by source-timeline inputs needed to materialize checkpoint memory state
   - this source scope includes the app-log stream and checkpoint cut definitions, not the authored Task A / Task C evaluation packs
-  - if source-timeline inputs are unchanged, later benchmark revisions may reuse previously built memory artifacts and rerun generation/evaluation only
+  - if source-timeline inputs are unchanged, later benchmark revisions may reuse previously built memory artifacts and rerun baseline_prediction/evaluation only
   - changing only the authored evaluation packs must not silently discard, clear, or rebuild existing persisted memory artifacts
   - if a backend cannot safely resume from the existing persisted memory state, generation must fail closed and require an explicit destructive-rebuild opt-in rather than deleting prior memory by default
 
@@ -408,14 +403,14 @@ Memory safety rule:
 - answering must not mutate shared memory state for Task A / Task C
 
 Evaluation resume rule:
-- `eval/eval_tce.py --resume` reuses only slot-judge units whose cached payload is structurally complete and free of recorded judge-call errors
+- `evaluation/eval_tce.py --resume` reuses only slot-judge units whose cached payload is structurally complete and free of recorded judge-call errors
 - any cached Task A key / Task B key / Task C item whose stored judgments contain evaluator-generated `judge_error:` placeholders must be treated as incomplete and retried on resume
 - cached Task A holistic units are reusable only when they contain the expected field count and every field judgment has non-error `analysis`, boolean `core_correct`, integer `detail_quality`, and numeric `score_0_1`
 - resume may skip successfully judged units even when sibling units in the same checkpoint are retried
 - partial outputs with transport / rate-limit / provider failures must therefore converge by rerunning against the same eval artifact, rather than requiring manual deletion of failed units
 
 Evaluation config rule:
-- `eval/eval_tce.py` may be run from a YAML config via `--config`
+- `evaluation/eval_tce.py` may be run from a YAML config via `--config`
 - config files are execution records for benchmark, prediction, output, LLM judge, and resume settings; they must not alter metric semantics or task contracts
 - `runtime.task_selection` may restrict execution scope; active values are `all` and `task_c_only`, where `task_c_only` skips Task A snapshot and legacy change evaluation and reports the selected scope in eval artifacts
 - explicit CLI arguments override config values for the same field
@@ -462,5 +457,3 @@ The following belong in the archive document, not in this active manual:
 - legacy fallback semantics that are kept only for reading old artifacts
 - historical metric definitions no longer used for active acceptance
 
-Archive reference:
-- `docs/protocols/archive/temporal_checkpoint_evaluation_developer_manual_legacy.md`
