@@ -28,4 +28,3 @@ This directory contains the protocol-aligned TCE runtime for `hipporag2`.
 ## Benchmarks
 
 - Formal config currently targets the available pack-first user1 benchmark artifact.
-- Smoke config targets `baseline_prediction/HippoRAG2/smoke3/{user_id}/tce_benchmark_3cp_task_packs_vnext_20260310.json`.

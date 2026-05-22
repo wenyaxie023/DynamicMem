@@ -8,7 +8,6 @@ Status: protocol-aligned
 | File | Role |
 |---|---|
 | `configs/experiments/tce/hipporag2.yaml` | Formal pack-first config |
-| `configs/experiments/tce/hipporag2_smoke3.yaml` | Smoke pack-first config |
 | `generation/adapters/hipporag2.py` | Shared adapter wiring |
 | `generation/HippoRAG2/generation_tce/online_tce.py` | Canonical runtime |
 | `generation/HippoRAG2/generation_tce/tce.py` | Compatibility wrapper |

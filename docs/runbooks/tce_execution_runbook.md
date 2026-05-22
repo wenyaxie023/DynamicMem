@@ -295,7 +295,7 @@ Generation mode selection:
 ### 2.3 RAG single-checkpoint smoke
 ```bash
 python3 -m baseline_prediction.run_tce \
-  --config configs/experiments/tce/rag_user1_v14_top20_c4.yaml \
+  --config configs/experiments/tce/rag_predict_users.yaml \
   --max-checkpoints 1
 ```
 - RAG/TCE supports:
