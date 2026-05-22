@@ -5,8 +5,8 @@ from memoryos import Memoryos
 # --- Basic Configuration ---
 USER_ID = "demo_user"
 ASSISTANT_ID = "demo_assistant"
-API_KEY = "sk-7VaFJuGM146a957c4E75T3BlBkFJb7232107783F41C29e00"  # Replace with your key
-BASE_URL = "https://cn2us02.opapi.win/v1"  # Optional: if using a custom OpenAI endpoint
+API_KEY = os.getenv("OPENAI_API_KEY", "")  # set via the OPENAI_API_KEY env var
+BASE_URL = os.getenv("OPENAI_BASE_URL", "https://api.openai.com/v1")  # optional custom endpoint
 DATA_STORAGE_PATH = "./simple_demo_data"
 LLM_MODEL = "gpt-4o-mini"
 
