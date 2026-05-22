@@ -6,7 +6,7 @@ from sentence_transformers import SentenceTransformer
 from openai import OpenAI
 gpt_client = OpenAI(
         api_key='',
-    base_url='https://cn2us02.opapi.win/v1'
+    base_url='https://api.openai.com/v1'
 )
 def get_timestamp():
     return time.strftime("%Y-%m-%d %H:%M:%S", time.localtime())

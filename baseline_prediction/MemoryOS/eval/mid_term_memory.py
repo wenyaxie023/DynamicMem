@@ -10,7 +10,7 @@ from utils import get_timestamp, generate_id, get_embedding, normalize_vector, l
 
 client = OpenAIClient(
     api_key='',
-    base_url='https://cn2us02.opapi.win/v1'
+    base_url='https://api.openai.com/v1'
 )
 
 def compute_recency(last_visit_time, tau=24):

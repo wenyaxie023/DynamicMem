@@ -21,7 +21,7 @@ def main():
     memoryos = Memoryos(
         user_id='travel_user_test',
         openai_api_key='',
-        openai_base_url='https://cn2us02.opapi.win/v1',
+        openai_base_url='https://api.openai.com/v1',
         data_storage_path='./comprehensive_test_data',
         assistant_id='travel_assistant',
         embedding_model_name='',

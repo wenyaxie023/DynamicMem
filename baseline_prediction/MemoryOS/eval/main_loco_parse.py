@@ -16,7 +16,7 @@ num_samples=0
 # Initialize OpenAI client
 client = OpenAIClient(
     api_key='',
-    base_url='https://cn2us02.opapi.win/v1'
+    base_url='https://api.openai.com/v1'
 )
 
 # Heat threshold
