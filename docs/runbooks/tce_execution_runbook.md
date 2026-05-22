@@ -310,9 +310,8 @@ python3 -m baseline_prediction.run_tce \
 - Do not use checkpoint-level combined Task A retrieval as a formal protocol path.
 - For long reruns, avoid depending on unstable partial artifacts. If `save_prompt_and_raw=true`, very small `save_every_generation_keys` values can cause excessive full-file rewrites and unstable intermediate outputs.
 - Baseline concurrency policy must follow the protocol:
-  - `rag / oracle / icl / hipporag / hipporag2 / memoryos / mem0`: both worker dimensions may be enabled
+  - `rag / oracle / hipporag2 / memoryos`: both worker dimensions may be enabled
   - `amem`: `checkpoint_workers` is effectively forced to `1`; `within_checkpoint_workers` may still be parallel
-  - `letta`: both worker dimensions are effectively forced to `1`
 - After the run, inspect prediction metadata:
   - `concurrency_policy`
   - `requested_checkpoint_workers`

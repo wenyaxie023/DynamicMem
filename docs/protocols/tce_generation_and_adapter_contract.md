@@ -120,17 +120,11 @@ Legacy `retrieve_context(...)` callback is no longer a valid baseline contract.
 Current baselines:
 - `rag`
 - `oracle`
-- `icl`
 - `hipporag2`
 - `amem`
 - `memoryos`
-- `mem0`
-- `zep`
 - `simplemem`
-- `letta`
-- `memgpt`
 
-`letta` / `memgpt` are not protocol exceptions. If an implementation has not yet migrated to the required snapshot-builder route, it must be treated as pending compliance work rather than a protocol carve-out.
 
 ## 5. Pack-First Input Contract
 
@@ -218,19 +212,15 @@ Prediction metadata must always record:
 - `effective_within_checkpoint_workers`
 
 Policy classes:
-- `rag`, `oracle`, `icl`, `hipporag2`, `memoryos`, `mem0`
+- `rag`, `oracle`, `hipporag2`, `memoryos`
   - `checkpoint_parallelism = allowed`
   - `within_checkpoint_parallelism = allowed`
-- `zep`
   - `checkpoint_parallelism = forbidden`
   - `within_checkpoint_parallelism = forbidden`
 - `amem`
   - `checkpoint_parallelism = forbidden`
   - `within_checkpoint_parallelism = allowed`
 - `simplemem`
-  - `checkpoint_parallelism = forbidden`
-  - `within_checkpoint_parallelism = forbidden`
-- `letta`, `memgpt`
   - `checkpoint_parallelism = forbidden`
   - `within_checkpoint_parallelism = forbidden`
 
@@ -330,16 +320,7 @@ Rules:
 - `allow_destructive_rebuild=false` is the default safety posture; backends must not clear existing persisted memory artifacts unless the caller explicitly opts in
 - shared retrieval top-k settings apply only to baselines that implement explicit query-time retrieval
 - explicit-retrieval baselines must consume shared `QuerySpec.retrieval_query_text` directly; they must not regenerate or fallback to baseline-local retrieval query text
-- agent-memory baselines such as `letta` / `memgpt` may ignore explicit-retriever config when they do not perform query-time retrieval
 
-Letta / MemGPT self-hosted runtime note:
-- canonical self-hosted local Letta uses `letta_mode: sdk`
-- `letta_mode: local` means the repository's local compatibility fallback, not a self-hosted Letta server
-- to target a local/self-hosted Letta server, the runtime environment must set `LETTA_BASE_URL=http://127.0.0.1:<port>` (or another explicit self-hosted base URL)
-- if `LETTA_BASE_URL` is missing, SDK mode does not imply self-hosted routing
-- when `.env` carries a hosted `LETTA_API_KEY`, local/self-hosted runs should explicitly `unset LETTA_API_KEY` unless the local server itself is configured with auth
-- for this project, self-hosted Letta service should run on a login node rather than a transient compute-node job
-- reason: TCE resume, builder-agent reuse, and viewer/debug URLs assume a stable long-lived `LETTA_BASE_URL`; compute-node teardown will invalidate that endpoint
 - Task C runtime consumes one pack item per key; item-count is not a shared runtime config
 - generation runtime assumes pack-first Task C data is already valid; missing/invalid `rq3_apply_service_qa` should be treated as task-pack build issues rather than a baseline runtime policy knob
 
@@ -415,8 +396,6 @@ Recommended shared config for baselines that implement this hook:
 - `final_qa.save_prompt_and_raw`
 - `retrieval.final_qa_top_k`
 
-Agent-memory baseline note:
-- `letta` / `memgpt` may implement final QA, but they do not use `retrieval.final_qa_top_k` because final QA answers come from checkpoint-scoped agent memory rather than an explicit retriever.
 
 ## 13. Evaluation Contract
 

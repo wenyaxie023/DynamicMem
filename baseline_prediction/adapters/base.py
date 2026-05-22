@@ -23,39 +23,20 @@ _DEFAULT_CONCURRENCY_POLICY = BaselineConcurrencyPolicy(
 SHARED_PIPELINE_SNAPSHOT_BASELINES = {
     "rag",
     "oracle",
-    "oracle_state",
-    "icl",
-    "hipporag",
     "hipporag2",
     "amem",
     "memoryos",
-    "mem0",
-    "zep",
     "simplemem",
-}
-
-AGENT_LOOP_BASELINES = {
-    "letta",
-    "memgpt",
 }
 
 
 BASELINE_CONCURRENCY_POLICIES: Dict[str, BaselineConcurrencyPolicy] = {
     "rag": BaselineConcurrencyPolicy("allowed", "allowed"),
     "oracle": BaselineConcurrencyPolicy("allowed", "allowed"),
-    "oracle_state": BaselineConcurrencyPolicy("allowed", "allowed"),
-    "icl": BaselineConcurrencyPolicy("allowed", "allowed"),
-    "hipporag": BaselineConcurrencyPolicy("allowed", "allowed"),
     "hipporag2": BaselineConcurrencyPolicy("allowed", "allowed"),
     "amem": BaselineConcurrencyPolicy("forbidden", "allowed"),
     "memoryos": BaselineConcurrencyPolicy("allowed", "allowed"),
-    "mem0": BaselineConcurrencyPolicy("allowed", "allowed"),
-    "zep": BaselineConcurrencyPolicy("forbidden", "forbidden"),
     "simplemem": BaselineConcurrencyPolicy("forbidden", "forbidden"),
-    # Letta's agent-loop implementation mutates shared memory state while answering,
-    # so both checkpoint-level and within-checkpoint parallelism are disabled.
-    "letta": BaselineConcurrencyPolicy("forbidden", "forbidden"),
-    "memgpt": BaselineConcurrencyPolicy("forbidden", "forbidden"),
 }
 
 
@@ -67,8 +48,6 @@ def get_baseline_route_class(baseline_name: str) -> str:
     key = str(baseline_name or "").strip().lower()
     if key in SHARED_PIPELINE_SNAPSHOT_BASELINES:
         return SHARED_PIPELINE_SNAPSHOT_ROUTE
-    if key in AGENT_LOOP_BASELINES:
-        return AGENT_LOOP_ROUTE
     return SHARED_PIPELINE_SNAPSHOT_ROUTE
 
 

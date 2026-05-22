@@ -1,4 +1,0 @@
-transformers>=4.39.0
-torch
-accelerate
-scipy
