@@ -7,6 +7,7 @@ env
 *DS_Store
 *.log
 *.txt
+!requirements.txt
 .env
 .env.bak*
 data/
