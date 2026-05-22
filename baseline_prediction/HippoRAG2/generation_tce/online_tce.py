@@ -17,12 +17,11 @@ from typing import Any, Callable, Dict, List, Optional, Set, Tuple
 SCRIPT_DIR = Path(__file__).resolve().parent
 HIPPORAG2_ROOT_DIR = SCRIPT_DIR.parent
 REPO_ROOT_DIR = HIPPORAG2_ROOT_DIR.parent.parent
-HIPPORAG_SRC_DIR = HIPPORAG2_ROOT_DIR / "HippoRAG" / "src"
 
-for extra_path in (HIPPORAG_SRC_DIR, REPO_ROOT_DIR):
-    extra_path_str = str(extra_path)
-    if extra_path_str not in sys.path:
-        sys.path.append(extra_path_str)
+# The `hipporag` package is an external dependency installed via pip;
+# see baseline_prediction/HippoRAG2/requirements.txt.
+if str(REPO_ROOT_DIR) not in sys.path:
+    sys.path.append(str(REPO_ROOT_DIR))
 
 
 def _patch_transformers_torch_safety() -> None:

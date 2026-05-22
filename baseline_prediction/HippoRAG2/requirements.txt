@@ -1,0 +1,13 @@
+# HippoRAG2 baseline — external upstream dependency.
+#
+# Unlike amem / memoryos / simplemem (whose upstream code is vendored into this
+# repo), the HippoRAG2 baseline depends on the upstream HippoRAG package.
+#
+# The original experiments used the upstream HippoRAG git repository at commit
+# 35c8fcc (git describe: v1.0.0-57-g35c8fcc), consumed directly from source.
+# The pin below installs that exact commit, so results stay reproducible:
+hipporag @ git+https://github.com/OSU-NLP-Group/HippoRAG.git@35c8fcca64cd538b3266808f7341693ca5e8096a
+
+# If you prefer a PyPI release instead (API may differ from the commit above),
+# the published alphas are 2.0.0a2 / 2.0.0a3 / 2.0.0a4:
+#   hipporag==2.0.0a4
