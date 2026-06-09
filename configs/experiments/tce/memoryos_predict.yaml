@@ -14,8 +14,8 @@ runtime:
   save_every_generation_keys: 5
 
 data:
-  benchmark: /projects/standard/zrliu/shared/wenya/xie00470/dynamicmem/outputs/gemini_3_flash_preview/004_user_004/tce_benchmark_vnext_20260428_tce_v2_field_validation_prompt_refresh_task_packs.json
-  app_logs_path: /projects/standard/zrliu/shared/wenya/xie00470/dynamicmem/outputs/gemini_3_flash_preview/004_user_004/app_log_large.json
+  benchmark: outputs/gemini_3_flash_preview/004_user_004/tce_benchmark_vnext_20260428_tce_v2_field_validation_prompt_refresh_task_packs.json
+  app_logs_path: outputs/gemini_3_flash_preview/004_user_004/app_log_large.json
 
 output:
   prediction_path: results/MemoryOS/results/{user_id}/prediction/{run_name}/tce_results.json
