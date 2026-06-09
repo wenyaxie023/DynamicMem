@@ -294,7 +294,7 @@ def _require_validated_benchmark(benchmark: Dict[str, Any]) -> None:
             continue
         if "validated_snapshot_state" not in checkpoint or "state_questionability" not in checkpoint:
             raise ValueError(
-                "Validated benchmark required: run data_construction.build_tce_state_validation first."
+                "Validated benchmark required: run benchmark_construction.build_tce_state_validation first."
             )
 
 

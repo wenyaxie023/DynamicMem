@@ -149,8 +149,8 @@ def main() -> None:
                 resolved_user_id = users[0]
             elif len(users) > 1:
                 raise ValueError(
-                    "generation.run_tce requires runtime.user_id when config contains multiple users. "
-                    "Use generation.run_tce_batch for multi-user configs."
+                    "baseline_prediction.run_tce requires runtime.user_id when config contains multiple users. "
+                    "Use baseline_prediction.run_tce_batch for multi-user configs."
                 )
         experiment_name = str(runtime.get("experiment_name", "") or "").strip()
         run_id = str(runtime.get("run_id", "") or "").strip() or "main"

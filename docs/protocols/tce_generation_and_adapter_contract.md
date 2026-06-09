@@ -387,7 +387,6 @@ Contract:
   - `answer_query`
 - final QA retrieval must remain checkpoint-isolated and query non-polluting
 - final QA output must be written as a separate QA artifact, not embedded into the main TCE prediction JSON
-- the legacy `baseline_prediction.run_qa` runner and QA adapter registry remain unchanged
 
 Recommended shared config for baselines that implement this hook:
 - `final_qa.enabled`

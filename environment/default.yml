@@ -261,4 +261,3 @@ dependencies:
       - zep-cloud==2.17.0
       - zipp==3.23.0
       - zstandard==0.23.0
-prefix: /users/4/xie00470/miniconda3/envs/mem0311

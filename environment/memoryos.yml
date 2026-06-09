@@ -117,4 +117,3 @@ dependencies:
       - werkzeug==3.1.3
       - yarl==1.23.0
       - zipp==3.23.1
-prefix: /users/4/xie00470/miniconda3/envs/memoryos

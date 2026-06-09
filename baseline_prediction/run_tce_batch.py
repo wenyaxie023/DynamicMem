@@ -27,7 +27,7 @@ from baseline_prediction.tce_config import (
 
 
 def _load_benchmark_builder_api():
-    module_name = "data_construction.build_tce_benchmark"
+    module_name = "benchmark_construction.build_tce_benchmark"
     try:
         module = importlib.import_module(module_name)
     except ModuleNotFoundError:
