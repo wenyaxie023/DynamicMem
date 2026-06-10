@@ -25,5 +25,5 @@ set -euo pipefail
 # fi
 
 python3 -m baseline_prediction.run_tce_batch \
-  --config configs/experiments/tce/hipporag2.yaml \
+  --config configs/experiments/tce/hipporag2_predict.yaml \
   "$@"

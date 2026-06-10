@@ -48,13 +48,13 @@ Shared generation config contract:
 Recommended single-run entrypoint:
 
 ```bash
-python -m baseline_prediction.run_tce --config configs/experiments/tce/<baseline>.yaml
+python -m baseline_prediction.run_tce --config configs/experiments/tce/<baseline>_predict.yaml
 ```
 
 Recommended batch entrypoint:
 
 ```bash
-python -m baseline_prediction.run_tce_batch --config configs/experiments/tce/<baseline>.yaml
+python -m baseline_prediction.run_tce_batch --config configs/experiments/tce/<baseline>_predict.yaml
 ```
 
 Batch config templating supports:
@@ -413,7 +413,7 @@ Contributor validation should confirm:
 
 1. Add `baseline_prediction/adapters/<baseline>.py`
 2. Register the baseline in `baseline_prediction/adapters/registry.py`
-3. Add `configs/experiments/tce/<baseline>.yaml`
+3. Add `configs/experiments/tce/<baseline>_predict.yaml`
 4. Ensure the baseline consumes a pack-first benchmark by default
 5. Add at least one minimal acceptance test covering:
 - config dry-run

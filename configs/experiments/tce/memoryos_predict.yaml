@@ -1,21 +1,20 @@
 users:
-  - 004_user_004
+  - 001_user_001
 
 runtime:
   baseline: memoryos
-  experiment_name: prediction
+  experiment_name: predict0504v2_formal
   run_id: main
   resume: true
-  within_checkpoint_workers: 1
+  within_checkpoint_workers: 4
   enable_change_reasoning: false
   enable_rq3_apply_service_qa: true
   save_prompt_and_raw: true
   rq3_apply_save_prompt_and_raw: true
-  save_every_generation_keys: 5
 
 data:
-  benchmark: outputs/004_user_004/task_packs.json
-  app_logs_path: outputs/004_user_004/app_log_large.json
+  benchmark: outputs/{user_id}/task_packs.json
+  app_logs_path: outputs/{user_id}/app_log_large.json
 
 output:
   prediction_path: results/MemoryOS/results/{user_id}/prediction/{run_name}/tce_results.json
@@ -23,24 +22,25 @@ output:
 llm:
   provider: azure
   model: gpt-5-mini
-  max_workers: 1
+  max_workers: 4
 
 retriever:
   provider: azure
   model: text-embedding-3-large
 
 retrieval:
-  top_k: 1
-  rq3_apply_top_k: 1
+  top_k: 10
+  rq3_apply_top_k: 10
 
 final_qa:
   enabled: false
 
+
 baseline_params:
-  memory_action: predict_from_prebuilt
+  memory_action: build_then_predict
   size: large
-  snapshot_dir: results/MemoryOS/snapshots/memoryos_v14_user1_azure_build_only_raw
-  data_storage_path: results/MemoryOS/runtime_data/memoryos_v14_user1_azure_build_only_raw
+  snapshot_dir: results/MemoryOS/snapshots/{user_id}
+  data_storage_path: results/MemoryOS/runtime_data/{user_id}
   llm_controller_model: gpt-5-mini
   assistant_id: assistant
   allow_destructive_rebuild: false

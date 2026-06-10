@@ -2,22 +2,24 @@ users:
   - 001_user_001
 
 runtime:
-  baseline: hipporag2
+  baseline: rag
   experiment_name: predict0504v2_formal_20
   run_id: main
   resume: true
+  checkpoint_workers: 1
   within_checkpoint_workers: 4
   enable_change_reasoning: false
   enable_rq3_apply_service_qa: true
   save_prompt_and_raw: true
   rq3_apply_save_prompt_and_raw: true
+  save_every_generation_keys: 5
 
 data:
   benchmark: outputs/{user_id}/task_packs.json
   app_logs_path: outputs/{user_id}/app_log_large.json
 
 output:
-  prediction_path: results/HippoRAG2/results/{user_id}/prediction/{run_name}/tce_results.json
+  prediction_path: results/rag/results/{user_id}/prediction/{run_name}/tce_results.json
 
 llm:
   provider: azure
@@ -37,8 +39,4 @@ final_qa:
   enabled: false
 
 baseline_params:
-  memory_action: predict_from_prebuilt
-  snapshot_dir: results/HippoRAG2/snapshots/hipporag2_build_only/{user_id}
-  data_storage_path: results/HippoRAG2/runtime_data/hipporag2_build_only/{user_id}
-  builder_save_every_logs: 64
-  allow_destructive_rebuild: false
+  predict_per_key: true

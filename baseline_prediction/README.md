@@ -9,7 +9,7 @@ Use this README as the operational guide.
 
 TCE single run (recommended):
 ```bash
-python -m baseline_prediction.run_tce --config configs/experiments/tce/<baseline>.yaml
+python -m baseline_prediction.run_tce --config configs/experiments/tce/<baseline>_predict.yaml
 ```
 
 TCE batch run:
@@ -19,7 +19,7 @@ python -m baseline_prediction.run_tce_batch --config <batch_config.yaml>
 
 Dry-run config resolution (no execution):
 ```bash
-python -m baseline_prediction.run_tce --config configs/experiments/tce/<baseline>.yaml --dry-run
+python -m baseline_prediction.run_tce --config configs/experiments/tce/<baseline>_predict.yaml --dry-run
 ```
 
 ## Output Layout
@@ -63,7 +63,7 @@ Entrypoints:
 Shared config layer:
 - `baseline_prediction/tce_config.py`
 - `configs/tce.default.yaml`
-- `configs/experiments/tce/<baseline>.yaml`
+- `configs/experiments/tce/<baseline>_predict.yaml`
 
 Adapter layer:
 - `baseline_prediction/adapters/base.py`
@@ -77,7 +77,7 @@ Reproducibility artifact:
 
 Minimal files:
 - `baseline_prediction/adapters/<baseline>.py`
-- `configs/experiments/tce/<baseline>.yaml`
+- `configs/experiments/tce/<baseline>_predict.yaml`
 - optional baseline-specific implementation folder under `baseline_prediction/<BaselineName>/`
 
 Required adapter interface:
@@ -123,9 +123,9 @@ baseline_params:
 ```
 
 Validation checklist:
-1. `python -m baseline_prediction.run_tce --config configs/experiments/tce/<baseline>.yaml --dry-run`
-2. `python -m baseline_prediction.run_tce --config configs/experiments/tce/<baseline>.yaml`
-3. `python -m evaluation.eval_tce --config configs/experiments/tce/<baseline>_eval_predict.yaml`
+1. `python -m baseline_prediction.run_tce --config configs/experiments/tce/<baseline>_predict.yaml --dry-run`
+2. `python -m baseline_prediction.run_tce --config configs/experiments/tce/<baseline>_predict.yaml`
+3. `python -m evaluation.eval_tce --config configs/experiments/tce/<baseline>_eval.yaml`
 4. confirm `*_run_settings.yaml` exists next to prediction output
 
 ## Security Note

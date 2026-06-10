@@ -7,7 +7,7 @@ This directory contains the protocol-aligned TCE runtime for `hipporag2`.
 - Runtime: `baseline_prediction/HippoRAG2/generation_tce/online_tce.py`
 - Compatibility wrapper: `baseline_prediction/HippoRAG2/generation_tce/tce.py`
 - Adapter: `baseline_prediction/adapters/hipporag2.py`
-- Preferred runner: `python -m baseline_prediction.run_tce --config configs/experiments/tce/hipporag2.yaml`
+- Preferred runner: `python -m baseline_prediction.run_tce --config configs/experiments/tce/hipporag2_predict.yaml`
 
 ## Current Design
 

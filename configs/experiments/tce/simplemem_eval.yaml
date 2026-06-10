@@ -1,0 +1,19 @@
+runtime:
+  user_id: 001_user_001
+  experiment_name: predict0504v2_formal
+  enable_llm_judge: true
+  save_eyeball: true
+  resume: true
+
+data:
+  benchmark: outputs/{user_id}/task_packs.json
+  prediction: results/simplemem/results/{user_id}/prediction/{experiment_name}/tce_results.json
+
+output:
+  eval_path: results/simplemem/results/{user_id}/eval/{experiment_name}/tce_eval.json
+  llm_judge_input_output: results/simplemem/results/{user_id}/eval/{experiment_name}/tce_eval_llm_judge_audit.json
+
+llm:
+  provider: azure
+  model: gpt-5.4
+  max_workers: 4

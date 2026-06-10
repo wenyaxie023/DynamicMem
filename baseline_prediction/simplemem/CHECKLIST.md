@@ -97,7 +97,7 @@ SimpleMem-specific knobs live in `baseline_params`:
 - `max_retrieval_workers`
 
 Current formal config:
-- `configs/experiments/tce/simplemem.yaml`
+- `configs/experiments/tce/simplemem_predict.yaml`
 
 ## 5. Resume + Usage
 
@@ -144,8 +144,8 @@ The viewer now reads:
 Dry-run config resolution:
 
 ```bash
-python3.11 -m generation.run_tce --config configs/experiments/tce/simplemem.yaml --dry-run
-python3.11 -m generation.run_tce_batch --config configs/experiments/tce/simplemem.yaml --dry-run
+python3.11 -m baseline_prediction.run_tce --config configs/experiments/tce/simplemem_predict.yaml --dry-run
+python3.11 -m baseline_prediction.run_tce_batch --config configs/experiments/tce/simplemem_predict.yaml --dry-run
 ```
 
 Targeted tests:

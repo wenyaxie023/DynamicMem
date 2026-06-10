@@ -3,10 +3,10 @@ users:
 
 runtime:
   baseline: amem
-  experiment_name: predict_0430
+  experiment_name: predict0504v2_formal_5
   run_id: main
   resume: true
-  within_checkpoint_workers: 1
+  within_checkpoint_workers: 4
   enable_change_reasoning: false
   enable_rq3_apply_service_qa: true
   save_prompt_and_raw: true
@@ -22,20 +22,19 @@ output:
 llm:
   provider: azure
   model: gpt-5-mini
-  max_workers: 1
+  max_workers: 4
 
 retriever:
   provider: azure
   model: text-embedding-3-large
 
 retrieval:
-  top_k: 10
-  rq3_apply_top_k: 10
+  top_k: 5
+  rq3_apply_top_k: 5
 
 baseline_params:
-  memory_action: predict_from_prebuilt
+  memory_action: build_then_predict
   size: large
-  # Optional AMem-only knob. Omit to reuse retrieval top_k; set 0 to disable linked-neighbor expansion.
-  linked_neighbor_top_k: 10
+  linked_neighbor_top_k: 5
   snapshot_dir: results/Amem/snapshots/amem_build_only
   data_storage_path: results/Amem/runtime_data/amem_build_only/{user_id}

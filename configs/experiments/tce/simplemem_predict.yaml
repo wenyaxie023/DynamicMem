@@ -39,7 +39,7 @@ final_qa:
   save_prompt_and_raw: false
 
 baseline_params:
-  memory_action: predict_from_prebuilt
+  memory_action: build_then_predict
   snapshot_dir: results/simplemem/snapshots/simplemem_build_only/{user_id}
   data_storage_path: results/simplemem/runtime_data/simplemem_build_only/{user_id}
   allow_destructive_rebuild: false

@@ -1,3 +1,6 @@
+users:
+  - 001_user_001
+
 runtime:
   baseline: hipporag2
   experiment_name: predict0504v2_formal_20
@@ -34,8 +37,8 @@ final_qa:
   enabled: false
 
 baseline_params:
-  memory_action: predict_from_prebuilt
-  snapshot_dir: results/HippoRAG2/snapshots/hipporag2_build_only_raw/{user_id}
-  data_storage_path: results/HippoRAG2/runtime_data/hipporag2_build_only_raw/{user_id}
+  memory_action: build_then_predict
+  snapshot_dir: results/HippoRAG2/snapshots/hipporag2_build_only/{user_id}
+  data_storage_path: results/HippoRAG2/runtime_data/hipporag2_build_only/{user_id}
   builder_save_every_logs: 64
   allow_destructive_rebuild: false

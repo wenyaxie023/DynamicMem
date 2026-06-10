@@ -89,17 +89,6 @@ python3 -m benchmark_construction.build_tce_benchmark \
   --canonical-research-doc analysis_tools/tce_research_questions/001_user_001/new_research_question.md
 ```
 
-Build-only note:
-- A raw benchmark is sufficient for memory-building baselines such as `memoryos` when the immediate goal is only to materialize checkpointed memory state.
-- Task-pack benchmarks are still needed later for full generation and evaluation.
-
-Example raw-benchmark build-only run for `memoryos`:
-```bash
-python3 -m baseline_prediction.run_tce_batch \
-  --config configs/experiments/tce/memoryos_build_only_raw.yaml \
-  --users <user_id>
-```
-
 ### 1.1 Run standalone state validation
 ```bash
 python3 -m benchmark_construction.build_tce_state_validation \
@@ -295,7 +284,7 @@ Generation mode selection:
 ### 2.3 RAG single-checkpoint smoke
 ```bash
 python3 -m baseline_prediction.run_tce \
-  --config configs/experiments/tce/rag_predict_users.yaml \
+  --config configs/experiments/tce/rag_predict.yaml \
   --max-checkpoints 1
 ```
 - RAG/TCE supports:
@@ -323,17 +312,6 @@ python3 -m baseline_prediction.run_tce \
   - Task B: one request per changed `state_key`
   - Task C: one request per `(state_key, qa_id)`
 - The primary Task C answer metric is `rq3_apply_answer_point_score_mean`, derived from slot-level LLM judging over each item's `answer_scoring_points[]`. Missing `answer_scoring_points[]` should be treated as a task-pack or protocol error, not as a signal to fall back to option-style metrics.
-
-### 2.4 Letta/MemGPT expansion run
-```bash
-python3 -m baseline_prediction.run_tce \
-  --config configs/experiments/tce/memgpt_v14.yaml \
-  --max-checkpoints 1
-```
-
-Expected output:
-- `baseline_prediction/<baseline>/results/<user_id>/prediction/tce_results*.json`
-- sibling `*_run_settings.yaml`
 
 ## 3. Part III - Evaluation Execution
 

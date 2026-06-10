@@ -76,7 +76,7 @@ and `app_log_large.json`.
 ```bash
 # Example: A-Mem (runs in the default env)
 python -m baseline_prediction.run_tce \
-  --config configs/experiments/tce/amem_predict_user001.yaml
+  --config configs/experiments/tce/amem_predict.yaml
 ```
 
 Predictions are written to
@@ -95,7 +95,7 @@ configs). To benchmark *only* State Completion, set that flag to `false`.
 
 ```bash
 python -m evaluation.eval_tce \
-  --config configs/experiments/tce/amem_eval_predict.yaml
+  --config configs/experiments/tce/amem_eval.yaml
 ```
 
 The eval prints a summary and writes `.../evaluation/<run_name>/tce_eval.json`.
