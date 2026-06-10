@@ -21,12 +21,12 @@ output:
   prediction_path: results/Oracle/results/{user_id}/prediction/{run_name}/tce_results.json
 
 llm:
-  provider: azure
+  provider: openai
   model: gpt-5-mini
   max_workers: 4
 
 retriever:
-  provider: azure
+  provider: openai
   model: text-embedding-3-large
   batch_size: 64
 

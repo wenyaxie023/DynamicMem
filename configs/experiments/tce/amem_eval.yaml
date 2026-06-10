@@ -14,6 +14,6 @@ output:
   llm_judge_input_output: results/Amem/results/{user_id}/eval/{experiment_name}/tce_eval_llm_judge_audit.json
 
 llm:
-  provider: azure
+  provider: openai
   model: gpt-5.4
   max_workers: 4

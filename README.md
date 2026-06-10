@@ -50,13 +50,15 @@ conda env create -f environment/hipporag2.yml   # HippoRAG2 baseline
 
 ### 2. Set your LLM credentials
 
-Predictions and the LLM judge call an OpenAI-compatible endpoint. Set the key for
-your provider (provider/model are configurable in each config's `llm:` block):
+Predictions and the LLM judge call the OpenAI API. The example configs use
+`provider: openai`, so set:
 
 ```bash
 export OPENAI_API_KEY=sk-...
-# Azure users: also set AZURE_OPENAI_API_KEY and the endpoint/base-url your config expects
 ```
+
+Provider and model are configurable per config (`llm:` / `retriever:` blocks);
+Azure is also supported (`provider: azure` + `AZURE_OPENAI_API_KEY`).
 
 ### 3. Download the benchmark data
 
