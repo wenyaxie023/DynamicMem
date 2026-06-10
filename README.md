@@ -184,5 +184,5 @@ here upon publication.
 
 ## License
 
-MIT — see [`LICENSE`](LICENSE). Vendored baselines retain their upstream licenses
-(e.g. [`baseline_prediction/MemoryOS/LICENSE`](baseline_prediction/MemoryOS/LICENSE)).
+MIT — see [`LICENSE`](LICENSE). Vendored and depended-on third-party baselines
+retain their own licenses; see [`NOTICE`](NOTICE) for attribution.
