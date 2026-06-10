@@ -31,7 +31,7 @@ and act on it (**Personalized Service**).
 ## Usage
 
 ```bash
-huggingface-cli download xiewenya/dynamicmem \
+hf download xiewenya/dynamicmem \
   --repo-type dataset --local-dir outputs/
 ```
 

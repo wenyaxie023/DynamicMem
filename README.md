@@ -64,7 +64,7 @@ The benchmark task packs and app logs are published on the Hugging Face Hub.
 Download them into the repo-root `outputs/` directory (the layout the configs expect):
 
 ```bash
-huggingface-cli download xiewenya/dynamicmem \
+hf download xiewenya/dynamicmem \
   --repo-type dataset --local-dir outputs/
 ```
 
