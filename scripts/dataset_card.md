@@ -23,7 +23,7 @@ and act on it (**Personalized Service**).
 ## Contents
 
 ```
-<model>/<user_id>/
+<user_id>/
 ├── task_packs.json      # benchmark task packs (carry ground-truth state)
 └── app_log_large.json   # the activity stream the memory system consumes
 ```
@@ -35,7 +35,7 @@ hf download xiewenya/dynamicmem \
   --repo-type dataset --local-dir outputs/
 ```
 
-This reproduces the `outputs/<model>/<user_id>/...` layout the repo's configs
+This reproduces the `outputs/<user_id>/...` layout the repo's configs
 expect. Then follow the repo Quick Start to run a baseline and evaluate.
 
 ## License

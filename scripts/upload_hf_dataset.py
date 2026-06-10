@@ -3,23 +3,24 @@
 
 Run this on a machine that can read the generated benchmark tree (e.g. the
 cluster). For each user it publishes exactly two files — the canonical task
-packs (renamed to `task_packs.json`) and the app-log stream — under the
-`<model>/<user_id>/` layout the repo configs expect, so
+packs (renamed to `task_packs.json`) and the app-log stream — under a flat
+`<user_id>/` layout, so
 
     hf download xiewenya/dynamicmem --repo-type dataset --local-dir outputs/
 
-reproduces a runnable `outputs/<model>/<user_id>/{task_packs.json,
-app_log_large.json}` tree.
+reproduces a runnable `outputs/<user_id>/{task_packs.json, app_log_large.json}`
+tree.
 
-Safe by default: prints the manifest and does nothing. Add --push to upload
-(one atomic commit).
+Safe by default: prints the manifest and does nothing. Add --push to upload.
+On --push the repo is synced to the manifest: files not in the manifest
+(e.g. an older model-prefixed layout) are deleted in the same atomic commit.
 
 Examples
 --------
 # See exactly what would be published (no network):
 python scripts/upload_hf_dataset.py
 
-# Actually upload (after `hf auth login`):
+# Actually upload / re-sync (after `hf auth login`):
 python scripts/upload_hf_dataset.py --push
 """
 from __future__ import annotations
@@ -28,10 +29,10 @@ import argparse
 import sys
 from pathlib import Path
 
-# The generated benchmark tree on the maintainer's host.
+# The per-user benchmark dirs on the maintainer's host.
 DEFAULT_OUTPUTS_ROOT = (
     "/projects/standard/zrliu/shared/wenya/xie00470/dynamicmem/"
-    "data_construction/generated_outputs"
+    "data_construction/generated_outputs/gemini_3_flash_preview"
 )
 DEFAULT_REPO_ID = "xiewenya/dynamicmem"
 
@@ -45,19 +46,18 @@ def build_manifest(outputs_root: Path) -> tuple[list[tuple[Path, str]], list[str
     """Return (uploads, warnings). uploads = [(local_path, path_in_repo), ...]."""
     uploads: list[tuple[Path, str]] = []
     warnings: list[str] = []
-    for model_dir in sorted(p for p in outputs_root.iterdir() if p.is_dir()):
-        for user_dir in sorted(p for p in model_dir.iterdir() if p.is_dir()):
-            rel = f"{model_dir.name}/{user_dir.name}"
-            pack = user_dir / CANONICAL_TASK_PACK
-            applog = user_dir / APP_LOG
-            if not pack.is_file():
-                warnings.append(f"missing task pack for {rel}: {CANONICAL_TASK_PACK}")
-                continue
-            if not applog.is_file():
-                warnings.append(f"missing app log for {rel}: {APP_LOG}")
-                continue
-            uploads.append((pack, f"{rel}/{PUBLISHED_TASK_PACK}"))
-            uploads.append((applog, f"{rel}/{APP_LOG}"))
+    for user_dir in sorted(p for p in outputs_root.iterdir() if p.is_dir()):
+        user = user_dir.name
+        pack = user_dir / CANONICAL_TASK_PACK
+        applog = user_dir / APP_LOG
+        if not pack.is_file():
+            warnings.append(f"missing task pack for {user}: {CANONICAL_TASK_PACK}")
+            continue
+        if not applog.is_file():
+            warnings.append(f"missing app log for {user}: {APP_LOG}")
+            continue
+        uploads.append((pack, f"{user}/{PUBLISHED_TASK_PACK}"))
+        uploads.append((applog, f"{user}/{APP_LOG}"))
     return uploads, warnings
 
 
@@ -84,7 +84,7 @@ def main() -> int:
         return 2
 
     total_mb = sum(p.stat().st_size for p, _ in uploads) / 1e6
-    n_users = len({repo_path.rsplit('/', 1)[0] for _, repo_path in uploads})
+    n_users = len({repo_path.split("/", 1)[0] for _, repo_path in uploads})
     print(f"Repo:         {args.repo_id} (dataset)")
     print(f"Outputs root: {root}")
     print(f"Publishing {len(uploads)} file(s) for {n_users} user(s), {total_mb:.1f} MB:")
@@ -98,24 +98,33 @@ def main() -> int:
         print("\nDRY RUN — nothing uploaded. Re-run with --push to publish.")
         return 0
 
-    from huggingface_hub import HfApi
-    from huggingface_hub import CommitOperationAdd
+    from huggingface_hub import HfApi, CommitOperationAdd, CommitOperationDelete
 
     api = HfApi()
     api.create_repo(args.repo_id, repo_type="dataset", private=args.private, exist_ok=True)
-    ops = [
+
+    desired = {repo_path for _, repo_path in uploads}
+    if args.card.is_file():
+        desired.add("README.md")
+    existing = set(api.list_repo_files(args.repo_id, repo_type="dataset"))
+    stale = sorted(f for f in existing - desired if not f.startswith("."))
+
+    ops: list = [
         CommitOperationAdd(path_in_repo=repo_path, path_or_fileobj=str(local))
         for local, repo_path in uploads
     ]
     if args.card.is_file():
         ops.append(CommitOperationAdd(path_in_repo="README.md", path_or_fileobj=str(args.card)))
+    for f in stale:
+        print(f"  deleting stale: {f}")
+        ops.append(CommitOperationDelete(path_in_repo=f))
 
     print(f"\nUploading to https://huggingface.co/datasets/{args.repo_id} ...")
     api.create_commit(
         repo_id=args.repo_id,
         repo_type="dataset",
         operations=ops,
-        commit_message="Publish DynamicMem benchmark (task packs + app logs)",
+        commit_message="Publish DynamicMem benchmark (flat <user_id>/ layout)",
     )
     print("Done.")
     return 0

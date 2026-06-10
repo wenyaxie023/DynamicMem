@@ -3,7 +3,7 @@ set -euo pipefail
 
 PYTHON_BIN="python3"
 PROJECT_ROOT="${PROJECT_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
-OUTPUT_ROOT="$PROJECT_ROOT/outputs/gemini_3_flash_preview"
+OUTPUT_ROOT="$PROJECT_ROOT/outputs"
 TASK_CONTRACT_VERSION="${TASK_CONTRACT_VERSION:-taskabc_v2}"
 RESEARCH_FRAME_VERSION="${RESEARCH_FRAME_VERSION:-rq_20260413}"
 # If unset, build_tce_benchmark.py falls back to its built-in default

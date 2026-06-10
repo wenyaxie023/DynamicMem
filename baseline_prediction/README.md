@@ -107,7 +107,7 @@ runtime:
   resume: false
 
 data:
-  benchmark: outputs/gemini_3_flash_preview/{user_id}/tce_benchmark.json
+  benchmark: outputs/{user_id}/tce_benchmark.json
   app_logs_path: data/user{user_id}/app_log_large.json
 
 output:

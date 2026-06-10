@@ -20,7 +20,7 @@ from collections import defaultdict
 from copy import deepcopy
 
 # Add parent paths for imports
-# Path: generated_outputs/gemini_3_flash_preview/002_user_002 -> need to go up 3 levels to data_construction
+# Path: generated_outputs/002_user_002 -> need to go up 3 levels to data_construction
 data_construction_dir = Path(__file__).resolve().parent.parent.parent.parent
 sys.path.insert(0, str(data_construction_dir))
 

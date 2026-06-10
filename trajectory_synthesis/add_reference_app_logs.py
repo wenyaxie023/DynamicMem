@@ -101,8 +101,6 @@ def process_all_users(
 
 
 if __name__ == "__main__":
-    # Default root is the gemini_3_flash_preview outputs (repo-root outputs/).
-    default_root = (
-        Path(__file__).resolve().parent.parent / "outputs" / "gemini_3_flash_preview"
-    )
+    # Default root is the repo-root outputs/ dir.
+    default_root = Path(__file__).resolve().parent.parent / "outputs"
     process_all_users(root_dir=default_root)

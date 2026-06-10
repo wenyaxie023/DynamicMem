@@ -68,7 +68,7 @@ hf download xiewenya/dynamicmem \
   --repo-type dataset --local-dir outputs/
 ```
 
-This populates `outputs/<model>/<user_id>/` with each user's `task_packs.json`
+This populates `outputs/<user_id>/` with each user's `task_packs.json`
 and `app_log_large.json`.
 
 ### 4. Run a reference baseline
@@ -162,7 +162,7 @@ dynamicmem/
 To regenerate the dataset from scratch (needs LLM API budget), follow Part 1 then
 Part 2: [`trajectory_synthesis/README.md`](trajectory_synthesis/README.md) →
 [`benchmark_construction/README.md`](benchmark_construction/README.md).
-Generated artifacts (gitignored) land under repo-root `outputs/<model>/<user_id>/`.
+Generated artifacts (gitignored) land under repo-root `outputs/<user_id>/`.
 
 ### Protocol & runbooks
 

@@ -20,7 +20,7 @@ Override the defaults via env: `PROJECT_ROOT`, `BENCHMARK_ROOT`, `BASELINE`,
 Direct CLI (single file):
 ```bash
 python -m evaluation.eval_tce \
-  --benchmark outputs/gemini_3_flash_preview/<user_id>/<benchmark_task_packs>.json \
+  --benchmark outputs/<user_id>/<benchmark_task_packs>.json \
   --prediction baseline_prediction/<baseline>/results/<user_id>/prediction/<run_name>/tce_results.json \
   --output baseline_prediction/<baseline>/results/<user_id>/evaluation/<run_name>/tce_eval.json \
   --save-eyeball
@@ -127,7 +127,7 @@ For changed-vs-unchanged and per-key temporal trends, run:
 
 ```bash
 python -m evaluation.analyze_tce_item_trends \
-  --benchmark outputs/gemini_3_flash_preview/<user_id>/<benchmark_task_packs>.json \
+  --benchmark outputs/<user_id>/<benchmark_task_packs>.json \
   --prediction baseline_prediction/rag/results/001_user_001/prediction/<run_name>/tce_results.json \
   --output-dir baseline_prediction/rag/results/<user_id>/analysis/perkey_trends \
   --group-change-mode first_seen \
@@ -149,7 +149,7 @@ For checkpoint-level RQ1/RQ2/RQ3 analysis on frozen TCE artifacts, run:
 
 ```bash
 python -m evaluation.build_tce_analysis_pack \
-  --benchmark outputs/gemini_3_flash_preview/<user_id>/tce_benchmark_vnext_*.json \
+  --benchmark outputs/<user_id>/tce_benchmark_vnext_*.json \
   --prediction baseline_prediction/rag/results/<user_id>/prediction/tce_results_*.json \
   --eval baseline_prediction/rag/results/<user_id>/evaluation/tce_eval_*.json \
   --output-dir baseline_prediction/rag/results/<user_id>/analysis/milestone1_<tag>

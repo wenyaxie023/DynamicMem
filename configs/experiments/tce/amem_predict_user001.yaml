@@ -13,8 +13,8 @@ runtime:
   rq3_apply_save_prompt_and_raw: true
 
 data:
-  benchmark: outputs/gemini_3_flash_preview/{user_id}/task_packs.json
-  app_logs_path: outputs/gemini_3_flash_preview/{user_id}/app_log_large.json
+  benchmark: outputs/{user_id}/task_packs.json
+  app_logs_path: outputs/{user_id}/app_log_large.json
 
 output:
   prediction_path: results/Amem/results/{user_id}/prediction/{run_name}/tce_results.json

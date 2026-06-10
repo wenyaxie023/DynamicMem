@@ -3,7 +3,7 @@ set -euo pipefail
 
 PYTHON_BIN="${PYTHON_BIN:-python3}"
 PROJECT_ROOT="${PROJECT_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
-BENCHMARK_ROOT="${BENCHMARK_ROOT:-$PROJECT_ROOT/outputs/gemini_3_flash_preview}"
+BENCHMARK_ROOT="${BENCHMARK_ROOT:-$PROJECT_ROOT/outputs}"
 BASELINE="${BASELINE:-rag}"
 USER_DIR="${USER_DIR:-001_user_001}"
 EXPERIMENT_NAME="${EXPERIMENT_NAME:-}"

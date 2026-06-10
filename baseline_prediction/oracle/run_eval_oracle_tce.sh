@@ -3,7 +3,7 @@ set -euo pipefail
 
 PYTHON_BIN="python3"
 PROJECT_ROOT="${PROJECT_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)}"
-BENCHMARK_ROOT="$PROJECT_ROOT/outputs/gemini_3_flash_preview"
+BENCHMARK_ROOT="$PROJECT_ROOT/outputs"
 PREDICTION_ROOT="$PROJECT_ROOT/baseline_prediction/oracle/results"
 
 # Accept either numeric IDs (1,2,3) or full user dirs (001_user_001)

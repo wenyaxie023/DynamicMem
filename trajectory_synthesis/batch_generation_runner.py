@@ -663,7 +663,7 @@ def main():
     if args.output_dir:
         output_dir = Path(args.output_dir)
     else:
-        output_dir = base_dir / "outputs" / _slugify(args.model)
+        output_dir = base_dir / "outputs"
 
     _ensure_dir(output_dir)
 
