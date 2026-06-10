@@ -16,18 +16,18 @@ and a set of reference baselines.
 Each user has a synthesized multi-month trajectory (profile → life events → app
 logs). DynamicMem cuts that trajectory at ordered **checkpoints**; at each
 checkpoint a memory system sees everything up to that point and is scored on
-three tasks:
+**two tasks**:
 
-| Task | Name | The system must… |
-|------|------|-------------------|
-| **A** | State Reconstruction | reconstruct the user's current state (per-slot semantic match) |
-| **B** | Change Tracking | identify what changed since the previous checkpoint |
-| **C** | Personalization Utility | use the remembered state to complete a proactive, personalized service |
+| Task | The system must… | Eval score field |
+|------|------------------|------------------|
+| **State Completion** | reconstruct the user's current state at the checkpoint (per-slot semantic match) | `snapshot_point_score` |
+| **Personalized Service** | use the remembered state to complete a proactive, personalized service | `rq3_apply_answer_point_score` |
 
 Scoring is per-checkpoint and per-slot, with semantic (LLM-judge) metrics. See
 the [evaluation protocol manual](docs/protocols/temporal_checkpoint_evaluation_developer_manual.md)
-for the full specification. (In the code and protocol docs this checkpoint
-evaluation is abbreviated **TCE**.)
+for the full specification. (In the code and protocol docs, State Completion is
+the *snapshot / Task A* path and Personalized Service is the *rq3_apply / Task C*
+path; the checkpoint evaluation itself is abbreviated **TCE**.)
 
 ---
 
@@ -82,6 +82,11 @@ python -m baseline_prediction.run_tce \
 Predictions are written to
 `baseline_prediction/<baseline>/results/<user_id>/prediction/<run_name>/tce_results.json`.
 
+**Which task does this run?** A baseline always produces **State Completion**
+predictions at every checkpoint. **Personalized Service** is additionally enabled
+by `runtime.enable_rq3_apply_service_qa: true` (already set in the example
+configs). To benchmark *only* State Completion, set that flag to `false`.
+
 > Configs under [`configs/experiments/tce/`](configs/experiments/tce/) are
 > templates — set `runtime.user_id` / `data` to match the users you downloaded.
 > Use `--dry-run` first to print the resolved config without running.
@@ -93,8 +98,14 @@ python -m evaluation.eval_tce \
   --config configs/experiments/tce/amem_eval_predict.yaml
 ```
 
-Eval payloads land next to the predictions under `.../evaluation/<run_name>/tce_eval.json`.
-See [`evaluation/README.md`](evaluation/README.md) for the metric definitions and
+The eval prints a summary and writes `.../evaluation/<run_name>/tce_eval.json`.
+Read the score for the task you care about:
+
+- **State Completion** → `snapshot_point_score_mean_on_expected_mean`
+  (plus `snapshot_holistic_score`, `snapshot_value_f1`, `snapshot_evidence_recall`)
+- **Personalized Service** → `rq3_apply_answer_point_score_mean_mean`
+
+See [`evaluation/README.md`](evaluation/README.md) for all metric definitions and
 the direct (`--benchmark/--prediction/--output`) CLI form.
 
 ---
