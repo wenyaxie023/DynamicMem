@@ -6,7 +6,7 @@ runtime:
   resume: true
 
 data:
-  benchmark: outputs/gemini_3_flash_preview/{user_id}/tce_benchmark_vnext_20260504v2_formal_task_packs_human_revised.json
+  benchmark: outputs/gemini_3_flash_preview/{user_id}/task_packs.json
   prediction: results/HippoRAG2/results/{user_id}/prediction/{experiment_name}/tce_results.json
 
 output:

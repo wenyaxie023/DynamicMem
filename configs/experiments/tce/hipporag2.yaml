@@ -15,7 +15,7 @@ runtime:
   save_every_generation_keys: 5
 
 data:
-  benchmark: outputs/gemini_3_flash_preview/001_user_001/tce_benchmark_vnext_20260319_formal_crv_task_packs_v14.json
+  benchmark: outputs/gemini_3_flash_preview/001_user_001/task_packs.json
   app_logs_path: outputs/gemini_3_flash_preview/{user_id}/app_log_large.json
 
 output:

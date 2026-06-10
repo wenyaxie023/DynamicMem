@@ -14,7 +14,7 @@ runtime:
   save_every_generation_keys: 5
 
 data:
-  benchmark: outputs/gemini_3_flash_preview/004_user_004/tce_benchmark_vnext_20260428_tce_v2_field_validation_prompt_refresh_task_packs.json
+  benchmark: outputs/gemini_3_flash_preview/004_user_004/task_packs.json
   app_logs_path: outputs/gemini_3_flash_preview/004_user_004/app_log_large.json
 
 output:

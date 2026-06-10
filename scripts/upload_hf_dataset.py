@@ -1,21 +1,26 @@
 #!/usr/bin/env python3
 """Publish the DynamicMem benchmark data to the Hugging Face Hub.
 
-Run this on a machine that can read the generated `outputs/` tree (e.g. the
-cluster). It uploads ONLY the files a benchmark consumer needs — each user's
-task packs and app-log stream — preserving the `<model>/<user_id>/...` layout
-the configs expect, so `huggingface-cli download ... --local-dir outputs/`
-reproduces a runnable tree.
+Run this on a machine that can read the generated benchmark tree (e.g. the
+cluster). For each user it publishes exactly two files — the canonical task
+packs (renamed to `task_packs.json`) and the app-log stream — under the
+`<model>/<user_id>/` layout the repo configs expect, so
 
-Safe by default: prints the manifest and does nothing. Add --push to upload.
+    hf download xiewenya/dynamicmem --repo-type dataset --local-dir outputs/
+
+reproduces a runnable `outputs/<model>/<user_id>/{task_packs.json,
+app_log_large.json}` tree.
+
+Safe by default: prints the manifest and does nothing. Add --push to upload
+(one atomic commit).
 
 Examples
 --------
-# 1. See exactly what would be published (no network):
-python scripts/upload_hf_dataset.py --outputs-root /path/to/outputs
+# See exactly what would be published (no network):
+python scripts/upload_hf_dataset.py
 
-# 2. Actually upload (after `huggingface-cli login`):
-python scripts/upload_hf_dataset.py --outputs-root /path/to/outputs --push
+# Actually upload (after `hf auth login`):
+python scripts/upload_hf_dataset.py --push
 """
 from __future__ import annotations
 
@@ -23,27 +28,37 @@ import argparse
 import sys
 from pathlib import Path
 
-# Files that make up the public benchmark. Patterns are relative to a
-# <model>/<user_id>/ directory. Keep this conservative — everything else in
-# outputs/ (intermediate generation artifacts, debug dumps) stays private.
-INCLUDE_PATTERNS = [
-    "*_task_packs.json",   # benchmark task packs (carry ground-truth state)
-    "app_log_large.json",  # the activity stream baselines consume
-]
-
-DEFAULT_REPO_ID = "xiewenya/dynamicmem"
+# The generated benchmark tree on the maintainer's host.
 DEFAULT_OUTPUTS_ROOT = (
-    "/projects/standard/zrliu/shared/wenya/xie00470/dynamicmem/outputs"
+    "/projects/standard/zrliu/shared/wenya/xie00470/dynamicmem/"
+    "data_construction/generated_outputs"
 )
+DEFAULT_REPO_ID = "xiewenya/dynamicmem"
+
+# The canonical benchmark version to publish, and the clean name it ships under.
+CANONICAL_TASK_PACK = "tce_benchmark_vnext_20260504v2_formal_task_packs_human_revised.json"
+PUBLISHED_TASK_PACK = "task_packs.json"
+APP_LOG = "app_log_large.json"
 
 
-def collect(outputs_root: Path) -> list[Path]:
-    files: list[Path] = []
+def build_manifest(outputs_root: Path) -> tuple[list[tuple[Path, str]], list[str]]:
+    """Return (uploads, warnings). uploads = [(local_path, path_in_repo), ...]."""
+    uploads: list[tuple[Path, str]] = []
+    warnings: list[str] = []
     for model_dir in sorted(p for p in outputs_root.iterdir() if p.is_dir()):
         for user_dir in sorted(p for p in model_dir.iterdir() if p.is_dir()):
-            for pat in INCLUDE_PATTERNS:
-                files.extend(sorted(user_dir.glob(pat)))
-    return files
+            rel = f"{model_dir.name}/{user_dir.name}"
+            pack = user_dir / CANONICAL_TASK_PACK
+            applog = user_dir / APP_LOG
+            if not pack.is_file():
+                warnings.append(f"missing task pack for {rel}: {CANONICAL_TASK_PACK}")
+                continue
+            if not applog.is_file():
+                warnings.append(f"missing app log for {rel}: {APP_LOG}")
+                continue
+            uploads.append((pack, f"{rel}/{PUBLISHED_TASK_PACK}"))
+            uploads.append((applog, f"{rel}/{APP_LOG}"))
+    return uploads, warnings
 
 
 def main() -> int:
@@ -61,44 +76,47 @@ def main() -> int:
         print(f"ERROR: outputs root not found: {root}", file=sys.stderr)
         return 2
 
-    files = collect(root)
-    if not files:
-        print(f"ERROR: no benchmark files matched {INCLUDE_PATTERNS} under {root}", file=sys.stderr)
+    uploads, warnings = build_manifest(root)
+    for w in warnings:
+        print(f"WARNING: {w}", file=sys.stderr)
+    if not uploads:
+        print(f"ERROR: no publishable files found under {root}", file=sys.stderr)
         return 2
 
-    total_mb = sum(f.stat().st_size for f in files) / 1e6
+    total_mb = sum(p.stat().st_size for p, _ in uploads) / 1e6
+    n_users = len({repo_path.rsplit('/', 1)[0] for _, repo_path in uploads})
     print(f"Repo:         {args.repo_id} (dataset)")
     print(f"Outputs root: {root}")
-    print(f"Matched {len(files)} file(s), {total_mb:.1f} MB:")
-    for f in files:
-        print(f"  {f.relative_to(root)}")
+    print(f"Publishing {len(uploads)} file(s) for {n_users} user(s), {total_mb:.1f} MB:")
+    for local, repo_path in uploads:
+        rename = "  (renamed)" if local.name != repo_path.rsplit("/", 1)[1] else ""
+        print(f"  {repo_path}{rename}")
     if args.card.is_file():
-        print(f"Dataset card: {args.card}")
+        print(f"Dataset card: {args.card} -> README.md")
 
     if not args.push:
         print("\nDRY RUN — nothing uploaded. Re-run with --push to publish.")
         return 0
 
     from huggingface_hub import HfApi
+    from huggingface_hub import CommitOperationAdd
 
     api = HfApi()
     api.create_repo(args.repo_id, repo_type="dataset", private=args.private, exist_ok=True)
+    ops = [
+        CommitOperationAdd(path_in_repo=repo_path, path_or_fileobj=str(local))
+        for local, repo_path in uploads
+    ]
+    if args.card.is_file():
+        ops.append(CommitOperationAdd(path_in_repo="README.md", path_or_fileobj=str(args.card)))
+
     print(f"\nUploading to https://huggingface.co/datasets/{args.repo_id} ...")
-    api.upload_folder(
-        folder_path=str(root),
+    api.create_commit(
         repo_id=args.repo_id,
         repo_type="dataset",
-        allow_patterns=[f"*/*/{pat}" for pat in INCLUDE_PATTERNS],
-        commit_message="Add DynamicMem benchmark task packs + app logs",
+        operations=ops,
+        commit_message="Publish DynamicMem benchmark (task packs + app logs)",
     )
-    if args.card.is_file():
-        api.upload_file(
-            path_or_fileobj=str(args.card),
-            path_in_repo="README.md",
-            repo_id=args.repo_id,
-            repo_type="dataset",
-            commit_message="Add dataset card",
-        )
     print("Done.")
     return 0
 

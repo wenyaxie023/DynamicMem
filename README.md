@@ -68,8 +68,8 @@ hf download xiewenya/dynamicmem \
   --repo-type dataset --local-dir outputs/
 ```
 
-This populates `outputs/<model>/<user_id>/` with each user's task packs
-(`*_task_packs.json`) and `app_log_large.json`.
+This populates `outputs/<model>/<user_id>/` with each user's `task_packs.json`
+and `app_log_large.json`.
 
 ### 4. Run a reference baseline
 

@@ -24,7 +24,7 @@ and act on it (**Personalized Service**).
 
 ```
 <model>/<user_id>/
-├── *_task_packs.json    # benchmark task packs (carry ground-truth state)
+├── task_packs.json      # benchmark task packs (carry ground-truth state)
 └── app_log_large.json   # the activity stream the memory system consumes
 ```
 
