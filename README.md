@@ -2,9 +2,8 @@
 
 **DynamicMem** is a benchmark for **long-horizon memory systems**. It evaluates
 how well a memory system tracks a single user's evolving state across a long,
-realistic activity stream — using **Temporal Checkpoint Evaluation (TCE)**:
-at many checkpoints along each user's timeline, the system must reconstruct the
-user's current state, track what changed, and act on it.
+realistic activity stream: at many points along each user's timeline, the system
+must reconstruct the user's current state, track what changed, and act on it.
 
 If you build a memory system (RAG-over-memory, agentic memory, memory OS, …),
 DynamicMem lets you **benchmark it in a few commands** against a shared dataset
@@ -15,8 +14,9 @@ and a set of reference baselines.
 ## What the benchmark measures
 
 Each user has a synthesized multi-month trajectory (profile → life events → app
-logs). TCE cuts that trajectory at ordered **checkpoints**; at each checkpoint a
-memory system sees everything up to that point and is scored on three tasks:
+logs). DynamicMem cuts that trajectory at ordered **checkpoints**; at each
+checkpoint a memory system sees everything up to that point and is scored on
+three tasks:
 
 | Task | Name | The system must… |
 |------|------|-------------------|
@@ -25,8 +25,9 @@ memory system sees everything up to that point and is scored on three tasks:
 | **C** | Personalization Utility | use the remembered state to complete a proactive, personalized service |
 
 Scoring is per-checkpoint and per-slot, with semantic (LLM-judge) metrics. See
-[`docs/protocols/temporal_checkpoint_evaluation_developer_manual.md`](docs/protocols/temporal_checkpoint_evaluation_developer_manual.md)
-for the full protocol.
+the [evaluation protocol manual](docs/protocols/temporal_checkpoint_evaluation_developer_manual.md)
+for the full specification. (In the code and protocol docs this checkpoint
+evaluation is abbreviated **TCE**.)
 
 ---
 
@@ -63,7 +64,7 @@ The benchmark task packs and app logs are published on the Hugging Face Hub.
 Download them into the repo-root `outputs/` directory (the layout the configs expect):
 
 ```bash
-huggingface-cli download xiewenya/dynamicmem-tce \
+huggingface-cli download xiewenya/dynamicmem \
   --repo-type dataset --local-dir outputs/
 ```
 
@@ -100,9 +101,9 @@ the direct (`--benchmark/--prediction/--output`) CLI form.
 
 ## Benchmark your own memory system
 
-This is the main use case. A memory system plugs in as a **TCE adapter**: it
-receives the app-log stream up to each checkpoint and returns predictions in the
-TCE format, which `evaluation.eval_tce` then scores.
+This is the main use case. A memory system plugs in as a **DynamicMem adapter**:
+it receives the app-log stream up to each checkpoint and returns predictions in
+the expected format, which `evaluation.eval_tce` then scores.
 
 - Adapter contract & prediction format:
   [`docs/protocols/tce_generation_and_adapter_contract.md`](docs/protocols/tce_generation_and_adapter_contract.md)
