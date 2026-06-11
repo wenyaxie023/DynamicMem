@@ -135,9 +135,9 @@ Output result (top-level):
 
 ## Library entry
 
-To drive the evaluator directly (as `bench_core` does), import the public API
-from the package — `evaluate_checkpoints` scores predictions against a benchmark's
-checkpoints, and `normalize_predictions` normalizes raw prediction JSON first:
+To drive the evaluator directly (as `evaluation/tce_evaluator.py` does), import the
+public API from the package — `evaluate_checkpoints` scores predictions against a
+benchmark's checkpoints, and `normalize_predictions` normalizes raw prediction JSON first:
 
 ```python
 from tce_core import evaluate_checkpoints, normalize_predictions

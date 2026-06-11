@@ -155,10 +155,9 @@ dynamicmem/
 ├── baseline_prediction/       Part 3: run memory-system baselines  ← you are here for "run baselines"
 ├── evaluation/                Part 4: score predictions            ← you are here for "evaluate"
 ├── tce_core/                  shared TCE protocol / data contracts
-├── bench_core/                shared evaluator contracts
 ├── configs/                   YAML experiment configs
 ├── environment/               conda env specs (default / memoryos / hipporag2)
-├── docs/                      protocol manuals + execution runbooks
+├── docs/                      adapter contract
 ├── tce_contracts.py           canonical task-contract constants
 ├── pyproject.toml             package metadata
 └── LICENSE                    MIT

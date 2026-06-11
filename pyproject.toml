@@ -38,7 +38,6 @@ py-modules = ["tce_contracts"]
 where = ["."]
 include = [
     "tce_core*",
-    "bench_core*",
     "trajectory_synthesis*",
     "benchmark_construction*",
     "baseline_prediction*",

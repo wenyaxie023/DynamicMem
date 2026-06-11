@@ -26,7 +26,7 @@ from tqdm import tqdm
 from tce_core import (
     mean_numeric_fields,
 )
-from bench_core.tce_evaluator import (
+from evaluation.tce_evaluator import (
     build_tce_result_payload,
     evaluate_tce_rows,
 )
