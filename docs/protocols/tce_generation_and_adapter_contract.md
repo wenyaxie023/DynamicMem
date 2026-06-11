@@ -9,10 +9,6 @@ This document is the canonical contract for:
 
 If any README, run script, or baseline note conflicts with this file, this file wins.
 
-Normative TCE protocol references:
-- `docs/protocols/temporal_checkpoint_evaluation_developer_manual.md`
-- `docs/runbooks/tce_execution_runbook.md`
-
 ## 1. Contributor Boundary
 
 Baseline contributors do **not** need to modify:

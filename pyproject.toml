@@ -50,6 +50,5 @@ exclude = [
     "configs*",
     "outputs*",
     "user_data*",
-    "debug_utils*",
     "environment*",
 ]

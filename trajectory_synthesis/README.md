@@ -126,12 +126,11 @@ In practice, TCE build workflows start from outputs such as:
 - `app_log_large.json`
 
 This README intentionally does not duplicate the full TCE benchmark build procedure.
-Use the following documents instead:
+See instead:
 
-- [docs/protocols/temporal_checkpoint_evaluation_developer_manual.md](../docs/protocols/temporal_checkpoint_evaluation_developer_manual.md):
-  canonical TCE task and artifact contract
-- [docs/runbooks/tce_execution_runbook.md](../docs/runbooks/tce_execution_runbook.md):
-  executable workflow for benchmark build, generation, and evaluation
+- [`benchmark_construction/README.md`](../benchmark_construction/README.md): benchmark build (Part 2)
+- [docs/protocols/tce_generation_and_adapter_contract.md](../docs/protocols/tce_generation_and_adapter_contract.md):
+  generation / adapter contract and artifact field semantics
 
 ## Where To Go Next
 

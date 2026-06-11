@@ -47,9 +47,6 @@ Conventions:
 Canonical TCE generation and adapter contract is maintained in:
 - `docs/protocols/tce_generation_and_adapter_contract.md`
 
-Normative TCE protocol spec remains in:
-- `docs/protocols/temporal_checkpoint_evaluation_developer_manual.md`
-
 If this README conflicts with the TCE contract file, follow the TCE contract file.
 
 ## TCE Architecture

@@ -10,8 +10,8 @@ Most of the construction logic lives in the shared
 `state_validation`, `pipeline`). Scripts here are the user-facing build
 entrypoints that wire those pieces together for one user at a time.
 
-For the normative protocol and field semantics, see
-[`docs/protocols/temporal_checkpoint_evaluation_developer_manual.md`](../docs/protocols/temporal_checkpoint_evaluation_developer_manual.md).
+For the generation/adapter contract and field semantics, see
+[`docs/protocols/tce_generation_and_adapter_contract.md`](../docs/protocols/tce_generation_and_adapter_contract.md).
 
 ## Inputs (produced by Part 1)
 
@@ -24,8 +24,7 @@ For each user under `outputs/<model>/<user_id>/`:
 ## Outputs
 
 Written back under the same `outputs/<model>/<user_id>/` directory, in
-several stages (see [`docs/runbooks/tce_execution_runbook.md`](../docs/runbooks/tce_execution_runbook.md)
-for the executable flow):
+several stages:
 
 - `tce_benchmark_vnext_raw.json` (raw benchmark)
 - `tce_benchmark_state_validated.json` (after state-validation pass)

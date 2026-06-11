@@ -2,11 +2,10 @@
 
 This directory evaluates baseline predictions against TCE benchmark task packs.
 
-Canonical TCE protocol:
-- [`docs/protocols/temporal_checkpoint_evaluation_developer_manual.md`](../docs/protocols/temporal_checkpoint_evaluation_developer_manual.md)
+Generation / adapter contract:
 - [`docs/protocols/tce_generation_and_adapter_contract.md`](../docs/protocols/tce_generation_and_adapter_contract.md)
 
-If this README conflicts with a protocol document, follow the protocol.
+If this README conflicts with the contract document, follow the contract.
 
 ## Quick Start
 

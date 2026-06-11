@@ -23,11 +23,10 @@ checkpoint a memory system sees everything up to that point and is scored on
 | **State Completion** | reconstruct the user's current state at the checkpoint (per-slot semantic match) | `snapshot_point_score` |
 | **Personalized Service** | use the remembered state to complete a proactive, personalized service | `rq3_apply_answer_point_score` |
 
-Scoring is per-checkpoint and per-slot, with semantic (LLM-judge) metrics. See
-the [evaluation protocol manual](docs/protocols/temporal_checkpoint_evaluation_developer_manual.md)
-for the full specification. (In the code and protocol docs, State Completion is
-the *snapshot / Task A* path and Personalized Service is the *rq3_apply / Task C*
-path; the checkpoint evaluation itself is abbreviated **TCE**.)
+Scoring is per-checkpoint and per-slot, with semantic (LLM-judge) metrics. (In the
+code, State Completion is the *snapshot / Task A* path and Personalized Service is
+the *rq3_apply / Task C* path; the checkpoint evaluation itself is abbreviated
+**TCE**.)
 
 ---
 
@@ -166,14 +165,12 @@ Part 2: [`trajectory_synthesis/README.md`](trajectory_synthesis/README.md) →
 [`benchmark_construction/README.md`](benchmark_construction/README.md).
 Generated artifacts (gitignored) land under repo-root `outputs/<user_id>/`.
 
-### Protocol & runbooks
+### Adapter contract
 
-READMEs explain usage; protocol docs define the canonical contracts; runbooks
-define executable workflows. When they conflict, follow the protocol or runbook.
+The contributor-facing contract for adding a baseline or plugging in your own
+memory system — prediction format, directory layout, and the build/predict phases:
 
-- [`docs/protocols/temporal_checkpoint_evaluation_developer_manual.md`](docs/protocols/temporal_checkpoint_evaluation_developer_manual.md) — canonical TCE protocol
-- [`docs/protocols/tce_generation_and_adapter_contract.md`](docs/protocols/tce_generation_and_adapter_contract.md) — generation / adapter contract
-- [`docs/runbooks/tce_execution_runbook.md`](docs/runbooks/tce_execution_runbook.md) — executable TCE workflow
+- [`docs/protocols/tce_generation_and_adapter_contract.md`](docs/protocols/tce_generation_and_adapter_contract.md)
 
 ---
 
