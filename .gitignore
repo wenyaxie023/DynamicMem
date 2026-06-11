@@ -11,8 +11,6 @@ env
 .env
 .env.bak*
 data/
-pixi.toml
-pixi.lock
 *.af
 
 # HippoRAG Cache and Outputs
