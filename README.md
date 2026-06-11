@@ -107,6 +107,12 @@ Read the score for the task you care about:
 See [`evaluation/README.md`](evaluation/README.md) for all metric definitions and
 the direct (`--benchmark/--prediction/--output`) CLI form.
 
+**Shortcut** — run steps 4 + 5 for a baseline in one command:
+
+```bash
+bash scripts/run_baseline.sh amem   # amem | rag | oracle | simplemem | memoryos | hipporag2
+```
+
 ---
 
 ## Benchmark your own memory system

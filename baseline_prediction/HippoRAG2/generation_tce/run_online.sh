@@ -38,7 +38,7 @@ echo "Running ONLINE HippoRAG TCE for $USER_ID using index at $HIPPORAG_DIR"
 python3 -u generation_tce/online_tce.py \
     --benchmark "$(resolve_benchmark_path)" \
     --app-logs-path "../../user_data/${USER_ID}/app_log_large.json" \
-    --output "$HIPPORAG_DIR/tce_results_v14_taskabc.json" \
+    --output "$HIPPORAG_DIR/tce_results.json" \
     --save-dir "$HIPPORAG_DIR" \
     --llm-model "$LLM" \
     --embedding-model "$EMBED" \

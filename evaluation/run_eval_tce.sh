@@ -68,7 +68,7 @@ else
     prediction_path="$(resolve_latest_named_file "$PREDICTION_DIR" "tce_results*topk${TOPK}*.json" || true)"
   fi
   if [[ -z "$prediction_path" ]]; then
-    prediction_path="$(resolve_latest_named_file "$PREDICTION_DIR" 'tce_results_v14_taskabc*.json' || true)"
+    prediction_path="$(resolve_latest_named_file "$PREDICTION_DIR" 'tce_results*.json' || true)"
   fi
   if [[ -z "$prediction_path" ]]; then
     prediction_path="$(resolve_latest_named_file "$PREDICTION_DIR" 'tce_results*taskabc*.json' || true)"
