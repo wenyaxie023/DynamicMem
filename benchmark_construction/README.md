@@ -34,7 +34,7 @@ several stages:
 
 - `build_tce_benchmark.py` — raw benchmark from Part 1 artifacts
 - `build_tce_state_validation.py` — state-validation pass
-- `build_tce_task_packs.py` — task-pack assembly for Tasks A / B / C
+- `build_tce_task_packs.py` — task-pack assembly (State Completion + Personalized Service)
 - `build_tce_rq3_apply_pack.py` — Task C (personalized service) apply pack
 - `verify_tce_groundtruth.py` — sanity / contract checks on a built benchmark
 - `run_build_tce_benchmark.sh` — convenience wrapper that drives the steps above

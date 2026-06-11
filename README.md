@@ -18,15 +18,13 @@ logs). DynamicMem cuts that trajectory at ordered **checkpoints**; at each
 checkpoint a memory system sees everything up to that point and is scored on
 **two tasks**:
 
-| Task | The system must… | Eval score field |
-|------|------------------|------------------|
-| **State Completion** | reconstruct the user's current state at the checkpoint (per-slot semantic match) | `snapshot_point_score` |
-| **Personalized Service** | use the remembered state to complete a proactive, personalized service | `rq3_apply_answer_point_score` |
+| Task | The system must… |
+|------|------------------|
+| **State Completion** | reconstruct the user's current state at the checkpoint (per-slot semantic match) |
+| **Personalized Service** | use the remembered state to complete a proactive, personalized service |
 
-Scoring is per-checkpoint and per-slot, with semantic (LLM-judge) metrics. (In the
-code, State Completion is the *snapshot / Task A* path and Personalized Service is
-the *rq3_apply / Task C* path; the checkpoint evaluation itself is abbreviated
-**TCE**.)
+Scoring is per-checkpoint and per-slot, with semantic (LLM-judge) metrics. (This
+checkpoint evaluation is abbreviated **TCE** in the code and configs.)
 
 ---
 
@@ -147,7 +145,7 @@ the full data-generation pipeline is included and reproducible.
 ```
 dynamicmem/
 ├── trajectory_synthesis/      Part 1: synthesize user trajectories (profile → events → app logs)
-├── benchmark_construction/    Part 2: build TCE benchmark task packs (Tasks A / B / C)
+├── benchmark_construction/    Part 2: build TCE benchmark task packs from trajectories
 ├── baseline_prediction/       Part 3: run memory-system baselines  ← you are here for "run baselines"
 ├── evaluation/                Part 4: score predictions            ← you are here for "evaluate"
 ├── tce_core/                  shared TCE protocol / data contracts
