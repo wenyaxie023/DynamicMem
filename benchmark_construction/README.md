@@ -15,7 +15,7 @@ For the generation/adapter contract and field semantics, see
 
 ## Inputs (produced by Part 1)
 
-For each user under `outputs/<model>/<user_id>/`:
+For each user under `outputs/<user_id>/`:
 
 - `app_logs_final.json`: final app-log sequence
 - `app_log_large.json`: large app-log view
@@ -23,7 +23,7 @@ For each user under `outputs/<model>/<user_id>/`:
 
 ## Outputs
 
-Written back under the same `outputs/<model>/<user_id>/` directory, in
+Written back under the same `outputs/<user_id>/` directory, in
 several stages:
 
 - `tce_benchmark_vnext_raw.json` (raw benchmark)
@@ -56,7 +56,7 @@ Direct module invocation for one stage:
 
 ```bash
 python -m benchmark_construction.build_tce_benchmark \
-  --app-logs-final outputs/<model>/<user_id>/app_logs_final.json \
+  --app-logs-final outputs/<user_id>/app_logs_final.json \
   --task-contract-version taskabc_v2 \
   --research-frame-version rq_20260413
 ```
