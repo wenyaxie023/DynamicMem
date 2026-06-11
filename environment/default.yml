@@ -1,4 +1,4 @@
-name: mem0311
+name: dynamicmem
 channels:
   - defaults
   - https://repo.anaconda.com/pkgs/main

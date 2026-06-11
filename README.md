@@ -36,8 +36,8 @@ path; the checkpoint evaluation itself is abbreviated **TCE**.)
 ### 1. Install
 
 ```bash
-conda env create -f environment/default.yml   # creates the `mem0311` env
-conda activate mem0311
+conda env create -f environment/default.yml   # creates the `dynamicmem` env
+conda activate dynamicmem
 pip install -e .                               # editable install of the core packages
 ```
 
@@ -131,10 +131,10 @@ Once your adapter produces `tce_results.json`, evaluate it exactly like a baseli
 
 | Baseline | Env | Notes |
 |----------|-----|-------|
-| A-Mem | `mem0311` (default) | agentic memory |
-| RAG | `mem0311` (default) | retrieval-over-memory |
-| SimpleMem | `mem0311` (default) | lightweight memory |
-| Oracle | `mem0311` (default) | ground-truth-state ceiling |
+| A-Mem | `dynamicmem` (default) | agentic memory |
+| RAG | `dynamicmem` (default) | retrieval-over-memory |
+| SimpleMem | `dynamicmem` (default) | lightweight memory |
+| Oracle | `dynamicmem` (default) | ground-truth-state ceiling |
 | MemoryOS | `memoryos` | needs its own env |
 | HippoRAG2 | `hipporag2` | needs its own env |
 

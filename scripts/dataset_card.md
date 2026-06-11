@@ -17,7 +17,7 @@ Each user has a synthesized multi-month trajectory; at ordered checkpoints a
 memory system must reconstruct the user's current state (**State Completion**)
 and act on it (**Personalized Service**).
 
-- Code, baselines, and evaluation: https://github.com/wenyaxie023/dynamicmem
+- Code, baselines, and evaluation: https://github.com/wenyaxie023/DynamicMem
 - Quick start, task definitions, and the adapter contract are in the repo README.
 
 ## Contents

@@ -14,7 +14,6 @@ Contributor-facing generation and adapter obligations are maintained in:
 
 Current execution note:
 - This runbook is the broad execution reference for TCE.
-- For the current TCE v2 pre-batch build validation pass across baselines, use `docs/plans/tce_v2_build_progress_master_sheet.md` as the active command sheet and status tracker.
 - Current workflow policy: `final_qa` is disabled unless explicitly re-enabled for a specific purpose.
 
 ## 0. Execution Prerequisites
@@ -22,9 +21,9 @@ Current execution note:
 Shell bootstrap for repo commands:
 
 ```bash
-cd /users/4/xie00470/mem_bench/dynamicmem
+cd /path/to/dynamicmem
 source ~/miniconda/etc/profile.d/conda.sh
-conda activate mem0311
+conda activate dynamicmem
 ```
 
 Environment / credentials:
@@ -46,26 +45,19 @@ python3 debug_utils/test_azure_key.py
 ```
 
 Node selection:
-- Do not launch TCE builds, generation jobs, or evaluations from login nodes.
-- On this cluster, hosts such as `ahl02` are login nodes.
-- Use compute nodes such as `aga02` for actual build and generation jobs.
-- Viewer serving and other lightweight browser-facing helpers may still run on login nodes.
+- On a shared cluster, do not launch TCE builds, generation jobs, or evaluations
+  from login nodes; run them on compute nodes.
+- Lightweight browser-facing helpers (viewers, etc.) may run anywhere.
 
 ## 0.1 Recommended Entry Points
 
 Use the narrowest entrypoint that matches the job:
-- Current TCE v2 cross-baseline pre-batch validation:
-  - use `docs/plans/tce_v2_build_progress_master_sheet.md`
 - Single-user generation smoke or bounded rerun:
   - use `python3 -m baseline_prediction.run_tce --config ...`
 - Multi-user batch generation:
   - use `python3 -m baseline_prediction.run_tce_batch --config ...`
 - Prediction evaluation:
   - use `python3 -m evaluation.eval_tce ...`
-
-Operational rule:
-- Keep this runbook as the general TCE reference.
-- Keep baseline-specific validation commands and current batch status in the master sheet.
 
 ## 1. Part I - Pack Build Execution (with 10-state eyeball)
 
@@ -454,7 +446,7 @@ Storage note:
   - `outputs/...`
   - `baseline_prediction/<baseline>/results/...`
 - Recommended project storage root:
-  - `/projects/standard/zrliu/shared/wenya/xie00470/dynamicmem/`
+  - `/path/to/project-storage/dynamicmem/`
 - If the repo path is already a symlink, keep using the repo-local path in scripts and commands.
 
 ### 5.2 Quick checks
