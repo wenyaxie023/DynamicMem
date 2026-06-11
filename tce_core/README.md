@@ -133,6 +133,29 @@ Output result (top-level):
 }
 ```
 
+## Library entry
+
+To drive the evaluator directly (as `bench_core` does), import the public API
+from the package — `evaluate_checkpoints` scores predictions against a benchmark's
+checkpoints, and `normalize_predictions` normalizes raw prediction JSON first:
+
 ```python
 from tce_core import evaluate_checkpoints, normalize_predictions
 ```
+
+## Files
+
+| File | Purpose |
+|------|---------|
+| `pipeline.py` | Core runtime: drives each baseline's `prepare_checkpoint_state` → `retrieve` → `answer` and produces predictions. |
+| `evaluation.py` | Evaluation engine: scores predictions against the benchmark per checkpoint (`evaluate_checkpoints`, `normalize_predictions`, `score_snapshot`, `value_f1`). |
+| `task_packs.py` | Builds / extracts the benchmark task packs (State Completion + Personalized Service items). |
+| `scoring_points.py` | Scoring-point schema (`micro` / `field` points) shared by pack build and evaluation. |
+| `prompts.py` | Shared LLM prompt templates (state encoding, scoring rubrics, judge prompts). |
+| `state_validation.py` | Validates ground-truth snapshot state during benchmark construction. |
+| `exposure_checkpoint_builder.py` | Selects checkpoint cutoffs (exposure-token / calendar-time sampling). |
+| `questionability.py` | Decides which state keys are eligible for Personalized Service item generation. |
+| `task_spec.py` | Builds the per-task spec that drives the retrieval query and generation prompt. |
+| `orchestrator_protocol.py` | Protocol dataclasses adapters implement (`CheckpointHandle`, `QuerySpec`, `RetrievalOptions`, `RetrievalResult`). |
+| `final_checkpoint_qa.py` | Optional, off-by-default post-checkpoint QA hook. |
+| `__init__.py` | Package public API (lazy-exports the entry functions above). |
