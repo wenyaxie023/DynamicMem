@@ -38,7 +38,6 @@ Task C personalized-service contract:
 - `Task C - Task A` remains a useful diagnostic gap, but it is not the canonical task definition
 - checkpoint may include `state_questionability` and `rq3_apply_service_qa` with per-key apply QA items
 - prediction may include `rq3_apply_answers` with per-item answer/evidence
-- full protocol supplement: `docs/protocols/tce_rq3_know_apply_contract.md`
 - under active `taskabc_v2`, Task C no longer uses the legacy apply-QA-style `{service_category, question, reference_answer}` write path
 - current `taskabc_v2` Task C write path generates one family-specific item per key:
   - `user_communication`: `scenario`, `task_instruction`, `reference_answer`
