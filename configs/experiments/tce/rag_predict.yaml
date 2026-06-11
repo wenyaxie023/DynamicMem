@@ -8,11 +8,7 @@ runtime:
   resume: true
   checkpoint_workers: 1
   within_checkpoint_workers: 4
-  enable_change_reasoning: false
   enable_rq3_apply_service_qa: true
-  save_prompt_and_raw: true
-  rq3_apply_save_prompt_and_raw: true
-  save_every_generation_keys: 5
 
 data:
   benchmark: outputs/{user_id}/task_packs.json

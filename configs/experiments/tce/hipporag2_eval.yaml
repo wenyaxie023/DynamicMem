@@ -2,7 +2,6 @@ runtime:
   user_id: 001_user_001
   experiment_name: predict0504v2_formal_20
   enable_llm_judge: true
-  save_eyeball: true
   resume: true
 
 data:

@@ -7,10 +7,7 @@ runtime:
   run_id: main
   resume: true
   within_checkpoint_workers: 4
-  enable_change_reasoning: false
   enable_rq3_apply_service_qa: true
-  save_prompt_and_raw: true
-  rq3_apply_save_prompt_and_raw: true
 
 data:
   benchmark: outputs/{user_id}/task_packs.json
@@ -40,5 +37,4 @@ baseline_params:
   memory_action: build_then_predict
   snapshot_dir: results/HippoRAG2/snapshots/hipporag2_build_only/{user_id}
   data_storage_path: results/HippoRAG2/runtime_data/hipporag2_build_only/{user_id}
-  builder_save_every_logs: 64
   allow_destructive_rebuild: false
