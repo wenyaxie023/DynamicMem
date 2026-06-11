@@ -21,8 +21,7 @@ Direct CLI (single file):
 python -m evaluation.eval_tce \
   --benchmark outputs/<user_id>/<benchmark_task_packs>.json \
   --prediction baseline_prediction/<baseline>/results/<user_id>/prediction/<run_name>/tce_results.json \
-  --output baseline_prediction/<baseline>/results/<user_id>/evaluation/<run_name>/tce_eval.json \
-  --save-eyeball
+  --output baseline_prediction/<baseline>/results/<user_id>/evaluation/<run_name>/tce_eval.json
 ```
 
 ## Output Locations
@@ -30,7 +29,7 @@ python -m evaluation.eval_tce \
 Evaluation outputs are written next to each prediction:
 - `baseline_prediction/<baseline>/results/<user_id>/evaluation/<run_name>/tce_eval.json`
   — main eval payload
-- optional eyeball / audit artifacts in the same directory
+- optional audit artifacts in the same directory
 
 ## TCE Evaluation Details
 

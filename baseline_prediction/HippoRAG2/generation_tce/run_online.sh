@@ -44,6 +44,5 @@ python3 -u generation_tce/online_tce.py \
     --embedding-model "$EMBED" \
     --batch-size 40 \
     --debug \
-    --save-prompt-and-raw \
     --resume \
     "$@" | tee -a "$HIPPORAG_DIR/run.log"

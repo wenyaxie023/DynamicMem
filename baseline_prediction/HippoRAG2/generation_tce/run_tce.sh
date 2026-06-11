@@ -40,5 +40,4 @@ python3 -u generation_tce/tce.py \
     --llm-provider "openai" \
     --llm-model "$LLM" \
     --debug \
-    --save-prompt-and-raw \
     "$@"
