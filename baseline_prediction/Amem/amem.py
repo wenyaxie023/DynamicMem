@@ -47,7 +47,7 @@ DATA_DIR = GENERATION_DIR / "data"
 if str(GENERATION_DIR) not in sys.path:
     sys.path.append(str(GENERATION_DIR))
 
-from baseline_prediction.load_dataset import build_membench_memory_from_event, load_membench_dataset
+from baseline_prediction.Amem.load_dataset import build_membench_memory_from_event, load_membench_dataset
 
 
 def _env_value(*keys: str) -> Optional[str]:
