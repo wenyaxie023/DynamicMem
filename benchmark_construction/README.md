@@ -41,15 +41,14 @@ several stages:
 
 ## Quick Start
 
-End-to-end benchmark build for one user (with sensible defaults; relies on the
-Python module's built-in `CANONICAL_RESEARCH_DOC_V2` default unless overridden):
+End-to-end benchmark build for one user (with sensible defaults):
 
 ```bash
 bash benchmark_construction/run_build_tce_benchmark.sh
 ```
 
 Override defaults via env vars: `PROJECT_ROOT`, `PYTHON_BIN`,
-`TASK_CONTRACT_VERSION`, `RESEARCH_FRAME_VERSION`, `CANONICAL_RESEARCH_DOC`.
+`TASK_CONTRACT_VERSION`, `RESEARCH_FRAME_VERSION`.
 Set `USERS=(...)` inside the script (or fork it) to target a different list.
 
 Direct module invocation for one stage:
@@ -60,11 +59,3 @@ python -m benchmark_construction.build_tce_benchmark \
   --task-contract-version taskabc_v2 \
   --research-frame-version rq_20260413
 ```
-
-## Canonical Research Questions
-
-[`research_questions.md`](research_questions.md) carries the canonical
-RQ1 / RQ2 / RQ3 definitions, hypotheses, and the baseline reference table that
-benchmark payloads record as provenance (`canonical_research_doc` field, default
-from `tce_contracts.CANONICAL_RESEARCH_DOC_V2`). Edit that file when the
-research frame moves.
