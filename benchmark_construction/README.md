@@ -57,5 +57,5 @@ Direct module invocation for one stage:
 python -m benchmark_construction.build_tce_benchmark \
   --app-logs-final outputs/<user_id>/app_logs_final.json \
   --task-contract-version taskabc_v2 \
-  --research-frame-version rq_20260413
+  --research-frame-version rq_v2
 ```

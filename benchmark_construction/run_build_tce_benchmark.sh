@@ -5,7 +5,7 @@ PYTHON_BIN="python3"
 PROJECT_ROOT="${PROJECT_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
 OUTPUT_ROOT="$PROJECT_ROOT/outputs"
 TASK_CONTRACT_VERSION="${TASK_CONTRACT_VERSION:-taskabc_v2}"
-RESEARCH_FRAME_VERSION="${RESEARCH_FRAME_VERSION:-rq_20260413}"
+RESEARCH_FRAME_VERSION="${RESEARCH_FRAME_VERSION:-rq_v2}"
 # If unset, build_tce_benchmark.py falls back to its built-in default
 # (tce_contracts.CANONICAL_RESEARCH_DOC_V2). Set this env var to override.
 CANONICAL_RESEARCH_DOC="${CANONICAL_RESEARCH_DOC:-}"

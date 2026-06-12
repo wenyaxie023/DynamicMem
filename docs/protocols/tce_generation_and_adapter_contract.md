@@ -125,7 +125,7 @@ containing at least `predictions`.
 ## 9. Prediction contract
 
 Each prediction artifact carries top-level `task_contract_version` and
-`research_frame_version` (current: `taskabc_v2`, `rq_20260413`), and a
+`research_frame_version` (current: `taskabc_v2`, `rq_v2`), and a
 `predictions` list where each entry provides:
 
 - `checkpoint_id`
