@@ -1,12 +1,20 @@
 # DynamicMem
 
-**DynamicMem** is a benchmark for evaluating **long-horizon memory systems**: it
-measures how reliably a memory system maintains and uses a single user's evolving
-state across a months-long, realistic activity stream. From a synthesized user
-trajectory, DynamicMem constructs an ordered sequence of **checkpoints**; at each
-checkpoint the system observes the full history up to that point and is assessed
-under **Temporal Checkpoint Evaluation (TCE)** on two complementary tasks —
-reconstructing the user's current state, and acting on it.
+**DynamicMem** is a benchmark for **long-horizon memory in personal-assistant
+agents**. Such an agent must infer and maintain a model of the user's **profile** —
+who they are (*attributes*), what they routinely do (*habits*), and what they
+prefer (*preferences*) — and keep it current as that profile evolves with life
+events and shifting routines. This evidence is seldom stated explicitly; it is
+scattered across many small actions in different applications and must be inferred
+from those distributed behavioral traces.
+
+DynamicMem evaluates this ability on synthesized, user-consistent trajectories
+that span many months of multi-application activity. From each trajectory it
+constructs an ordered sequence of **checkpoints**; at every checkpoint a memory
+system observes the full history up to that point and is assessed under **Temporal
+Checkpoint Evaluation (TCE)** on two tasks — reconstructing the user's current
+profile, and acting on it — which also exposes how performance scales as the
+history grows.
 
 This repository provides the dataset, the evaluation protocol, and a suite of
 reference baselines, so that an arbitrary memory system can be evaluated under an
