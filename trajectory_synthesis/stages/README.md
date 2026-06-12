@@ -1,12 +1,8 @@
-# Data Construction Stages
+# Trajectory Synthesis Stages
 
-This directory contains the Stage 1/2/3 implementation that powers
-`trajectory_synthesis/batch_generation_runner.py`.
-
-Use this README when you need the internal organization of the pipeline. For the
-module-level overview and recommended entrypoint, start with
-[../README.md](../README.md). If this README conflicts with a protocol document or
-runbook, follow the protocol document or runbook.
+The Stage 1/2/3 implementation behind
+`trajectory_synthesis/batch_generation_runner.py`. For the module-level overview
+and entrypoint, see [../README.md](../README.md).
 
 ## Stage Directory Purpose
 
@@ -105,7 +101,6 @@ Typical outputs:
 
 Implementation note:
 
-- `stage3_checkpoint.json` remains for legacy compatibility
 - `checkpoints/checkpoint_*.json` is the main resume substrate
 
 ## Output Layout
@@ -145,10 +140,3 @@ Example per-user output layout:
   - `stage3_checkpoint.json`
   - `app_logs_intermediate.json`
   - optionally `app_logs_final.json` to avoid mixing old and new outputs
-
-Documentation boundary:
-
-- this README explains internal stage responsibilities and file ownership
-- [../README.md](../README.md) explains module-level usage and navigation
-- protocol docs define benchmark contracts
-- runbooks define executable workflows

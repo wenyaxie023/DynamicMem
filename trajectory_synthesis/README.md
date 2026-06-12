@@ -1,147 +1,45 @@
-# Data Construction
+# Trajectory Synthesis (Part 1)
 
-`data_construction` owns the user-history build pipeline that turns a persona-like
-description into structured benchmark artifacts.
+Turns persona-like descriptions into synthetic user trajectories — the artifacts
+the benchmark is built from: multi-domain profiles → event chains over time →
+chronological app logs. The external entrypoint is `batch_generation_runner.py`.
 
-This README is the module-level onboarding page. It explains what this directory
-produces, how to run the main entrypoint, and where to find deeper references. If
-this README conflicts with a protocol document or execution runbook, follow the
-protocol document or runbook.
+## Three-stage pipeline
 
-## What This Module Owns
+1. **Stage 1** — generate dynamic profiles and resolve conflicts
+2. **Stage 2** — convert resolved profiles into event chains
+3. **Stage 3** — convert event chains into chronological app logs
 
-This module is responsible for:
-
-- user and profile generation across multiple domains
-- event-chain generation across time windows
-- app-log generation from those events
-- preparation of the main artifacts consumed by the TCE benchmark
-
-The recommended external entrypoint is `batch_generation_runner.py`.
-
-## Three-Stage Pipeline
-
-The pipeline is organized as three stages:
-
-1. `Stage 1`: generate dynamic profiles and resolve conflicts
-2. `Stage 2`: convert resolved profiles into event chains
-3. `Stage 3`: convert event chains into chronological app logs
-
-For stage-level implementation details, see [stages/README.md](stages/README.md).
+Stage-level details: [stages/README.md](stages/README.md).
 
 ## Quick Start
 
-For a newcomer, the shortest reliable path is:
-
-1. Resolve the sampled user set and download the matching world backgrounds.
-2. Run the full Stage 1 -> Stage 2 -> Stage 3 pipeline.
-
-Example:
-
 ```bash
-cd data_construction
-python download_world_backgrounds.py --model gemini_3_flash_preview --user-count 10
-python batch_generation_runner.py --debug --user-count 10
+# 1. download the world backgrounds for the sampled users
+python -m trajectory_synthesis.download_world_backgrounds --model gemini_3_flash_preview --user-count 10
+# 2. run the full Stage 1 -> 2 -> 3 pipeline
+python -m trajectory_synthesis.batch_generation_runner --user-count 10
 ```
 
-By default, Stage 1 runs with `--world-bg-mode require_existing`, so the pipeline
-expects world background artifacts to exist before dynamic profile generation
-continues.
+By default Stage 1 uses `--world-bg-mode require_existing`, so world backgrounds
+must exist before generation. Precomputed backgrounds are hosted at
+<https://huggingface.co/datasets/xiewenya/user-world-backgrounds>.
 
-Precomputed world backgrounds are currently hosted at:
+Run `download_world_backgrounds.py` with the same sampling inputs (sample file,
+seed, user-count) you will pass to `batch_generation_runner.py`. For ad-hoc runs
+driven by `--user-description`, use `--world-bg-mode generate_if_missing`.
 
-- `https://huggingface.co/datasets/xiewenya/user-world-backgrounds`
+## Outputs
 
-The helper script mirrors the runner's current persona-sampling selection using the
-same sample file, seed, and user-count logic. If your sampled user set changes,
-rerun the helper with matching arguments before running the main pipeline.
+Under `outputs/<user_id>/`:
 
-Stage 1 accepts either of these local input formats:
+- `user_basic_profile.json` — normalized user profile
+- `dynamic_profiles_final.json` — resolved multi-domain dynamic state
+- `all_events_chains.json` — aggregated event chains
+- `app_logs_final.json` — final app-log sequence
+- `app_log_large.json` — large app-log view consumed by the benchmark
+- `golden_evidence_index.json` — evidence mapping
 
-- `generated_outputs/<model_name>/<user_id>/world_backgrounds.json`
-- `generated_outputs/<model_name>/<user_id>/<domain_slug>_world_background.json`
-
-If only the aggregated file is present, Stage 1 will load it and sync the per-domain
-cache files automatically. If neither format is present, Stage 1 fails fast with a
-missing-prerequisite error.
-
-Useful variants:
-
-- Download only the second sampled user:
-
-```bash
-cd data_construction
-python download_world_backgrounds.py \
-  --model gemini_3_flash_preview \
-  --user-count 10 \
-  --user-index 2
-```
-
-- Download explicit known users without mirroring sampling:
-
-```bash
-cd data_construction
-python download_world_backgrounds.py \
-  --model gemini_3_flash_preview \
-  --users 001_user_001 002_user_002
-```
-
-- for sampled runs, run `download_world_backgrounds.py` with the same sampling inputs
-  you will use for `batch_generation_runner.py`
-- for ad hoc runs driven by `--user-description`, use `--world-bg-mode generate_if_missing`
-  unless you have already prepared those files manually
-
-If you intentionally want to fall back to automatic generation for missing domains:
-
-```bash
-cd data_construction
-python batch_generation_runner.py --debug --world-bg-mode generate_if_missing
-```
-
-`--dry-run-world-bg` remains available for prompt-only preparation, but it is not a
-full pipeline run.
-
-## Key Outputs
-
-Under `generated_outputs/<model_name>/<user_id>/`, a newcomer should recognize at
-least these artifacts:
-
-- `user_basic_profile.json`: normalized user profile derived from the input description
-- `dynamic_profiles_final.json`: resolved multi-domain dynamic state
-- `all_events_chains.json`: aggregated event chains produced from the resolved state
-- `app_logs_final.json`: final app-log sequence used by downstream pipelines
-- `app_log_large.json`: large app-log view used by the TCE benchmark
-- `golden_evidence_index.json`: evidence mapping artifact for downstream inspection
-
-These files form the handoff boundary for most downstream generation and evaluation
-work in the repo.
-
-## Handoff to TCE
-
-`trajectory_synthesis` is also the source of the artifacts used to build TCE benchmarks.
-In practice, TCE build workflows start from outputs such as:
-
-- `all_events_chains.json`
-- `app_logs_final.json`
-- `app_log_large.json`
-
-This README intentionally does not duplicate the full TCE benchmark build procedure.
-See instead:
-
-- [`benchmark_construction/README.md`](../benchmark_construction/README.md): benchmark build (Part 2)
-- [docs/protocols/tce_generation_and_adapter_contract.md](../docs/protocols/tce_generation_and_adapter_contract.md):
-  generation / adapter contract and artifact field semantics
-
-## Where To Go Next
-
-- [stages/README.md](stages/README.md): internal Stage 1/2/3 responsibilities and outputs
-- [../benchmark_construction/README.md](../benchmark_construction/README.md): TCE benchmark task-pack construction
-- [../baseline_prediction/README.md](../baseline_prediction/README.md): baseline generation entrypoints
-- [../evaluation/README.md](../evaluation/README.md): evaluator entrypoints
-
-Documentation boundary:
-
-- onboarding READMEs explain usage and navigation
-- protocol docs define contracts and semantics
-- runbooks define executable operational steps
-- plans are active or historical work records, not onboarding docs
+`all_events_chains.json`, `app_logs_final.json`, and `app_log_large.json` are the
+handoff into benchmark construction (Part 2,
+[benchmark_construction/README.md](../benchmark_construction/README.md)).
