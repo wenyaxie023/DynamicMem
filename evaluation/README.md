@@ -42,10 +42,9 @@ Prediction format:
   - `predictions`
 - each prediction should provide:
   - `checkpoint_id`
-  - `snapshot_state`
+  - `snapshot_state` — State Completion
   - `evidence`
-  - `change_analysis` when Task B is enabled
-  - `rq3_apply_answers` when Task C is enabled
+  - `rq3_apply_answers` — Personalized Service
 
 Evaluation focus for this task:
 - Keys are treated as fixed by benchmark.
@@ -65,10 +64,8 @@ TCE eval implementation details:
 - legacy option metrics may appear only when inspecting historical artifacts; they are not part of the current write/eval contract.
 - active terminology is point-specific evaluation: `field`, `list_item`, and `micro` are all scoring-point types; `atomic fact` is only legacy shorthand for a `micro` point.
 - Slot-level LLM judge request granularity:
-  - Task A: one request per `state_key`, containing all slots for that key
-  - Task B: one request per changed `state_key`, containing all `before/after/change_reason` slots for that key
-    - legacy/v1 only; active `taskabc_v2` no longer requires standalone Task B
-  - Task C: one request per `(state_key, qa_id)` item, containing all answer scoring-point slots for that item
+  - State Completion (Task A): one request per `state_key`, containing all slots for that key
+  - Personalized Service (Task C): one request per `(state_key, qa_id)` item, containing all answer scoring-point slots for that item
 - `--save-eyeball` stores `groundtruth_snapshot`, `prediction_snapshot`, `groundtruth_evidence`, and `prediction_evidence` for manual inspection.
 
 ### TCE Slot-Level LLM Judge I/O Schema
@@ -111,10 +108,7 @@ Generic slot judge output:
 ```
 
 Canonical main-eval row payloads:
-- Task A:
+- State Completion (Task A):
   - `snapshot_slot_eval_by_key[state_key] = { score_0_1, slot_count, slot_context, judgments }`
-- Task B:
-  - `change_slot_eval_by_key[state_key].before|after|state_predict|change_reason = { score_0_1, slot_count, slot_context, judgments }`
-  - legacy/v1 only
-- Task C:
+- Personalized Service (Task C):
   - `rq3_apply_slot_eval_by_item[item_id] = { state_key, qa_id, score_0_1, slot_count, slot_context, judgments }`
