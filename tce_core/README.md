@@ -143,17 +143,39 @@ from tce_core import evaluate_checkpoints, normalize_predictions
 
 ## Files
 
-| File | Purpose |
-|------|---------|
-| `pipeline.py` | Core runtime: drives each baseline's `prepare_checkpoint_state` → `retrieve` → `answer` and produces predictions. |
-| `evaluation.py` | Evaluation engine: scores predictions against the benchmark per checkpoint (`evaluate_checkpoints`, `normalize_predictions`, `score_snapshot`, `value_f1`). |
-| `task_packs.py` | Builds / extracts the benchmark task packs (State Completion + Personalized Service items). |
-| `scoring_points.py` | Scoring-point schema (`micro` / `field` points) shared by pack build and evaluation. |
-| `prompts.py` | Shared LLM prompt templates (state encoding, scoring rubrics, judge prompts). |
-| `state_validation.py` | Validates ground-truth snapshot state during benchmark construction. |
-| `exposure_checkpoint_builder.py` | Selects checkpoint cutoffs (exposure-token / calendar-time sampling). |
-| `questionability.py` | Decides which state keys are eligible for Personalized Service item generation. |
-| `task_spec.py` | Builds the per-task spec that drives the retrieval query and generation prompt. |
-| `orchestrator_protocol.py` | Protocol dataclasses adapters implement (`CheckpointHandle`, `QuerySpec`, `RetrievalOptions`, `RetrievalResult`). |
-| `final_checkpoint_qa.py` | Optional, off-by-default post-checkpoint QA hook. |
-| `__init__.py` | Package public API (lazy-exports the entry functions above). |
+`tce_core` holds the logic shared by three parts. Evaluation follows a
+**field-level Core+Detail** rubric: each reference unit is decomposed into scoring
+fields, and an LLM judge scores every field on **Core** (binary — does the
+prediction recover the field's central meaning?) and **Detail** (0–2 — how
+completely it preserves the supporting specifics), combined as
+`s = 0.8·Core + 0.2·(Detail/2)` and averaged over fields and units. The Core+Detail
+judging itself lives in `evaluation/`; the files below build the artifacts it
+scores and run the baselines that produce predictions.
+
+**Benchmark construction (Part 2)**
+
+| File | Role in the framework |
+|------|-----------------------|
+| `task_packs.py` | Builds the task packs — the State Completion state cloze and the Personalized Service items — each decomposed into the scoring fields the judge will score. |
+| `scoring_points.py` | Decomposes a reference unit into those scoring fields: `field` points for structured state, `micro` points for free-text / atomic criteria. |
+| `state_validation.py` | Field-level evidence validation of the ground-truth state. |
+| `exposure_checkpoint_builder.py` | Selects the checkpoints along each trajectory (exposure-token / calendar-time). |
+| `questionability.py` | Selects which state keys are eligible to become Personalized Service items. |
+| `prompts.py` | Construction LLM prompts (state encoding, scoring-point generation, validation rubrics). |
+
+**Baseline prediction (Part 3)**
+
+| File | Role in the framework |
+|------|-----------------------|
+| `pipeline.py` | Prediction runtime: drives each baseline's build → retrieve → answer and emits the prediction JSON. |
+| `orchestrator_protocol.py` | The protocol dataclasses a baseline adapter implements (`CheckpointHandle`, `QuerySpec`, `RetrievalOptions`, `RetrievalResult`). |
+| `task_spec.py` | Builds the per-task spec that drives the retrieval query and the generation prompt. |
+| `final_checkpoint_qa.py` | Optional, off-by-default final-checkpoint QA hook. |
+
+**Evaluation (Part 4)**
+
+| File | Role in the framework |
+|------|-----------------------|
+| `evaluation.py` | Aligns predictions to benchmark checkpoints and aggregates the per-field scores into the reported metrics; called from `evaluation/tce_evaluator.py`. |
+
+`__init__.py` exposes the package's public entry functions (lazy-imported).
