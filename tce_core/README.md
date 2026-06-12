@@ -30,10 +30,8 @@ Task-contract metadata:
   - `task_contract_version`
   - `research_frame_version`
   - `canonical_research_doc` when available
-- current active contract family is `taskabc_v2`
-- legacy frozen artifacts without explicit metadata should be interpreted as `taskabc_v1`
-- the active `taskabc_v2` task set is the two tasks: State Completion (`Task A`)
-  and Personalized Service (`Task C`)
+- current contract family is `taskabc_v2`; its task set is the two tasks:
+  State Completion (`Task A`) and Personalized Service (`Task C`)
 
 Personalized Service contract:
 - checkpoint may include `state_questionability` and `rq3_apply_service_qa` with per-key apply items
@@ -41,7 +39,7 @@ Personalized Service contract:
 - the `taskabc_v2` Task C write path generates one family-specific item per key:
   - `user_communication`: `scenario`, `task_instruction`, `reference_answer`
   - structured families: `scenario`, `task_instruction`, `output_template`, `reference_output`
-- scoring terminology is point-specific evaluation: `micro` and `field` are point types; `atomic fact` is only legacy shorthand for a `micro` point
+- scoring terminology is point-specific evaluation: `micro` and `field` are point types
 - `user_communication` materializes deterministic micro `answer_scoring_points[]` from the validated state after item validation passes
 - structured families materialize deterministic field-based `answer_scoring_points[]` from `reference_output` after item validation passes
 

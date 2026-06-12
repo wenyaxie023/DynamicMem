@@ -21,5 +21,4 @@ This directory contains the protocol-aligned TCE runtime for `hipporag2`.
 - Shared embedding backend settings come from `retriever.provider`, `retriever.model`, `retriever.batch_size`.
 - Shared retrieval budget comes from `retrieval.top_k`, `retrieval.rq3_apply_top_k`, `retrieval.final_qa_top_k`.
 - Backend-specific storage root uses `baseline_params.save_dir`.
-- Periodic builder persistence cadence uses `baseline_params.builder_save_every_logs` and defaults to `5`.
-- `baseline_params.hipporag_dir` is still accepted as a compatibility alias, but new configs should use `save_dir`.
+- Periodic builder persistence cadence uses `baseline_params.builder_save_every_logs` (default `5`).
