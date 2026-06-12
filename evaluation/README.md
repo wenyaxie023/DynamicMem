@@ -9,17 +9,16 @@ If this README conflicts with the contract document, follow the contract.
 
 ## Quick Start
 
-Batch wrapper (recommended):
+Evaluate a baseline's predictions with its eval config (same flow as the
+top-level README):
 ```bash
-bash evaluation/run_eval_tce.sh
+python -m evaluation.eval_tce --config configs/experiments/tce/<baseline>_eval.yaml
 ```
-Override the defaults via env: `PROJECT_ROOT`, `BENCHMARK_ROOT`, `BASELINE`,
-`USER_DIR`, `EXPERIMENT_NAME`, `LLM_PROVIDER`, `LLM_MODEL`, `LLM_MAX_WORKERS`.
 
-Direct CLI (single file):
+Or point at the files directly:
 ```bash
 python -m evaluation.eval_tce \
-  --benchmark outputs/<user_id>/<benchmark_task_packs>.json \
+  --benchmark outputs/<user_id>/task_packs.json \
   --prediction baseline_prediction/<baseline>/results/<user_id>/prediction/<run_name>/tce_results.json \
   --output baseline_prediction/<baseline>/results/<user_id>/evaluation/<run_name>/tce_eval.json
 ```
