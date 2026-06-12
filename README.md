@@ -1,36 +1,38 @@
 # DynamicMem
 
-**DynamicMem** is a benchmark for **long-horizon memory systems**. It evaluates
-how well a memory system tracks a single user's evolving state across a long,
-realistic activity stream: at many points along each user's timeline, the system
-must reconstruct the user's current state, track what changed, and act on it.
+**DynamicMem** is a benchmark for evaluating **long-horizon memory systems**: it
+measures how reliably a memory system maintains and uses a single user's evolving
+state across a months-long, realistic activity stream. From a synthesized user
+trajectory, DynamicMem constructs an ordered sequence of **checkpoints**; at each
+checkpoint the system observes the full history up to that point and is assessed
+under **Temporal Checkpoint Evaluation (TCE)** on two complementary tasks —
+reconstructing the user's current state, and acting on it.
 
-If you build a memory system (RAG-over-memory, agentic memory, memory OS, …),
-DynamicMem lets you **benchmark it in a few commands** against a shared dataset
-and a set of reference baselines.
+This repository provides the dataset, the evaluation protocol, and a suite of
+reference baselines, so that an arbitrary memory system can be evaluated under an
+identical protocol with a few commands.
 
----
+## Tasks
 
-## What the benchmark measures
+At each checkpoint a system is evaluated on two task families, both derived from
+the same validated ground-truth state so as to separate *recovering* state from
+*using* it:
 
-Each user has a synthesized multi-month trajectory (profile → life events → app
-logs). DynamicMem cuts that trajectory at ordered **checkpoints**; at each
-checkpoint a memory system sees everything up to that point and is scored on
-**two tasks**:
+- **State Completion** — reconstruct the user's current state: the attributes,
+  habits, and preferences that hold at the checkpoint.
+- **Personalized Service** — use the remembered state to complete a proactive,
+  personalized service request grounded in that state.
 
-| Task | The system must… |
-|------|------------------|
-| **State Completion** | reconstruct the user's current state at the checkpoint (per-slot semantic match) |
-| **Personalized Service** | use the remembered state to complete a proactive, personalized service |
+## Evaluation
 
-Scoring is per-checkpoint and per-slot, with semantic (LLM-judge) metrics. (This
-checkpoint evaluation is abbreviated **TCE** in the code and configs.)
+Predictions are scored by a **field-level Core+Detail** LLM-as-judge. Each
+reference unit is decomposed into fields; every field is scored on a binary
+**Core** axis (does the prediction recover the field's central meaning?) and a
+three-level **Detail** axis (how completely are the supporting specifics
+preserved?), combined as `s = 0.8·Core + 0.2·(Detail/2)` and averaged over fields
+and units. (In the code and configs this protocol is abbreviated **TCE**.)
 
----
-
-## Quick Start
-
-### 1. Install
+## Installation
 
 ```bash
 conda env create -f environment/default.yml   # creates the `dynamicmem` env
@@ -38,149 +40,114 @@ conda activate dynamicmem
 pip install -e .                               # editable install of the core packages
 ```
 
-Two baselines need their own environments (conflicting deps); skip unless you run them:
+Two baselines require isolated environments (conflicting dependencies); create
+them only if you intend to run those baselines:
 
 ```bash
-conda env create -f environment/memoryos.yml    # MemoryOS baseline
-conda env create -f environment/hipporag2.yml   # HippoRAG2 baseline
+conda env create -f environment/memoryos.yml
+conda env create -f environment/hipporag2.yml
 ```
 
-### 2. Set your LLM credentials
-
-Predictions and the LLM judge call the OpenAI API. The example configs use
-`provider: openai`, so set:
+Predictions and the LLM judge call the OpenAI API; the example configs use
+`provider: openai`:
 
 ```bash
 export OPENAI_API_KEY=sk-...
 ```
 
-Provider and model are configurable per config (`llm:` / `retriever:` blocks);
-Azure is also supported (`provider: azure` + `AZURE_OPENAI_API_KEY`).
+Provider and model are configurable per config (the `llm:` / `retriever:`
+blocks); Azure is also supported (`provider: azure` + `AZURE_OPENAI_API_KEY`).
 
-### 3. Download the benchmark data
+## Dataset
 
-The benchmark task packs and app logs are published on the Hugging Face Hub.
-Download them into the repo-root `outputs/` directory (the layout the configs expect):
+The benchmark task packs and app-log streams are released on the Hugging Face
+Hub. Download them into the repo-root `outputs/` directory expected by the configs:
 
 ```bash
-hf download xiewenya/dynamicmem \
-  --repo-type dataset --local-dir outputs/
+hf download xiewenya/dynamicmem --repo-type dataset --local-dir outputs/
 ```
 
 This populates `outputs/<user_id>/` with each user's `task_packs.json`
-and `app_log_large.json`.
+(the per-checkpoint evaluation targets) and `app_log_large.json` (the activity
+stream a memory system ingests).
 
-### 4. Run a reference baseline
+## Running a baseline
 
-```bash
-# Example: A-Mem (runs in the default env)
-python -m baseline_prediction.run_tce \
-  --config configs/experiments/tce/amem_predict.yaml
-```
-
-Predictions are written to
-`baseline_prediction/<baseline>/results/<user_id>/prediction/<run_name>/tce_results.json`.
-
-**Which task does this run?** A baseline always produces **State Completion**
-predictions at every checkpoint. **Personalized Service** is additionally enabled
-by `runtime.enable_rq3_apply_service_qa: true` (already set in the example
-configs). To benchmark *only* State Completion, set that flag to `false`.
-
-> Configs under [`configs/experiments/tce/`](configs/experiments/tce/) are
-> templates — set `runtime.user_id` / `data` to match the users you downloaded.
-> Use `--dry-run` first to print the resolved config without running.
-
-### 5. Evaluate the predictions
+A run produces predictions for one baseline on one user, then scores them:
 
 ```bash
-python -m evaluation.eval_tce \
-  --config configs/experiments/tce/amem_eval.yaml
+# 1. prediction
+python -m baseline_prediction.run_tce  --config configs/experiments/tce/amem_predict.yaml
+# 2. evaluation
+python -m evaluation.eval_tce          --config configs/experiments/tce/amem_eval.yaml
+# (or both at once)
+bash scripts/run_baseline.sh amem      # amem | rag | oracle | simplemem | memoryos | hipporag2
 ```
 
-The eval prints a summary and writes `.../evaluation/<run_name>/tce_eval.json`.
-Read the score for the task you care about:
+Predictions are written under
+`baseline_prediction/<baseline>/results/<user_id>/prediction/`, and the evaluator
+prints a summary and writes `tce_eval.json` next to them. The headline scores are:
 
-- **State Completion** → `snapshot_point_score_mean_on_expected_mean`
-  (plus `snapshot_holistic_score`, `snapshot_value_f1`, `snapshot_evidence_recall`)
-- **Personalized Service** → `rq3_apply_answer_point_score_mean_mean`
+- **State Completion** → `snapshot_point_score`
+- **Personalized Service** → `rq3_apply_answer_point_score`
 
-See [`evaluation/README.md`](evaluation/README.md) for all metric definitions and
-the direct (`--benchmark/--prediction/--output`) CLI form.
+A baseline always produces State Completion predictions; Personalized Service is
+enabled by `runtime.enable_rq3_apply_service_qa: true` (set in the example
+configs). Configs under [`configs/experiments/tce/`](configs/experiments/tce/) are
+templates — adjust `runtime.user_id` / `data` to the users you downloaded, and use
+`--dry-run` to inspect a resolved config without executing it.
 
-**Shortcut** — run steps 4 + 5 for a baseline in one command:
+## Evaluating your own memory system
 
-```bash
-bash scripts/run_baseline.sh amem   # amem | rag | oracle | simplemem | memoryos | hipporag2
-```
+A memory system integrates as a **DynamicMem adapter**: it receives the app-log
+stream up to each checkpoint and returns predictions in the evaluator's format,
+which `evaluation.eval_tce` then scores under the same protocol as the reference
+baselines.
 
----
-
-## Benchmark your own memory system
-
-This is the main use case. A memory system plugs in as a **DynamicMem adapter**:
-it receives the app-log stream up to each checkpoint and returns predictions in
-the expected format, which `evaluation.eval_tce` then scores.
-
-- Adapter contract & prediction format:
+- Adapter contract and prediction format:
   [`docs/protocols/tce_generation_and_adapter_contract.md`](docs/protocols/tce_generation_and_adapter_contract.md)
-- Register your adapter: [`baseline_prediction/adapters/registry.py`](baseline_prediction/adapters/registry.py)
-- Use any reference baseline in [`baseline_prediction/`](baseline_prediction/) as a worked example.
+- Registry: [`baseline_prediction/adapters/registry.py`](baseline_prediction/adapters/registry.py)
+- Any baseline under [`baseline_prediction/`](baseline_prediction/) serves as a
+  worked example.
 
-Once your adapter produces `tce_results.json`, evaluate it exactly like a baseline (step 5).
+## Reference baselines
 
----
+| Baseline | Environment | Description |
+|----------|-------------|-------------|
+| RAG | `dynamicmem` | retrieval over raw history |
+| A-Mem | `dynamicmem` | agentic memory |
+| SimpleMem | `dynamicmem` | lightweight structured memory |
+| Oracle | `dynamicmem` | ground-truth-state ceiling |
+| MemoryOS | `memoryos` | memory operating system |
+| HippoRAG2 | `hipporag2` | graph-structured memory |
 
-## Reference baselines included
+## Repository structure
 
-| Baseline | Env | Notes |
-|----------|-----|-------|
-| A-Mem | `dynamicmem` (default) | agentic memory |
-| RAG | `dynamicmem` (default) | retrieval-over-memory |
-| SimpleMem | `dynamicmem` (default) | lightweight memory |
-| Oracle | `dynamicmem` (default) | ground-truth-state ceiling |
-| MemoryOS | `memoryos` | needs its own env |
-| HippoRAG2 | `hipporag2` | needs its own env |
-
----
-
-## Repository structure (for contributors)
-
-DynamicMem is organized as four parts; consumers only need Parts 3–4 above, but
-the full data-generation pipeline is included and reproducible.
+DynamicMem is organized as four parts. Using the published dataset requires only
+Parts 3–4; Parts 1–2 are the full, reproducible data-generation pipeline.
 
 ```
 dynamicmem/
-├── trajectory_synthesis/      Part 1: synthesize user trajectories (profile → events → app logs)
-├── benchmark_construction/    Part 2: build TCE benchmark task packs from trajectories
-├── baseline_prediction/       Part 3: run memory-system baselines  ← you are here for "run baselines"
-├── evaluation/                Part 4: score predictions            ← you are here for "evaluate"
-├── tce_core/                  shared TCE protocol / data contracts
+├── trajectory_synthesis/      Part 1 — synthesize user trajectories (profile → events → app logs)
+├── benchmark_construction/    Part 2 — build benchmark task packs from trajectories
+├── baseline_prediction/       Part 3 — run memory-system baselines
+├── evaluation/                Part 4 — score predictions (Core+Detail judge)
+├── tce_core/                  shared protocol: checkpointing, pack build, scoring, runtime
 ├── configs/                   YAML experiment configs
-├── environment/               conda env specs (default / memoryos / hipporag2)
+├── environment/               conda environment specs
 ├── docs/                      adapter contract
 ├── tce_contracts.py           canonical task-contract constants
-├── pyproject.toml             package metadata
-└── LICENSE                    MIT
+└── pyproject.toml             package metadata
 ```
 
-To regenerate the dataset from scratch (needs LLM API budget), follow Part 1 then
-Part 2: [`trajectory_synthesis/README.md`](trajectory_synthesis/README.md) →
+To regenerate the dataset from scratch (requires LLM API budget), follow Part 1
+then Part 2: [`trajectory_synthesis/README.md`](trajectory_synthesis/README.md) →
 [`benchmark_construction/README.md`](benchmark_construction/README.md).
-Generated artifacts (gitignored) land under repo-root `outputs/<user_id>/`.
-
-### Adapter contract
-
-The contributor-facing contract for adding a baseline or plugging in your own
-memory system — prediction format, directory layout, and the build/predict phases:
-
-- [`docs/protocols/tce_generation_and_adapter_contract.md`](docs/protocols/tce_generation_and_adapter_contract.md)
-
----
 
 ## Citation
 
-A paper describing DynamicMem is under review. Citation information will be added
-here upon publication.
+A paper describing DynamicMem is under review; citation information will be added
+upon publication.
 
 ## License
 
