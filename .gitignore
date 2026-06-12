@@ -1,84 +1,39 @@
-__pycache__
-*.json
-logs
-test_azure_models.py
-qdrant_storage
-env
-*DS_Store
-*.log
-*.txt
-!requirements.txt
+# Python
+__pycache__/
+*.pyc
+*.egg-info/
+.venv/
+venv/
+env/
+
+# Secrets / local env
 .env
 .env.bak*
-data/
-*.af
 
-# HippoRAG Cache and Outputs
+# Generated artifacts (benchmark data, predictions, eval, memory)
+outputs/
+results/
+results
+data/
+logs/
+*.log
+*.json
+*.txt
+!requirements.txt
+
+# Memory-backend caches (HippoRAG / vector stores)
 *.sqlite
 *.sqlite-shm
 *.sqlite-wal
+*.sqlite.lock
 *.pickle
 *.parquet
-*.sqlite.lock
+qdrant_storage/
+*.af
 
-# HippoRAG2 paths
-generation/HippoRAG2/hf_cache/
-generation/HippoRAG2/logs*/
-generation/HippoRAG2/outputs/
-generation/HippoRAG2/HippoRAG/
-
-# MemAgent specific (Dual-Env)
-generation/MemAgent/venv-vllm/
-generation/MemAgent/venv-memagent/
-generation/MemAgent/results_logs/
-generation/MemAgent/benchmark_data/
-generation/MemAgent/*.result.json
-generation/MemAgent/benchmark_main.log
-
-
-
+# OS / editor
+.DS_Store
 *.bak
 
-# Project-generated artifacts (do not commit)
-outputs/
-results
-results/
-generation/*/results
-generation/*/results/
-generation/*/runtime_data
-generation/*/runtime_data/
-generation/*/snapshots
-generation/*/snapshots/
-generation/*/outputs
-generation/*/outputs/
-generation/*/outputs_smoke3
-generation/*/outputs_smoke3/
-generation/*/results_smoke3
-generation/*/results_smoke3/
-generation/*/checkpoints
-generation/*/checkpoints/
-generation/*/agents
-generation/*/agents/
-generation/*/service_state
-generation/*/service_state/
-eval/plots/
-eval/*.png
-eval/*.pdf
-eval/*.csv
-
-# Local presentation drafts/decks
-docs/presentations/
-
-# Documentation drafts (do not commit)
+# Internal agent instructions (not part of the release)
 AGENTS*.md
-
-# Test data and results (do not commit)
-user_data/tce/test_*.yaml
-user_data/tce/*.log
-user_data/tce/*.md
-user_data/tce/*_test.yaml
-user_data/tce/*_report*
-user_data/tce/minimal_test*.yaml
-
-# Python build artifacts
-*.egg-info/
