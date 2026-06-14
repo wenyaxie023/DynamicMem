@@ -48,12 +48,14 @@ conda activate dynamicmem
 pip install -e .                               # editable install of the core packages
 ```
 
-Two baselines require isolated environments (conflicting dependencies); create
-them only if you intend to run those baselines:
+The default environment is lightweight and runs the `rag`, `oracle`, and
+`simplemem` baselines plus trajectory synthesis, benchmark construction, and
+evaluation. The other baselines need extra setup, only if you run them:
 
 ```bash
-conda env create -f environment/memoryos.yml
-conda env create -f environment/hipporag2.yml
+pip install -r baseline_prediction/Amem/requirements.txt   # amem (adds torch / sentence-transformers / chromadb)
+conda env create -f environment/memoryos.yml               # memoryos (isolated env)
+conda env create -f environment/hipporag2.yml              # hipporag2 (isolated env)
 ```
 
 Predictions and the LLM judge call the OpenAI API; the example configs use
@@ -85,11 +87,11 @@ A run produces predictions for one baseline on one user, then scores them:
 
 ```bash
 # 1. prediction
-python -m baseline_prediction.run_tce  --config configs/experiments/tce/amem_predict.yaml
+python -m baseline_prediction.run_tce  --config configs/experiments/tce/rag_predict.yaml
 # 2. evaluation
-python -m evaluation.eval_tce          --config configs/experiments/tce/amem_eval.yaml
+python -m evaluation.eval_tce          --config configs/experiments/tce/rag_eval.yaml
 # (or both at once)
-bash scripts/run_baseline.sh amem      # amem | rag | oracle | simplemem | memoryos | hipporag2
+bash scripts/run_baseline.sh rag       # rag | oracle | simplemem (default env); amem | memoryos | hipporag2 (extra setup)
 ```
 
 Predictions are written under
