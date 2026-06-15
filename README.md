@@ -106,6 +106,25 @@ enabled by `runtime.enable_rq3_apply_service_qa: true` (set in the example
 configs). Configs under [`configs/experiments/tce/`](configs/experiments/tce/) are
 templates — adjust `runtime.user_id` / `data` to the users you downloaded.
 
+### Memory build modes
+
+For the memory-building baselines (**A-Mem, SimpleMem, MemoryOS, HippoRAG2**),
+`baseline_params.memory_action` controls how building the memory relates to
+producing predictions:
+
+- `build_then_predict` (the default in the example configs) — at each checkpoint,
+  ingest history *then* predict, in a single run. Build and prediction are
+  interleaved.
+- `build_only` — only construct the memory snapshots; write no predictions.
+- `predict_from_prebuilt` — skip building, load prebuilt snapshots and predict
+  (requires a prior `build_only` run; errors if the snapshots are missing).
+
+So you can either run everything in one pass (`build_then_predict`), or **build
+the full memory first** (`build_only`) and **predict separately afterwards**
+(`predict_from_prebuilt`) — useful for inspecting the constructed memory before
+spending prediction tokens, or for reusing one build across several prediction
+settings. `RAG` and `Oracle` have no build phase and ignore this setting.
+
 ## Evaluating your own memory system
 
 A memory system integrates as a **DynamicMem adapter**: it receives the app-log
@@ -121,14 +140,22 @@ baselines.
 
 ## Reference baselines
 
-| Baseline | Environment | Description |
-|----------|-------------|-------------|
-| RAG | `dynamicmem` | retrieval over raw history |
-| A-Mem | `dynamicmem` | agentic memory |
-| SimpleMem | `dynamicmem` | lightweight structured memory |
-| Oracle | `dynamicmem` | ground-truth-state ceiling |
-| MemoryOS | `memoryos` | memory operating system |
-| HippoRAG2 | `hipporag2` | graph-structured memory |
+DynamicMem ships six baselines that bracket the task with an oracle ceiling and a
+retrieval-only floor, and fill the middle with four memory systems of increasing
+structure. Oracle, RAG, and SimpleMem are original to this repository; A-Mem,
+MemoryOS, and HippoRAG2 are vendored or installed from their upstream projects
+(see [`NOTICE`](NOTICE) for sources and licenses). The four memory-building
+baselines support the [memory build modes](#memory-build-modes) described above;
+Oracle and RAG have no build phase.
+
+| Baseline | Env | How it represents memory |
+|----------|-----|--------------------------|
+| **Oracle** | `dynamicmem` | *No memory.* Answers each checkpoint from the validated ground-truth state — an upper-bound ceiling that isolates prediction/judging headroom from memory quality. |
+| **RAG** | `dynamicmem` | *No memory.* Embeds the raw app-log history and retrieves the top-_k_ most relevant entries per query — a retrieval-only floor over unprocessed history. |
+| **SimpleMem** | `dynamicmem` | Lightweight structured memory: incrementally distills the history into a compact structured user profile that is updated and queried at each checkpoint. |
+| **A-Mem** | `dynamicmem` | Agentic memory ([agiresearch/A-mem](https://github.com/agiresearch/A-mem)): turns observations into interlinked memory notes that evolve over time, retrieving linked neighbors at query time. |
+| **MemoryOS** | `memoryos` | Memory operating system ([BAI-LAB/MemoryOS](https://github.com/BAI-LAB/MemoryOS)): tiered short-/mid-/long-term stores governed by OS-style update and eviction policies. |
+| **HippoRAG2** | `hipporag2` | Graph-structured memory ([OSU-NLP-Group/HippoRAG](https://github.com/OSU-NLP-Group/HippoRAG)): builds a knowledge graph over the history and retrieves by personalized-PageRank traversal. |
 
 ## Repository structure
 
