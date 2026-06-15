@@ -81,6 +81,14 @@ This populates `outputs/<user_id>/` with each user's `task_packs.json`
 (the per-checkpoint evaluation targets) and `app_log_large.json` (the activity
 stream a memory system ingests).
 
+## Visualization
+
+An interactive [DynamicMem Visualizer](https://zirui-ray-liu.github.io/dynamicmem-viz/viz.html)
+walks through one user's trajectory end to end — the evolving profile, the event
+chain it induces, the resulting multi-application `app_log_large.json` stream, and
+the TCE checkpoints built from it — so you can see what a memory system actually
+ingests and is scored on before running anything.
+
 ## Running a baseline
 
 A run produces predictions for one baseline on one user, then scores them:
