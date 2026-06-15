@@ -1,0 +1,324 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>DynamicMem: A Long-Horizon Memory Benchmark in Real-World Settings</title>
+  <meta name="description" content="DynamicMem is a benchmark for long-horizon memory in personal-assistant agents: 15-month, user-consistent trajectories across 16 applications, evaluated at quarterly checkpoints.">
+
+  <!-- Open Graph / social preview -->
+  <meta property="og:title" content="DynamicMem: A Long-Horizon Memory Benchmark in Real-World Settings">
+  <meta property="og:description" content="15-month, user-consistent trajectories across 16 applications, with checkpoint-based Temporal Checkpoint Evaluation of memory systems.">
+  <meta property="og:image" content="static/images/overview.png">
+  <meta property="og:type" content="website">
+
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=Newsreader:ital,wght@0,400;0,500;1,400&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css">
+
+  <style>
+    :root {
+      --bg: #ffffff;
+      --fg: #1a1a1f;
+      --muted: #5b6170;
+      --accent: #2f6df6;
+      --accent-soft: #eaf0ff;
+      --line: #e6e8ee;
+      --card: #f7f8fb;
+      --maxw: 980px;
+    }
+    * { box-sizing: border-box; }
+    html { scroll-behavior: smooth; }
+    body {
+      margin: 0;
+      font-family: 'Inter', system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
+      color: var(--fg);
+      background: var(--bg);
+      line-height: 1.65;
+      -webkit-font-smoothing: antialiased;
+    }
+    a { color: var(--accent); text-decoration: none; }
+    a:hover { text-decoration: underline; }
+    .wrap { max-width: var(--maxw); margin: 0 auto; padding: 0 24px; }
+
+    /* Hero */
+    header.hero {
+      text-align: center;
+      padding: 72px 0 28px;
+      border-bottom: 1px solid var(--line);
+      background: radial-gradient(1100px 320px at 50% -40px, var(--accent-soft), transparent 70%);
+    }
+    .eyebrow {
+      display: inline-block;
+      font-size: 13px; font-weight: 600; letter-spacing: .08em; text-transform: uppercase;
+      color: var(--accent);
+      background: var(--accent-soft);
+      padding: 5px 12px; border-radius: 999px; margin-bottom: 18px;
+    }
+    h1.title {
+      font-size: clamp(28px, 4.4vw, 44px);
+      line-height: 1.15; font-weight: 800; letter-spacing: -0.02em;
+      margin: 0 auto 6px; max-width: 880px;
+    }
+    h1.title .brand { color: var(--accent); }
+    .subtitle { color: var(--muted); font-size: 18px; margin: 10px auto 22px; max-width: 720px; }
+    .authors { font-size: 17px; margin: 8px 0 2px; }
+    .authors a { color: var(--fg); font-weight: 600; }
+    .affil { color: var(--muted); font-size: 15px; margin-bottom: 6px; }
+    .venue { color: var(--muted); font-size: 15px; font-style: italic; }
+
+    /* Buttons */
+    .links { display: flex; flex-wrap: wrap; gap: 12px; justify-content: center; margin: 26px 0 6px; }
+    .btn {
+      display: inline-flex; align-items: center; gap: 9px;
+      background: #14161c; color: #fff; font-weight: 600; font-size: 15px;
+      padding: 11px 20px; border-radius: 999px; border: 1px solid #14161c;
+      transition: transform .08s ease, background .15s ease;
+    }
+    .btn:hover { background: #000; text-decoration: none; transform: translateY(-1px); }
+    .btn.alt { background: #fff; color: var(--fg); border-color: var(--line); }
+    .btn.alt:hover { background: var(--card); }
+    .btn i { font-size: 16px; }
+
+    /* Sections */
+    section { padding: 48px 0; border-bottom: 1px solid var(--line); }
+    h2.section-title {
+      font-size: 26px; font-weight: 800; letter-spacing: -0.01em;
+      text-align: center; margin: 0 0 8px;
+    }
+    .section-sub { text-align: center; color: var(--muted); margin: 0 auto 28px; max-width: 640px; }
+    p.lead { font-size: 17px; }
+
+    /* Figure */
+    figure { margin: 8px 0 0; }
+    figure img { width: 100%; height: auto; border: 1px solid var(--line); border-radius: 12px; background: #fff; }
+    figcaption { color: var(--muted); font-size: 14.5px; margin-top: 12px; text-align: center; }
+
+    /* Stats band */
+    .stats { display: grid; grid-template-columns: repeat(5, 1fr); gap: 14px; }
+    .stat { background: var(--card); border: 1px solid var(--line); border-radius: 14px; padding: 20px 12px; text-align: center; }
+    .stat .num { font-size: 26px; font-weight: 800; color: var(--accent); letter-spacing: -0.02em; }
+    .stat .lab { font-size: 13.5px; color: var(--muted); margin-top: 4px; }
+
+    /* Findings */
+    .finding { margin: 0 0 44px; }
+    .finding:last-child { margin-bottom: 0; }
+    .finding .tag {
+      display: inline-block; font-size: 13px; font-weight: 700; color: var(--accent);
+      background: var(--accent-soft); padding: 3px 10px; border-radius: 999px; margin-bottom: 10px;
+    }
+    .finding h3 { font-size: 20px; font-weight: 700; margin: 0 0 8px; letter-spacing: -0.01em; }
+    .finding p { color: #33384a; margin: 0 0 14px; }
+
+    /* Tasks cards */
+    .cards { display: grid; grid-template-columns: 1fr 1fr; gap: 18px; }
+    .card { background: var(--card); border: 1px solid var(--line); border-radius: 14px; padding: 22px 22px; }
+    .card h3 { margin: 0 0 6px; font-size: 18px; }
+    .card p { margin: 0; color: #33384a; font-size: 15.5px; }
+    .card .ic { font-size: 20px; color: var(--accent); margin-bottom: 8px; }
+
+    /* BibTeX */
+    pre.bibtex {
+      background: #14161c; color: #e9ecf3; border-radius: 12px; padding: 20px 22px;
+      overflow-x: auto; font-size: 13.5px; line-height: 1.55;
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    }
+    footer { text-align: center; color: var(--muted); font-size: 14px; padding: 30px 0 50px; }
+
+    @media (max-width: 760px) {
+      .stats { grid-template-columns: repeat(2, 1fr); }
+      .cards { grid-template-columns: 1fr; }
+    }
+  </style>
+</head>
+<body>
+
+  <!-- ============ HERO ============ -->
+  <header class="hero">
+    <div class="wrap">
+      <span class="eyebrow">Long-Horizon Memory Benchmark</span>
+      <h1 class="title"><span class="brand">DynamicMem</span>: A Long-Horizon Memory Benchmark in Real-World Settings</h1>
+      <p class="subtitle">Can memory systems track who a user is, what they do, and what they prefer — and keep it current — across months of multi-app activity?</p>
+
+      <!-- TODO(authors): the paper is under double-blind review, so this is anonymized.
+           Replace with real author names / affiliation links when you de-anonymize. -->
+      <p class="authors">Anonymous Authors</p>
+      <p class="affil">Under review</p>
+      <p class="venue">NeurIPS 2026 (under review)</p>
+
+      <div class="links">
+        <!-- TODO(paper): point to the arXiv / OpenReview PDF once available. -->
+        <a class="btn" href="#" aria-label="Paper"><i class="fas fa-file-pdf"></i> Paper</a>
+        <a class="btn alt" href="https://github.com/wenyaxie023/DynamicMem"><i class="fab fa-github"></i> Code</a>
+        <a class="btn alt" href="https://huggingface.co/datasets/xiewenya/dynamicmem"><i class="fas fa-database"></i> Dataset</a>
+        <a class="btn alt" href="https://zirui-ray-liu.github.io/dynamicmem-viz/viz.html"><i class="fas fa-chart-line"></i> Visualizer</a>
+      </div>
+    </div>
+  </header>
+
+  <!-- ============ TEASER ============ -->
+  <section>
+    <div class="wrap">
+      <figure>
+        <img src="static/images/overview.png" alt="DynamicMem overview: profile construction, intent-conditioned event chains, multi-app log generation, and checkpoint-based evaluation.">
+        <figcaption>
+          DynamicMem constructs evolving user profiles, generates intent-driven event chains, and grounds them into
+          state-consistent multi-app interaction logs — then evaluates memory systems at quarterly checkpoints on two
+          task families: <strong>State Completion</strong> (recover the user's current profile) and
+          <strong>Personalized Service</strong> (act on it).
+        </figcaption>
+      </figure>
+    </div>
+  </section>
+
+  <!-- ============ STATS ============ -->
+  <section>
+    <div class="wrap">
+      <div class="stats">
+        <div class="stat"><div class="num">15</div><div class="lab">months per user</div></div>
+        <div class="stat"><div class="num">2.2M</div><div class="lab">tokens / user (avg)</div></div>
+        <div class="stat"><div class="num">1,772</div><div class="lab">grounded events / user</div></div>
+        <div class="stat"><div class="num">16</div><div class="lab">applications</div></div>
+        <div class="stat"><div class="num">5</div><div class="lab">quarterly checkpoints</div></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============ ABSTRACT ============ -->
+  <section id="abstract">
+    <div class="wrap">
+      <h2 class="section-title">Abstract</h2>
+      <p class="lead">
+        LLM agents increasingly act as personal assistants that must remember a user's profile over months — who they
+        are (<em>attributes</em>), what they routinely do (<em>habits</em>), and what they prefer
+        (<em>preferences</em>) — and keep it updated as jobs, routines, and tastes drift. Existing benchmarks evaluate
+        this "memory" through short, simplified interactions, missing three core properties of real long-horizon
+        behavior: a user's profile is <strong>heterogeneous</strong> (attributes, habits, and preferences evolve on
+        different timelines); its changes are <strong>causally driven</strong> by external context such as life events;
+        and its evidence is <strong>scattered</strong> across many small actions in different apps rather than stated
+        explicitly.
+      </p>
+      <p class="lead">
+        We introduce <strong>DynamicMem</strong>, a synthetic benchmark that constructs 15 months of activity for each
+        user — the kind of long-term, multi-app data that real users' privacy keeps out of reach. It provides
+        user-consistent trajectories averaging <strong>2.2M tokens</strong> and <strong>1,772 grounded events</strong>
+        per user across <strong>16 applications</strong>, with profiles that evolve under seasons and life events, and
+        every recorded action reflecting the user's profile at that moment. We evaluate at five quarterly checkpoints to
+        track how systems scale as history grows. Benchmarking five representative memory systems exposes problems a
+        single accuracy score hides — detailed below.
+      </p>
+    </div>
+  </section>
+
+  <!-- ============ FINDINGS ============ -->
+  <section id="findings">
+    <div class="wrap">
+      <h2 class="section-title">Key Findings</h2>
+      <p class="section-sub">Benchmarking Oracle, RAG, HippoRAG2, A-Mem, and MemoryOS under DynamicMem's checkpoint protocol.</p>
+
+      <div class="finding">
+        <span class="tag">Finding 1</span>
+        <h3>Reconstructing the profile gets harder over time — but acting on it doesn't.</h3>
+        <p>
+          As histories grow, every system gets steadily worse at <strong>reconstructing</strong> the user's profile
+          (State Completion), yet no worse at <strong>using</strong> that profile to complete a service task
+          (Personalized Service) — even though both draw on the same memory. The bottleneck is recovering state, not
+          applying it.
+        </p>
+        <figure>
+          <img src="static/images/finding1.png" alt="State Completion and Personalized Service scores across the five quarterly checkpoints for all systems.">
+          <figcaption>State Completion (top) and Personalized Service (bottom), overall and across checkpoints C1–C5. Markers annotate the change relative to C1.</figcaption>
+        </figure>
+      </div>
+
+      <div class="finding">
+        <span class="tag">Finding 2</span>
+        <h3>No system both keeps facts that stay true and replaces facts that change.</h3>
+        <p>
+          The same mechanism that preserves a stable fact tends to block overwriting a changed one. Errors cluster on
+          <strong>preferences</strong> (which users never state outright) and on naming the <strong>exact entity</strong>
+          a fact refers to — which gym, which work tool. Retention and update behave as competing objectives, and the
+          right update semantics differ by family.
+        </p>
+        <figure>
+          <img src="static/images/finding2.png" alt="State Completion across checkpoints decomposed by state family: preferences, habits, attributes.">
+          <figcaption>State Completion across C1–C5 by state family: (a) Preferences, (b) Habits, (c) Attributes.</figcaption>
+        </figure>
+        <figure style="margin-top:18px">
+          <img src="static/images/finding3.png" alt="State Completion split into long-range retention and update, by family.">
+          <figcaption>The same scores split into long-range <strong>retention</strong> (top) and <strong>update</strong> (bottom), by family — exposing where each system trades one off against the other.</figcaption>
+        </figure>
+      </div>
+
+      <div class="finding">
+        <span class="tag">Finding 3</span>
+        <h3>Over 93% of failures come from memory, not the answer model.</h3>
+        <p>
+          When predictions are wrong, more than <strong>93%</strong> of failures trace to what the memory system
+          retrieves rather than to the model that writes the final answer. The largest room for improvement lies in
+          memory itself — in how it retains, updates, and surfaces the right evidence.
+        </p>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============ TASKS ============ -->
+  <section id="tasks">
+    <div class="wrap">
+      <h2 class="section-title">Two Task Families</h2>
+      <p class="section-sub">Both are derived from the same validated ground-truth state, separating <em>recovering</em> state from <em>using</em> it.</p>
+      <div class="cards">
+        <div class="card">
+          <div class="ic"><i class="fas fa-user-pen"></i></div>
+          <h3>State Completion</h3>
+          <p>Reconstruct the user's current profile — the attributes, habits, and preferences that hold at the checkpoint — by condensing many time-scattered app logs into a fixed schema.</p>
+        </div>
+        <div class="card">
+          <div class="ic"><i class="fas fa-wand-magic-sparkles"></i></div>
+          <h3>Personalized Service</h3>
+          <p>Use the remembered state to complete a proactive, personalized request grounded in that state — e.g. pre-filling a setup form or drafting a context-aware reminder.</p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============ EVALUATION ============ -->
+  <section id="evaluation">
+    <div class="wrap">
+      <h2 class="section-title">Evaluation: Temporal Checkpoint Evaluation (TCE)</h2>
+      <p class="lead" style="text-align:center; max-width:760px; margin:0 auto;">
+        Predictions are scored by a field-level <strong>Core+Detail</strong> LLM-as-judge. Each reference unit is
+        decomposed into fields; every field is scored on a binary <strong>Core</strong> axis (does the prediction
+        recover the field's central meaning?) and a three-level <strong>Detail</strong> axis (how completely are the
+        specifics preserved?), combined as <code>s = 0.8·Core + 0.2·(Detail/2)</code> and averaged over fields and units.
+      </p>
+    </div>
+  </section>
+
+  <!-- ============ BIBTEX ============ -->
+  <section id="bibtex">
+    <div class="wrap">
+      <h2 class="section-title">BibTeX</h2>
+      <!-- TODO(citation): update once the paper is published / de-anonymized. -->
+      <pre class="bibtex">@inproceedings{dynamicmem2026,
+  title     = {DynamicMem: A Long-Horizon Memory Benchmark in Real-World Settings},
+  author    = {Anonymous Authors},
+  booktitle = {Under review at NeurIPS},
+  year      = {2026}
+}</pre>
+    </div>
+  </section>
+
+  <footer>
+    <div class="wrap">
+      <p>
+        <a href="https://github.com/wenyaxie023/DynamicMem">Code</a> ·
+        <a href="https://huggingface.co/datasets/xiewenya/dynamicmem">Dataset</a> ·
+        <a href="https://zirui-ray-liu.github.io/dynamicmem-viz/viz.html">Visualizer</a>
+      </p>
+      <p>Released under the MIT License. Page content reflects a paper currently under review.</p>
+    </div>
+  </footer>
+
+</body>
+</html>
