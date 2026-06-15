@@ -318,7 +318,7 @@ def _write_snapshot_bundle(
     return entry
 
 
-def evaluate_membench(
+def build_amem_memory(
     user_id: str,
     *,
     app_log_path: Optional[str] = None,
@@ -687,7 +687,7 @@ def main() -> None:
     )
     args = parser.parse_args()
 
-    summary = evaluate_membench(
+    summary = build_amem_memory(
         user_id=args.user_id,
         app_log_path=args.app_log,
         benchmark_path=args.benchmark_path,

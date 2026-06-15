@@ -305,11 +305,11 @@ def run(args: TceAdapterArgs):
         if not embedding_api_base_url:
             embedding_api_base_url = resolved_embedding_base
 
-    evaluate_membench = None
+    build_amem_memory = None
     llm_controller_api_key = None
     llm_controller_api_base_url = None
     if runs_builder:
-        from baseline_prediction.Amem.amem import evaluate_membench
+        from baseline_prediction.Amem.amem import build_amem_memory
 
         llm_controller_api_key, llm_controller_api_base_url = resolve_openai_compatible_credentials(
             args.llm_provider,
@@ -446,7 +446,7 @@ def run(args: TceAdapterArgs):
             answer_llm_usage={},
         )
 
-    evaluate_membench(
+    build_amem_memory(
         user_id=user_id,
         app_log_path=args.app_logs_path,
         benchmark_path=str(args.benchmark),
