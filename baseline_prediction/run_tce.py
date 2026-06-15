@@ -166,6 +166,8 @@ def main() -> None:
         adapter_args = build_from_config(merged)
         if args.resume:
             adapter_args.resume = True
+        if args.max_checkpoints is not None:
+            adapter_args.max_checkpoints = args.max_checkpoints
     else:
         adapter_args = _build_from_legacy_args(args)
 
