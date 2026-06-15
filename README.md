@@ -104,8 +104,7 @@ prints a summary and writes `tce_eval.json` next to them. The headline scores ar
 A baseline always produces State Completion predictions; Personalized Service is
 enabled by `runtime.enable_rq3_apply_service_qa: true` (set in the example
 configs). Configs under [`configs/experiments/tce/`](configs/experiments/tce/) are
-templates — adjust `runtime.user_id` / `data` to the users you downloaded, and use
-`--dry-run` to inspect a resolved config without executing it.
+templates — adjust `runtime.user_id` / `data` to the users you downloaded.
 
 ## Evaluating your own memory system
 
