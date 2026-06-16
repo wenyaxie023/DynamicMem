@@ -282,12 +282,51 @@
         </figure>
       </div>
 
-      <div class="finding" style="background:var(--accent-soft); border:1px solid var(--line); border-radius:14px; padding:22px 24px;">
-        <span class="tag" style="background:#fff;">Takeaway</span>
-        <h3 style="margin-bottom:4px;">Over 93% of failures trace to memory, not the answer model.</h3>
-        <p style="margin:0;">
-          When predictions are wrong, more than <strong>93%</strong> of failures come from what the memory system
-          delivers rather than the model that writes the final answer — so the headroom lies in memory itself.
+    </div>
+  </section>
+
+  <!-- ============ ERROR ANALYSIS ============ -->
+  <section id="error-analysis">
+    <div class="wrap">
+      <h2 class="section-title">Error Analysis</h2>
+      <p class="section-sub">Every failure is labelled by what the memory system <em>delivered to the answer model</em> — isolating memory failures from answer-model behaviour.</p>
+
+      <figure>
+        <img src="static/images/error_analysis.png" alt="Failure-type distribution per system on State Completion and Personalized Service.">
+        <figcaption>Failure-type distribution per system on (a) State Completion and (b) Personalized Service. Each bar is 300 sampled failures (score &lt; 1), classified into <strong>Irrelevant</strong>, <strong>Identity miss</strong>, <strong>Detail miss</strong>, <strong>Conflated</strong>, or <strong>All clear</strong> (evidence complete but the answer still wrong — i.e. an answer-model fault).</figcaption>
+      </figure>
+
+      <div class="finding" style="margin-top:36px">
+        <span class="tag">Finding 4</span>
+        <h3>Structured memory shifts failures from detail to identity.</h3>
+        <p>
+          The four systems that build structure beyond raw chunks (A-Mem, HippoRAG2, MemoryOS, SimpleMem) all
+          concentrate at <strong>35–36% Identity Miss</strong> with Detail Miss falling to 28–33%; RAG shows the opposite
+          balance (36% Detail Miss). Merging and summarizing preserve surrounding detail but abstract away the named
+          anchor — and the identity-miss rate sits within a point of 35% across four very different mechanisms,
+          suggesting it is a systemic challenge of structured memory.
+        </p>
+      </div>
+
+      <div class="finding">
+        <span class="tag">Finding 5</span>
+        <h3>Hierarchical summarization fails earlier in the pipeline.</h3>
+        <p>
+          MemoryOS shows the highest <strong>Irrelevant Evidence</strong> rate on both tasks (29% SC vs 23–24%; 40% PS
+          vs 35–37%); combined with its Identity Miss, roughly two-thirds of its failures involve evidence that never
+          pins down the user's state. Compacting many logs into a multi-level summary surfaces an abstracted view rather
+          than the specific log a precise state query needs.
+        </p>
+      </div>
+
+      <div class="finding">
+        <span class="tag">Finding 6</span>
+        <h3>Improving memory is far more leverageable than improving the answer model.</h3>
+        <p>
+          <strong>All Clear</strong> — evidence complete and unambiguous, yet the prediction still wrong — stays at just
+          <strong>2–7%</strong> across all ten (system, task) combinations. In other words, more than <strong>93%</strong>
+          of failures are bounded by what the memory system could deliver, not by what the answer model did with it. The
+          headroom lies in memory itself.
         </p>
       </div>
     </div>
