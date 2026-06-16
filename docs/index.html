@@ -224,7 +224,7 @@
       <h2 class="section-title">How the Benchmark Works</h2>
       <p class="section-sub">A quick tour of the setting before the results.</p>
 
-      <p class="lead" style="max-width:780px; margin:0 auto 30px; text-align:center;">
+      <p class="lead" style="max-width:780px; margin:0 auto 8px; text-align:center;">
         Each user has a <strong>15-month</strong> trajectory of activity across 16 apps. We place
         <strong>five quarterly checkpoints</strong> (C1–C5); at each one a memory system sees <em>only</em> the app logs
         up to that date and must answer about the user's state <em>at that moment</em>. Accessible history therefore
@@ -232,7 +232,17 @@
         piles up, and whether it updates facts that have changed.
       </p>
 
-      <h3 style="text-align:center; font-size:18px; font-weight:700; margin:0 0 16px;">A user's profile = three state families</h3>
+      <figure style="margin-top:26px">
+        <img src="static/images/trajectory.png" alt="One user's profile evolving across five quarterly checkpoints, with world-background drivers and typed state changes.">
+        <figcaption>
+          One user across the five quarterly checkpoints. A <strong>world background</strong> of seasons and life events
+          (top) drives <strong>typed changes</strong> to the profile (bottom) — acquiring a weekly site-audit habit,
+          adding an EPA-compliance attribute, shifting a learning preference. Every recorded action is consistent with
+          the profile at that moment.
+        </figcaption>
+      </figure>
+
+      <h3 style="text-align:center; font-size:18px; font-weight:700; margin:40px 0 16px;">The profile decomposes into three state families</h3>
       <div class="cards three">
         <div class="card">
           <div class="ic"><i class="fas fa-id-card"></i></div>
@@ -244,7 +254,7 @@
           <div class="ic"><i class="fas fa-repeat"></i></div>
           <h3>Habits</h3>
           <p>Recurring routines — what the user <em>regularly does</em>. Adapt to context and may revert.</p>
-          <p class="eg"><strong>e.g.</strong> a weekend grocery run at REWE City Frankfurt; morning runs during marathon training, dropped after.</p>
+          <p class="eg"><strong>e.g.</strong> a weekend grocery run at a usual store; morning runs during marathon training, dropped after.</p>
         </div>
         <div class="card">
           <div class="ic"><i class="fas fa-heart"></i></div>
@@ -254,13 +264,23 @@
         </div>
       </div>
 
-      <h3 style="text-align:center; font-size:18px; font-weight:700; margin:34px 0 16px;">Two tasks: recover the state, then act on it</h3>
+      <h3 style="text-align:center; font-size:18px; font-weight:700; margin:40px 0 12px;">Evidence is scattered across apps and time</h3>
+      <p class="lead" style="max-width:760px; margin:0 auto 18px; text-align:center;">
+        Nothing in the profile is stated outright. A single user intent unfolds as a causally linked
+        <strong>event chain</strong> across several apps over months, so the evidence for any one fact is fragmented —
+        a memory system has to piece it back together.
+      </p>
+      <figure style="max-width:560px; margin-left:auto; margin-right:auto;">
+        <img src="static/images/event_chain.png" alt="A user intent unfolding as a causally linked event chain across Gmail, LinkedIn, and WhatsApp over two months.">
+        <figcaption>One intent — obtaining and acting on an EPA VOC certification — spread across Gmail, LinkedIn, and WhatsApp over two months.</figcaption>
+      </figure>
+
+      <h3 style="text-align:center; font-size:18px; font-weight:700; margin:40px 0 16px;">Two tasks: recover the state, then act on it</h3>
       <div class="cards">
         <div class="card">
           <div class="ic"><i class="fas fa-user-pen"></i></div>
           <h3>State Completion <span style="font-weight:500; color:var(--muted);">— recover the state</span></h3>
           <p>Fill the blank fields of the user's current profile in a fixed schema, condensing many time-scattered logs.</p>
-          <p class="eg"><strong>e.g.</strong> "What is the user's current grocery-shopping routine?" → fill {frequency, day, location}.</p>
         </div>
         <div class="card">
           <div class="ic"><i class="fas fa-wand-magic-sparkles"></i></div>
@@ -269,8 +289,12 @@
           <p class="eg"><strong>e.g.</strong> "Sunday 10:15" → draft a reminder for the user's weekend grocery run at its usual time and place.</p>
         </div>
       </div>
+      <figure style="max-width:680px; margin:22px auto 0;">
+        <img src="static/images/state_completion_example.png" alt="State Completion example: condensing scattered Fitbit walking logs into a fixed habit schema at the Q4 2023 checkpoint.">
+        <figcaption><strong>State Completion example:</strong> condense many time-scattered logs (left) into the blank fields of a fixed schema (right) — here, the user's current weekend-walk habit at the Q4 2023 checkpoint.</figcaption>
+      </figure>
 
-      <p class="section-sub" style="margin:30px auto 0; max-width:740px;">
+      <p class="section-sub" style="margin:34px auto 0; max-width:740px;">
         Both tasks are scored field by field by an LLM judge on a <strong>Core</strong> axis (is the central fact right?)
         and a <strong>Detail</strong> axis (are the specifics preserved?), combined as
         <code>s = 0.8·Core + 0.2·(Detail/2)</code>.
