@@ -234,49 +234,60 @@
   <section id="findings">
     <div class="wrap">
       <h2 class="section-title">Key Findings</h2>
-      <p class="section-sub">Benchmarking Oracle, RAG, HippoRAG2, A-Mem, and MemoryOS under DynamicMem's checkpoint protocol.</p>
+      <p class="section-sub">Benchmarking Oracle plus five memory systems — RAG, HippoRAG2, A-Mem, MemoryOS, and SimpleMem — at the five quarterly checkpoints C1–C5.</p>
 
       <div class="finding">
         <span class="tag">Finding 1</span>
-        <h3>Reconstructing the profile gets harder over time — but acting on it doesn't.</h3>
+        <h3>State Completion degrades over the horizon — but Personalized Service does not.</h3>
         <p>
-          As histories grow, every system gets steadily worse at <strong>reconstructing</strong> the user's profile
-          (State Completion), yet no worse at <strong>using</strong> that profile to complete a service task
-          (Personalized Service) — even though both draw on the same memory. The bottleneck is recovering state, not
-          applying it.
+          From C1 to C5, State Completion declines for every system (−4.4 RAG, −6.6 HippoRAG2, −8.9 A-Mem,
+          −14.2 MemoryOS, −16.7 SimpleMem). Yet Personalized Service shows no such decay — it is <em>higher</em> at C5
+          than C1 for four of the five systems. Since both tasks read the same memory, the bottleneck is
+          <strong>recovering</strong> state, not <strong>acting</strong> on it.
         </p>
         <figure>
-          <img src="static/images/finding1.png" alt="State Completion and Personalized Service scores across the five quarterly checkpoints for all systems.">
-          <figcaption>State Completion (top) and Personalized Service (bottom), overall and across checkpoints C1–C5. Markers annotate the change relative to C1.</figcaption>
+          <img src="static/images/finding1.png" alt="State Completion and Personalized Service scores across the five quarterly checkpoints C1–C5 for all systems.">
+          <figcaption>(a) State Completion and (b) Personalized Service across the five quarterly checkpoints C1–C5, for all systems. Markers are annotated with their change relative to C1.</figcaption>
         </figure>
       </div>
 
       <div class="finding">
         <span class="tag">Finding 2</span>
-        <h3>No system both keeps facts that stay true and replaces facts that change.</h3>
+        <h3>The decline is mainly preferences; habits stay stable and attributes drop early then flatten.</h3>
         <p>
-          The same mechanism that preserves a stable fact tends to block overwriting a changed one. Errors cluster on
-          <strong>preferences</strong> (which users never state outright) and on naming the <strong>exact entity</strong>
-          a fact refers to — which gym, which work tool. Retention and update behave as competing objectives, and the
-          right update semantics differ by family.
+          Breaking State Completion down by state family, <strong>preferences</strong> account for most of the decline
+          (e.g. −26.5 for A-Mem from C1 to C5) and degrade steadily — they are implicit, inferred from many scattered
+          logs that later evidence blurs. <strong>Habits</strong> stay roughly flat (recurring behavior adds redundant
+          evidence), and <strong>attributes</strong> drop early then hold.
         </p>
         <figure>
-          <img src="static/images/finding2.png" alt="State Completion across checkpoints decomposed by state family: preferences, habits, attributes.">
-          <figcaption>State Completion across C1–C5 by state family: (a) Preferences, (b) Habits, (c) Attributes.</figcaption>
-        </figure>
-        <figure style="margin-top:18px">
-          <img src="static/images/finding3.png" alt="State Completion split into long-range retention and update, by family.">
-          <figcaption>The same scores split into long-range <strong>retention</strong> (top) and <strong>update</strong> (bottom), by family — exposing where each system trades one off against the other.</figcaption>
+          <img src="static/images/finding2.png" alt="State Completion across checkpoints C1–C5 decomposed by state family: preferences, habits, attributes.">
+          <figcaption>State Completion across C1–C5, decomposed by state family: (a) Preferences, (b) Habits, (c) Attributes, for all systems. Markers are annotated with their change relative to C1.</figcaption>
         </figure>
       </div>
 
       <div class="finding">
         <span class="tag">Finding 3</span>
-        <h3>Over 93% of failures come from memory, not the answer model.</h3>
+        <h3>Retention and update are separate failure modes — no architecture wins both.</h3>
         <p>
-          When predictions are wrong, more than <strong>93%</strong> of failures trace to what the memory system
-          retrieves rather than to the model that writes the final answer. The largest room for improvement lies in
-          memory itself — in how it retains, updates, and surfaces the right evidence.
+          A falling score can mean forgetting a long-standing fact (<strong>retention</strong>) or failing to adopt a
+          changed one (<strong>update</strong>) — distinct failures an aggregate curve hides. The same mechanism that
+          lets a system hold a stable fact often blocks it from adopting a changed one, and the trade-off differs by
+          family: append-only stores (RAG, HippoRAG2) adopt changes fast but forget; consolidating stores
+          (A-Mem, SimpleMem, MemoryOS) retain but blur old and new.
+        </p>
+        <figure>
+          <img src="static/images/finding3.png" alt="State Completion split into long-range retention (top row) and update (bottom row), by family.">
+          <figcaption>State Completion split into long-range <strong>retention</strong> (top row) and <strong>update</strong> (bottom row), by family. Retention re-asks about facts unchanged since C1 (a forgetting curve as the lookback grows); update scores facts whose gold value just changed. Neither regime is defined at C1, so both rows start at C2.</figcaption>
+        </figure>
+      </div>
+
+      <div class="finding" style="background:var(--accent-soft); border:1px solid var(--line); border-radius:14px; padding:22px 24px;">
+        <span class="tag" style="background:#fff;">Takeaway</span>
+        <h3 style="margin-bottom:4px;">Over 93% of failures trace to memory, not the answer model.</h3>
+        <p style="margin:0;">
+          When predictions are wrong, more than <strong>93%</strong> of failures come from what the memory system
+          delivers rather than the model that writes the final answer — so the headroom lies in memory itself.
         </p>
       </div>
     </div>
