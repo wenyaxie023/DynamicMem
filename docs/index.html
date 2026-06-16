@@ -116,6 +116,8 @@
     .card h3 { margin: 0 0 6px; font-size: 18px; }
     .card p { margin: 0; color: #33384a; font-size: 15.5px; }
     .card .ic { font-size: 20px; color: var(--accent); margin-bottom: 8px; }
+    .card .eg { color: var(--muted); font-size: 14px; margin-top: 10px; }
+    .cards.three { grid-template-columns: repeat(3, 1fr); }
 
     /* BibTeX */
     pre.bibtex {
@@ -216,23 +218,63 @@
     </div>
   </section>
 
-  <!-- ============ TASKS ============ -->
-  <section id="tasks">
+  <!-- ============ THE BENCHMARK ============ -->
+  <section id="benchmark">
     <div class="wrap">
-      <h2 class="section-title">Two Task Families</h2>
-      <p class="section-sub">Both are derived from the same validated ground-truth state, separating <em>recovering</em> state from <em>using</em> it.</p>
+      <h2 class="section-title">How the Benchmark Works</h2>
+      <p class="section-sub">A quick tour of the setting before the results.</p>
+
+      <p class="lead" style="max-width:780px; margin:0 auto 30px; text-align:center;">
+        Each user has a <strong>15-month</strong> trajectory of activity across 16 apps. We place
+        <strong>five quarterly checkpoints</strong> (C1–C5); at each one a memory system sees <em>only</em> the app logs
+        up to that date and must answer about the user's state <em>at that moment</em>. Accessible history therefore
+        grows from ~3 months at C1 to ~15 months at C5 — so later checkpoints reveal how a system scales as evidence
+        piles up, and whether it updates facts that have changed.
+      </p>
+
+      <h3 style="text-align:center; font-size:18px; font-weight:700; margin:0 0 16px;">A user's profile = three state families</h3>
+      <div class="cards three">
+        <div class="card">
+          <div class="ic"><i class="fas fa-id-card"></i></div>
+          <h3>Attributes</h3>
+          <p>Facts and possessions — what the user <em>has</em> or <em>is</em>. Change discretely on life events.</p>
+          <p class="eg"><strong>e.g.</strong> primary vehicle → 2022 BMW 530e; moving to a new city.</p>
+        </div>
+        <div class="card">
+          <div class="ic"><i class="fas fa-repeat"></i></div>
+          <h3>Habits</h3>
+          <p>Recurring routines — what the user <em>regularly does</em>. Adapt to context and may revert.</p>
+          <p class="eg"><strong>e.g.</strong> a weekend grocery run at REWE City Frankfurt; morning runs during marathon training, dropped after.</p>
+        </div>
+        <div class="card">
+          <div class="ic"><i class="fas fa-heart"></i></div>
+          <h3>Preferences</h3>
+          <p>Comparative inclinations — what the user <em>tends to choose</em>. Drift gradually, rarely stated outright.</p>
+          <p class="eg"><strong>e.g.</strong> a slow shift from fast food toward healthier options.</p>
+        </div>
+      </div>
+
+      <h3 style="text-align:center; font-size:18px; font-weight:700; margin:34px 0 16px;">… probed by two tasks</h3>
       <div class="cards">
         <div class="card">
           <div class="ic"><i class="fas fa-user-pen"></i></div>
-          <h3>State Completion</h3>
-          <p>Reconstruct the user's current profile — the attributes, habits, and preferences that hold at the checkpoint — by condensing many time-scattered app logs into a fixed schema.</p>
+          <h3>State Completion <span style="font-weight:500; color:var(--muted);">— recover the state</span></h3>
+          <p>Fill the blank fields of the user's current profile in a fixed schema, condensing many time-scattered logs.</p>
+          <p class="eg"><strong>e.g.</strong> "What is the user's current grocery-shopping routine?" → fill {frequency, day, location}.</p>
         </div>
         <div class="card">
           <div class="ic"><i class="fas fa-wand-magic-sparkles"></i></div>
-          <h3>Personalized Service</h3>
-          <p>Use the remembered state to complete a proactive, personalized request grounded in that state — e.g. pre-filling a setup form or drafting a context-aware reminder.</p>
+          <h3>Personalized Service <span style="font-weight:500; color:var(--muted);">— act on the state</span></h3>
+          <p>Handle a request whose scenario gives only time and place — the user-state needed is deliberately withheld.</p>
+          <p class="eg"><strong>e.g.</strong> "Sunday 10:15" → draft a reminder for the user's weekend grocery run at its usual time and place.</p>
         </div>
       </div>
+
+      <p class="section-sub" style="margin:30px auto 0; max-width:740px;">
+        Both tasks are scored field by field by an LLM judge on a <strong>Core</strong> axis (is the central fact right?)
+        and a <strong>Detail</strong> axis (are the specifics preserved?), combined as
+        <code>s = 0.8·Core + 0.2·(Detail/2)</code>.
+      </p>
     </div>
   </section>
 
@@ -335,19 +377,6 @@
           headroom lies in memory itself.
         </p>
       </div>
-    </div>
-  </section>
-
-  <!-- ============ EVALUATION ============ -->
-  <section id="evaluation">
-    <div class="wrap">
-      <h2 class="section-title">Checkpoint-Based Evaluation</h2>
-      <p class="lead" style="text-align:center; max-width:760px; margin:0 auto;">
-        Predictions are scored by a field-level <strong>Core+Detail</strong> LLM-as-judge. Each reference unit is
-        decomposed into fields; every field is scored on a binary <strong>Core</strong> axis (does the prediction
-        recover the field's central meaning?) and a three-level <strong>Detail</strong> axis (how completely are the
-        specifics preserved?), combined as <code>s = 0.8·Core + 0.2·(Detail/2)</code> and averaged over fields and units.
-      </p>
     </div>
   </section>
 
